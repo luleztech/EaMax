@@ -59,6 +59,7 @@ router.get('/dashboard', async (req, res, next) => {
       uninstallUsersThisMonth,
       adsToday,
       totalPoints,
+      premiumPayments,
     ] = await Promise.all([
       query('SELECT COUNT(*)::int AS count FROM users'),
       query(
@@ -74,6 +75,9 @@ router.get('/dashboard', async (req, res, next) => {
         "SELECT COUNT(*)::int AS count FROM ad_events WHERE date_trunc('day', watched_at) = date_trunc('day', now())",
       ),
       query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
+      query(
+        "SELECT COALESCE(SUM(amount_cents), 0)::int AS amount_cents FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
+      ),
     ]);
 
     return res.json({
@@ -83,7 +87,7 @@ router.get('/dashboard', async (req, res, next) => {
       uninstallUsersThisMonth: uninstallUsersThisMonth.rows[0].count,
       adsWatchedToday: adsToday.rows[0].count,
       totalPointsCollected: totalPoints.rows[0].total_points,
-      revenue: 0, // TODO: Calculate from subscription_payments table
+      premiumPaymentsCents: premiumPayments.rows[0].amount_cents,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
