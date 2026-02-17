@@ -332,12 +332,22 @@ router.delete('/channels/:id', async (req, res, next) => {
   }
 });
 
-// Admin: list carousel slides
+// Admin: list carousel slides (optionally filter by category)
 router.get('/carousel', async (req, res, next) => {
   try {
-    const result = await query(
-      `SELECT * FROM carousel_slides ORDER BY sort_order ASC, created_at DESC`,
-    );
+    const category = req.query.category; // football | movies | undefined (all)
+    
+    let queryStr = 'SELECT * FROM carousel_slides';
+    let params = [];
+    
+    if (category) {
+      queryStr += ' WHERE category = $1';
+      params.push(category);
+    }
+    
+    queryStr += ' ORDER BY sort_order ASC, created_at DESC';
+    
+    const result = await query(queryStr, params);
     return res.json(result.rows);
   } catch (err) {
     return next(err);
@@ -351,13 +361,13 @@ router.post('/carousel', async (req, res, next) => {
       title: z.string().min(1),
       subtitle: z.string().optional(),
       badge: z.string().optional(),
-      // Allow any non-empty string here; frontend already validates presence
       imageUrl: z.string().optional(),
       gradientStart: z.string().optional(),
       gradientMid: z.string().optional(),
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
+      category: z.enum(['football', 'movies']).default('football'),
       isActive: z.boolean().optional().default(true),
       sortOrder: z.number().int().optional().default(0),
     });
@@ -368,8 +378,8 @@ router.post('/carousel', async (req, res, next) => {
       `INSERT INTO carousel_slides
          (title, subtitle, badge, image_url,
           gradient_start, gradient_mid, gradient_end,
-          info_icon, info_text, is_active, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          info_icon, info_text, category, is_active, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         data.title,
@@ -381,6 +391,7 @@ router.post('/carousel', async (req, res, next) => {
         data.gradientEnd || '#000000',
         data.infoIcon || null,
         data.infoText || null,
+        data.category,
         data.isActive,
         data.sortOrder,
       ],
@@ -408,6 +419,7 @@ router.put('/carousel/:id', async (req, res, next) => {
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
+      category: z.enum(['football', 'movies']).optional(),
       isActive: z.boolean().optional(),
       sortOrder: z.number().int().optional(),
     });
@@ -429,6 +441,7 @@ router.put('/carousel/:id', async (req, res, next) => {
       gradientEnd: 'gradient_end',
       infoIcon: 'info_icon',
       infoText: 'info_text',
+      category: 'category',
       isActive: 'is_active',
       sortOrder: 'sort_order',
     };
@@ -480,6 +493,139 @@ router.delete('/carousel/:id', async (req, res, next) => {
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Slide not found' });
+    }
+
+    return res.status(204).send();
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: list upcoming matches
+router.get('/matches', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT * FROM upcoming_matches ORDER BY match_time ASC`,
+    );
+    return res.json(result.rows);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: create upcoming match
+router.post('/matches', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      league: z.string().min(1),
+      team1: z.string().min(1),
+      team2: z.string().min(1),
+      matchTime: z.string().datetime(), // ISO 8601 string
+      pointsRequired: z.number().int().optional().default(15),
+      isActive: z.boolean().optional().default(true),
+    });
+
+    const data = bodySchema.parse(req.body);
+
+    const result = await query(
+      `INSERT INTO upcoming_matches
+         (league, team1, team2, match_time, points_required, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        data.league,
+        data.team1,
+        data.team2,
+        data.matchTime,
+        data.pointsRequired,
+        data.isActive,
+      ],
+    );
+
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: update upcoming match
+router.put('/matches/:id', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const bodySchema = z.object({
+      league: z.string().optional(),
+      team1: z.string().optional(),
+      team2: z.string().optional(),
+      matchTime: z.string().datetime().optional(),
+      pointsRequired: z.number().int().optional(),
+      isActive: z.boolean().optional(),
+    });
+
+    const { id } = paramsSchema.parse(req.params);
+    const data = bodySchema.parse(req.body);
+
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    const mapping = {
+      league: 'league',
+      team1: 'team1',
+      team2: 'team2',
+      matchTime: 'match_time',
+      pointsRequired: 'points_required',
+      isActive: 'is_active',
+    };
+
+    Object.entries(mapping).forEach(([key, column]) => {
+      const value = data[key];
+      if (value !== undefined) {
+        fields.push(`${column} = $${idx}`);
+        values.push(value);
+        idx += 1;
+      }
+    });
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(Number(id));
+
+    const updated = await query(
+      `UPDATE upcoming_matches
+          SET ${fields.join(', ')}
+        WHERE id = $${idx}
+        RETURNING *`,
+      values,
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'Match not found' });
+    }
+
+    return res.json(updated.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: delete upcoming match
+router.delete('/matches/:id', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const { id } = paramsSchema.parse(req.params);
+
+    const result = await query('DELETE FROM upcoming_matches WHERE id = $1', [
+      Number(id),
+    ]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Match not found' });
     }
 
     return res.status(204).send();
