@@ -11,6 +11,7 @@ const adminRouter = require('./routes/admin');
 const notificationsRouter = require('./routes/notifications');
 const settingsRouter = require('./routes/settings');
 const carouselRouter = require('./routes/carousel');
+const paymentsRouter = require('./routes/payments');
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/channels', channelsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/carousel', carouselRouter);
+app.use('/api/payments', paymentsRouter);
 
 // Admin API (for EaAdmin)
 app.use('/api/admin', adminRouter);
