@@ -59,3 +59,25 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+  id SERIAL PRIMARY KEY,
+  key TEXT UNIQUE NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS carousel_slides (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  subtitle TEXT,
+  badge TEXT,
+  image_url TEXT,
+  gradient_start VARCHAR(16) NOT NULL DEFAULT '#14532d',
+  gradient_mid VARCHAR(16),
+  gradient_end VARCHAR(16) NOT NULL DEFAULT '#000000',
+  info_icon TEXT,
+  info_text TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

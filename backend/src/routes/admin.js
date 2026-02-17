@@ -332,6 +332,162 @@ router.delete('/channels/:id', async (req, res, next) => {
   }
 });
 
+// Admin: list carousel slides
+router.get('/carousel', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT * FROM carousel_slides ORDER BY sort_order ASC, created_at DESC`,
+    );
+    return res.json(result.rows);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: create carousel slide
+router.post('/carousel', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      title: z.string().min(1),
+      subtitle: z.string().optional(),
+      badge: z.string().optional(),
+      // Allow any non-empty string here; frontend already validates presence
+      imageUrl: z.string().optional(),
+      gradientStart: z.string().optional(),
+      gradientMid: z.string().optional(),
+      gradientEnd: z.string().optional(),
+      infoIcon: z.string().optional(),
+      infoText: z.string().optional(),
+      isActive: z.boolean().optional().default(true),
+      sortOrder: z.number().int().optional().default(0),
+    });
+
+    const data = bodySchema.parse(req.body);
+
+    const result = await query(
+      `INSERT INTO carousel_slides
+         (title, subtitle, badge, image_url,
+          gradient_start, gradient_mid, gradient_end,
+          info_icon, info_text, is_active, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [
+        data.title,
+        data.subtitle || null,
+        data.badge || null,
+        data.imageUrl || null,
+        data.gradientStart || '#14532d',
+        data.gradientMid || null,
+        data.gradientEnd || '#000000',
+        data.infoIcon || null,
+        data.infoText || null,
+        data.isActive,
+        data.sortOrder,
+      ],
+    );
+
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: update carousel slide
+router.put('/carousel/:id', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const bodySchema = z.object({
+      title: z.string().optional(),
+      subtitle: z.string().optional(),
+      badge: z.string().optional(),
+      imageUrl: z.string().optional(),
+      gradientStart: z.string().optional(),
+      gradientMid: z.string().optional(),
+      gradientEnd: z.string().optional(),
+      infoIcon: z.string().optional(),
+      infoText: z.string().optional(),
+      isActive: z.boolean().optional(),
+      sortOrder: z.number().int().optional(),
+    });
+
+    const { id } = paramsSchema.parse(req.params);
+    const data = bodySchema.parse(req.body);
+
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    const mapping = {
+      title: 'title',
+      subtitle: 'subtitle',
+      badge: 'badge',
+      imageUrl: 'image_url',
+      gradientStart: 'gradient_start',
+      gradientMid: 'gradient_mid',
+      gradientEnd: 'gradient_end',
+      infoIcon: 'info_icon',
+      infoText: 'info_text',
+      isActive: 'is_active',
+      sortOrder: 'sort_order',
+    };
+
+    Object.entries(mapping).forEach(([key, column]) => {
+      const value = data[key];
+      if (value !== undefined) {
+        fields.push(`${column} = $${idx}`);
+        values.push(value);
+        idx += 1;
+      }
+    });
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(Number(id));
+
+    const updated = await query(
+      `UPDATE carousel_slides
+          SET ${fields.join(', ')}
+        WHERE id = $${idx}
+        RETURNING *`,
+      values,
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'Slide not found' });
+    }
+
+    return res.json(updated.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: delete carousel slide
+router.delete('/carousel/:id', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const { id } = paramsSchema.parse(req.params);
+
+    const result = await query('DELETE FROM carousel_slides WHERE id = $1', [
+      Number(id),
+    ]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Slide not found' });
+    }
+
+    return res.status(204).send();
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: create notification
 router.post('/notifications', async (req, res, next) => {
   try {
