@@ -28,14 +28,27 @@ router.post('/zeno/start', async (req, res, next) => {
     const bodySchema = z.object({
       externalId: z.string().min(1),
       bundle: z.enum(['week', 'month', 'year']),
-      phone: z
-        .string()
-        .regex(/^0[0-9]{8,9}$/, 'Invalid Tanzanian phone number, use format 07XXXXXXXX'),
+      phone: z.string().min(9).max(15),
       email: z.string().email().optional(),
       name: z.string().optional(),
     });
 
     const data = bodySchema.parse(req.body);
+
+    // Normalize phone number to ZenoPay format (07XXXXXXXX)
+    // Accept: 0712345678, 255712345678, +255712345678
+    let normalizedPhone = data.phone.replace(/\s+/g, ''); // Remove spaces
+    if (normalizedPhone.startsWith('+255')) {
+      normalizedPhone = '0' + normalizedPhone.slice(4);
+    } else if (normalizedPhone.startsWith('255')) {
+      normalizedPhone = '0' + normalizedPhone.slice(3);
+    }
+    // Ensure it starts with 0 and has 9-10 digits after 0
+    if (!/^0[0-9]{8,9}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        error: 'Invalid phone number format. Use 07XXXXXXXX (e.g., 0712345678)',
+      });
+    }
 
     // Find user by externalId
     const userRes = await query('SELECT id FROM users WHERE external_id = $1', [
@@ -61,10 +74,17 @@ router.post('/zeno/start', async (req, res, next) => {
       order_id: orderId,
       buyer_email: data.email || 'user@eamax.app',
       buyer_name: data.name || data.externalId,
-      buyer_phone: data.phone,
+      buyer_phone: normalizedPhone,
       amount: planInfo.amount,
       webhook_url: webhookUrl,
     };
+
+    // eslint-disable-next-line no-console
+    console.log('[ZenoPay] Sending payment request:', {
+      orderId,
+      phone: normalizedPhone,
+      amount: planInfo.amount,
+    });
 
     const response = await fetch(
       `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
@@ -80,10 +100,22 @@ router.post('/zeno/start', async (req, res, next) => {
 
     const zenoData = await response.json();
 
+    // eslint-disable-next-line no-console
+    console.log('[ZenoPay] Response:', {
+      status: response.status,
+      zenoStatus: zenoData.status,
+      message: zenoData.message,
+      resultcode: zenoData.resultcode,
+    });
+
     if (!response.ok || zenoData.status !== 'success') {
+      const errorMsg =
+        zenoData.message ||
+        `ZenoPay error (code: ${zenoData.resultcode || 'unknown'})` ||
+        'Failed to start payment request';
       return res.status(400).json({
-        error: zenoData.message || 'Failed to start payment request',
-        raw: zenoData,
+        error: errorMsg,
+        zenoResponse: zenoData,
       });
     }
 
