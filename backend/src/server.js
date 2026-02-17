@@ -20,15 +20,20 @@ app.use(
 app.use(express.json());
 app.use(morgan('dev'));
 
-// Health check
-app.get('/health', async (req, res) => {
+// Simple health check (no DB required)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'EaMax backend is running' });
+});
+
+// Database health check
+app.get('/health/db', async (req, res) => {
   try {
     await query('SELECT 1');
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', database: 'connected' });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('Health check failed', err);
-    res.status(500).json({ status: 'error' });
+    console.error('Database health check failed', err);
+    res.status(500).json({ status: 'error', database: 'disconnected', error: err.message });
   }
 });
 
