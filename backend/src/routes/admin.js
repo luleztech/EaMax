@@ -22,6 +22,36 @@ router.use((req, res, next) => {
 // Dashboard stats for EaAdmin
 router.get('/dashboard', async (req, res, next) => {
   try {
+    // Check if tables exist first
+    const tableCheck = await query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'users'
+      ) AS users_exists,
+      EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'ad_events'
+      ) AS ad_events_exists
+    `);
+
+    const { users_exists, ad_events_exists } = tableCheck.rows[0];
+
+    // If tables don't exist, return zeros
+    if (!users_exists || !ad_events_exists) {
+      return res.json({
+        totalUsers: 0,
+        premiumUsers: 0,
+        newUsersThisMonth: 0,
+        uninstallUsersThisMonth: 0,
+        adsWatchedToday: 0,
+        totalPointsCollected: 0,
+        revenue: 0,
+        message: 'Database tables not initialized. Please run the schema.sql script.',
+      });
+    }
+
     const [
       totalUsers,
       premiumUsers,
@@ -53,9 +83,22 @@ router.get('/dashboard', async (req, res, next) => {
       uninstallUsersThisMonth: uninstallUsersThisMonth.rows[0].count,
       adsWatchedToday: adsToday.rows[0].count,
       totalPointsCollected: totalPoints.rows[0].total_points,
+      revenue: 0, // TODO: Calculate from subscription_payments table
     });
   } catch (err) {
-    return next(err);
+    // eslint-disable-next-line no-console
+    console.error('Dashboard stats error:', err);
+    // Return default values on error instead of crashing
+    return res.json({
+      totalUsers: 0,
+      premiumUsers: 0,
+      newUsersThisMonth: 0,
+      uninstallUsersThisMonth: 0,
+      adsWatchedToday: 0,
+      totalPointsCollected: 0,
+      revenue: 0,
+      error: err.message,
+    });
   }
 });
 
