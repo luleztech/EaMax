@@ -1,0 +1,62 @@
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const morgan = require('morgan');
+
+const { query } = require('./db');
+const usersRouter = require('./routes/users');
+const channelsRouter = require('./routes/channels');
+const adminRouter = require('./routes/admin');
+const notificationsRouter = require('./routes/notifications');
+
+const app = express();
+
+app.use(
+  cors({
+    origin: '*', // you can restrict this to your app bundle IDs / domains later
+  }),
+);
+app.use(express.json());
+app.use(morgan('dev'));
+
+// Health check
+app.get('/health', async (req, res) => {
+  try {
+    await query('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Health check failed', err);
+    res.status(500).json({ status: 'error' });
+  }
+});
+
+// Public API for mobile apps
+app.use('/api/users', usersRouter);
+app.use('/api/channels', channelsRouter);
+app.use('/api/notifications', notificationsRouter);
+
+// Admin API (for EaAdmin)
+app.use('/api/admin', adminRouter);
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Global error handler
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  // eslint-disable-next-line no-console
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+const PORT = process.env.PORT || 4000;
+
+app.listen(PORT, () => {
+  // eslint-disable-next-line no-console
+  console.log(`EaMax backend listening on port ${PORT}`);
+});
+
