@@ -54,9 +54,10 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
-  console.log(`EaMax backend listening on port ${PORT}`);
+  console.log(`EaMax backend listening on ${HOST}:${PORT}`);
 });
 
