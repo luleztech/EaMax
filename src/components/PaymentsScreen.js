@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,15 +6,25 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Alert,
+  Linking,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { settingsAPI, paymentsAPI } from '../config/api';
 
 const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
   const [selectedBundle, setSelectedBundle] = useState(null);
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [statusModalVisible, setStatusModalVisible] = useState(false);
+  const [statusModalTitle, setStatusModalTitle] = useState('');
+  const [statusModalMessage, setStatusModalMessage] = useState('');
 
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '3,000', duration: '7 siku', value: 3000 },
@@ -22,26 +32,125 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
     { id: 'year', name: 'Mwaka', price: '15,000', duration: '365 siku', value: 15000 },
   ];
 
-  const handleSendRequest = () => {
+  useEffect(() => {
+    const loadWhatsApp = async () => {
+      try {
+        const data = await settingsAPI.getWhatsAppNumber();
+        if (data.number) {
+          // Normalize: remove spaces
+          setWhatsappNumber(data.number.replace(/\s+/g, ''));
+        }
+      } catch (error) {
+        console.error('Failed to load WhatsApp number:', error);
+      }
+    };
+    loadWhatsApp();
+
+    const loadUserId = async () => {
+      try {
+        // Primary key used by ProfileScreen
+        let storedId = await AsyncStorage.getItem('userId');
+
+        // Fallback for any older key we might have used
+        if (!storedId) {
+          const legacyId = await AsyncStorage.getItem('@eamax:userId');
+          if (legacyId) {
+            storedId = legacyId;
+            await AsyncStorage.setItem('userId', legacyId);
+          }
+        }
+
+        if (storedId) {
+          setUserId(storedId);
+        }
+      } catch (e) {
+        console.error('Failed to load user id for payments:', e);
+      }
+    };
+    loadUserId();
+  }, []);
+
+  const showStatusModal = (title, message) => {
+    setStatusModalTitle(title);
+    setStatusModalMessage(message);
+    setStatusModalVisible(true);
+  };
+
+  const handleSendRequest = async () => {
     if (!selectedBundle) {
-      Alert.alert('Chagua Bundle', 'Tafadhali chagua bundle unayotaka kulipa');
+      showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.');
       return;
     }
-    if (!phoneNumber || phoneNumber.length < 9) {
-      Alert.alert('Nambari ya Simu', 'Tafadhali ingiza nambari ya simu sahihi');
+    // Validate Tanzanian phone number
+    // Valid prefixes: Halotel (061, 062), Mixx by Yas (065, 071), Airtel (068, 069, 078), Vodacom (074, 075, 076, 079)
+    const validPrefixes = ['061', '062', '065', '068', '069', '071', '074', '075', '076', '078', '079'];
+    const cleanPhone = phoneNumber.replace(/\s+/g, '');
+    const isValidFormat = /^0[0-9]{8,9}$/.test(cleanPhone);
+    const hasValidPrefix = validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
+    
+    if (!phoneNumber || !isValidFormat || !hasValidPrefix) {
+      showStatusModal(
+        'Nambari ya simu',
+        'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0712345678, 0742345678, 0782345678).',
+      );
+      return;
+    }
+    if (!userId) {
+      showStatusModal(
+        'Tatizo la akaunti',
+        'Hatukuweza kutambua akaunti yako. Fungua tena sehemu ya wasifu (Profile) kisha ujaribu tena.',
+      );
       return;
     }
 
     const bundle = bundles.find(b => b.id === selectedBundle);
 
-    Alert.alert(
-      'Ombi Limetumwa',
-      `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${phoneNumber}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
-      [{ text: 'Sawa', onPress: () => {
-        setSelectedBundle(null);
-        setPhoneNumber('');
-      }}]
-    );
+    try {
+      setSubmitting(true);
+      // Clean phone number (remove spaces) before sending
+      const cleanPhone = phoneNumber.replace(/\s+/g, '');
+      const result = await paymentsAPI.startZenoPayment({
+        externalId: userId,
+        bundle: bundle.id,
+        phone: cleanPhone,
+        email: `${userId}@eamax.app`,
+        name: userId,
+      });
+
+      showStatusModal(
+        'Ombi limetumwa',
+        result.message ||
+          `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${phoneNumber}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
+      );
+
+      setSelectedBundle(null);
+      setPhoneNumber('');
+    } catch (error) {
+      console.error('Failed to start payment:', error);
+      showStatusModal(
+        'Malipo yameshindikana',
+        error?.message || 'Imeshindikana kutuma ombi la malipo. Jaribu tena baadae.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOpenWhatsApp = () => {
+    if (!whatsappNumber) {
+      showStatusModal(
+        'Hakuna namba ya WhatsApp',
+        'Tafadhali wasiliana na admin kuongeza namba ya WhatsApp kwenye sehemu ya Settings.',
+      );
+      return;
+    }
+    const phone = whatsappNumber.startsWith('+')
+      ? whatsappNumber.slice(1)
+      : whatsappNumber;
+    const url = `https://wa.me/${phone}`;
+    Linking.openURL(url).catch(() => {
+      showStatusModal('Tatizo', 'Imeshindwa kufungua WhatsApp kwenye kifaa chako.');
+    });
   };
 
   return (
@@ -119,7 +228,7 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
             <Icon name="phone" size={20} color="#9ca3af" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
-              placeholder="0712345678"
+              placeholder="0612345678, 0712345678, 0742345678..."
               placeholderTextColor="#6b7280"
               value={phoneNumber}
               onChangeText={setPhoneNumber}
@@ -128,7 +237,7 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
             />
           </View>
           <Text style={styles.inputHint}>
-            Ingiza nambari ya simu yako (mfano: 0712345678)
+            Ingiza nambari ya simu yako (Halotel: 061/062, Mixx: 065/071, Airtel: 068/069/078, Vodacom: 074/075/076/079)
           </Text>
         </View>
 
@@ -136,13 +245,23 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
         <TouchableOpacity
           style={[
             styles.sendButton,
-            (!selectedBundle || !phoneNumber) && styles.sendButtonDisabled,
+            ((!selectedBundle || !phoneNumber) && styles.sendButtonDisabled) ||
+              (submitting && styles.sendButtonDisabled),
             { backgroundColor: accentColor },
           ]}
-          onPress={handleSendRequest}
-          disabled={!selectedBundle || !phoneNumber}>
-          <Icon name="send" size={20} color="#fff" />
-          <Text style={styles.sendButtonText}>Tuma Ombi la Malipo</Text>
+          onPress={submitting ? undefined : handleSendRequest}
+          disabled={!selectedBundle || !phoneNumber || submitting}>
+          {submitting ? (
+            <>
+              <Icon name="clock-outline" size={20} color="#fff" />
+              <Text style={styles.sendButtonText}>Inatuma ombi...</Text>
+            </>
+          ) : (
+            <>
+              <Icon name="send" size={20} color="#fff" />
+              <Text style={styles.sendButtonText}>Tuma Ombi la Malipo</Text>
+            </>
+          )}
         </TouchableOpacity>
 
         {/* Info Section */}
@@ -159,8 +278,33 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
               Taarifa zako ni salama na hazitashirikiwa na mtu yeyote.
             </Text>
           </View>
+          <TouchableOpacity style={styles.infoRow} onPress={handleOpenWhatsApp}>
+            <Icon name="whatsapp" size={18} color="#22c55e" />
+            <Text style={[styles.infoText, styles.whatsappText]}>
+              Msaada zaidi? Bofya hapa tuandikie WhatsApp
+            </Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Status Modal */}
+      <Modal
+        visible={statusModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStatusModalVisible(false)}>
+        <View style={styles.statusModalOverlay}>
+          <View style={styles.statusModalContent}>
+            <Text style={styles.statusModalTitle}>{statusModalTitle}</Text>
+            <Text style={styles.statusModalMessage}>{statusModalMessage}</Text>
+            <TouchableOpacity
+              style={styles.statusModalButton}
+              onPress={() => setStatusModalVisible(false)}>
+              <Text style={styles.statusModalButtonText}>Sawa</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -356,6 +500,49 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9ca3af',
     lineHeight: 18,
+  },
+  whatsappText: {
+    color: '#22c55e',
+    fontWeight: '600',
+  },
+  statusModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  statusModalContent: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#020617',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#4b5563',
+  },
+  statusModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  statusModalMessage: {
+    fontSize: 14,
+    color: '#e5e7eb',
+    marginBottom: 16,
+  },
+  statusModalButton: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#22c55e',
+  },
+  statusModalButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 13,
   },
 });
 

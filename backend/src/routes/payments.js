@@ -35,18 +35,37 @@ router.post('/zeno/start', async (req, res, next) => {
 
     const data = bodySchema.parse(req.body);
 
-    // Normalize phone number to ZenoPay format (07XXXXXXXX)
-    // Accept: 0712345678, 255712345678, +255712345678
+    // Normalize phone number to ZenoPay format
+    // Accept: 0712345678, 0621234567, 255712345678, +255712345678
+    // Tanzanian mobile prefixes:
+    // - Halotel: 062, 061
+    // - Vodacom: 074, 075, 076, 079
+    // - Mixx by Yas: 071, 065
+    // - Airtel: 078, 068, 069
     let normalizedPhone = data.phone.replace(/\s+/g, ''); // Remove spaces
+    
+    // Convert international format to local format
     if (normalizedPhone.startsWith('+255')) {
       normalizedPhone = '0' + normalizedPhone.slice(4);
-    } else if (normalizedPhone.startsWith('255')) {
+    } else if (normalizedPhone.startsWith('255') && normalizedPhone.length >= 12) {
       normalizedPhone = '0' + normalizedPhone.slice(3);
     }
-    // Ensure it starts with 0 and has 9-10 digits after 0
-    if (!/^0[0-9]{8,9}$/.test(normalizedPhone)) {
+    
+    // Validate Tanzanian mobile number format
+    // Must start with 0 and have valid prefix, then 7-8 more digits (total 9-10 digits after 0)
+    const validPrefixes = [
+      '061', '062', // Halotel
+      '065', '071', // Mixx by Yas
+      '068', '069', '078', // Airtel
+      '074', '075', '076', '079', // Vodacom
+    ];
+    
+    const isValidFormat = /^0[0-9]{8,9}$/.test(normalizedPhone);
+    const hasValidPrefix = validPrefixes.some(prefix => normalizedPhone.startsWith(prefix));
+    
+    if (!isValidFormat || !hasValidPrefix) {
       return res.status(400).json({
-        error: 'Invalid phone number format. Use 07XXXXXXXX (e.g., 0712345678)',
+        error: 'Invalid Tanzanian phone number. Use format: 061XXXXXXXX, 062XXXXXXXX, 065XXXXXXXX, 068XXXXXXXX, 069XXXXXXXX, 071XXXXXXXX, 074XXXXXXXX, 075XXXXXXXX, 076XXXXXXXX, 078XXXXXXXX, or 079XXXXXXXX',
       });
     }
 
@@ -70,11 +89,16 @@ router.post('/zeno/start', async (req, res, next) => {
       process.env.ZENO_WEBHOOK_URL ||
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
 
+    // ZenoPay docs show local format (0744963858), but some networks may need international
+    // Try local format first (as per docs), but we can switch to international if needed
+    // For now, use local format (0XXXXXXXXX) as shown in ZenoPay documentation
+    const phoneForZeno = normalizedPhone; // Local format: 0XXXXXXXXX
+
     const payload = {
       order_id: orderId,
       buyer_email: data.email || 'user@eamax.app',
       buyer_name: data.name || data.externalId,
-      buyer_phone: normalizedPhone,
+      buyer_phone: phoneForZeno, // Local format (0XXXXXXXXX) as per ZenoPay docs
       amount: planInfo.amount,
       webhook_url: webhookUrl,
     };
@@ -82,8 +106,19 @@ router.post('/zeno/start', async (req, res, next) => {
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Sending payment request:', {
       orderId,
-      phone: normalizedPhone,
+      phone: phoneForZeno,
+      phonePrefix: phoneForZeno.substring(0, 3),
       amount: planInfo.amount,
+      bundle: data.bundle,
+      network: phoneForZeno.startsWith('061') || phoneForZeno.startsWith('062')
+        ? 'Halotel'
+        : phoneForZeno.startsWith('065') || phoneForZeno.startsWith('071')
+        ? 'Mixx by Yas'
+        : phoneForZeno.startsWith('068') || phoneForZeno.startsWith('069') || phoneForZeno.startsWith('078')
+        ? 'Airtel'
+        : phoneForZeno.startsWith('074') || phoneForZeno.startsWith('075') || phoneForZeno.startsWith('076') || phoneForZeno.startsWith('079')
+        ? 'Vodacom'
+        : 'Unknown',
     });
 
     const response = await fetch(
