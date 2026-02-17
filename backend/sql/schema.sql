@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS ad_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ad_events_user ON ad_events(user_id);
-CREATE INDEX IF NOT EXISTS idx_ad_events_day ON ad_events(date_trunc('day', watched_at));
+CREATE INDEX IF NOT EXISTS idx_ad_events_watched_at ON ad_events(watched_at);
 
 CREATE TABLE IF NOT EXISTS subscription_payments (
   id SERIAL PRIMARY KEY,
