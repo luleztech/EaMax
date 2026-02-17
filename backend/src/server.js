@@ -9,6 +9,7 @@ const usersRouter = require('./routes/users');
 const channelsRouter = require('./routes/channels');
 const adminRouter = require('./routes/admin');
 const notificationsRouter = require('./routes/notifications');
+const settingsRouter = require('./routes/settings');
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.get('/health/db', async (req, res) => {
 app.use('/api/users', usersRouter);
 app.use('/api/channels', channelsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/settings', settingsRouter);
 
 // Admin API (for EaAdmin)
 app.use('/api/admin', adminRouter);
