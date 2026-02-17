@@ -148,6 +148,49 @@ router.patch('/users/:id/block', async (req, res, next) => {
   }
 });
 
+// Admin: give special access (premium for duration)
+router.post('/users/:id/special-access', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const bodySchema = z.object({
+      duration: z.number().int().positive(),
+      unit: z.enum(['hours', 'days', 'weeks', 'months']),
+    });
+
+    const { id } = paramsSchema.parse(req.params);
+    const { duration, unit } = bodySchema.parse(req.body);
+
+    // Calculate expiration date
+    const expiresAt = new Date();
+    const multiplier = {
+      hours: 1,
+      days: 24,
+      weeks: 24 * 7,
+      months: 24 * 30,
+    }[unit];
+    expiresAt.setHours(expiresAt.getHours() + duration * multiplier);
+
+    const updated = await query(
+      `UPDATE users
+          SET is_premium = TRUE,
+              premium_expires_at = $1
+        WHERE id = $2
+        RETURNING id, external_id, is_premium, premium_expires_at`,
+      [expiresAt.toISOString(), Number(id)],
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json(updated.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: create or update channels
 router.get('/channels', async (req, res, next) => {
   try {
