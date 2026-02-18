@@ -690,12 +690,13 @@ router.post('/notifications', async (req, res, next) => {
 
     const data = bodySchema.parse(req.body);
 
+    const sentAt = data.type === 'normal' ? new Date() : null;
     let result;
     try {
       result = await query(
         `INSERT INTO notifications
            (title, message, category, type, scheduled_for, sent_at)
-         VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'normal' THEN now() ELSE NULL END)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
         [
           data.title,
@@ -703,6 +704,7 @@ router.post('/notifications', async (req, res, next) => {
           data.category,
           data.type,
           data.scheduledFor,
+          sentAt,
         ],
       );
     } catch (dbErr) {
