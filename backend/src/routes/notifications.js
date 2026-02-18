@@ -4,15 +4,18 @@ const { query } = require('../db');
 
 const router = express.Router();
 
-// Public: list latest notifications (for potential in-app inbox)
+// Public: list latest sent notifications (for admin recent list & in-app)
+// ?limit=10 returns last 10; default 10
 router.get('/', async (req, res, next) => {
   try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
     const result = await query(
-      `SELECT id, title, message, category, type, sent_at
+      `SELECT id, title, message, category, type, sent_at, clicks
          FROM notifications
         WHERE sent_at IS NOT NULL
         ORDER BY sent_at DESC
-        LIMIT 50`,
+        LIMIT $1`,
+      [limit],
     );
     return res.json(result.rows);
   } catch (err) {

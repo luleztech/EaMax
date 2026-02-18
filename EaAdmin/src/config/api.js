@@ -191,9 +191,9 @@ export const adminNotificationsAPI = {
   },
 
   // Get all notifications
-  getNotifications: async () => {
-    // Use public notifications endpoint for listing recent notifications
-    return apiRequest('/api/notifications');
+  getNotifications: async (limit = 10) => {
+    // Use public notifications endpoint for last N sent notifications (time, clicks)
+    return apiRequest(`/api/notifications?limit=${limit}`);
   },
 };
 

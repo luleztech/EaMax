@@ -24,7 +24,7 @@ import {
 
 const { width } = Dimensions.get('window');
 
-const DashboardSection = ({ onNavigate }) => {
+const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   const [stats, setStats] = useState([
     {
       title: 'Total Users',
@@ -186,7 +186,7 @@ const DashboardSection = ({ onNavigate }) => {
 
       setMostWatchedChannels(top);
 
-      const recent = (notifications || []).slice(0, 5).map((n) => ({
+      const recent = (notifications || []).slice(0, 10).map((n) => ({
         title: n.title,
         description: n.message,
         clicks:
@@ -408,6 +408,13 @@ const DashboardSection = ({ onNavigate }) => {
     };
     init();
   }, []);
+
+  // Refetch recent notifications when a new one is sent (e.g. from NotificationsPanel)
+  useEffect(() => {
+    if (refreshTrigger != null && refreshTrigger > 0) {
+      fetchExtraData();
+    }
+  }, [refreshTrigger]);
 
   const onRefresh = () => {
     setRefreshing(true);

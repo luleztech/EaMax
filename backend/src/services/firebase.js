@@ -33,6 +33,20 @@ const initializeFirebase = () => {
   }
 };
 
+// FCM keeps messages when device is offline and delivers when back online.
+// TTL: 28 days (max) so user gets the notification as soon as they have internet.
+// No collapseKey so every notification is delivered (not replaced by a newer one).
+const FCM_TTL_MS = 28 * 24 * 60 * 60 * 1000; // 28 days in milliseconds
+
+// Ensure all data payload values are strings (FCM requirement)
+const stringifyData = (data) => {
+  const out = {};
+  for (const [k, v] of Object.entries(data || {})) {
+    out[k] = v == null ? '' : String(v);
+  }
+  return out;
+};
+
 // Send push notification to a single FCM token
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   if (!firebaseInitialized) {
@@ -45,13 +59,14 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
         title,
         body,
       },
-      data: {
+      data: stringifyData({
         ...data,
         click_action: 'FLUTTER_NOTIFICATION_CLICK', // For React Native compatibility
-      },
+      }),
       token: fcmToken,
       android: {
         priority: 'high',
+        ttl: FCM_TTL_MS,
         notification: {
           channelId: 'default',
           sound: 'default',
@@ -65,6 +80,10 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
             badge: 1,
           },
         },
+        headers: {
+          'apns-priority': '10',
+          'apns-push-type': 'alert',
+        },
       },
     };
 
@@ -76,7 +95,9 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   }
 };
 
-// Send push notification to multiple FCM tokens
+// Send push notification to multiple FCM tokens.
+// Offline: FCM stores each message (no collapseKey); when user has internet again,
+// all pending messages are delivered (app can be minimized or in background).
 const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {}) => {
   if (!firebaseInitialized) {
     throw new Error('Firebase Admin not initialized');
@@ -92,12 +113,13 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
         title,
         body,
       },
-      data: {
+      data: stringifyData({
         ...data,
         click_action: 'FLUTTER_NOTIFICATION_CLICK',
-      },
+      }),
       android: {
         priority: 'high',
+        ttl: FCM_TTL_MS,
         notification: {
           channelId: 'default',
           sound: 'default',
@@ -110,6 +132,10 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
             sound: 'default',
             badge: 1,
           },
+        },
+        headers: {
+          'apns-priority': '10',
+          'apns-push-type': 'alert',
         },
       },
     };

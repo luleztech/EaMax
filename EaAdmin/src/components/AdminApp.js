@@ -23,11 +23,17 @@ const { width } = Dimensions.get('window');
 const AdminApp = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notificationsPanelVisible, setNotificationsPanelVisible] = useState(false);
+  const [dashboardRefreshTrigger, setDashboardRefreshTrigger] = useState(0);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <DashboardSection onNavigate={setActiveTab} />;
+        return (
+          <DashboardSection
+            onNavigate={setActiveTab}
+            refreshTrigger={dashboardRefreshTrigger}
+          />
+        );
       case 'users':
         return <UsersSection />;
       case 'content':
@@ -187,6 +193,7 @@ const AdminApp = () => {
       <NotificationsPanel
         visible={notificationsPanelVisible}
         onClose={() => setNotificationsPanelVisible(false)}
+        onNotificationSent={() => setDashboardRefreshTrigger((k) => k + 1)}
       />
     </SafeAreaView>
   );

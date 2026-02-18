@@ -60,6 +60,12 @@ The notification should appear in the status bar in these scenarios:
 - Tapping notification should open the app
 - Should have sound (if device not muted)
 
+#### D. User Was Offline (Pro: offline → online delivery)
+- Backend sends with **high priority** and **28-day TTL**; FCM queues messages when the device is offline.
+- As soon as the device has internet again (Wi‑Fi or mobile data), FCM delivers pending notifications.
+- Works with the app **minimized** or in the background; the notification appears in the status bar when delivered.
+- No collapse key is used, so **each notification** is delivered (not replaced by a newer one).
+
 ## Troubleshooting
 
 ### "Internal server error" or "Error sending notification" in Admin

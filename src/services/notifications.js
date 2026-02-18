@@ -1,6 +1,10 @@
 import { Platform } from 'react-native';
 import { userAPI } from '../config/api';
 
+// Notifications are delivered by FCM even when the user was offline: the backend
+// sends with high priority and 28-day TTL, so when the device has internet again
+// (app minimized or in background), FCM delivers and we show in the status bar.
+
 // Request notification permissions (safe: no crash if Firebase/Notifee missing)
 export const requestNotificationPermission = async () => {
   try {
@@ -114,7 +118,7 @@ export const initializeNotifications = async (externalId) => {
       await registerFCMToken(externalId, fcmToken);
     }
 
-    // Listen for token refresh
+    // When user comes back online, FCM may refresh the token; re-register so backend has it
     messaging().onTokenRefresh(async (token) => {
       console.log('FCM token refreshed:', token);
       if (externalId) {

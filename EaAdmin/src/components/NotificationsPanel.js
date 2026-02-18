@@ -18,7 +18,7 @@ import { adminNotificationsAPI } from '../config/api';
 
 const { width, height } = Dimensions.get('window');
 
-const NotificationsPanel = ({ visible, onClose }) => {
+const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
   const [category, setCategory] = useState(''); // 'kabumbu' or 'movies'
   const [title, setTitle] = useState('');
@@ -74,6 +74,8 @@ const NotificationsPanel = ({ visible, onClose }) => {
           ? 'Notification scheduled successfully!' 
           : 'Notification sent successfully to all users!' 
       });
+
+      if (onNotificationSent) onNotificationSent();
 
       // Reset form after success
       setTimeout(() => {
