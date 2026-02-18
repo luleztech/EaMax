@@ -4,16 +4,19 @@ const { query } = require('../db');
 
 const router = express.Router();
 
-// Public: list latest sent notifications (for admin recent list & in-app)
-// ?limit=10 returns last 10; default 10
+// Public: list notifications for admin recent list (scheduled pinned first, then sent)
+// Scheduled: sent_at IS NULL, scheduled_for set — shown first (pinned). Sent: sent_at set — then by sent_at DESC.
+// ?limit=20 returns up to 20 total (scheduled + sent); default 20
 router.get('/', async (req, res, next) => {
   try {
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const result = await query(
-      `SELECT id, title, message, category, type, sent_at, clicks
+      `SELECT id, title, message, category, type, sent_at, scheduled_for, clicks
          FROM notifications
-        WHERE sent_at IS NOT NULL
-        ORDER BY sent_at DESC
+        WHERE sent_at IS NOT NULL OR scheduled_for IS NOT NULL
+        ORDER BY (CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) ASC,
+                 (CASE WHEN sent_at IS NULL THEN scheduled_for END) ASC NULLS LAST,
+                 (CASE WHEN sent_at IS NOT NULL THEN sent_at END) DESC NULLS LAST
         LIMIT $1`,
       [limit],
     );

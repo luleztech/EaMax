@@ -113,36 +113,39 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         return num.toString();
       };
 
+      const revenueTsh = Number(data.revenueTsh) || 0;
+      const formatTsh = (n) => (n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString());
+
       setStats([
         {
           title: 'Total Users',
           value: formatNumber(data.totalUsers || 0),
-          change: data.totalUsersChange ? `+${data.totalUsersChange}%` : '+0%',
-          subtitle: 'vs last month',
+          change: '+0%',
+          subtitle: 'registered',
           gradient: ['#2563eb', '#1e40af'],
           icon: 'account-group',
         },
         {
           title: 'Premium Users',
           value: formatNumber(data.premiumUsers || 0),
-          change: data.premiumUsersChange ? `+${data.premiumUsersChange}%` : '+0%',
-          subtitle: 'conversion rate',
+          change: '+0%',
+          subtitle: 'active subscription',
           gradient: ['#10b981', '#059669'],
           icon: 'star',
         },
         {
           title: 'Revenue',
-          value: `$${formatNumber(data.revenue || 0)}`,
-          change: data.revenueChange ? `+${data.revenueChange}%` : '+0%',
-          subtitle: 'this month',
+          value: `${formatTsh(revenueTsh)} TSh`,
+          change: 'this month',
+          subtitle: 'successful payments only',
           gradient: ['#7c3aed', '#6d28d9'],
           icon: 'currency-usd',
         },
         {
-          title: 'Ads Watched per Month',
-          value: formatNumber(data.adsWatchedThisMonth || 0),
-          change: data.adsWatchedChange ? `+${data.adsWatchedChange}%` : '+0%',
-          subtitle: 'this month',
+          title: 'Ads Watched',
+          value: formatNumber(data.adsWatchedThisMonth ?? data.adsWatchedToday ?? 0),
+          change: 'this month',
+          subtitle: 'real ad_events data',
           gradient: ['#f97316', '#ea580c'],
           icon: 'eye',
         },
@@ -186,28 +189,39 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
 
       setMostWatchedChannels(top);
 
-      const recent = (notifications || []).slice(0, 10).map((n) => ({
-        title: n.title,
-        description: n.message,
-        clicks:
-          typeof n.clicks === 'number'
-            ? `${n.clicks} clicks`
-            : 'Clicks data',
-        time: n.sent_at
-          ? new Date(n.sent_at).toLocaleString('sw-TZ', {
+      const formatDateTime = (iso) =>
+        iso
+          ? new Date(iso).toLocaleString('sw-TZ', {
               hour: '2-digit',
               minute: '2-digit',
               day: '2-digit',
               month: 'short',
             })
-          : '',
-        color:
-          n.category === 'kabumbu'
-            ? '#10b981'
-            : n.category === 'movies'
-            ? '#7c3aed'
-            : '#3b82f6',
-      }));
+          : '';
+      const recent = (notifications || []).slice(0, 15).map((n) => {
+        const isScheduled = n.type === 'scheduled' && n.scheduled_for && !n.sent_at;
+        return {
+          title: n.title,
+          description: n.message,
+          clicks:
+            isScheduled
+              ? '—'
+              : typeof n.clicks === 'number'
+                ? `${n.clicks} clicks`
+                : 'Clicks data',
+          time: isScheduled
+            ? `Scheduled ${formatDateTime(n.scheduled_for)}`
+            : n.sent_at
+              ? `Sent ${formatDateTime(n.sent_at)}`
+              : '',
+          color:
+            n.category === 'kabumbu'
+              ? '#10b981'
+              : n.category === 'movies'
+              ? '#7c3aed'
+              : '#3b82f6',
+        };
+      });
 
       setRecentNotifications(recent);
 

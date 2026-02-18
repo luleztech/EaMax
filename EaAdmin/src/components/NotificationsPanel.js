@@ -7,16 +7,45 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
-  Switch,
   Dimensions,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { adminNotificationsAPI } from '../config/api';
 
 const { width, height } = Dimensions.get('window');
+
+const formatDisplayDate = (yyyyMmDd) => {
+  if (!yyyyMmDd || yyyyMmDd.length < 10) return null;
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  const d2 = new Date(y, m - 1, d);
+  return d2.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+const formatDisplayTime = (hhMm) => {
+  if (!hhMm || !/^\d{1,2}:\d{2}$/.test(hhMm)) return null;
+  const [h, min] = hhMm.split(':').map(Number);
+  const h12 = h % 12 || 12;
+  const ampm = h < 12 ? 'AM' : 'PM';
+  return `${h12}:${String(min).padStart(2, '0')} ${ampm}`;
+};
+
+const toYyyyMmDd = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const toHhMm = (d) => {
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${h}:${min}`;
+};
 
 const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
@@ -25,8 +54,26 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [message, setMessage] = useState('');
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState({ type: null, text: '' });
+
+  const minDate = new Date();
+  const dateForPicker = scheduledDate
+    ? (() => {
+        const [y, m, d] = scheduledDate.split('-').map(Number);
+        return new Date(y, m - 1, d);
+      })()
+    : new Date();
+  const timeForPicker = scheduledTime
+    ? (() => {
+        const [h, min] = scheduledTime.split(':').map(Number);
+        const d = new Date();
+        d.setHours(h, min, 0, 0);
+        return d;
+      })()
+    : new Date();
 
   const handleSend = async () => {
     if (!category) {
@@ -43,6 +90,17 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       setStatusMessage({ type: 'error', text: 'Please select date and time for scheduled notification' });
       setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
       return;
+    }
+
+    if (notificationType === 'scheduled' && scheduledDate && scheduledTime) {
+      const [y, mo, d] = scheduledDate.split('-').map(Number);
+      const [h, min] = scheduledTime.split(':').map(Number);
+      const scheduledAt = new Date(y, mo - 1, d, h, min, 0);
+      if (scheduledAt <= new Date()) {
+        setStatusMessage({ type: 'error', text: 'Please select a future date and time' });
+        setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
+        return;
+      }
     }
 
     setLoading(true);
@@ -77,12 +135,13 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
 
       if (onNotificationSent) onNotificationSent();
 
-      // Reset form after success
       setTimeout(() => {
         setTitle('');
         setMessage('');
         setScheduledDate('');
         setScheduledTime('');
+        setShowDatePicker(false);
+        setShowTimePicker(false);
         setCategory('');
         setNotificationType('normal');
         setStatusMessage({ type: null, text: '' });
@@ -473,26 +532,67 @@ const styles = StyleSheet.create({
     minHeight: 100,
     paddingTop: 12,
   },
-  dateTimeContainer: {
-    flexDirection: 'row',
-    gap: 12,
+  scheduleSectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 4,
   },
-  dateTimeInput: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
+  scheduleSectionSubtitle: {
+    fontSize: 13,
+    color: '#9ca3af',
+    marginBottom: 16,
+  },
+  scheduleCard: {
+    backgroundColor: 'rgba(31, 41, 55, 0.9)',
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#374151',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  dateTimeText: {
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 14,
+  },
+  scheduleIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleRowTextWrap: {
     flex: 1,
+  },
+  scheduleRowLabel: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  scheduleRowValue: {
+    fontSize: 16,
     color: '#fff',
-    fontSize: 14,
+    fontWeight: '600',
+  },
+  scheduleRowPlaceholder: {
+    fontSize: 15,
+    color: '#6b7280',
+  },
+  scheduleDivider: {
+    height: 1,
+    backgroundColor: '#374151',
+    marginLeft: 74,
   },
   actionButtons: {
     flexDirection: 'row',

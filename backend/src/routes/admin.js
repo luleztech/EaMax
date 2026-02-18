@@ -22,23 +22,13 @@ router.use((req, res, next) => {
 // Dashboard stats for EaAdmin
 router.get('/dashboard', async (req, res, next) => {
   try {
-    // Check if tables exist first
     const tableCheck = await query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'users'
-      ) AS users_exists,
-      EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'ad_events'
-      ) AS ad_events_exists
+      SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') AS users_exists,
+             EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ad_events') AS ad_events_exists,
+             EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'subscription_payments') AS payments_exists
     `);
+    const { users_exists, ad_events_exists, payments_exists } = tableCheck.rows[0];
 
-    const { users_exists, ad_events_exists } = tableCheck.rows[0];
-
-    // If tables don't exist, return zeros
     if (!users_exists || !ad_events_exists) {
       return res.json({
         totalUsers: 0,
@@ -46,9 +36,10 @@ router.get('/dashboard', async (req, res, next) => {
         newUsersThisMonth: 0,
         uninstallUsersThisMonth: 0,
         adsWatchedToday: 0,
+        adsWatchedThisMonth: 0,
         totalPointsCollected: 0,
-        revenue: 0,
-        message: 'Database tables not initialized. Please run the schema.sql script.',
+        revenueTsh: 0,
+        message: 'Database tables not initialized. Run schema.sql.',
       });
     }
 
@@ -58,8 +49,9 @@ router.get('/dashboard', async (req, res, next) => {
       newUsersThisMonth,
       uninstallUsersThisMonth,
       adsToday,
+      adsThisMonth,
       totalPoints,
-      premiumPayments,
+      revenueResult,
     ] = await Promise.all([
       query('SELECT COUNT(*)::int AS count FROM users'),
       query(
@@ -74,11 +66,18 @@ router.get('/dashboard', async (req, res, next) => {
       query(
         "SELECT COUNT(*)::int AS count FROM ad_events WHERE date_trunc('day', watched_at) = date_trunc('day', now())",
       ),
-      query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
       query(
-        "SELECT COALESCE(SUM(amount_cents), 0)::int AS amount_cents FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
+        "SELECT COUNT(*)::int AS count FROM ad_events WHERE date_trunc('month', watched_at) = date_trunc('month', now())",
       ),
+      query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
+      payments_exists
+        ? query(
+            "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
+          )
+        : Promise.resolve({ rows: [{ total: 0 }] }),
     ]);
+
+    const revenueTsh = Number(revenueResult.rows[0]?.total ?? 0);
 
     return res.json({
       totalUsers: totalUsers.rows[0].count,
@@ -86,21 +85,21 @@ router.get('/dashboard', async (req, res, next) => {
       newUsersThisMonth: newUsersThisMonth.rows[0].count,
       uninstallUsersThisMonth: uninstallUsersThisMonth.rows[0].count,
       adsWatchedToday: adsToday.rows[0].count,
+      adsWatchedThisMonth: adsThisMonth.rows[0].count,
       totalPointsCollected: totalPoints.rows[0].total_points,
-      premiumPaymentsCents: premiumPayments.rows[0].amount_cents,
+      revenueTsh,
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error('Dashboard stats error:', err);
-    // Return default values on error instead of crashing
     return res.json({
       totalUsers: 0,
       premiumUsers: 0,
       newUsersThisMonth: 0,
       uninstallUsersThisMonth: 0,
       adsWatchedToday: 0,
+      adsWatchedThisMonth: 0,
       totalPointsCollected: 0,
-      revenue: 0,
+      revenueTsh: 0,
       error: err.message,
     });
   }
