@@ -18,6 +18,10 @@ import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
 import { userAPI } from '../config/api';
+import {
+  initializeNotifications,
+  setupNotificationHandlers,
+} from '../services/notifications';
 
 const { width } = Dimensions.get('window');
 
@@ -65,6 +69,23 @@ const StreamingApp = () => {
 
   useEffect(() => {
     refreshUserPoints();
+  }, []);
+
+  // Register FCM token and set up notification handlers as soon as we have a user
+  // (so notifications work even if the user never opens Profile)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const userId = await AsyncStorage.getItem('userId');
+        if (cancelled || !userId) return;
+        await initializeNotifications(userId);
+        setupNotificationHandlers(() => {});
+      } catch (e) {
+        console.warn('App notification init:', e?.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Premium: turn ON "Ondoa Matangazo" (no ads) and keep it ON until subscription ends

@@ -133,8 +133,13 @@ export const initializeNotifications = async (externalId) => {
   }
 };
 
+// Only attach FCM/Notifee listeners once (avoid duplicate when both StreamingApp and ProfileScreen init)
+let _handlersSetup = false;
+
 // Setup notification handlers (safe: returns no-op if Firebase/Notifee unavailable)
 export const setupNotificationHandlers = (onNotificationReceived) => {
+  if (_handlersSetup) return () => {};
+  _handlersSetup = true;
   let unsubscribeForeground = () => {};
   try {
     const messaging = require('@react-native-firebase/messaging').default;
