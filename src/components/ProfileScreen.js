@@ -117,28 +117,25 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
     loadUserData(true);
   }, []);
 
-  // Initialize push notifications when user ID is available
+  // Initialize push notifications when user ID is available (permission + FCM)
   useEffect(() => {
-    if (userId) {
-      // Initialize notifications
-      initializeNotifications(userId).catch((error) => {
-        console.error('Failed to initialize notifications:', error);
+    if (!userId) return;
+    let unsubscribe = () => {};
+    try {
+      initializeNotifications(userId).catch((err) => {
+        console.warn('Notifications init:', err?.message || err);
       });
-
-      // Setup notification handlers
-      const unsubscribe = setupNotificationHandlers((remoteMessage) => {
-        console.log('Notification received:', remoteMessage);
-        // You can handle notification tap here if needed
-        // For example, navigate to a specific screen based on notification data
+      unsubscribe = setupNotificationHandlers((remoteMessage) => {
+        if (remoteMessage) console.log('Notification received');
       });
-
-      // Cleanup on unmount
-      return () => {
-        if (unsubscribe) {
-          unsubscribe();
-        }
-      };
+    } catch (err) {
+      console.warn('Notification setup error:', err?.message || err);
     }
+    return () => {
+      try {
+        if (typeof unsubscribe === 'function') unsubscribe();
+      } catch (e) {}
+    };
   }, [userId]);
 
   // Refresh user data (sync points from parent when provided)

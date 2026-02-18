@@ -24,15 +24,18 @@ const apiRequest = async (endpoint, options = {}) => {
 
   try {
     const response = await fetch(url, config);
-    const data = await response.json();
-    
+    let data = {};
+    try {
+      const text = await response.text();
+      if (text && text.trim()) data = JSON.parse(text);
+    } catch (_) {
+      // non-JSON or empty response
+    }
     if (!response.ok) {
       throw new Error(data.error || `HTTP error! status: ${response.status}`);
     }
-    
     return data;
   } catch (error) {
-    // Swallow detailed console logs to avoid noisy 'Api request error' messages
     throw error;
   }
 };

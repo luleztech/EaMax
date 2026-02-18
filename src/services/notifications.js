@@ -1,13 +1,14 @@
-import messaging from '@react-native-firebase/messaging';
-import notifee, { AndroidImportance } from '@notifee/react-native';
 import { Platform } from 'react-native';
 import { userAPI } from '../config/api';
 
-// Request notification permissions
+// Request notification permissions (safe: no crash if Firebase/Notifee missing)
 export const requestNotificationPermission = async () => {
   try {
+    const notifee = require('@notifee/react-native').default;
+    const { AndroidImportance } = require('@notifee/react-native');
+    const messaging = require('@react-native-firebase/messaging').default;
+
     if (Platform.OS === 'android') {
-      // Create a default channel for Android
       await notifee.createChannel({
         id: 'default',
         name: 'Default Channel',
@@ -24,12 +25,11 @@ export const requestNotificationPermission = async () => {
     if (enabled) {
       console.log('Notification permission granted');
       return true;
-    } else {
-      console.log('Notification permission denied');
-      return false;
     }
+    console.log('Notification permission denied');
+    return false;
   } catch (error) {
-    console.error('Error requesting notification permission:', error);
+    console.warn('Notification permission error:', error?.message || error);
     return false;
   }
 };
@@ -66,38 +66,34 @@ export const registerFCMToken = async (externalId, fcmToken) => {
 // Display local notification using Notifee
 export const displayNotification = async (title, body, data = {}) => {
   try {
+    const notifee = require('@notifee/react-native').default;
+    const { AndroidImportance } = require('@notifee/react-native');
     if (Platform.OS === 'android') {
       await notifee.displayNotification({
-        title,
-        body,
+        title: title || 'EaMax',
+        body: body || '',
         android: {
           channelId: 'default',
           importance: AndroidImportance.HIGH,
-          pressAction: {
-            id: 'default',
-          },
+          pressAction: { id: 'default' },
           sound: 'default',
-          // Ensure notification shows in status bar
-          smallIcon: 'ic_notification', // Use default system icon
+          smallIcon: 'ic_launcher',
           showTimestamp: true,
           autoCancel: true,
           ongoing: false,
         },
-        data,
+        data: data || {},
       });
     } else {
-      // iOS
       await notifee.displayNotification({
-        title,
-        body,
-        ios: {
-          sound: 'default',
-        },
-        data,
+        title: title || 'EaMax',
+        body: body || '',
+        ios: { sound: 'default' },
+        data: data || {},
       });
     }
   } catch (error) {
-    console.error('Error displaying notification:', error);
+    console.warn('Display notification error:', error?.message || error);
   }
 };
 
@@ -133,57 +129,39 @@ export const initializeNotifications = async (externalId) => {
   }
 };
 
-// Setup notification handlers
+// Setup notification handlers (safe: returns no-op if Firebase/Notifee unavailable)
 export const setupNotificationHandlers = (onNotificationReceived) => {
-  // Handle foreground notifications
-  const unsubscribeForeground = messaging().onMessage(async (remoteMessage) => {
-    console.log('Foreground notification received:', remoteMessage);
-    
-    const { notification, data } = remoteMessage;
-    
-    if (notification) {
-      // Display notification using Notifee
-      await displayNotification(
-        notification.title || 'EaMax',
-        notification.body || '',
-        data || {}
-      );
-    }
+  let unsubscribeForeground = () => {};
+  try {
+    const messaging = require('@react-native-firebase/messaging').default;
+    const notifee = require('@notifee/react-native').default;
 
-    // Call callback if provided
-    if (onNotificationReceived) {
-      onNotificationReceived(remoteMessage);
-    }
-  });
-
-  // Note: Background message handler is registered in index.js
-  // This is required for React Native Firebase to work when app is in background/quit state
-
-  // Handle notification opened from quit state
-  messaging()
-    .getInitialNotification()
-    .then((remoteMessage) => {
-      if (remoteMessage) {
-        console.log('Notification opened app from quit state:', remoteMessage);
-        if (onNotificationReceived) {
-          onNotificationReceived(remoteMessage);
+    unsubscribeForeground = messaging().onMessage(async (remoteMessage) => {
+      try {
+        const { notification, data } = remoteMessage || {};
+        if (notification) {
+          await displayNotification(
+            notification.title || 'EaMax',
+            notification.body || '',
+            data || {}
+          );
         }
+        if (onNotificationReceived) onNotificationReceived(remoteMessage);
+      } catch (e) {
+        console.warn('Foreground message handler error:', e?.message);
       }
     });
 
-  // Handle notification opened from background state
-  messaging().onNotificationOpenedApp((remoteMessage) => {
-    console.log('Notification opened app from background:', remoteMessage);
-    if (onNotificationReceived) {
-      onNotificationReceived(remoteMessage);
-    }
-  });
+    messaging().getInitialNotification().then((remoteMessage) => {
+      if (remoteMessage && onNotificationReceived) onNotificationReceived(remoteMessage);
+    }).catch(() => {});
 
-  // Handle notification press (when app is in foreground)
-  notifee.onForegroundEvent(async ({ type, detail }) => {
-    if (type === 1) { // Press action
-      console.log('Notification pressed:', detail.notification);
-      if (onNotificationReceived && detail.notification) {
+    messaging().onNotificationOpenedApp((remoteMessage) => {
+      if (onNotificationReceived && remoteMessage) onNotificationReceived(remoteMessage);
+    });
+
+    notifee.onForegroundEvent(({ type, detail }) => {
+      if (type === 1 && onNotificationReceived && detail?.notification) {
         onNotificationReceived({
           notification: {
             title: detail.notification.title,
@@ -192,15 +170,11 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
           data: detail.notification.data || {},
         });
       }
-    }
-  });
+    });
 
-  // Handle notification press (when app is in background/quit)
-  notifee.onBackgroundEvent(async ({ type, detail }) => {
-    if (type === 1) { // Press action
-      console.log('Background notification pressed:', detail.notification);
-    }
-  });
-
+    notifee.onBackgroundEvent(() => {});
+  } catch (error) {
+    console.warn('Setup notification handlers error:', error?.message || error);
+  }
   return unsubscribeForeground;
 };

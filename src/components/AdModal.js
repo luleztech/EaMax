@@ -5,69 +5,126 @@ import {
   StyleSheet,
   Modal,
   TouchableOpacity,
-  Animated,
+  ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import AntDesign from 'react-native-vector-icons/AntDesign';
 import { userAPI } from '../config/api';
 
+let REWARDED_AD_UNIT_ID = 'ca-app-pub-3940256099942544/5224354917';
+try {
+  const adsConfig = require('../config/ads');
+  if (adsConfig.REWARDED_AD_UNIT_ID) REWARDED_AD_UNIT_ID = adsConfig.REWARDED_AD_UNIT_ID;
+} catch (e) {
+  // use default test ID
+}
+
+const POINTS_PER_REWARD = 20;
+
+let RewardedAdModule = null;
+let RewardedAdEventType = null;
+let TestIds = null;
+try {
+  const ads = require('react-native-google-mobile-ads');
+  RewardedAdModule = ads.RewardedAd;
+  RewardedAdEventType = ads.RewardedAdEventType;
+  TestIds = ads.TestIds;
+} catch (e) {
+  // Package not installed or not linked yet
+}
+
 const AdModal = ({ visible, onClose, onComplete }) => {
-  const [progress, setProgress] = useState(0);
-  const [isWatching, setIsWatching] = useState(true);
-  const [isComplete, setIsComplete] = useState(false);
-  const [pointsEarned, setPointsEarned] = useState(20);
-  const progressAnim = useRef(new Animated.Value(0)).current;
+  const [status, setStatus] = useState('loading'); // 'loading' | 'showing' | 'rewarded' | 'error' | 'fallback'
+  const [pointsEarned, setPointsEarned] = useState(POINTS_PER_REWARD);
+  const rewardedAdRef = useRef(null);
+  const earnedRewardRef = useRef(false);
 
   useEffect(() => {
-    if (visible) {
-      setProgress(0);
-      setIsWatching(true);
-      setIsComplete(false);
-      startAdProgress();
+    if (!visible) return;
+
+    earnedRewardRef.current = false;
+    setPointsEarned(POINTS_PER_REWARD);
+
+    if (!RewardedAdModule || !RewardedAdEventType) {
+      setStatus('fallback');
+      const t = setTimeout(async () => {
+        try {
+          const userId = await AsyncStorage.getItem('userId');
+          if (userId) {
+            const result = await userAPI.recordAdWatched(userId, POINTS_PER_REWARD);
+            setPointsEarned(result.pointsAdded ?? POINTS_PER_REWARD);
+          }
+        } catch (err) {
+          console.error('Fallback record ad:', err);
+        }
+        if (onComplete) onComplete();
+        setStatus('rewarded');
+      }, 3000);
+      return () => clearTimeout(t);
     }
+
+    const unitId = REWARDED_AD_UNIT_ID || (TestIds && TestIds.REWARDED) || 'ca-app-pub-3940256099942544/5224354917';
+    const rewarded = RewardedAdModule.createForAdRequest(unitId, {
+      requestNonPersonalizedAdsOnly: false,
+    });
+
+    const unsubLoaded = rewarded.addAdEventListener(RewardedAdEventType.LOADED, () => {
+      setStatus('showing');
+      rewarded.show();
+    });
+
+    const unsubEarned = rewarded.addAdEventListener(RewardedAdEventType.EARNED_REWARD, (reward) => {
+      earnedRewardRef.current = true;
+      recordAdWatchedAndComplete();
+    });
+
+    const unsubClosed = rewarded.addAdEventListener(RewardedAdEventType.CLOSED, () => {
+      if (earnedRewardRef.current) {
+        setStatus('rewarded');
+      } else {
+        setStatus('closed');
+        setTimeout(() => onClose && onClose(), 0);
+      }
+    });
+
+    const unsubError = rewarded.addAdEventListener(RewardedAdEventType.ERROR, (err) => {
+      console.warn('Rewarded ad error:', err);
+      setStatus('error');
+    });
+
+    rewardedAdRef.current = rewarded;
+    setStatus('loading');
+    rewarded.load();
+
+    return () => {
+      unsubLoaded && unsubLoaded();
+      unsubEarned && unsubEarned();
+      unsubClosed && unsubClosed();
+      unsubError && unsubError();
+    };
   }, [visible]);
 
-  const startAdProgress = () => {
-    let currentProgress = 0;
-    progressAnim.setValue(0);
-    const interval = setInterval(() => {
-      currentProgress += 5;
-      setProgress(currentProgress);
-      progressAnim.setValue(currentProgress);
-
-      if (currentProgress >= 100) {
-        clearInterval(interval);
-        setTimeout(async () => {
-          // Record ad watched with backend
-          try {
-            const userId = await AsyncStorage.getItem('userId');
-            if (userId) {
-              const result = await userAPI.recordAdWatched(userId, 20);
-              setPointsEarned(result.pointsAdded ?? 20);
-            }
-          } catch (error) {
-            console.error('Failed to record ad watch:', error);
-            // Continue with default points if API fails
-          }
-          
-          setIsWatching(false);
-          setIsComplete(true);
-          if (onComplete) {
-            onComplete();
-          }
-        }, 500);
+  const recordAdWatchedAndComplete = async () => {
+    try {
+      const userId = await AsyncStorage.getItem('userId');
+      if (userId) {
+        const result = await userAPI.recordAdWatched(userId, POINTS_PER_REWARD);
+        setPointsEarned(result.pointsAdded ?? POINTS_PER_REWARD);
       }
-    }, 150);
+    } catch (error) {
+      console.error('Failed to record ad watch:', error);
+    }
+    if (onComplete) onComplete();
   };
 
   const handleClose = () => {
-    setProgress(0);
-    setIsWatching(true);
-    setIsComplete(false);
+    setStatus('loading');
     onClose();
   };
+
+  const isRewardedScreen = status === 'rewarded' || (status === 'fallback' && pointsEarned > 0);
+  const showError = status === 'error';
+  if (status === 'closed') return null;
 
   return (
     <Modal
@@ -77,48 +134,46 @@ const AdModal = ({ visible, onClose, onComplete }) => {
       onRequestClose={handleClose}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
-          {isWatching && (
+          {(status === 'loading' || status === 'fallback') && (
             <View style={styles.watchingContainer}>
-              <Text style={styles.watchingTitle}>Watching Ad...</Text>
-              <Text style={styles.watchingSubtitle}>Earning your points</Text>
-              <View style={styles.progressBarContainer}>
-                <Animated.View
-                  style={[
-                    styles.progressBar,
-                    {
-                      width: progressAnim.interpolate({
-                        inputRange: [0, 100],
-                        outputRange: ['0%', '100%'],
-                      }),
-                    },
-                  ]}
-                />
-              </View>
-              <LinearGradient
-                colors={['#1e3a8a', '#9333ea']}
-                style={styles.adContent}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}>
-                <Text style={styles.adTitle}>Ad Content Here</Text>
-                <Text style={styles.adSubtitle}>Sample Advertisement</Text>
-              </LinearGradient>
+              <ActivityIndicator size="large" color="#22c55e" />
+              <Text style={styles.watchingTitle}>
+                {status === 'fallback' ? 'Preparing reward...' : 'Loading ad...'}
+              </Text>
+              <Text style={styles.watchingSubtitle}>
+                {status === 'fallback' ? `You'll get ${POINTS_PER_REWARD} points in a moment` : 'Please wait'}
+              </Text>
             </View>
           )}
 
-          {isComplete && (
+          {status === 'showing' && (
+            <View style={styles.watchingContainer}>
+              <Text style={styles.watchingTitle}>Watch the ad</Text>
+              <Text style={styles.watchingSubtitle}>Complete the video to earn {POINTS_PER_REWARD} points</Text>
+            </View>
+          )}
+
+          {showError && (
+            <View style={styles.watchingContainer}>
+              <Icon name="alert-circle" size={48} color="#ef4444" />
+              <Text style={styles.watchingTitle}>Ad unavailable</Text>
+              <Text style={styles.watchingSubtitle}>Try again later</Text>
+              <TouchableOpacity style={styles.startButton} onPress={handleClose}>
+                <Text style={styles.startButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {isRewardedScreen && (
             <View style={styles.completeContainer}>
               <View style={styles.checkmarkContainer}>
                 <Icon name="check" size={32} color="#fff" />
               </View>
-              <Text style={styles.completeTitle}>Points Earned!</Text>
+              <Text style={styles.completeTitle}>Points earned!</Text>
               <Text style={styles.pointsEarned}>+{pointsEarned} pts</Text>
-              <Text style={styles.completeSubtitle}>
-                You can now start streaming
-              </Text>
-              <TouchableOpacity
-                style={styles.startButton}
-                onPress={handleClose}>
-                <Text style={styles.startButtonText}>Start Watching</Text>
+              <Text style={styles.completeSubtitle}>You can now use your points to watch</Text>
+              <TouchableOpacity style={styles.startButton} onPress={handleClose}>
+                <Text style={styles.startButtonText}>Done</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -147,47 +202,19 @@ const styles = StyleSheet.create({
   },
   watchingContainer: {
     alignItems: 'center',
+    paddingVertical: 24,
   },
   watchingTitle: {
     fontSize: 18,
     fontWeight: 'bold',
     color: '#fff',
+    marginTop: 16,
     marginBottom: 8,
   },
   watchingSubtitle: {
     fontSize: 14,
     color: '#9ca3af',
     marginBottom: 16,
-  },
-  progressBarContainer: {
-    width: '100%',
-    height: 12,
-    backgroundColor: '#1f2937',
-    borderRadius: 6,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#22c55e',
-    borderRadius: 6,
-  },
-  adContent: {
-    width: '100%',
-    height: 192,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  adTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 8,
-  },
-  adSubtitle: {
-    fontSize: 14,
-    color: '#d1d5db',
   },
   completeContainer: {
     alignItems: 'center',

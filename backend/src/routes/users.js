@@ -46,9 +46,11 @@ router.get('/:externalId', async (req, res, next) => {
       return res.status(404).json({ error: 'User not found' });
     }
     const row = result.rows[0];
-    const premiumExpiresAt = row.premium_expires_at
-      ? new Date(row.premium_expires_at)
-      : null;
+    let premiumExpiresAt = null;
+    if (row.premium_expires_at) {
+      const d = new Date(row.premium_expires_at);
+      if (!Number.isNaN(d.getTime())) premiumExpiresAt = d;
+    }
     const isPremiumCurrently =
       row.is_premium === true &&
       (!premiumExpiresAt || premiumExpiresAt > new Date());
