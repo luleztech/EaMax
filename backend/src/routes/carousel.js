@@ -9,7 +9,7 @@ router.get('/', async (req, res, next) => {
     const category = req.query.category || 'football'; // Default to football
     
     const result = await query(
-      `SELECT id, title, subtitle, badge, image_url,
+      `SELECT id, title, subtitle, badge, image_url, video_url,
               gradient_start, gradient_mid, gradient_end,
               info_icon, info_text
          FROM carousel_slides

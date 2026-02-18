@@ -34,7 +34,7 @@ router.post('/register', async (req, res, next) => {
   }
 });
 
-// Get user summary by externalId
+// Get user summary by externalId (returns camelCase for app; isPremium reflects current status including expiry)
 router.get('/:externalId', async (req, res, next) => {
   try {
     const { externalId } = req.params;
@@ -45,7 +45,27 @@ router.get('/:externalId', async (req, res, next) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    return res.json(result.rows[0]);
+    const row = result.rows[0];
+    const premiumExpiresAt = row.premium_expires_at
+      ? new Date(row.premium_expires_at)
+      : null;
+    const isPremiumCurrently =
+      row.is_premium === true &&
+      (!premiumExpiresAt || premiumExpiresAt > new Date());
+
+    return res.json({
+      id: row.id,
+      external_id: row.external_id,
+      points: row.points,
+      blocked: row.blocked,
+      created_at: row.created_at,
+      is_premium: row.is_premium,
+      premium_expires_at: row.premium_expires_at,
+      isPremium: isPremiumCurrently,
+      subscriptionEndDate: row.premium_expires_at
+        ? new Date(row.premium_expires_at).toISOString()
+        : null,
+    });
   } catch (err) {
     return next(err);
   }
@@ -58,7 +78,7 @@ router.post('/:externalId/ads/watched', async (req, res, next) => {
       externalId: z.string().min(1),
     });
     const bodySchema = z.object({
-      points: z.number().int().positive().default(10),
+      points: z.number().int().positive().default(20),
     });
 
     const { externalId } = paramsSchema.parse(req.params);
@@ -91,6 +111,100 @@ router.post('/:externalId/ads/watched', async (req, res, next) => {
       user: updated.rows[0],
       pointsAdded: points,
     });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Spend points to watch a channel (per view – no persistent unlock; each watch requires points again)
+router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      externalId: z.string().min(1),
+      channelId: z.string().min(1),
+    });
+    const { externalId, channelId } = paramsSchema.parse(req.params);
+
+    const channelIdNum = parseInt(channelId, 10);
+    if (Number.isNaN(channelIdNum)) {
+      return res.status(400).json({ error: 'Invalid channel id' });
+    }
+
+    const userResult = await query(
+      'SELECT id, points FROM users WHERE external_id = $1',
+      [externalId],
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const userId = userResult.rows[0].id;
+    const userPoints = userResult.rows[0].points;
+
+    const channelResult = await query(
+      'SELECT id, points_required FROM channels WHERE id = $1 AND is_active = TRUE',
+      [channelIdNum],
+    );
+    if (channelResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+    const pointsRequired = channelResult.rows[0].points_required || 0;
+
+    if (pointsRequired > 0 && userPoints < pointsRequired) {
+      return res.status(400).json({
+        error: 'Insufficient points',
+        pointsRequired,
+        userPoints,
+      });
+    }
+
+    if (pointsRequired > 0) {
+      await query(
+        `UPDATE users SET points = points - $1 WHERE id = $2`,
+        [pointsRequired, userId],
+      );
+    }
+
+    return res.json({
+      success: true,
+      pointsSpent: pointsRequired,
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Register or update FCM token for push notifications
+router.post('/:externalId/fcm-token', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      externalId: z.string().min(1),
+    });
+    const bodySchema = z.object({
+      fcmToken: z.string().min(1),
+    });
+
+    const { externalId } = paramsSchema.parse(req.params);
+    const { fcmToken } = bodySchema.parse(req.body);
+
+    const userResult = await query(
+      'SELECT id FROM users WHERE external_id = $1',
+      [externalId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userId = userResult.rows[0].id;
+
+    await query(
+      `UPDATE users 
+       SET fcm_token = $1, fcm_token_updated_at = now() 
+       WHERE id = $2`,
+      [fcmToken, userId],
+    );
+
+    return res.json({ message: 'FCM token registered successfully' });
   } catch (err) {
     return next(err);
   }

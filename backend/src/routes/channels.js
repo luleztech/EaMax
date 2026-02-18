@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/', async (req, res, next) => {
   try {
     const schema = z.object({
-      category: z.enum(['football', 'movies', 'habari']).optional(),
+      category: z.enum(['football', 'movies', 'habari', 'tamthilia', 'wanyama', 'katuni', 'sayansi']).optional(),
     });
     const parsed = schema.safeParse(req.query);
 

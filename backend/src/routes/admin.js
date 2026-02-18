@@ -152,7 +152,7 @@ router.patch('/users/:id/block', async (req, res, next) => {
   }
 });
 
-// Admin: give special access (premium for duration)
+// Admin: give special access (premium for duration) – user receives access for the given time
 router.post('/users/:id/special-access', async (req, res, next) => {
   try {
     const paramsSchema = z.object({
@@ -166,15 +166,25 @@ router.post('/users/:id/special-access', async (req, res, next) => {
     const { id } = paramsSchema.parse(req.params);
     const { duration, unit } = bodySchema.parse(req.body);
 
-    // Calculate expiration date
+    const userId = Number(id);
     const expiresAt = new Date();
-    const multiplier = {
-      hours: 1,
-      days: 24,
-      weeks: 24 * 7,
-      months: 24 * 30,
-    }[unit];
-    expiresAt.setHours(expiresAt.getHours() + duration * multiplier);
+
+    switch (unit) {
+      case 'hours':
+        expiresAt.setHours(expiresAt.getHours() + duration);
+        break;
+      case 'days':
+        expiresAt.setDate(expiresAt.getDate() + duration);
+        break;
+      case 'weeks':
+        expiresAt.setDate(expiresAt.getDate() + duration * 7);
+        break;
+      case 'months':
+        expiresAt.setMonth(expiresAt.getMonth() + duration);
+        break;
+      default:
+        expiresAt.setDate(expiresAt.getDate() + duration);
+    }
 
     const updated = await query(
       `UPDATE users
@@ -182,14 +192,33 @@ router.post('/users/:id/special-access', async (req, res, next) => {
               premium_expires_at = $1
         WHERE id = $2
         RETURNING id, external_id, is_premium, premium_expires_at`,
-      [expiresAt.toISOString(), Number(id)],
+      [expiresAt.toISOString(), userId],
     );
 
     if (updated.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    return res.json(updated.rows[0]);
+    // Unlock all channels for this user (optional; app uses is_premium for full access)
+    try {
+      await query(
+        `INSERT INTO user_unlocked_channels (user_id, channel_id)
+         SELECT $1, id FROM channels WHERE is_active = TRUE
+         ON CONFLICT (user_id, channel_id) DO NOTHING`,
+        [userId],
+      );
+    } catch (insertErr) {
+      console.error('Unlock channels insert (non-fatal):', insertErr);
+    }
+
+    const row = updated.rows[0];
+    return res.json({
+      id: row.id,
+      external_id: row.external_id,
+      is_premium: row.is_premium,
+      premium_expires_at: row.premium_expires_at,
+      message: `User is now premium until ${row.premium_expires_at}`,
+    });
   } catch (err) {
     return next(err);
   }
@@ -367,7 +396,8 @@ router.post('/carousel', async (req, res, next) => {
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
-      category: z.enum(['football', 'movies']).default('football'),
+      category: z.enum(['football', 'movies', 'habari']).default('football'),
+      videoUrl: z.string().optional(),
       isActive: z.boolean().optional().default(true),
       sortOrder: z.number().int().optional().default(0),
     });
@@ -376,16 +406,17 @@ router.post('/carousel', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO carousel_slides
-         (title, subtitle, badge, image_url,
+         (title, subtitle, badge, image_url, video_url,
           gradient_start, gradient_mid, gradient_end,
           info_icon, info_text, category, is_active, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         data.title,
         data.subtitle || null,
         data.badge || null,
         data.imageUrl || null,
+        data.videoUrl || null,
         data.gradientStart || '#14532d',
         data.gradientMid || null,
         data.gradientEnd || '#000000',
@@ -419,7 +450,8 @@ router.put('/carousel/:id', async (req, res, next) => {
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
-      category: z.enum(['football', 'movies']).optional(),
+      category: z.enum(['football', 'movies', 'habari']).optional(),
+      videoUrl: z.string().optional(),
       isActive: z.boolean().optional(),
       sortOrder: z.number().int().optional(),
     });
@@ -436,6 +468,7 @@ router.put('/carousel/:id', async (req, res, next) => {
       subtitle: 'subtitle',
       badge: 'badge',
       imageUrl: 'image_url',
+      videoUrl: 'video_url',
       gradientStart: 'gradient_start',
       gradientMid: 'gradient_mid',
       gradientEnd: 'gradient_end',
@@ -638,11 +671,17 @@ router.delete('/matches/:id', async (req, res, next) => {
 router.post('/notifications', async (req, res, next) => {
   try {
     const bodySchema = z.object({
-      title: z.string().min(1),
-      message: z.string().min(1),
-      category: z.enum(['kabumbu', 'movies', 'habari']),
+      title: z.string().min(1, 'Title is required'),
+      message: z.string().min(1, 'Message is required'),
+      category: z
+        .string()
+        .min(1, 'Category is required')
+        .transform((s) => s.toLowerCase().trim())
+        .refine((s) => ['kabumbu', 'movies', 'habari'].includes(s), {
+          message: 'Category must be kabumbu, movies, or habari',
+        }),
       type: z.enum(['normal', 'scheduled']).default('normal'),
-      scheduledFor: z.string().datetime().optional(),
+      scheduledFor: z.string().optional().nullable(),
     });
 
     const data = bodySchema.parse(req.body);
@@ -650,19 +689,60 @@ router.post('/notifications', async (req, res, next) => {
     const result = await query(
       `INSERT INTO notifications
          (title, message, category, type, scheduled_for, sent_at)
-       VALUES ($1,$2,$3,$4,$5, CASE WHEN $4 = 'normal' THEN now() ELSE NULL END)
+       VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'normal' THEN now() ELSE NULL END)
        RETURNING *`,
       [
         data.title,
         data.message,
         data.category,
         data.type,
-        data.scheduledFor || null,
+        data.scheduledFor && data.scheduledFor.trim() !== '' ? data.scheduledFor.trim() : null,
       ],
     );
 
-    return res.status(201).json(result.rows[0]);
+    const notification = result.rows[0];
+
+    // Send push notifications to all users with FCM tokens (never fail the request)
+    if (data.type === 'normal') {
+      try {
+        const { sendPushNotificationToMultiple, isInitialized } = require('../services/firebase');
+
+        if (typeof isInitialized === 'function' && isInitialized()) {
+          const tokensResult = await query(
+            `SELECT fcm_token FROM users 
+             WHERE fcm_token IS NOT NULL 
+             AND blocked = FALSE 
+             AND TRIM(fcm_token) != ''`
+          );
+
+          const fcmTokens = (tokensResult.rows || [])
+            .map((row) => row && row.fcm_token)
+            .filter((token) => token && String(token).trim() !== '');
+
+          if (fcmTokens.length > 0) {
+            await sendPushNotificationToMultiple(
+              fcmTokens,
+              data.title,
+              data.message,
+              {
+                notificationId: String(notification.id),
+                category: data.category,
+                type: 'notification',
+              }
+            );
+          }
+        }
+      } catch (pushError) {
+        console.error('Failed to send push notifications:', pushError);
+      }
+    }
+
+    return res.status(201).json(notification);
   } catch (err) {
+    if (err.name === 'ZodError') {
+      const message = err.errors?.map((e) => e.message).join('; ') || err.message;
+      return res.status(400).json({ error: 'Validation failed', details: message });
+    }
     return next(err);
   }
 });

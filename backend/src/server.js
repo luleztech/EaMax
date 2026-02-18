@@ -58,11 +58,15 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-// Global error handler
+// Global error handler (Zod and others)
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   // eslint-disable-next-line no-console
   console.error('Unhandled error:', err);
+  if (err.name === 'ZodError') {
+    const message = err.errors?.map((e) => `${e.path?.join('.') || 'field'}: ${e.message}`).join('; ') || err.message;
+    return res.status(400).json({ error: 'Validation failed', details: message });
+  }
   res.status(500).json({ error: 'Internal server error' });
 });
 

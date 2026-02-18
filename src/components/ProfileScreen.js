@@ -6,20 +6,34 @@ import {
   ScrollView,
   Dimensions,
   ActivityIndicator,
+  RefreshControl,
+  TouchableOpacity,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import LinearGradient from 'react-native-linear-gradient';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
+import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { userAPI } from '../config/api';
+import {
+  initializeNotifications,
+  setupNotificationHandlers,
+} from '../services/notifications';
 
 const { width } = Dimensions.get('window');
 
-const ProfileScreen = ({ accentColor = '#4ade80' }) => {
+const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentPoints, onPointsRefresh }) => {
   const [userId, setUserId] = useState(null);
   const [isPremium, setIsPremium] = useState(false);
-  const [userPoints, setUserPoints] = useState(0);
+  const [userPoints, setUserPoints] = useState(parentPoints ?? 0);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // When parent passes points (same as header), use them so profile and header match
+  useEffect(() => {
+    if (parentPoints !== undefined && parentPoints !== null) {
+      setUserPoints(parentPoints);
+    }
+  }, [parentPoints]);
   const [timeRemaining, setTimeRemaining] = useState({
     days: 0,
     hours: 0,
@@ -39,59 +53,126 @@ const ProfileScreen = ({ accentColor = '#4ade80' }) => {
     return prefix + randomPart;
   };
 
-  // Load or generate user ID and register with backend
-  useEffect(() => {
-    const loadUserId = async () => {
-      try {
+  // Load user data function
+  const loadUserData = async (showLoading = false) => {
+    try {
+      if (showLoading) {
         setLoading(true);
-        let storedUserId = await AsyncStorage.getItem('userId');
-        if (!storedUserId) {
-          storedUserId = generateUserId();
-          await AsyncStorage.setItem('userId', storedUserId);
-        }
-        setUserId(storedUserId);
+      }
+      let storedUserId = await AsyncStorage.getItem('userId');
+      if (!storedUserId) {
+        storedUserId = generateUserId();
+        await AsyncStorage.setItem('userId', storedUserId);
+      }
+      setUserId(storedUserId);
 
-        // Register user with backend
-        try {
-          const userData = await userAPI.register(storedUserId);
+      // Register user with backend (only update local state if parent doesn't control points)
+      try {
+        const userData = await userAPI.register(storedUserId);
+        if (parentPoints === undefined || parentPoints === null) {
           setIsPremium(userData.isPremium || false);
           setUserPoints(userData.points || 0);
-          
-          // If premium, set subscription end date
-          if (userData.isPremium && userData.subscriptionEndDate) {
-            setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
-          } else if (userData.isPremium) {
-            // Default 30 days if not set
-            const endDate = new Date();
-            endDate.setDate(endDate.getDate() + 30);
-            setSubscriptionEndDate(endDate);
-          }
-        } catch (apiError) {
-          console.error('Failed to register user:', apiError);
-          // Continue with local data if API fails
         }
+        
+        // If premium, set subscription end date
+        if (userData.isPremium && userData.subscriptionEndDate) {
+          setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
+        } else if (userData.isPremium) {
+          // Default 30 days if not set
+          const endDate = new Date();
+          endDate.setDate(endDate.getDate() + 30);
+          setSubscriptionEndDate(endDate);
+        }
+      } catch (apiError) {
+        console.error('Failed to register user:', apiError);
+        // Continue with local data if API fails
+      }
 
-        // Fetch latest user data
-        try {
-          const userData = await userAPI.getUser(storedUserId);
+      // Fetch latest user data (only update points if parent doesn't control them)
+      try {
+        const userData = await userAPI.getUser(storedUserId);
+        if (parentPoints === undefined || parentPoints === null) {
           setIsPremium(userData.isPremium || false);
           setUserPoints(userData.points || 0);
-          if (userData.isPremium && userData.subscriptionEndDate) {
-            setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
-          }
-        } catch (fetchError) {
-          console.error('Failed to fetch user data:', fetchError);
         }
-      } catch (error) {
-        console.error('Error loading user ID:', error);
-        const fallbackId = generateUserId();
-        setUserId(fallbackId);
-      } finally {
+        if (userData.isPremium && userData.subscriptionEndDate) {
+          setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
+        }
+      } catch (fetchError) {
+        console.error('Failed to fetch user data:', fetchError);
+      }
+    } catch (error) {
+      console.error('Error loading user ID:', error);
+      const fallbackId = generateUserId();
+      setUserId(fallbackId);
+    } finally {
+      if (showLoading) {
         setLoading(false);
       }
-    };
-    loadUserId();
+    }
+  };
+
+  // Load or generate user ID and register with backend
+  useEffect(() => {
+    loadUserData(true);
   }, []);
+
+  // Initialize push notifications when user ID is available
+  useEffect(() => {
+    if (userId) {
+      // Initialize notifications
+      initializeNotifications(userId).catch((error) => {
+        console.error('Failed to initialize notifications:', error);
+      });
+
+      // Setup notification handlers
+      const unsubscribe = setupNotificationHandlers((remoteMessage) => {
+        console.log('Notification received:', remoteMessage);
+        // You can handle notification tap here if needed
+        // For example, navigate to a specific screen based on notification data
+      });
+
+      // Cleanup on unmount
+      return () => {
+        if (unsubscribe) {
+          unsubscribe();
+        }
+      };
+    }
+  }, [userId]);
+
+  // Refresh user data (sync points from parent when provided)
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      if (onPointsRefresh) await onPointsRefresh();
+      await loadUserData(false);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Handle watch ad with automatic points refresh
+  const handleWatchAd = () => {
+    if (onWatchAd) {
+      // Call the parent's onWatchAd to open the modal
+      onWatchAd();
+      
+      // Refresh points after ad completes (ad modal takes ~6-7 seconds)
+      // Refresh multiple times to ensure we catch the backend update
+      setTimeout(() => {
+        loadUserData(false);
+      }, 7500); // After ad completes
+      
+      setTimeout(() => {
+        loadUserData(false);
+      }, 10000); // Backup refresh
+      
+      setTimeout(() => {
+        loadUserData(false);
+      }, 12000); // Final refresh
+    }
+  };
 
   // Initialize subscription end date for premium users
   useEffect(() => {
@@ -171,7 +252,12 @@ const ProfileScreen = ({ accentColor = '#4ade80' }) => {
         end={{ x: 1, y: 1 }}
       />
       
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.scrollView} 
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }>
         {/* Header Section */}
         <View style={styles.headerSection}>
           <View style={[styles.avatarContainer, { backgroundColor: `${accentColor}20` }]}>
@@ -230,6 +316,21 @@ const ProfileScreen = ({ accentColor = '#4ade80' }) => {
               <View style={styles.sectionHeader}>
                 <AntDesign name="star" size={20} color="#fbbf24" />
                 <Text style={styles.sectionTitle}>Jumla ya Points</Text>
+                {onWatchAd && (
+                  <TouchableOpacity
+                    style={styles.adsButton}
+                    onPress={handleWatchAd}
+                    activeOpacity={0.8}>
+                    <LinearGradient
+                      colors={['#22c55e', '#16a34a']}
+                      style={styles.adsButtonGradient}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}>
+                      <AntDesign name="plus" size={16} color="#fff" />
+                      <Text style={styles.adsButtonText}>Ads</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                )}
               </View>
               <View style={styles.pointsContainer}>
                 <View style={styles.pointsCircle}>
@@ -350,6 +451,7 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
     marginBottom: 16,
   },
@@ -357,6 +459,29 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: '#fff',
+    flex: 1,
+  },
+  adsButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#22c55e',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  adsButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  adsButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   countdownContainer: {
     flexDirection: 'row',

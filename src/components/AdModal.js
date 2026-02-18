@@ -17,7 +17,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
   const [progress, setProgress] = useState(0);
   const [isWatching, setIsWatching] = useState(true);
   const [isComplete, setIsComplete] = useState(false);
-  const [pointsEarned, setPointsEarned] = useState(10);
+  const [pointsEarned, setPointsEarned] = useState(20);
   const progressAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -44,8 +44,8 @@ const AdModal = ({ visible, onClose, onComplete }) => {
           try {
             const userId = await AsyncStorage.getItem('userId');
             if (userId) {
-              const result = await userAPI.recordAdWatched(userId, 10);
-              setPointsEarned(result.pointsEarned || 10);
+              const result = await userAPI.recordAdWatched(userId, 20);
+              setPointsEarned(result.pointsAdded ?? 20);
             }
           } catch (error) {
             console.error('Failed to record ad watch:', error);

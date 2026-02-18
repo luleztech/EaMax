@@ -9,21 +9,32 @@ CREATE TABLE IF NOT EXISTS users (
   premium_expires_at TIMESTAMPTZ,
   points INTEGER NOT NULL DEFAULT 0,
   blocked BOOLEAN NOT NULL DEFAULT FALSE,
-  uninstalled_at TIMESTAMPTZ
+  uninstalled_at TIMESTAMPTZ,
+  fcm_token TEXT,
+  fcm_token_updated_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS channels (
   id SERIAL PRIMARY KEY,
   name VARCHAR(128) NOT NULL,
-  category VARCHAR(32) NOT NULL, -- football | movies | habari
+  category VARCHAR(32) NOT NULL, -- football | movies | habari | tamthilia | wanyama | katuni | sayansi
   stream_url TEXT NOT NULL,
   thumbnail_url TEXT,
   thumbnail_emoji VARCHAR(8),
   color VARCHAR(16),
+  points_required INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   drm_protected BOOLEAN NOT NULL DEFAULT FALSE,
   owner_user_id INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_unlocked_channels (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  channel_id INTEGER NOT NULL REFERENCES channels(id),
+  unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(user_id, channel_id)
 );
 
 CREATE TABLE IF NOT EXISTS ad_events (
@@ -72,12 +83,13 @@ CREATE TABLE IF NOT EXISTS carousel_slides (
   subtitle TEXT,
   badge TEXT,
   image_url TEXT,
+  video_url TEXT,
   gradient_start VARCHAR(16) NOT NULL DEFAULT '#14532d',
   gradient_mid VARCHAR(16),
   gradient_end VARCHAR(16) NOT NULL DEFAULT '#000000',
   info_icon TEXT,
   info_text TEXT,
-  category VARCHAR(32) NOT NULL DEFAULT 'football', -- football | movies
+  category VARCHAR(32) NOT NULL DEFAULT 'football', -- football | movies | habari
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

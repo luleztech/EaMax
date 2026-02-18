@@ -7,25 +7,57 @@ import {
   Switch,
   Animated,
   Dimensions,
+  Modal,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
+import LinearGradient from 'react-native-linear-gradient';
 import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
+import { userAPI } from './config/api';
 
 const { width } = Dimensions.get('window');
 
 const StreamingApp = () => {
   const [currentApp, setCurrentApp] = useState('football');
-  const [isPremium, setIsPremium] = useState(false);
-  const [userPoints, setUserPoints] = useState(350);
+  const [isPremium, setIsPremium] = useState(false); // from API – real subscription
+  const [premiumToggleOn, setPremiumToggleOn] = useState(false); // switch: ON = "Premium User" → direct to payment; OFF = "Ondoa Matangazo" → use points
+  const [userPoints, setUserPoints] = useState(0);
   const [adModalVisible, setAdModalVisible] = useState(false);
   const [isPaymentsActive, setIsPaymentsActive] = useState(false);
+  const [congratsModalVisible, setCongratsModalVisible] = useState(false);
+  const [hasShownCongrats, setHasShownCongrats] = useState(false);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const indicatorAnim = useRef(new Animated.Value(0)).current;
+
+  const refreshUserPoints = async () => {
+    try {
+      const userId = await AsyncStorage.getItem('userId');
+      if (userId) {
+        const userData = await userAPI.getUser(userId);
+        const points = userData.points ?? 0;
+        const premium = !!userData.isPremium;
+        setUserPoints(points);
+        if (premium && !hasShownCongrats) {
+          setCongratsModalVisible(true);
+          setHasShownCongrats(true);
+        }
+        setIsPremium(premium);
+        return points;
+      }
+    } catch (error) {
+      console.error('Failed to refresh user points:', error);
+    }
+    return userPoints;
+  };
+
+  useEffect(() => {
+    refreshUserPoints();
+  }, []);
 
   useEffect(() => {
     Animated.spring(indicatorAnim, {
@@ -38,8 +70,6 @@ const StreamingApp = () => {
 
   const switchApp = (app) => {
     if (app === currentApp) return;
-    
-    // Fade out animation
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 0,
@@ -53,7 +83,6 @@ const StreamingApp = () => {
       }),
     ]).start(() => {
       setCurrentApp(app);
-      // Fade in animation
       slideAnim.setValue(app === 'movies' ? 50 : -50);
       Animated.parallel([
         Animated.timing(fadeAnim, {
@@ -71,19 +100,16 @@ const StreamingApp = () => {
   };
 
   const togglePremium = (value) => {
-    setIsPremium(value);
+    setPremiumToggleOn(value);
   };
 
   const handleWatchAd = () => {
-    if (isPremium) {
-      // Premium users can watch directly
-      return;
-    }
+    if (isPremium) return;
     setAdModalVisible(true);
   };
 
-  const handleAdComplete = () => {
-    setUserPoints((prev) => prev + 10);
+  const handleAdComplete = async () => {
+    await refreshUserPoints();
   };
 
   const handleCloseAd = () => {
@@ -92,87 +118,84 @@ const StreamingApp = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* App Switcher */}
       {!isPaymentsActive && (
         <View style={styles.appSwitcher}>
-        <View style={styles.switchContainer}>
-          <Animated.View
-            style={[
-              styles.switchIndicator,
-              {
-                transform: [
-                  {
-                    translateX: indicatorAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, (width - 64) / 2],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          />
-          <TouchableOpacity
-            style={[styles.switchButton, styles.switchButtonLeft]}
-            onPress={() => switchApp('football')}
-            activeOpacity={0.7}>
-            <Icon
-              name="football"
-              size={22}
-              color={currentApp === 'football' ? '#fff' : '#9ca3af'}
-            />
-            <Text
+          <View style={styles.switchContainer}>
+            <Animated.View
               style={[
-                styles.switchButtonText,
-                currentApp === 'football' && styles.switchButtonTextActive,
-              ]}>
-              Kabumbu
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.switchButton, styles.switchButtonRight]}
-            onPress={() => switchApp('movies')}
-            activeOpacity={0.7}>
-            <Icon
-              name="filmstrip"
-              size={22}
-              color={currentApp === 'movies' ? '#fff' : '#9ca3af'}
+                styles.switchIndicator,
+                {
+                  transform: [
+                    {
+                      translateX: indicatorAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, (width - 64) / 2],
+                      }),
+                    },
+                  ],
+                },
+              ]}
             />
-            <Text
-              style={[
-                styles.switchButtonText,
-                currentApp === 'movies' && styles.switchButtonTextActive,
-              ]}>
-              Movies na Habari
-            </Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.switchButton, styles.switchButtonLeft]}
+              onPress={() => switchApp('football')}
+              activeOpacity={0.7}>
+              <Icon
+                name="football"
+                size={22}
+                color={currentApp === 'football' ? '#fff' : '#9ca3af'}
+              />
+              <Text
+                style={[
+                  styles.switchButtonText,
+                  currentApp === 'football' && styles.switchButtonTextActive,
+                ]}>
+                Kabumbu
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.switchButton, styles.switchButtonRight]}
+              onPress={() => switchApp('movies')}
+              activeOpacity={0.7}>
+              <Icon
+                name="filmstrip"
+                size={22}
+                color={currentApp === 'movies' ? '#fff' : '#9ca3af'}
+              />
+              <Text
+                style={[
+                  styles.switchButtonText,
+                  currentApp === 'movies' && styles.switchButtonTextActive,
+                ]}>
+                Movies na Habari
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
       )}
 
-      {/* Premium Toggle */}
       {!isPaymentsActive && (
         <View style={styles.premiumToggleContainer}>
-        <Text style={styles.premiumToggleLabel}>Angalia Bure:</Text>
-        <View style={styles.toggleWrapper}>
-          <Switch
-            value={isPremium}
-            onValueChange={togglePremium}
-            trackColor={{ false: '#374151', true: '#eab308' }}
-            thumbColor={isPremium ? '#fff' : '#fff'}
-            ios_backgroundColor="#374151"
-          />
-          <Text
-            style={[
-              styles.premiumLabel,
-              isPremium && styles.premiumLabelActive,
-            ]}>
-            {isPremium ? 'Premium User' : 'Ondoa Matangazo'}
-          </Text>
+          <Text style={styles.premiumToggleLabel}>Angalia Bure:</Text>
+          <View style={styles.toggleWrapper}>
+            <Switch
+              value={premiumToggleOn}
+              onValueChange={togglePremium}
+              trackColor={{ false: '#374151', true: '#eab308' }}
+              thumbColor="#fff"
+              ios_backgroundColor="#374151"
+            />
+            <Text
+              style={[
+                styles.premiumLabel,
+                premiumToggleOn && styles.premiumLabelActive,
+              ]}>
+              {premiumToggleOn ? 'Premium User' : 'Ondoa Matangazo'}
+            </Text>
+          </View>
         </View>
-      </View>
       )}
 
-      {/* App Display Area */}
       <View style={styles.appContainer}>
         <Animated.View
           style={[
@@ -185,27 +208,61 @@ const StreamingApp = () => {
           {currentApp === 'football' ? (
             <FootballApp
               isPremium={isPremium}
+              premiumToggleOn={premiumToggleOn}
               userPoints={userPoints}
               onWatchAd={handleWatchAd}
               onPaymentsActiveChange={setIsPaymentsActive}
+              onPointsRefresh={refreshUserPoints}
             />
           ) : (
             <MoviesApp
               isPremium={isPremium}
+              premiumToggleOn={premiumToggleOn}
               userPoints={userPoints}
               onWatchAd={handleWatchAd}
               onPaymentsActiveChange={setIsPaymentsActive}
+              onPointsRefresh={refreshUserPoints}
             />
           )}
         </Animated.View>
       </View>
 
-      {/* Ad Modal */}
       <AdModal
         visible={adModalVisible}
         onClose={handleCloseAd}
         onComplete={handleAdComplete}
       />
+
+      {/* Congrats modal when user becomes premium */}
+      <Modal
+        visible={congratsModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCongratsModalVisible(false)}>
+        <View style={styles.congratsOverlay}>
+          <View style={styles.congratsCard}>
+            <LinearGradient
+              colors={['#eab308', '#ca8a04', '#a16207']}
+              style={styles.congratsGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}>
+              <View style={styles.congratsIconWrap}>
+                <AntDesign name="star" size={48} color="#fff" />
+              </View>
+              <Text style={styles.congratsTitle}>Hongera! Umefanikiwa</Text>
+              <Text style={styles.congratsMessage}>
+                Umajiunga nasi kama mwanachama wa Premium. Channels zote sasa ni bure kwako – hakuna matangazo, hakuna vikwazo hadi muda wako utakapokwisha.
+              </Text>
+              <TouchableOpacity
+                style={styles.congratsButton}
+                onPress={() => setCongratsModalVisible(false)}
+                activeOpacity={0.9}>
+                <Text style={styles.congratsButtonText}>Sawa</Text>
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -243,7 +300,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 4,
     left: 4,
-    width: ((width - 64) / 2) - 4,
+    width: (width - 64) / 2 - 4,
     height: 44,
     backgroundColor: '#22c55e',
     borderRadius: 12,
@@ -261,24 +318,16 @@ const styles = StyleSheet.create({
     zIndex: 1,
     minHeight: 44,
   },
-  switchButtonLeft: {
-    marginRight: 2,
-  },
-  switchButtonRight: {
-    marginLeft: 2,
-  },
+  switchButtonLeft: { marginRight: 2 },
+  switchButtonRight: { marginLeft: 2 },
   switchButtonText: {
     fontSize: 15,
     fontWeight: '700',
     color: '#9ca3af',
     letterSpacing: 0.5,
   },
-  switchButtonTextActive: {
-    color: '#fff',
-  },
-  appWrapper: {
-    flex: 1,
-  },
+  switchButtonTextActive: { color: '#fff' },
+  appWrapper: { flex: 1 },
   premiumToggleContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
@@ -290,25 +339,63 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(31, 41, 55, 0.5)',
   },
-  premiumToggleLabel: {
-    fontSize: 14,
-    color: '#9ca3af',
-  },
-  toggleWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  premiumLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6b7280',
-  },
-  premiumLabelActive: {
-    color: '#fbbf24',
-  },
-  appContainer: {
+  premiumToggleLabel: { fontSize: 14, color: '#9ca3af' },
+  toggleWrapper: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  premiumLabel: { fontSize: 14, fontWeight: '600', color: '#6b7280' },
+  premiumLabelActive: { color: '#fbbf24' },
+  appContainer: { flex: 1 },
+  congratsOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  congratsCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'rgba(234, 179, 8, 0.5)',
+  },
+  congratsGradient: {
+    padding: 28,
+    alignItems: 'center',
+  },
+  congratsIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  congratsTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  congratsMessage: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.95)',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  congratsButton: {
+    backgroundColor: '#fff',
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 14,
+  },
+  congratsButtonText: {
+    color: '#a16207',
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
 

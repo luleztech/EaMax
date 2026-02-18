@@ -32,7 +32,7 @@ const apiRequest = async (endpoint, options = {}) => {
     
     return data;
   } catch (error) {
-    console.error('API Request Error:', error);
+    // Swallow detailed console logs to avoid noisy 'Api request error' messages
     throw error;
   }
 };
@@ -54,11 +54,26 @@ export const userAPI = {
     return apiRequest(`/api/users/${externalId}`);
   },
 
-  // Record ad watched and earn points
-  recordAdWatched: async (externalId, points = 10) => {
+  // Record ad watched and earn points (1 ad = 20 points in all sections)
+  recordAdWatched: async (externalId, points = 20) => {
     return apiRequest(`/api/users/${externalId}/ads/watched`, {
       method: 'POST',
       body: JSON.stringify({ points }),
+    });
+  },
+
+  // Unlock channel using points
+  unlockChannel: async (externalId, channelId) => {
+    return apiRequest(`/api/users/${externalId}/channels/${channelId}/unlock`, {
+      method: 'POST',
+    });
+  },
+
+  // Register FCM token for push notifications
+  registerFCMToken: async (externalId, fcmToken) => {
+    return apiRequest(`/api/users/${externalId}/fcm-token`, {
+      method: 'POST',
+      body: JSON.stringify({ fcmToken }),
     });
   },
 };
@@ -91,9 +106,69 @@ export const notificationsAPI = {
   },
 };
 
+/**
+ * Public Settings API
+ */
+export const settingsAPI = {
+  // Get WhatsApp support number
+  getWhatsAppNumber: async () => {
+    return apiRequest('/api/settings/whatsapp');
+  },
+
+  // Get public carousel slides by category
+  getCarouselSlides: async (category = 'football') => {
+    return apiRequest(`/api/carousel?category=${category}`);
+  },
+};
+
+/**
+ * Matches API
+ */
+export const matchesAPI = {
+  // Get upcoming matches
+  getUpcomingMatches: async () => {
+    try {
+      return await apiRequest('/api/matches');
+    } catch (error) {
+      // Return empty array if endpoint not found (for backwards compatibility)
+      if (error.message?.includes('not found') || error.message?.includes('404')) {
+        return [];
+      }
+      throw error;
+    }
+  },
+};
+
+/**
+ * Payments API
+ */
+export const paymentsAPI = {
+  // Start ZenoPay mobile money payment
+  startZenoPayment: async ({ externalId, bundle, phone, email, name }) => {
+    return apiRequest('/api/payments/zeno/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        externalId,
+        bundle,
+        phone,
+        email,
+        name,
+      }),
+    });
+  },
+
+  // Check ZenoPay order status (optional polling)
+  checkZenoStatus: async (orderId) => {
+    return apiRequest(`/api/payments/zeno/status?orderId=${encodeURIComponent(orderId)}`);
+  },
+};
+
 export default {
   API_BASE_URL,
   userAPI,
   channelsAPI,
   notificationsAPI,
+  settingsAPI,
+  paymentsAPI,
+  matchesAPI,
 };
