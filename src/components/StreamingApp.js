@@ -17,7 +17,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
-import { userAPI } from './config/api';
+import { userAPI } from '../config/api';
 
 const { width } = Dimensions.get('window');
 
