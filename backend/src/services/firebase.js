@@ -11,11 +11,13 @@ const initializeFirebase = () => {
   }
 
   try {
-    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    let serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (!serviceAccountKey || String(serviceAccountKey).trim() === '') {
       console.warn('FIREBASE_SERVICE_ACCOUNT_KEY not set. Push notifications will be disabled.');
       return;
     }
+    // Allow pasting pretty-printed JSON (strip real newlines; keep \n inside private_key string)
+    serviceAccountKey = String(serviceAccountKey).replace(/\r\n/g, '').replace(/\n/g, '').trim();
     const serviceAccount = JSON.parse(serviceAccountKey);
     if (!serviceAccount || typeof serviceAccount !== 'object') {
       console.warn('FIREBASE_SERVICE_ACCOUNT_KEY invalid JSON. Push notifications will be disabled.');
