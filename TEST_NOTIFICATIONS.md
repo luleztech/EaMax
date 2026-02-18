@@ -62,6 +62,24 @@ The notification should appear in the status bar in these scenarios:
 
 ## Troubleshooting
 
+### "Internal server error" or "Error sending notification" in Admin
+
+If the Admin app shows an error when you tap **Send Now**:
+
+1. **Railway environment variables (required):**
+   - **ADMIN_API_KEY** – Must be set and must match the key in EaAdmin (`EaAdmin/src/config/api.js` or your env). If missing, the API returns 500.
+   - **FIREBASE_SERVICE_ACCOUNT_KEY** – Must be the **full JSON** of your Firebase service account key (one line, no line breaks). If missing or invalid, push won’t send but the notification is still saved.
+
+2. **Check Railway logs:**
+   - Railway project → your backend service → **Deployments** → **View Logs**.
+   - Look for: `Firebase Admin initialized successfully` (Firebase OK).
+   - Look for: `Notifications INSERT failed` or `POST /notifications error` (DB or code error).
+   - Look for: `Push send error (notification still saved)` (Firebase/FCM issue; notification is still created).
+
+3. **Database:** Ensure the `notifications` table exists (run `backend/sql/schema.sql` on your Railway Postgres if needed).
+
+4. **EaAdmin API key:** The value in EaAdmin’s `X-Admin-Key` header must exactly match Railway’s `ADMIN_API_KEY`.
+
 ### Notification Not Appearing
 
 1. **Check FCM Token:**

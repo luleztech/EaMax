@@ -322,7 +322,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               </View>
             </View>
 
-            {/* All Categories with Channels */}
+            {/* All Categories with Channels - same style as Football */}
             <View style={styles.searchCategoriesSection}>
               <Text style={styles.searchSectionTitle}>Machaguo mbalimbali</Text>
               {genres.map((genre) => {
@@ -339,66 +339,93 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                       <Text style={styles.searchCategoryCount}>{channels.length} channels</Text>
                     </View>
                     <View style={styles.searchChannelsGrid}>
-                      {channels.map((channel) => (
-                        <TouchableOpacity
-                          key={channel.id}
-                          style={styles.searchChannelCard}
-                          activeOpacity={0.8}
-                          onPress={() => handleChannelClick(channel)}>
-                          {channel.thumbnailUrl ? (
-                            <ImageBackground
-                              source={{ uri: channel.thumbnailUrl }}
-                              style={styles.searchChannelImageBackground}
-                              imageStyle={styles.searchChannelImage}>
-                              {/* Color Overlay */}
-                              {channel.color ? (
-                                <View style={[styles.searchChannelColorOverlay, { backgroundColor: (channel.color || '#000') + '50' }]} />
-                              ) : null}
-                              {/* Content */}
-                              <View style={styles.searchChannelGradient}>
-                                {!isPremium && (
-                                  <View style={styles.searchChannelPointsBadge}>
-                                    <AntDesign name="star" size={10} color="#fbbf24" />
-                                    <Text style={styles.searchChannelPointsText}>
-                                      {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                      {channels.map((channel) => {
+                        const channelColor = channel.color || genre.color || '#a855f7';
+                        return (
+                          <TouchableOpacity
+                            key={channel.id}
+                            style={styles.searchChannelCard}
+                            activeOpacity={0.8}
+                            onPress={() => handleChannelClick(channel)}>
+                            {channel.thumbnailUrl ? (
+                              <ImageBackground
+                                source={{ uri: channel.thumbnailUrl }}
+                                style={styles.searchChannelImageBackground}
+                                imageStyle={styles.searchChannelImage}>
+                                <View style={[styles.searchChannelColorOverlay, { backgroundColor: channelColor + '50' }]} />
+                                <View style={styles.searchChannelGradient}>
+                                  <View style={styles.searchChannelHeader}>
+                                    {!isPremium && (
+                                      <View style={styles.searchChannelPointsBadgeTop}>
+                                        <AntDesign name="star" size={14} color="#fbbf24" />
+                                        <Text style={styles.searchChannelPointsTextTop}>
+                                          {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <View style={styles.searchChannelContent}>
+                                    <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
+                                    <Text style={styles.searchChannelShow} numberOfLines={1}>
+                                      {channel.currentShow || channel.category || genre.name}
                                     </Text>
                                   </View>
-                                )}
-                                <Text style={styles.searchChannelName} numberOfLines={2}>
-                                  {channel.name}
-                                </Text>
-                              </View>
-                            </ImageBackground>
-                          ) : (
-                            <LinearGradient
-                              colors={[channel.color + '20', channel.color + '10', 'transparent']}
-                              style={styles.searchChannelGradient}
-                              start={{ x: 0, y: 0 }}
-                              end={{ x: 1, y: 1 }}>
-                              {channel.thumbnailEmoji ? (
-                                <View style={[styles.searchChannelThumbnail, { backgroundColor: channel.color + '30' }]}>
-                                  <Text style={styles.searchChannelEmoji}>{channel.thumbnailEmoji}</Text>
+                                  <TouchableOpacity
+                                    style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
+                                    onPress={() => handleChannelClick(channel)}>
+                                    <Icon name="play" size={16} color="#fff" />
+                                    <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                  </TouchableOpacity>
                                 </View>
-                              ) : (
-                                <View style={[styles.searchChannelThumbnail, { backgroundColor: channel.color + '30' }]}>
-                                  <Icon name="movie" size={28} color={channel.color} />
+                              </ImageBackground>
+                            ) : (
+                              <LinearGradient
+                                colors={[channelColor + '20', channelColor + '10', 'transparent']}
+                                style={styles.searchChannelGradient}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}>
+                                <View style={styles.searchChannelHeader}>
+                                  <View style={[styles.searchChannelIconContainer, { backgroundColor: channelColor + '30' }]}>
+                                    {channel.thumbnailEmoji ? (
+                                      <Text style={styles.searchChannelEmoji}>{channel.thumbnailEmoji}</Text>
+                                    ) : (
+                                      <Icon name={genre.icon} size={32} color={channelColor} />
+                                    )}
+                                  </View>
+                                  {!isPremium && (
+                                    <View style={styles.searchChannelPointsBadgeTop}>
+                                      <AntDesign name="star" size={14} color="#fbbf24" />
+                                      <Text style={styles.searchChannelPointsTextTop}>
+                                        {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                      </Text>
+                                    </View>
+                                  )}
                                 </View>
-                              )}
-                              <Text style={styles.searchChannelName} numberOfLines={2}>
-                                {channel.name}
-                              </Text>
-                              {!isPremium && (
-                                <View style={styles.searchChannelPointsBadge}>
-                                  <AntDesign name="star" size={10} color="#fbbf24" />
-                                  <Text style={styles.searchChannelPointsText}>
-                                    {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                <View style={styles.searchChannelContent}>
+                                  <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
+                                  <Text style={styles.searchChannelShow} numberOfLines={1}>
+                                    {channel.currentShow || channel.category || genre.name}
                                   </Text>
+                                  {!isPremium && (
+                                    <View style={styles.searchChannelPointsBadge}>
+                                      <AntDesign name="star" size={12} color="#fbbf24" />
+                                      <Text style={styles.searchChannelPointsText}>
+                                        {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
+                                      </Text>
+                                    </View>
+                                  )}
                                 </View>
-                              )}
-                            </LinearGradient>
-                          )}
-                        </TouchableOpacity>
-                      ))}
+                                <TouchableOpacity
+                                  style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
+                                  onPress={() => handleChannelClick(channel)}>
+                                  <Icon name="play" size={16} color="#fff" />
+                                  <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                </TouchableOpacity>
+                              </LinearGradient>
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
                     </View>
                   </View>
                 );
@@ -424,7 +451,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
             />
           )}
 
-          {/* Channels by Category */}
+          {/* Channels by Category - same style as Football/Kabumbu */}
           {genres.map((genre) => {
             const channels = channelsByCategory[genre.key] || [];
             if (channels.length === 0) return null;
@@ -438,73 +465,97 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                   </View>
                   <Text style={styles.sectionCount}>{channels.length} channels</Text>
                 </View>
-                <ScrollView 
-                  horizontal 
-                  showsHorizontalScrollIndicator={false} 
-                  style={styles.channelsScroll}>
-                  {channels.map((channel) => (
-                    <TouchableOpacity
-                      key={channel.id}
-                      style={styles.channelCard}
-                      activeOpacity={0.8}
-                      onPress={() => handleChannelClick(channel)}>
-                      {channel.thumbnailUrl ? (
-                        <ImageBackground
-                          source={{ uri: channel.thumbnailUrl }}
-                          style={styles.channelImageBackground}
-                          imageStyle={styles.channelImage}>
-                          {channel.color ? (
-                            <View style={[styles.channelColorOverlay, { backgroundColor: (channel.color || '#000') + '50' }]} />
-                          ) : null}
-                          <View style={styles.channelCardGradient}>
-                            <View style={styles.channelHeaderTop}>
+                <View style={styles.channelsGrid}>
+                  {channels.map((channel) => {
+                    const channelColor = channel.color || genre.color || '#a855f7';
+                    return (
+                      <TouchableOpacity
+                        key={channel.id}
+                        style={styles.channelCard}
+                        activeOpacity={0.8}
+                        onPress={() => handleChannelClick(channel)}>
+                        {channel.thumbnailUrl ? (
+                          <ImageBackground
+                            source={{ uri: channel.thumbnailUrl }}
+                            style={styles.channelImageBackground}
+                            imageStyle={styles.channelImage}>
+                            {channelColor ? (
+                              <View style={[styles.channelColorOverlay, { backgroundColor: channelColor + '50' }]} />
+                            ) : null}
+                            <View style={styles.channelGradient}>
+                              <View style={styles.channelHeader}>
+                                {!isPremium && (
+                                  <View style={styles.channelPointsBadgeTop}>
+                                    <AntDesign name="star" size={14} color="#fbbf24" />
+                                    <Text style={styles.channelPointsTextTop}>
+                                      {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                              <View style={styles.channelContent}>
+                                <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                                <Text style={styles.channelShow} numberOfLines={1}>
+                                  {channel.currentShow || channel.category || genre.name}
+                                </Text>
+                              </View>
+                              <TouchableOpacity
+                                style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
+                                onPress={() => handleChannelClick(channel)}>
+                                <Icon name="play" size={16} color="#fff" />
+                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                              </TouchableOpacity>
+                            </View>
+                          </ImageBackground>
+                        ) : (
+                          <LinearGradient
+                            colors={[channelColor + '20', channelColor + '10', 'transparent']}
+                            style={styles.channelGradient}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}>
+                            <View style={styles.channelHeader}>
+                              <View style={[styles.channelIconContainer, { backgroundColor: channelColor + '30' }]}>
+                                {channel.thumbnailEmoji ? (
+                                  <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
+                                ) : (
+                                  <Icon name={genre.icon} size={32} color={channelColor} />
+                                )}
+                              </View>
                               {!isPremium && (
                                 <View style={styles.channelPointsBadgeTop}>
-                                  <AntDesign name="star" size={12} color="#fbbf24" />
+                                  <AntDesign name="star" size={14} color="#fbbf24" />
                                   <Text style={styles.channelPointsTextTop}>
                                     {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
                                   </Text>
                                 </View>
                               )}
                             </View>
-                            <View style={styles.channelContentBottom}>
-                              <Text style={styles.channelCardName} numberOfLines={2}>
-                                {channel.name}
+                            <View style={styles.channelContent}>
+                              <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                              <Text style={styles.channelShow} numberOfLines={1}>
+                                {channel.currentShow || channel.category || genre.name}
                               </Text>
+                              {!isPremium && (
+                                <View style={styles.channelPointsBadge}>
+                                  <AntDesign name="star" size={12} color="#fbbf24" />
+                                  <Text style={styles.channelPointsText}>
+                                    {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
+                                  </Text>
+                                </View>
+                              )}
                             </View>
-                          </View>
-                        </ImageBackground>
-                      ) : (
-                        <LinearGradient
-                          colors={[channel.color + '20', channel.color + '10', 'transparent']}
-                          style={styles.channelCardGradient}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}>
-                          {channel.thumbnailEmoji ? (
-                            <View style={[styles.channelThumbnail, { backgroundColor: channel.color + '30' }]}>
-                              <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
-                            </View>
-                          ) : (
-                            <View style={[styles.channelThumbnail, { backgroundColor: channel.color + '30' }]}>
-                              <Icon name="movie" size={32} color={channel.color} />
-                            </View>
-                          )}
-                          <Text style={styles.channelCardName} numberOfLines={2}>
-                            {channel.name}
-                          </Text>
-                          {!isPremium && (
-                            <View style={styles.channelPointsBadge}>
-                              <AntDesign name="star" size={10} color="#fbbf24" />
-                              <Text style={styles.channelPointsText}>
-                                {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
-                              </Text>
-                            </View>
-                          )}
-                        </LinearGradient>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
+                            <TouchableOpacity
+                              style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
+                              onPress={() => handleChannelClick(channel)}>
+                              <Icon name="play" size={16} color="#fff" />
+                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                            </TouchableOpacity>
+                          </LinearGradient>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
             );
           })}
@@ -1014,15 +1065,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#9ca3af',
   },
-  channelsScroll: {
-    marginHorizontal: -16,
-    paddingHorizontal: 16,
+  channelsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 16,
   },
   channelCard: {
-    width: 140,
-    marginRight: 12,
-    borderRadius: 12,
+    width: (width - 48) / 2,
+    borderRadius: 16,
     overflow: 'hidden',
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: 'rgba(55, 65, 81, 0.5)',
     shadowColor: '#000',
@@ -1033,12 +1086,12 @@ const styles = StyleSheet.create({
   },
   channelImageBackground: {
     width: '100%',
-    minHeight: 160,
-    borderRadius: 12,
+    minHeight: 200,
+    borderRadius: 16,
     overflow: 'hidden',
   },
   channelImage: {
-    borderRadius: 12,
+    borderRadius: 16,
     resizeMode: 'cover',
   },
   channelColorOverlay: {
@@ -1047,63 +1100,63 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    borderRadius: 12,
+    borderRadius: 16,
   },
-  channelCardGradient: {
-    padding: 12,
-    minHeight: 160,
-    alignItems: 'center',
-    justifyContent: 'center',
+  channelGradient: {
+    padding: 16,
+    minHeight: 200,
     position: 'relative',
     zIndex: 1,
   },
-  channelHeaderTop: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    zIndex: 2,
+  channelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
   },
-  channelContentBottom: {
-    position: 'absolute',
-    bottom: 8,
-    left: 8,
-    right: 8,
-    zIndex: 2,
-  },
-  channelThumbnail: {
-    width: 80,
-    height: 80,
+  channelIconContainer: {
+    width: 56,
+    height: 56,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  channelContent: {
+    flex: 1,
     marginBottom: 12,
   },
-  channelEmoji: {
-    fontSize: 40,
-  },
-  channelCardName: {
-    fontSize: 14,
-    fontWeight: '600',
+  channelName: {
+    fontSize: 18,
+    fontWeight: 'bold',
     color: '#fff',
-    textAlign: 'center',
+    marginBottom: 6,
     textShadowColor: 'rgba(0, 0, 0, 0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
+  channelShow: {
+    fontSize: 13,
+    color: '#d1d5db',
+    marginBottom: 8,
+  },
+  channelEmoji: {
+    fontSize: 32,
+  },
   channelPointsBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 4,
-    marginTop: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     backgroundColor: 'rgba(251, 191, 36, 0.2)',
-    borderRadius: 6,
-    alignSelf: 'center',
+    borderRadius: 8,
+    alignSelf: 'flex-start',
   },
   channelPointsText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
     color: '#fbbf24',
   },
@@ -1111,17 +1164,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(251, 191, 36, 0.5)',
   },
   channelPointsTextTop: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: 'bold',
     color: '#fbbf24',
+  },
+  channelWatchButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 8,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+  },
+  channelWatchText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   searchCategoryBlock: {
     marginBottom: 24,
@@ -1150,15 +1223,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 16,
   },
   searchChannelCard: {
-    width: (width - 56) / 2,
-    borderRadius: 12,
+    width: (width - 48) / 2,
+    borderRadius: 16,
     overflow: 'hidden',
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: 'rgba(55, 65, 81, 0.5)',
-    marginBottom: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
@@ -1167,12 +1240,12 @@ const styles = StyleSheet.create({
   },
   searchChannelImageBackground: {
     width: '100%',
-    minHeight: 140,
-    borderRadius: 12,
+    minHeight: 200,
+    borderRadius: 16,
     overflow: 'hidden',
   },
   searchChannelImage: {
-    borderRadius: 12,
+    borderRadius: 16,
     resizeMode: 'cover',
   },
   searchChannelColorOverlay: {
@@ -1181,55 +1254,101 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    borderRadius: 12,
+    borderRadius: 16,
   },
   searchChannelGradient: {
-    padding: 12,
-    minHeight: 140,
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 16,
+    minHeight: 200,
     position: 'relative',
     zIndex: 1,
   },
-  searchChannelThumbnail: {
-    width: 64,
-    height: 64,
-    borderRadius: 10,
+  searchChannelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  searchChannelIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  searchChannelContent: {
+    flex: 1,
+    marginBottom: 12,
+  },
+  searchChannelName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 6,
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  searchChannelShow: {
+    fontSize: 13,
+    color: '#d1d5db',
     marginBottom: 8,
   },
   searchChannelEmoji: {
     fontSize: 32,
   },
-  searchChannelName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
-    textAlign: 'center',
-    textShadowColor: 'rgba(0, 0, 0, 0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
   searchChannelPointsBadge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: 'rgba(251, 191, 36, 0.2)',
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.5)',
-    zIndex: 2,
+    alignSelf: 'flex-start',
   },
   searchChannelPointsText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 'bold',
     color: '#fbbf24',
+  },
+  searchChannelPointsBadgeTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.5)',
+  },
+  searchChannelPointsTextTop: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#fbbf24',
+  },
+  searchChannelWatchButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 8,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+  },
+  searchChannelWatchText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

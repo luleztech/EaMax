@@ -11,22 +11,23 @@ const initializeFirebase = () => {
   }
 
   try {
-    // Check if Firebase credentials are provided
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    
-    if (serviceAccountKey) {
-      // Parse JSON from environment variable
-      const serviceAccount = JSON.parse(serviceAccountKey);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      firebaseInitialized = true;
-      console.log('Firebase Admin initialized successfully');
-    } else {
-      console.warn('FIREBASE_SERVICE_ACCOUNT_KEY not found. Push notifications will be disabled.');
+    if (!serviceAccountKey || String(serviceAccountKey).trim() === '') {
+      console.warn('FIREBASE_SERVICE_ACCOUNT_KEY not set. Push notifications will be disabled.');
+      return;
     }
+    const serviceAccount = JSON.parse(serviceAccountKey);
+    if (!serviceAccount || typeof serviceAccount !== 'object') {
+      console.warn('FIREBASE_SERVICE_ACCOUNT_KEY invalid JSON. Push notifications will be disabled.');
+      return;
+    }
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    firebaseInitialized = true;
+    console.log('Firebase Admin initialized successfully');
   } catch (error) {
-    console.error('Failed to initialize Firebase Admin:', error);
+    console.error('Failed to initialize Firebase Admin:', error.message || error);
   }
 };
 

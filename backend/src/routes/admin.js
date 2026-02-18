@@ -681,33 +681,52 @@ router.post('/notifications', async (req, res, next) => {
           message: 'Category must be kabumbu, movies, or habari',
         }),
       type: z.enum(['normal', 'scheduled']).default('normal'),
-      scheduledFor: z.string().optional().nullable(),
+      scheduledFor: z
+        .string()
+        .optional()
+        .nullable()
+        .transform((v) => (v && String(v).trim() !== '' ? String(v).trim() : null)),
     });
 
     const data = bodySchema.parse(req.body);
 
-    const result = await query(
-      `INSERT INTO notifications
-         (title, message, category, type, scheduled_for, sent_at)
-       VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'normal' THEN now() ELSE NULL END)
-       RETURNING *`,
-      [
-        data.title,
-        data.message,
-        data.category,
-        data.type,
-        data.scheduledFor && data.scheduledFor.trim() !== '' ? data.scheduledFor.trim() : null,
-      ],
-    );
+    let result;
+    try {
+      result = await query(
+        `INSERT INTO notifications
+           (title, message, category, type, scheduled_for, sent_at)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $4 = 'normal' THEN now() ELSE NULL END)
+         RETURNING *`,
+        [
+          data.title,
+          data.message,
+          data.category,
+          data.type,
+          data.scheduledFor,
+        ],
+      );
+    } catch (dbErr) {
+      console.error('Notifications INSERT failed:', dbErr);
+      return res.status(500).json({
+        error: 'Failed to save notification',
+        details: process.env.NODE_ENV === 'development' ? dbErr.message : undefined,
+      });
+    }
 
     const notification = result.rows[0];
+    if (!notification) {
+      console.error('Notifications INSERT returned no row');
+      return res.status(500).json({ error: 'Failed to save notification' });
+    }
 
-    // Send push notifications to all users with FCM tokens (never fail the request)
+    // Send push notifications (never fail the HTTP request)
     if (data.type === 'normal') {
       try {
-        const { sendPushNotificationToMultiple, isInitialized } = require('../services/firebase');
+        const firebase = require('../services/firebase');
+        const sendPush = firebase.sendPushNotificationToMultiple;
+        const isInit = firebase.isInitialized;
 
-        if (typeof isInitialized === 'function' && isInitialized()) {
+        if (typeof isInit === 'function' && isInit()) {
           const tokensResult = await query(
             `SELECT fcm_token FROM users 
              WHERE fcm_token IS NOT NULL 
@@ -719,8 +738,8 @@ router.post('/notifications', async (req, res, next) => {
             .map((row) => row && row.fcm_token)
             .filter((token) => token && String(token).trim() !== '');
 
-          if (fcmTokens.length > 0) {
-            await sendPushNotificationToMultiple(
+          if (fcmTokens.length > 0 && typeof sendPush === 'function') {
+            await sendPush(
               fcmTokens,
               data.title,
               data.message,
@@ -732,8 +751,8 @@ router.post('/notifications', async (req, res, next) => {
             );
           }
         }
-      } catch (pushError) {
-        console.error('Failed to send push notifications:', pushError);
+      } catch (pushErr) {
+        console.error('Push send error (notification still saved):', pushErr.message || pushErr);
       }
     }
 
@@ -743,7 +762,11 @@ router.post('/notifications', async (req, res, next) => {
       const message = err.errors?.map((e) => e.message).join('; ') || err.message;
       return res.status(400).json({ error: 'Validation failed', details: message });
     }
-    return next(err);
+    console.error('POST /notifications error:', err);
+    return res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
   }
 });
 

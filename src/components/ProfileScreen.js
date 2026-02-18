@@ -66,37 +66,35 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
       }
       setUserId(storedUserId);
 
-      // Register user with backend (only update local state if parent doesn't control points)
+      // Register user with backend
       try {
         const userData = await userAPI.register(storedUserId);
+        const premium = userData.isPremium ?? userData.is_premium ?? false;
+        const endDateRaw = userData.subscriptionEndDate ?? userData.premium_expires_at;
+        setIsPremium(!!premium);
         if (parentPoints === undefined || parentPoints === null) {
-          setIsPremium(userData.isPremium || false);
-          setUserPoints(userData.points || 0);
+          setUserPoints(userData.points ?? 0);
         }
-        
-        // If premium, set subscription end date
-        if (userData.isPremium && userData.subscriptionEndDate) {
-          setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
-        } else if (userData.isPremium) {
-          // Default 30 days if not set
-          const endDate = new Date();
-          endDate.setDate(endDate.getDate() + 30);
-          setSubscriptionEndDate(endDate);
+        if (premium && endDateRaw) {
+          const d = new Date(endDateRaw);
+          if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
         }
       } catch (apiError) {
         console.error('Failed to register user:', apiError);
-        // Continue with local data if API fails
       }
 
-      // Fetch latest user data (only update points if parent doesn't control them)
+      // Fetch latest user data (source of truth for paid/admin-granted premium and remaining time)
       try {
         const userData = await userAPI.getUser(storedUserId);
+        setIsPremium(userData.isPremium ?? false);
         if (parentPoints === undefined || parentPoints === null) {
-          setIsPremium(userData.isPremium || false);
-          setUserPoints(userData.points || 0);
+          setUserPoints(userData.points ?? 0);
         }
         if (userData.isPremium && userData.subscriptionEndDate) {
-          setSubscriptionEndDate(new Date(userData.subscriptionEndDate));
+          const d = new Date(userData.subscriptionEndDate);
+          if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+        } else {
+          setSubscriptionEndDate(null);
         }
       } catch (fetchError) {
         console.error('Failed to fetch user data:', fetchError);
@@ -171,34 +169,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
     }
   };
 
-  // Initialize subscription end date for premium users
-  useEffect(() => {
-    if (isPremium) {
-      const loadSubscriptionDate = async () => {
-        try {
-          let storedDate = await AsyncStorage.getItem('subscriptionEndDate');
-          if (!storedDate) {
-            // Set default subscription to 30 days from now
-            const endDate = new Date();
-            endDate.setDate(endDate.getDate() + 30);
-            storedDate = endDate.toISOString();
-            await AsyncStorage.setItem('subscriptionEndDate', storedDate);
-          }
-          setSubscriptionEndDate(new Date(storedDate));
-        } catch (error) {
-          // Fallback: 30 days from now
-          const endDate = new Date();
-          endDate.setDate(endDate.getDate() + 30);
-          setSubscriptionEndDate(endDate);
-        }
-      };
-      loadSubscriptionDate();
-    } else {
-      setSubscriptionEndDate(null);
-    }
-  }, [isPremium]);
-
-  // Countdown timer for premium users
+  // Countdown timer for premium users (subscription end comes from API: paid or admin-granted)
   useEffect(() => {
     if (!isPremium || !subscriptionEndDate) return;
 
@@ -306,6 +277,11 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
                 <Text style={styles.countdownText}>
                   Umebakiwa na siku {timeRemaining.days}, masaa {timeRemaining.hours}, dakika {timeRemaining.minutes} na sekunde {timeRemaining.seconds}
                 </Text>
+                {subscriptionEndDate && (
+                  <Text style={[styles.countdownText, styles.expiresOnText]}>
+                    Inaisha tarehe: {subscriptionEndDate.toLocaleDateString('sw-TZ', { day: 'numeric', month: 'long', year: 'numeric' })}
+                  </Text>
+                )}
               </View>
             </>
           ) : (
@@ -520,6 +496,10 @@ const styles = StyleSheet.create({
     color: '#d1d5db',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  expiresOnText: {
+    marginTop: 8,
+    color: '#9ca3af',
   },
   pointsContainer: {
     alignItems: 'center',

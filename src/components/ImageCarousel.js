@@ -146,7 +146,7 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
                     <Text style={styles.watchButtonText}>Watch Now</Text>
                   </TouchableOpacity>
                 </View>
-              </LinearGradient>
+              </View>
             </ImageBackground>
           </Animated.View>
         ))}

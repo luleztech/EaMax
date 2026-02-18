@@ -34,6 +34,8 @@ const StreamingApp = () => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const indicatorAnim = useRef(new Animated.Value(0)).current;
 
+  const CONGRATS_STORAGE_KEY = 'premiumCongratsShown';
+
   const refreshUserPoints = async () => {
     try {
       const userId = await AsyncStorage.getItem('userId');
@@ -42,9 +44,15 @@ const StreamingApp = () => {
         const points = userData.points ?? 0;
         const premium = !!userData.isPremium;
         setUserPoints(points);
-        if (premium && !hasShownCongrats) {
-          setCongratsModalVisible(true);
-          setHasShownCongrats(true);
+        if (premium) {
+          const alreadyShown = await AsyncStorage.getItem(`${CONGRATS_STORAGE_KEY}_${userId}`);
+          if (!alreadyShown) {
+            setCongratsModalVisible(true);
+            setHasShownCongrats(true);
+            await AsyncStorage.setItem(`${CONGRATS_STORAGE_KEY}_${userId}`, '1');
+          } else {
+            setHasShownCongrats(true);
+          }
         }
         setIsPremium(premium);
         return points;
@@ -58,6 +66,15 @@ const StreamingApp = () => {
   useEffect(() => {
     refreshUserPoints();
   }, []);
+
+  // Premium: turn ON "Ondoa Matangazo" (no ads) and keep it ON until subscription ends
+  useEffect(() => {
+    if (isPremium) {
+      setPremiumToggleOn(true);
+    } else {
+      setPremiumToggleOn(false);
+    }
+  }, [isPremium]);
 
   useEffect(() => {
     Animated.spring(indicatorAnim, {
@@ -100,6 +117,8 @@ const StreamingApp = () => {
   };
 
   const togglePremium = (value) => {
+    // Premium users: keep "Ondoa Matangazo" ON until subscription ends (never turn off)
+    if (isPremium) return;
     setPremiumToggleOn(value);
   };
 
@@ -181,6 +200,7 @@ const StreamingApp = () => {
             <Switch
               value={premiumToggleOn}
               onValueChange={togglePremium}
+              disabled={isPremium}
               trackColor={{ false: '#374151', true: '#eab308' }}
               thumbColor="#fff"
               ios_backgroundColor="#374151"
