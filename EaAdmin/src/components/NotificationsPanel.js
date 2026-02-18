@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,12 +9,10 @@ import {
   ScrollView,
   Dimensions,
   ActivityIndicator,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { adminNotificationsAPI } from '../config/api';
 
 const { width, height } = Dimensions.get('window');
@@ -34,18 +32,37 @@ const formatDisplayTime = (hhMm) => {
   return `${h12}:${String(min).padStart(2, '0')} ${ampm}`;
 };
 
-const toYyyyMmDd = (d) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+// Build calendar grid for a month: { value: 'YYYY-MM-DD', label: day number, isPast }
+const getCalendarDays = (year, month) => {
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = [];
+  const startPad = first.getDay();
+  for (let i = 0; i < startPad; i++) days.push(null);
+  for (let d = 1; d <= last.getDate(); d++) {
+    const date = new Date(year, month, d);
+    const value = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    days.push({ value, label: d, isPast: date < today });
+  }
+  return days;
 };
 
-const toHhMm = (d) => {
-  const h = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${h}:${min}`;
+// Time options: 30-min steps 06:00 - 23:30
+const getTimeOptions = () => {
+  const options = [];
+  for (let h = 6; h <= 23; h++) {
+    for (const m of [0, 30]) {
+      if (h === 23 && m === 30) break;
+      options.push({ value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` });
+    }
+  }
+  options.push({ value: '23:30' });
+  return options;
 };
+
+const timeOptions = getTimeOptions();
 
 const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
@@ -56,24 +73,19 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [scheduledTime, setScheduledTime] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
+  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState({ type: null, text: '' });
 
-  const minDate = new Date();
-  const dateForPicker = scheduledDate
-    ? (() => {
-        const [y, m, d] = scheduledDate.split('-').map(Number);
-        return new Date(y, m - 1, d);
-      })()
-    : new Date();
-  const timeForPicker = scheduledTime
-    ? (() => {
-        const [h, min] = scheduledTime.split(':').map(Number);
-        const d = new Date();
-        d.setHours(h, min, 0, 0);
-        return d;
-      })()
-    : new Date();
+  const calendarDays = useMemo(
+    () => getCalendarDays(calendarYear, calendarMonth),
+    [calendarYear, calendarMonth],
+  );
+  const monthLabel = useMemo(
+    () => new Date(calendarYear, calendarMonth, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
+    [calendarYear, calendarMonth],
+  );
 
   const handleSend = async () => {
     if (!category) {
@@ -339,32 +351,148 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
             />
           </View>
 
-          {/* Scheduled Date/Time */}
+          {/* Schedule: calendar date + time picker (no native deps) */}
           {notificationType === 'scheduled' && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Schedule Date & Time *</Text>
-              <View style={styles.dateTimeContainer}>
-                <View style={styles.dateTimeInput}>
-                  <Icon name="calendar" size={20} color="#9ca3af" />
-                  <TextInput
-                    style={styles.dateTimeText}
-                    placeholder="YYYY-MM-DD"
-                    placeholderTextColor="#6b7280"
-                    value={scheduledDate}
-                    onChangeText={setScheduledDate}
-                  />
-                </View>
-                <View style={styles.dateTimeInput}>
-                  <Icon name="clock-outline" size={20} color="#9ca3af" />
-                  <TextInput
-                    style={styles.dateTimeText}
-                    placeholder="HH:MM"
-                    placeholderTextColor="#6b7280"
-                    value={scheduledTime}
-                    onChangeText={setScheduledTime}
-                  />
-                </View>
+              <Text style={styles.scheduleSectionTitle}>Schedule for</Text>
+              <Text style={styles.scheduleSectionSubtitle}>Pick date from calendar and time below</Text>
+              <View style={styles.scheduleCard}>
+                <TouchableOpacity
+                  style={styles.scheduleRow}
+                  onPress={() => {
+                    const now = new Date();
+                    setCalendarMonth(now.getMonth());
+                    setCalendarYear(now.getFullYear());
+                    setShowDatePicker(true);
+                  }}
+                  activeOpacity={0.7}>
+                  <View style={styles.scheduleIconWrap}>
+                    <Icon name="calendar-month" size={24} color="#a855f7" />
+                  </View>
+                  <View style={styles.scheduleRowTextWrap}>
+                    <Text style={styles.scheduleRowLabel}>Date</Text>
+                    <Text style={scheduledDate ? styles.scheduleRowValue : styles.scheduleRowPlaceholder}>
+                      {formatDisplayDate(scheduledDate) || 'Tap to open calendar'}
+                    </Text>
+                  </View>
+                  <Icon name="chevron-right" size={24} color="#6b7280" />
+                </TouchableOpacity>
+                <View style={styles.scheduleDivider} />
+                <TouchableOpacity
+                  style={styles.scheduleRow}
+                  onPress={() => setShowTimePicker(true)}
+                  activeOpacity={0.7}>
+                  <View style={styles.scheduleIconWrap}>
+                    <Icon name="clock-outline" size={24} color="#a855f7" />
+                  </View>
+                  <View style={styles.scheduleRowTextWrap}>
+                    <Text style={styles.scheduleRowLabel}>Time</Text>
+                    <Text style={scheduledTime ? styles.scheduleRowValue : styles.scheduleRowPlaceholder}>
+                      {formatDisplayTime(scheduledTime) || 'Tap to pick time'}
+                    </Text>
+                  </View>
+                  <Icon name="chevron-right" size={24} color="#6b7280" />
+                </TouchableOpacity>
               </View>
+
+              <Modal visible={showDatePicker} transparent animationType="fade">
+                <TouchableOpacity
+                  style={styles.pickerOverlay}
+                  activeOpacity={1}
+                  onPress={() => setShowDatePicker(false)}>
+                  <View style={styles.pickerCard} onStartShouldSetResponder={() => true}>
+                    <Text style={styles.pickerTitle}>{monthLabel}</Text>
+                    <View style={styles.calendarNav}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (calendarMonth === 0) {
+                            setCalendarYear((y) => y - 1);
+                            setCalendarMonth(11);
+                          } else setCalendarMonth((m) => m - 1);
+                        }}>
+                        <Icon name="chevron-left" size={28} color="#a855f7" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (calendarMonth === 11) {
+                            setCalendarYear((y) => y + 1);
+                            setCalendarMonth(0);
+                          } else setCalendarMonth((m) => m + 1);
+                        }}>
+                        <Icon name="chevron-right" size={28} color="#a855f7" />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.calendarWeekdays}>
+                      {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((wd) => (
+                        <Text key={wd} style={styles.calendarWeekdayText}>{wd}</Text>
+                      ))}
+                    </View>
+                    <View style={styles.calendarGrid}>
+                      {calendarDays.map((day, idx) =>
+                        day === null ? (
+                          <View key={`e-${idx}`} style={styles.calendarDayCell} />
+                        ) : (
+                          <TouchableOpacity
+                            key={day.value}
+                            style={[
+                              styles.calendarDayCell,
+                              day.isPast && styles.calendarDayPast,
+                              scheduledDate === day.value && styles.calendarDaySelected,
+                            ]}
+                            onPress={() => {
+                              if (!day.isPast) {
+                                setScheduledDate(day.value);
+                                setShowDatePicker(false);
+                              }
+                            }}
+                            disabled={day.isPast}>
+                            <Text
+                              style={[
+                                styles.calendarDayText,
+                                day.isPast && styles.calendarDayTextPast,
+                                scheduledDate === day.value && styles.calendarDayTextSelected,
+                              ]}>
+                              {day.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ),
+                      )}
+                    </View>
+                    <TouchableOpacity style={styles.pickerCancel} onPress={() => setShowDatePicker(false)}>
+                      <Text style={styles.pickerCancelText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
+              </Modal>
+
+              <Modal visible={showTimePicker} transparent animationType="fade">
+                <TouchableOpacity
+                  style={styles.pickerOverlay}
+                  activeOpacity={1}
+                  onPress={() => setShowTimePicker(false)}>
+                  <View style={styles.pickerCard} onStartShouldSetResponder={() => true}>
+                    <Text style={styles.pickerTitle}>Select time</Text>
+                    <ScrollView style={styles.pickerScroll} showsVerticalScrollIndicator={false}>
+                      {timeOptions.map((opt) => (
+                        <TouchableOpacity
+                          key={opt.value}
+                          style={[styles.pickerOption, scheduledTime === opt.value && styles.pickerOptionActive]}
+                          onPress={() => {
+                            setScheduledTime(opt.value);
+                            setShowTimePicker(false);
+                          }}>
+                          <Text style={[styles.pickerOptionText, scheduledTime === opt.value && styles.pickerOptionTextActive]}>
+                            {formatDisplayTime(opt.value)}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                    <TouchableOpacity style={styles.pickerCancel} onPress={() => setShowTimePicker(false)}>
+                      <Text style={styles.pickerCancelText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
+              </Modal>
             </View>
           )}
 
@@ -593,6 +721,108 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#374151',
     marginLeft: 74,
+  },
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  pickerCard: {
+    backgroundColor: '#1f2937',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#374151',
+    maxHeight: height * 0.6,
+  },
+  pickerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#374151',
+  },
+  pickerScroll: {
+    maxHeight: 280,
+  },
+  pickerOption: {
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+  },
+  pickerOptionActive: {
+    backgroundColor: 'rgba(168, 85, 247, 0.2)',
+  },
+  pickerOptionText: {
+    fontSize: 16,
+    color: '#e5e7eb',
+  },
+  pickerOptionTextActive: {
+    color: '#a855f7',
+    fontWeight: '600',
+  },
+  pickerCancel: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#374151',
+  },
+  pickerCancelText: {
+    fontSize: 16,
+    color: '#9ca3af',
+    fontWeight: '500',
+  },
+  calendarNav: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  calendarWeekdays: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
+  calendarWeekdayText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#9ca3af',
+    textAlign: 'center',
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 12,
+    paddingBottom: 16,
+  },
+  calendarDayCell: {
+    width: '14.28%',
+    aspectRatio: 1,
+    maxWidth: 44,
+    maxHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    marginVertical: 2,
+  },
+  calendarDayPast: {
+    opacity: 0.4,
+  },
+  calendarDaySelected: {
+    backgroundColor: '#a855f7',
+  },
+  calendarDayText: {
+    fontSize: 15,
+    color: '#e5e7eb',
+    fontWeight: '500',
+  },
+  calendarDayTextPast: {
+    color: '#6b7280',
+  },
+  calendarDayTextSelected: {
+    color: '#fff',
   },
   actionButtons: {
     flexDirection: 'row',
