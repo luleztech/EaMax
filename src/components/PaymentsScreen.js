@@ -9,6 +9,7 @@ import {
   Linking,
   Modal,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -16,7 +17,10 @@ import AntDesign from 'react-native-vector-icons/AntDesign';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { settingsAPI, paymentsAPI } from '../config/api';
 
-const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
+const ACCENT = '#22c55e';
+const ACCENT_DARK = '#16a34a';
+
+const PaymentsScreen = ({ accentColor = ACCENT }) => {
   const [selectedBundle, setSelectedBundle] = useState(null);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState(null);
@@ -25,21 +29,19 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
+  const [statusIsSuccess, setStatusIsSuccess] = useState(true);
 
   const bundles = [
-    { id: 'week', name: 'Kwa Wiki', price: '3,000', duration: '7 siku', value: 3000 },
-    { id: 'month', name: 'Mwezi', price: '8,000', duration: '30 siku', value: 8000 },
-    { id: 'year', name: 'Mwaka', price: '15,000', duration: '365 siku', value: 15000 },
+    { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
+    { id: 'month', name: 'Mwezi', price: '5,000', duration: '30 siku', value: 5000, popular: true },
+    { id: 'year', name: 'Mwaka', price: '12,000', duration: '365 siku', value: 12000, popular: false },
   ];
 
   useEffect(() => {
     const loadWhatsApp = async () => {
       try {
         const data = await settingsAPI.getWhatsAppNumber();
-        if (data.number) {
-          // Normalize: remove spaces
-          setWhatsappNumber(data.number.replace(/\s+/g, ''));
-        }
+        if (data.number) setWhatsappNumber(data.number.replace(/\s+/g, ''));
       } catch (error) {
         console.error('Failed to load WhatsApp number:', error);
       }
@@ -48,10 +50,7 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
 
     const loadUserId = async () => {
       try {
-        // Primary key used by ProfileScreen
         let storedId = await AsyncStorage.getItem('userId');
-
-        // Fallback for any older key we might have used
         if (!storedId) {
           const legacyId = await AsyncStorage.getItem('@eamax:userId');
           if (legacyId) {
@@ -59,10 +58,7 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
             await AsyncStorage.setItem('userId', legacyId);
           }
         }
-
-        if (storedId) {
-          setUserId(storedId);
-        }
+        if (storedId) setUserId(storedId);
       } catch (e) {
         console.error('Failed to load user id for payments:', e);
       }
@@ -70,28 +66,28 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
     loadUserId();
   }, []);
 
-  const showStatusModal = (title, message) => {
+  const showStatusModal = (title, message, isSuccess = true) => {
     setStatusModalTitle(title);
     setStatusModalMessage(message);
+    setStatusIsSuccess(isSuccess);
     setStatusModalVisible(true);
   };
 
   const handleSendRequest = async () => {
     if (!selectedBundle) {
-      showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.');
+      showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.', false);
       return;
     }
-    // Validate Tanzanian phone number
-    // Valid prefixes: Halotel (061, 062), Mixx by Yas (065, 071), Airtel (068, 069, 078), Vodacom (074, 075, 076, 079)
     const validPrefixes = ['061', '062', '065', '068', '069', '071', '074', '075', '076', '078', '079'];
     const cleanPhone = phoneNumber.replace(/\s+/g, '');
     const isValidFormat = /^0[0-9]{8,9}$/.test(cleanPhone);
     const hasValidPrefix = validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
-    
+
     if (!phoneNumber || !isValidFormat || !hasValidPrefix) {
       showStatusModal(
         'Nambari ya simu',
         'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0712345678, 0742345678, 0782345678).',
+        false,
       );
       return;
     }
@@ -99,16 +95,14 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
       showStatusModal(
         'Tatizo la akaunti',
         'Hatukuweza kutambua akaunti yako. Fungua tena sehemu ya wasifu (Profile) kisha ujaribu tena.',
+        false,
       );
       return;
     }
 
     const bundle = bundles.find(b => b.id === selectedBundle);
-
     try {
       setSubmitting(true);
-      // Clean phone number (remove spaces) before sending
-      const cleanPhone = phoneNumber.replace(/\s+/g, '');
       const result = await paymentsAPI.startZenoPayment({
         externalId: userId,
         bundle: bundle.id,
@@ -116,13 +110,12 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
         email: `${userId}@eamax.app`,
         name: userId,
       });
-
       showStatusModal(
         'Ombi limetumwa',
         result.message ||
           `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${phoneNumber}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
+        true,
       );
-
       setSelectedBundle(null);
       setPhoneNumber('');
     } catch (error) {
@@ -130,6 +123,7 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
       showStatusModal(
         'Malipo yameshindikana',
         error?.message || 'Imeshindikana kutuma ombi la malipo. Jaribu tena baadae.',
+        false,
       );
     } finally {
       setSubmitting(false);
@@ -141,95 +135,101 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
       showStatusModal(
         'Hakuna namba ya WhatsApp',
         'Tafadhali wasiliana na admin kuongeza namba ya WhatsApp kwenye sehemu ya Settings.',
+        false,
       );
       return;
     }
-    const phone = whatsappNumber.startsWith('+')
-      ? whatsappNumber.slice(1)
-      : whatsappNumber;
-    const url = `https://wa.me/${phone}`;
-    Linking.openURL(url).catch(() => {
-      showStatusModal('Tatizo', 'Imeshindwa kufungua WhatsApp kwenye kifaa chako.');
+    const phone = whatsappNumber.startsWith('+') ? whatsappNumber.slice(1) : whatsappNumber;
+    Linking.openURL(`https://wa.me/${phone}`).catch(() => {
+      showStatusModal('Tatizo', 'Imeshindwa kufungua WhatsApp kwenye kifaa chako.', false);
     });
   };
 
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#030712', '#111827', '#000000']}
+        colors={['#030712', '#0f172a', '#020617']}
         style={StyleSheet.absoluteFill}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
       />
-      
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Header Section */}
-        <View style={styles.headerSection}>
-          <View style={[styles.iconContainer, { backgroundColor: `${accentColor}20` }]}>
-            <Icon name="wallet" size={32} color={accentColor} />
-          </View>
-          <Text style={styles.headerTitle}>Malipo</Text>
-          <Text style={styles.headerSubtitle}>Chagua bundle na ingiza nambari ya simu</Text>
-        </View>
 
-        {/* Safety Message */}
-        <View style={styles.safetyCard}>
-          <View style={styles.safetyHeader}>
-            <Icon name="shield-check" size={20} color="#10b981" />
-            <Text style={styles.safetyTitle}>Salama na Hakuna Malipo ya Kiotomatiki</Text>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
+        {/* Hero header */}
+        <View style={styles.hero}>
+          <View style={styles.heroIconWrap}>
+            <LinearGradient
+              colors={[`${accentColor}40`, `${accentColor}15`]}
+              style={styles.heroIconGradient}>
+              <Icon name="credit-card-outline" size={36} color={accentColor} />
+            </LinearGradient>
           </View>
-          <Text style={styles.safetyText}>
-            Malipo yako ni salama kabisa. Hakuna malipo ya kiotomatiki yatakayofanyika. 
-            Utapokea ombi kwenye simu yako na utahitaji kuthibitisha malipo mwenyewe.
+          <Text style={styles.heroTitle}>Malipo Premium</Text>
+          <Text style={styles.heroSubtitle}>
+            Chagua muda, ingiza nambari ya simu. Utapokea ombi kwenye simu yako.
           </Text>
-          <View style={styles.networksInfo}>
-            <Icon name="check-circle" size={16} color="#10b981" />
-            <Text style={styles.networksInfoText}>
-              Inasapoti mitandao yote: Vodacom M-Pesa, Mixx by Yas, Airtel Money, na Halopesa
-            </Text>
+        </View>
+
+        {/* Trust strip */}
+        <View style={styles.trustStrip}>
+          <View style={styles.trustItem}>
+            <Icon name="shield-check" size={18} color="#10b981" />
+            <Text style={styles.trustText}>Salama</Text>
+          </View>
+          <View style={styles.trustDivider} />
+          <View style={styles.trustItem}>
+            <Icon name="cellphone-check" size={18} color="#10b981" />
+            <Text style={styles.trustText}>M-Pesa, Airtel, Halopesa</Text>
           </View>
         </View>
 
-        {/* Bundle Selection */}
+        {/* Bundle section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Chagua Bundle</Text>
-          <View style={styles.bundlesContainer}>
-            {bundles.map((bundle) => (
-              <TouchableOpacity
-                key={bundle.id}
-                style={[
-                  styles.bundleCard,
-                  selectedBundle === bundle.id && [
-                    styles.bundleCardActive,
-                    { borderColor: accentColor },
-                  ],
-                ]}
-                onPress={() => setSelectedBundle(bundle.id)}>
-                {selectedBundle === bundle.id && (
-                  <View style={[styles.checkBadge, { backgroundColor: accentColor }]}>
-                    <AntDesign name="check" size={16} color="#fff" />
-                  </View>
-                )}
-                <Text style={styles.bundleName}>{bundle.name}</Text>
-                <Text style={styles.bundlePrice}>Tsh. {bundle.price}</Text>
-                <Text style={styles.bundleDuration}>{bundle.duration}</Text>
-                {selectedBundle === bundle.id && (
-                  <View style={[styles.selectedIndicator, { backgroundColor: accentColor }]} />
-                )}
-              </TouchableOpacity>
-            ))}
+          <Text style={styles.sectionLabel}>Chagua muda</Text>
+          <View style={styles.bundlesRow}>
+            {bundles.map((bundle) => {
+              const isSelected = selectedBundle === bundle.id;
+              return (
+                <TouchableOpacity
+                  key={bundle.id}
+                  activeOpacity={0.85}
+                  onPress={() => setSelectedBundle(bundle.id)}
+                  style={[styles.bundleCard, isSelected && styles.bundleCardSelected]}>
+                  {bundle.popular && (
+                    <View style={styles.popularBadge}>
+                      <Text style={styles.popularBadgeText}>Inayopendwa</Text>
+                    </View>
+                  )}
+                  {isSelected && (
+                    <View style={styles.bundleCheck}>
+                      <AntDesign name="check" size={14} color="#fff" />
+                    </View>
+                  )}
+                  <Text style={[styles.bundleName, isSelected && styles.bundleNameSelected]}>
+                    {bundle.name}
+                  </Text>
+                  <Text style={styles.bundlePrice}>Tsh. {bundle.price}</Text>
+                  <Text style={styles.bundleDuration}>{bundle.duration}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
 
-        {/* Phone Number Input */}
+        {/* Phone input */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Ingiza Nambari ya Simu</Text>
-          <View style={styles.inputContainer}>
-            <Icon name="phone" size={20} color="#9ca3af" style={styles.inputIcon} />
+          <Text style={styles.sectionLabel}>Nambari ya simu (Tanzania)</Text>
+          <View style={styles.inputWrap}>
+            <View style={styles.inputPrefix}>
+              <Text style={styles.inputPrefixText}>+255</Text>
+            </View>
             <TextInput
               style={styles.input}
-              placeholder="0612345678, 0712345678, 0742345678..."
-              placeholderTextColor="#6b7280"
+              placeholder="712 345 678"
+              placeholderTextColor="#64748b"
               value={phoneNumber}
               onChangeText={setPhoneNumber}
               keyboardType="phone-pad"
@@ -237,73 +237,86 @@ const PaymentsScreen = ({ accentColor = '#4ade80' }) => {
             />
           </View>
           <Text style={styles.inputHint}>
-            Ingiza nambari ya simu yako (Halotel: 061/062, Mixx: 065/071, Airtel: 068/069/078, Vodacom: 074/075/076/079)
+            Ingiza bila +255 (mfano: 0712345678, 0742345678)
           </Text>
         </View>
 
-        {/* Send Request Button */}
+        {/* CTA */}
         <TouchableOpacity
+          activeOpacity={0.9}
           style={[
-            styles.sendButton,
-            ((!selectedBundle || !phoneNumber) && styles.sendButtonDisabled) ||
-              (submitting && styles.sendButtonDisabled),
-            { backgroundColor: accentColor },
+            styles.ctaWrap,
+            (!selectedBundle || !phoneNumber || submitting) && styles.ctaDisabled,
           ]}
           onPress={submitting ? undefined : handleSendRequest}
           disabled={!selectedBundle || !phoneNumber || submitting}>
-          {submitting ? (
-            <>
-              <Icon name="clock-outline" size={20} color="#fff" />
-              <Text style={styles.sendButtonText}>Inatuma ombi...</Text>
-            </>
-          ) : (
-            <>
-              <Icon name="send" size={20} color="#fff" />
-              <Text style={styles.sendButtonText}>Tuma Ombi la Malipo</Text>
-            </>
-          )}
+          <LinearGradient
+            colors={selectedBundle && phoneNumber && !submitting ? [ACCENT, ACCENT_DARK] : ['#475569', '#334155']}
+            style={styles.ctaGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}>
+            {submitting ? (
+              <>
+                <ActivityIndicator size="small" color="#fff" />
+                <Text style={styles.ctaText}>Inatuma...</Text>
+              </>
+            ) : (
+              <>
+                <Icon name="send-circle-outline" size={22} color="#fff" />
+                <Text style={styles.ctaText}>Tuma ombi la malipo</Text>
+              </>
+            )}
+          </LinearGradient>
         </TouchableOpacity>
 
-        {/* Info Section */}
-        <View style={styles.infoSection}>
-          <View style={styles.infoRow}>
-            <Icon name="information" size={18} color="#9ca3af" />
-            <Text style={styles.infoText}>
-              Utapokea ombi kwenye simu yako. Fuata maelekezo ili kukamilisha malipo.
+        {/* Info + WhatsApp */}
+        <View style={styles.footerInfo}>
+          <View style={styles.footerRow}>
+            <Icon name="information-outline" size={18} color="#64748b" />
+            <Text style={styles.footerRowText}>
+              Utapokea ombi kwenye simu. Fuata maelekezo ili kukamilisha.
             </Text>
           </View>
-          <View style={styles.infoRow}>
-            <Icon name="lock" size={18} color="#9ca3af" />
-            <Text style={styles.infoText}>
-              Taarifa zako ni salama na hazitashirikiwa na mtu yeyote.
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.infoRow} onPress={handleOpenWhatsApp}>
-            <Icon name="whatsapp" size={18} color="#22c55e" />
-            <Text style={[styles.infoText, styles.whatsappText]}>
-              Msaada zaidi? Bofya hapa tuandikie WhatsApp
-            </Text>
+          <TouchableOpacity style={styles.whatsappRow} onPress={handleOpenWhatsApp} activeOpacity={0.8}>
+            <View style={styles.whatsappIconWrap}>
+              <Icon name="whatsapp" size={22} color="#fff" />
+            </View>
+            <View style={styles.whatsappTextWrap}>
+              <Text style={styles.whatsappTitle}>Msaada zaidi?</Text>
+              <Text style={styles.whatsappSubtitle}>Tuandikie kwenye WhatsApp</Text>
+            </View>
+            <AntDesign name="right" size={16} color="#22c55e" />
           </TouchableOpacity>
         </View>
       </ScrollView>
 
-      {/* Status Modal */}
+      {/* Status modal */}
       <Modal
         visible={statusModalVisible}
         transparent
         animationType="fade"
         onRequestClose={() => setStatusModalVisible(false)}>
-        <View style={styles.statusModalOverlay}>
-          <View style={styles.statusModalContent}>
-            <Text style={styles.statusModalTitle}>{statusModalTitle}</Text>
-            <Text style={styles.statusModalMessage}>{statusModalMessage}</Text>
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.modalOverlay}
+          onPress={() => setStatusModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.modalCard}>
+            <View style={[styles.modalIconWrap, statusIsSuccess ? styles.modalIconSuccess : styles.modalIconError]}>
+              <Icon
+                name={statusIsSuccess ? 'check-circle' : 'alert-circle'}
+                size={44}
+                color={statusIsSuccess ? '#22c55e' : '#f59e0b'}
+              />
+            </View>
+            <Text style={styles.modalTitle}>{statusModalTitle}</Text>
+            <Text style={styles.modalMessage}>{statusModalMessage}</Text>
             <TouchableOpacity
-              style={styles.statusModalButton}
+              style={[styles.modalBtn, statusIsSuccess && styles.modalBtnSuccess]}
               onPress={() => setStatusModalVisible(false)}>
-              <Text style={styles.statusModalButtonText}>Sawa</Text>
+              <Text style={styles.modalBtnText}>Sawa</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </View>
   );
@@ -316,233 +329,311 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
-    paddingBottom: 100,
   },
-  headerSection: {
-    alignItems: 'center',
-    padding: 24,
-    paddingTop: 32,
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 28,
+    paddingBottom: 48,
   },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: 'center',
+  hero: {
     alignItems: 'center',
+    marginBottom: 24,
+  },
+  heroIconWrap: {
     marginBottom: 16,
   },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
+  heroIconGradient: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  heroTitle: {
+    fontSize: 26,
+    fontWeight: '800',
     color: '#fff',
+    letterSpacing: -0.5,
     marginBottom: 8,
   },
-  headerSubtitle: {
-    fontSize: 16,
-    color: '#9ca3af',
+  heroSubtitle: {
+    fontSize: 15,
+    color: '#94a3b8',
     textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: 8,
   },
-  safetyCard: {
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderRadius: 12,
-    padding: 16,
-    marginHorizontal: 16,
-    marginBottom: 24,
+  trustStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 28,
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderColor: 'rgba(16, 185, 129, 0.2)',
   },
-  safetyHeader: {
+  trustItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
   },
-  safetyTitle: {
-    fontSize: 16,
+  trustText: {
+    fontSize: 13,
     fontWeight: '600',
     color: '#10b981',
   },
-  safetyText: {
-    fontSize: 14,
-    color: '#d1d5db',
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  networksInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  networksInfoText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#10b981',
-    lineHeight: 18,
+  trustDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: 'rgba(16, 185, 129, 0.4)',
+    marginHorizontal: 20,
   },
   section: {
-    paddingHorizontal: 16,
     marginBottom: 24,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 16,
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#94a3b8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 12,
   },
-  bundlesContainer: {
+  bundlesRow: {
+    flexDirection: 'row',
     gap: 10,
   },
   bundleCard: {
-    backgroundColor: 'rgba(31, 41, 55, 0.5)',
-    borderRadius: 12,
-    padding: 14,
+    flex: 1,
+    backgroundColor: 'rgba(30, 41, 59, 0.6)',
+    borderRadius: 16,
+    padding: 16,
+    paddingTop: 14,
     borderWidth: 2,
-    borderColor: 'rgba(55, 65, 81, 0.5)',
-    position: 'relative',
+    borderColor: 'rgba(71, 85, 105, 0.4)',
+    ...Platform.select({
+      android: { elevation: 2 },
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4 },
+    }),
   },
-  bundleCardActive: {
-    borderWidth: 2,
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+  bundleCardSelected: {
+    borderColor: '#22c55e',
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
   },
-  checkBadge: {
+  bundleCardPopular: {
+    paddingTop: 28,
+  },
+  popularBadge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    top: -1,
+    left: 0,
+    right: 0,
+    backgroundColor: '#22c55e',
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    paddingVertical: 4,
+    alignItems: 'center',
+  },
+  popularBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.5,
+  },
+  bundleCheck: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#22c55e',
     justifyContent: 'center',
     alignItems: 'center',
   },
   bundleName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#e2e8f0',
     marginBottom: 6,
   },
+  bundleNameSelected: {
+    color: '#fff',
+  },
   bundlePrice: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#4ade80',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#22c55e',
     marginBottom: 2,
   },
   bundleDuration: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: '#64748b',
   },
-  selectedIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-  },
-  inputContainer: {
+  inputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(31, 41, 55, 0.5)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(55, 65, 81, 0.5)',
-    paddingHorizontal: 16,
-    marginBottom: 8,
+    backgroundColor: 'rgba(30, 41, 59, 0.6)',
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.4)',
+    overflow: 'hidden',
   },
-  inputIcon: {
-    marginRight: 12,
+  inputPrefix: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    backgroundColor: 'rgba(51, 65, 85, 0.5)',
+  },
+  inputPrefixText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#94a3b8',
   },
   input: {
     flex: 1,
-    height: 50,
+    height: 52,
+    paddingHorizontal: 14,
     color: '#fff',
     fontSize: 16,
   },
   inputHint: {
     fontSize: 12,
-    color: '#6b7280',
+    color: '#64748b',
+    marginTop: 8,
     marginLeft: 4,
   },
-  sendButton: {
+  ctaWrap: {
+    marginTop: 8,
+    marginBottom: 32,
+    borderRadius: 14,
+    overflow: 'hidden',
+    ...Platform.select({
+      android: { elevation: 4 },
+      ios: { shadowColor: '#22c55e', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
+    }),
+  },
+  ctaDisabled: {
+    opacity: 0.7,
+  },
+  ctaGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 16,
-    borderRadius: 12,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 24,
+    gap: 10,
+    paddingVertical: 18,
   },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-  sendButtonText: {
+  ctaText: {
+    fontSize: 17,
+    fontWeight: '700',
     color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
   },
-  infoSection: {
-    paddingHorizontal: 16,
-    gap: 12,
+  footerInfo: {
+    gap: 14,
   },
-  infoRow: {
+  footerRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: 10,
   },
-  infoText: {
+  footerRowText: {
     flex: 1,
     fontSize: 13,
-    color: '#9ca3af',
-    lineHeight: 18,
+    color: '#64748b',
+    lineHeight: 20,
   },
-  whatsappText: {
-    color: '#22c55e',
-    fontWeight: '600',
+  whatsappRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.25)',
   },
-  statusModalOverlay: {
+  whatsappIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#22c55e',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  whatsappTextWrap: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+  whatsappTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  whatsappSubtitle: {
+    fontSize: 13,
+    color: '#22c55e',
+    marginTop: 2,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
-  statusModalContent: {
+  modalCard: {
     width: '100%',
-    maxWidth: 360,
-    backgroundColor: '#020617',
-    borderRadius: 16,
-    padding: 20,
+    maxWidth: 340,
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#4b5563',
+    borderColor: 'rgba(71, 85, 105, 0.5)',
   },
-  statusModalTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-    marginBottom: 8,
-  },
-  statusModalMessage: {
-    fontSize: 14,
-    color: '#e5e7eb',
+  modalIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: 16,
   },
-  statusModalButton: {
-    alignSelf: 'flex-end',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 999,
+  modalIconSuccess: {
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+  },
+  modalIconError: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#fff',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 20,
+  },
+  modalBtn: {
+    backgroundColor: '#334155',
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+  },
+  modalBtnSuccess: {
     backgroundColor: '#22c55e',
   },
-  statusModalButtonText: {
+  modalBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
     color: '#fff',
-    fontWeight: '600',
-    fontSize: 13,
   },
 });
 

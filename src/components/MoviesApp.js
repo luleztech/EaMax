@@ -375,10 +375,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                       </View>
                                   </View>
                                   <View style={styles.searchChannelContent}>
-                                    <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
-                                    <Text style={styles.searchChannelShow} numberOfLines={1}>
-                                      {channel.currentShow || channel.category || genre.name}
-                                    </Text>
+                                  <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
                                   </View>
                                   <TouchableOpacity
                                     style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
@@ -411,9 +408,6 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                 </View>
                                 <View style={styles.searchChannelContent}>
                                   <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
-                                  <Text style={styles.searchChannelShow} numberOfLines={1}>
-                                    {channel.currentShow || channel.category || genre.name}
-                                  </Text>
                                   <View style={styles.searchChannelPointsBadge}>
                                     <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.searchChannelPointsText}>
@@ -499,9 +493,6 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                               </View>
                               <View style={styles.channelContent}>
                                 <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                                <Text style={styles.channelShow} numberOfLines={1}>
-                                  {channel.currentShow || channel.category || genre.name}
-                                </Text>
                               </View>
                               <TouchableOpacity
                                 style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
@@ -534,9 +525,6 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                             </View>
                             <View style={styles.channelContent}>
                               <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                              <Text style={styles.channelShow} numberOfLines={1}>
-                                {channel.currentShow || channel.category || genre.name}
-                              </Text>
                               <View style={styles.channelPointsBadge}>
                                 <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                 <Text style={styles.channelPointsText}>

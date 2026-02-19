@@ -227,7 +227,8 @@ const styles = StyleSheet.create({
   },
   slideContentWrapper: {
     flex: 1,
-    backgroundColor: 'transparent',
+    // Subtle dark overlay to improve text legibility on bright images
+    backgroundColor: 'rgba(0,0,0,0.25)',
   },
   badge: {
     position: 'absolute',
@@ -268,18 +269,19 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginBottom: 8,
     textAlign: 'center',
-    textShadowColor: 'rgba(0,0,0,0.9)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
+    // Stronger shadow so title pops on any background
+    textShadowColor: 'rgba(0,0,0,1)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
   },
   slideSubtitle: {
     fontSize: 16,
     color: '#d1d5db',
     marginBottom: 16,
     textAlign: 'center',
-    textShadowColor: 'rgba(0,0,0,0.9)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textShadowColor: 'rgba(0,0,0,1)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 5,
   },
   slideInfo: {
     flexDirection: 'row',
@@ -295,6 +297,9 @@ const styles = StyleSheet.create({
   infoText: {
     fontSize: 14,
     color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   watchButton: {
     flexDirection: 'row',

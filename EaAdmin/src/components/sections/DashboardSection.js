@@ -545,7 +545,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.carouselDeleteButton}
-                  onPress={() => handleDeleteSlide(slide.id)}
+                  onPress={() => setDeleteConfirmSlide(slide)}
                   activeOpacity={0.7}>
                   <Icon name="delete" size={16} color="#ef4444" />
                 </TouchableOpacity>
@@ -604,7 +604,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.carouselDeleteButton}
-                  onPress={() => handleDeleteSlide(slide.id)}
+                  onPress={() => setDeleteConfirmSlide(slide)}
                   activeOpacity={0.7}>
                   <Icon name="delete" size={16} color="#ef4444" />
                 </TouchableOpacity>

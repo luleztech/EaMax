@@ -341,7 +341,6 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                           </View>
                           <View style={styles.channelContent}>
                             <Text style={styles.channelName}>{channel.name}</Text>
-                            <Text style={styles.channelShow}>{channel.currentShow}</Text>
                           </View>
                           <TouchableOpacity
                             style={[
@@ -381,7 +380,6 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                         </View>
                         <View style={styles.channelContent}>
                           <Text style={styles.channelName}>{channel.name}</Text>
-                          <Text style={styles.channelShow}>{channel.currentShow}</Text>
                           <View style={styles.channelCategory}>
                             <Icon name="tag" size={12} color="#9ca3af" />
                             <Text style={styles.channelCategoryText}>
@@ -473,7 +471,6 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                           </View>
                           <View style={styles.channelContent}>
                             <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                            <Text style={styles.channelShow} numberOfLines={1}>{channel.currentShow}</Text>
                           </View>
                           <TouchableOpacity
                             style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
@@ -506,7 +503,6 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                         </View>
                         <View style={styles.channelContent}>
                           <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                          <Text style={styles.channelShow} numberOfLines={1}>{channel.currentShow}</Text>
                           <View style={styles.channelPointsBadge}>
                             <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                             <Text style={styles.channelPointsText}>
