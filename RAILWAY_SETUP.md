@@ -52,6 +52,37 @@ Railway redeploys when you change variables. Wait for the new deployment to fini
 
 ---
 
+## 6. If you see "fcm_token does not exist" or "user_unlocked_channels does not exist"
+
+Your database was created before those columns/table were added. Run the migration once from your terminal.
+
+### Option A – Railway CLI (easiest)
+
+From the project root, with [Railway CLI](https://docs.railway.app/develop/cli) installed and logged in:
+
+```bash
+cd /home/ayoub/MySecretes/EaMax
+npx railway run node backend/scripts/run-migration.js
+```
+
+(If your backend is in a different service, run `railway link` first and select the backend service.)
+
+### Option B – Paste DATABASE_URL and run
+
+1. Get the **public** database URL. The one in Variables often uses `postgres.railway.internal`, which only works inside Railway. In Railway → **PostgreSQL** service → **Connect** tab, copy the **Public** connection URL (host like `xxx.railway.app` or `roundhouse.proxy.rlwy.net`). Use that full URL including the password.
+2. From the project root:
+
+```bash
+cd /home/ayoub/MySecretes/EaMax
+DATABASE_URL='postgresql://postgres:xxxxx@xxxx.railway.app:5432/railway' node backend/scripts/run-migration.js
+```
+
+Replace the string with your actual `DATABASE_URL` (keep the single quotes).
+
+After that, push notifications and admin “special access” (unlock channels) will work.
+
+---
+
 ## Quick checklist
 
 | Variable                      | Example / format                    | Used for              |

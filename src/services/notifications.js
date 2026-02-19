@@ -41,6 +41,7 @@ export const requestNotificationPermission = async () => {
 // Get FCM token
 export const getFCMToken = async () => {
   try {
+    const messaging = require('@react-native-firebase/messaging').default;
     const token = await messaging().getToken();
     console.log('FCM Token:', token);
     return token;
@@ -119,6 +120,7 @@ export const initializeNotifications = async (externalId) => {
     }
 
     // When user comes back online, FCM may refresh the token; re-register so backend has it
+    const messaging = require('@react-native-firebase/messaging').default;
     messaging().onTokenRefresh(async (token) => {
       console.log('FCM token refreshed:', token);
       if (externalId) {
