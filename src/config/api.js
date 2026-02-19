@@ -90,6 +90,10 @@ export const channelsAPI = {
     const query = category ? `?category=${category}` : '';
     return apiRequest(`/api/channels${query}`);
   },
+  // Get single channel by id (stream URL from admin) – for fast play on click
+  getChannel: async (channelId) => {
+    return apiRequest(`/api/channels/${channelId}`);
+  },
 };
 
 /**

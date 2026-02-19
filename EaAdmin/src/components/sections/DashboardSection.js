@@ -63,6 +63,8 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [mostWatchedChannels, setMostWatchedChannels] = useState([]);
   const [recentNotifications, setRecentNotifications] = useState([]);
+  const [allNotifications, setAllNotifications] = useState([]);
+  const [notificationsHistoryVisible, setNotificationsHistoryVisible] = useState(false);
   const [footballCarouselSlides, setFootballCarouselSlides] = useState([]);
   const [moviesCarouselSlides, setMoviesCarouselSlides] = useState([]);
   const [upcomingMatches, setUpcomingMatches] = useState([]);
@@ -162,7 +164,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     try {
       const [channels, notifications, footballSlides, moviesSlides, matches] = await Promise.all([
         adminChannelsAPI.getChannels(),
-        adminNotificationsAPI.getNotifications(),
+        adminNotificationsAPI.getNotifications(100),
         adminCarouselAPI.getSlides('football'),
         adminCarouselAPI.getSlides('movies'),
         adminMatchesAPI.getMatches(),
@@ -200,7 +202,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
               month: 'short',
             })
           : '';
-      const recent = (notifications || []).slice(0, 15).map((n) => {
+      const mapped = (notifications || []).map((n) => {
         const isScheduled = n.type === 'scheduled' && n.scheduled_for && !n.sent_at;
         return {
           title: n.title,
@@ -222,10 +224,12 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
               : n.category === 'movies'
               ? '#7c3aed'
               : '#3b82f6',
+          isScheduled,
         };
       });
-
-      setRecentNotifications(recent);
+      const sentOnly = mapped.filter((n) => !n.isScheduled);
+      setRecentNotifications(sentOnly.slice(0, 5));
+      setAllNotifications(mapped);
 
       const mapSlides = (slides) =>
         (slides || [])
@@ -704,7 +708,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         </View>
       </View>
 
-      {/* Recent Notifications */}
+      {/* Recent Notifications (last 5 sent only) */}
       <View style={styles.activityCard}>
         <Text style={styles.activityTitle}>Recent Notifications</Text>
         <View style={styles.activityList}>
@@ -720,7 +724,62 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
             </View>
           ))}
         </View>
+        <TouchableOpacity
+          style={styles.viewAllNotificationsButton}
+          onPress={() => setNotificationsHistoryVisible(true)}
+          activeOpacity={0.8}>
+          <Text style={styles.viewAllNotificationsButtonText}>View all</Text>
+          <Icon name="chevron-right" size={18} color="#a855f7" />
+        </TouchableOpacity>
       </View>
+
+      {/* Notifications History Modal */}
+      <Modal
+        visible={notificationsHistoryVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setNotificationsHistoryVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalHeaderLeft}>
+                <View style={styles.modalHeaderIconWrap}>
+                  <Icon name="bell" size={22} color="#a78bfa" />
+                </View>
+                <View>
+                  <Text style={styles.modalTitle}>Notifications history</Text>
+                  <Text style={styles.modalSubtitle}>All sent and scheduled notifications</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => setNotificationsHistoryVisible(false)}
+                style={styles.modalCloseButton}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                <Icon name="close" size={24} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              <View style={styles.activityList}>
+                {allNotifications.length === 0 ? (
+                  <Text style={styles.notificationsHistoryEmpty}>No notifications yet</Text>
+                ) : (
+                  allNotifications.map((notification, index) => (
+                    <View key={index} style={styles.activityItem}>
+                      <View style={[styles.activityDot, { backgroundColor: notification.color }]} />
+                      <View style={styles.activityContent}>
+                        <Text style={styles.activityItemTitle}>{notification.title}</Text>
+                        <Text style={styles.activityDescription}>{notification.description}</Text>
+                        <Text style={styles.activityClicks}>{notification.clicks}</Text>
+                      </View>
+                      <Text style={styles.activityTime}>{notification.time}</Text>
+                    </View>
+                  ))
+                )}
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* Carousel Slide Modal */}
       <Modal
@@ -1583,6 +1642,29 @@ const styles = StyleSheet.create({
   activityTime: {
     fontSize: 11,
     color: '#6b7280',
+  },
+  viewAllNotificationsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.4)',
+    borderRadius: 12,
+    backgroundColor: 'rgba(168, 85, 247, 0.08)',
+  },
+  viewAllNotificationsButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#a855f7',
+  },
+  notificationsHistoryEmpty: {
+    fontSize: 15,
+    color: '#9ca3af',
+    textAlign: 'center',
+    paddingVertical: 24,
   },
   loadingContainer: {
     flex: 1,

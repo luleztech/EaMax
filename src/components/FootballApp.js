@@ -154,23 +154,45 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
-  // Handle channel click: premium = play; 0 points = free play; toggle ON = payment; else show unlock choice modal
+  // Fetch stream URL from backend (admin) for the clicked channel, then open player for fast play
+  const openPlayerWithChannel = (channel, streamUrl) => {
+    const ch = { ...channel, streamUrl: streamUrl || channel.streamUrl };
+    setPlayingChannel(ch);
+    setVideoPlayerVisible(true);
+  };
+
+  // Fetch latest stream URL from backend (admin) and update player if URL changed (no block – play faster)
+  const fetchAndUpdateStreamUrl = (channel) => {
+    if (!channel || !channel.id) return;
+    channelsAPI
+      .getChannel(channel.id)
+      .then((data) => {
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel((prev) =>
+            prev && prev.id === channel.id && prev.streamUrl !== url ? { ...prev, streamUrl: url } : prev
+          );
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Handle channel click: fetch URL from admin app, then play (open immediately when we have URL for speed)
   const handleChannelClick = async (channel) => {
-    if (!channel.streamUrl) {
-      console.log('No stream URL available for this channel');
-      return;
-    }
-
-    if (isPremium) {
-      setPlayingChannel(channel);
-      setVideoPlayerVisible(true);
-      return;
-    }
-
     const pointsRequired = channel.pointsRequired ?? 0;
-    if (pointsRequired === 0) {
-      setPlayingChannel(channel);
-      setVideoPlayerVisible(true);
+
+    const canPlay = isPremium || pointsRequired === 0;
+    if (canPlay) {
+      if (channel.streamUrl) {
+        openPlayerWithChannel(channel, channel.streamUrl);
+        fetchAndUpdateStreamUrl(channel);
+      } else {
+        try {
+          const data = await channelsAPI.getChannel(channel.id);
+          const url = data.streamUrl || data.stream_url;
+          if (url) openPlayerWithChannel(channel, url);
+        } catch (_) {}
+      }
       return;
     }
 
@@ -192,9 +214,10 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
       await refreshUserPoints();
       if (onPointsRefresh) await onPointsRefresh();
       setChannelUnlockModalVisible(false);
-      setPlayingChannel(selectedChannel);
-      setVideoPlayerVisible(true);
+      const ch = selectedChannel;
       setSelectedChannel(null);
+      openPlayerWithChannel(ch, ch.streamUrl);
+      fetchAndUpdateStreamUrl(ch);
     } catch (error) {
       console.error('Failed to unlock channel:', error);
       setInsufficientPointsModalVisible(true);

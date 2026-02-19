@@ -24,12 +24,24 @@ const formatDisplayDate = (yyyyMmDd) => {
   return d2.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 };
 
-const formatDisplayTime = (hhMm) => {
-  if (!hhMm || !/^\d{1,2}:\d{2}$/.test(hhMm)) return null;
-  const [h, min] = hhMm.split(':').map(Number);
-  const h12 = h % 12 || 12;
-  const ampm = h < 12 ? 'AM' : 'PM';
-  return `${h12}:${String(min).padStart(2, '0')} ${ampm}`;
+// Normalize 24h time to HH:MM (e.g. "9:30" -> "09:30")
+const normalizeTime24 = (raw) => {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return trimmed;
+  const h = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const m = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+};
+
+// Validate 24h time string (HH:MM or H:MM)
+const isValidTime24 = (value) => {
+  if (!value || typeof value !== 'string') return false;
+  const normalized = normalizeTime24(value);
+  if (normalized.length !== 5) return false;
+  const [h, m] = normalized.split(':').map(Number);
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
 };
 
 // Build calendar grid for a month: { value: 'YYYY-MM-DD', label: day number, isPast }
@@ -49,21 +61,6 @@ const getCalendarDays = (year, month) => {
   return days;
 };
 
-// Time options: 30-min steps 06:00 - 23:30
-const getTimeOptions = () => {
-  const options = [];
-  for (let h = 6; h <= 23; h++) {
-    for (const m of [0, 30]) {
-      if (h === 23 && m === 30) break;
-      options.push({ value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` });
-    }
-  }
-  options.push({ value: '23:30' });
-  return options;
-};
-
-const timeOptions = getTimeOptions();
-
 const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
   const [category, setCategory] = useState(''); // 'kabumbu' or 'movies'
@@ -72,7 +69,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [scheduledDate, setScheduledDate] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [showTimePicker, setShowTimePicker] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
   const [loading, setLoading] = useState(false);
@@ -99,14 +95,20 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       return;
     }
     if (notificationType === 'scheduled' && (!scheduledDate || !scheduledTime)) {
-      setStatusMessage({ type: 'error', text: 'Please select date and time for scheduled notification' });
+      setStatusMessage({ type: 'error', text: 'Please select date and enter time (24h, e.g. 20:15)' });
+      setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
+      return;
+    }
+    if (notificationType === 'scheduled' && scheduledTime && !isValidTime24(scheduledTime)) {
+      setStatusMessage({ type: 'error', text: 'Invalid time. Use 24h format, e.g. 20:15' });
       setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
       return;
     }
 
     if (notificationType === 'scheduled' && scheduledDate && scheduledTime) {
       const [y, mo, d] = scheduledDate.split('-').map(Number);
-      const [h, min] = scheduledTime.split(':').map(Number);
+      const timeNorm = normalizeTime24(scheduledTime);
+      const [h, min] = timeNorm.split(':').map(Number);
       const scheduledAt = new Date(y, mo - 1, d, h, min, 0);
       if (scheduledAt <= new Date()) {
         setStatusMessage({ type: 'error', text: 'Please select a future date and time' });
@@ -119,13 +121,17 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
     setStatusMessage({ type: null, text: '' });
 
     try {
-      // Format scheduled date/time if scheduled
+      // Format scheduled date/time if scheduled (24h, with device timezone so stored time matches what admin entered)
       let scheduledFor = null;
       if (notificationType === 'scheduled' && scheduledDate && scheduledTime) {
-        // Format: YYYY-MM-DDTHH:MM:SS (ISO format)
+        const timeNorm = normalizeTime24(scheduledTime);
         const [year, month, day] = scheduledDate.split('-');
-        const [hour, minute] = scheduledTime.split(':');
-        scheduledFor = `${year}-${month}-${day}T${hour}:${minute}:00`;
+        const [hour, minute] = timeNorm.split(':');
+        const offsetMin = -new Date().getTimezoneOffset();
+        const sign = offsetMin >= 0 ? '+' : '-';
+        const absMin = Math.abs(offsetMin);
+        const offsetStr = `${sign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`;
+        scheduledFor = `${year}-${month}-${day}T${hour}:${minute}:00${offsetStr}`;
       }
 
       const notificationData = {
@@ -153,7 +159,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         setScheduledDate('');
         setScheduledTime('');
         setShowDatePicker(false);
-        setShowTimePicker(false);
         setCategory('');
         setNotificationType('normal');
         setStatusMessage({ type: null, text: '' });
@@ -355,7 +360,7 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
           {notificationType === 'scheduled' && (
             <View style={styles.section}>
               <Text style={styles.scheduleSectionTitle}>Schedule for</Text>
-              <Text style={styles.scheduleSectionSubtitle}>Pick date from calendar and time below</Text>
+              <Text style={styles.scheduleSectionSubtitle}>Pick date from calendar; enter time in 24h (e.g. 20:15)</Text>
               <View style={styles.scheduleCard}>
                 <TouchableOpacity
                   style={styles.scheduleRow}
@@ -378,21 +383,23 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                   <Icon name="chevron-right" size={24} color="#6b7280" />
                 </TouchableOpacity>
                 <View style={styles.scheduleDivider} />
-                <TouchableOpacity
-                  style={styles.scheduleRow}
-                  onPress={() => setShowTimePicker(true)}
-                  activeOpacity={0.7}>
+                <View style={styles.scheduleRow}>
                   <View style={styles.scheduleIconWrap}>
                     <Icon name="clock-outline" size={24} color="#a855f7" />
                   </View>
-                  <View style={styles.scheduleRowTextWrap}>
-                    <Text style={styles.scheduleRowLabel}>Time</Text>
-                    <Text style={scheduledTime ? styles.scheduleRowValue : styles.scheduleRowPlaceholder}>
-                      {formatDisplayTime(scheduledTime) || 'Tap to pick time'}
-                    </Text>
+                  <View style={[styles.scheduleRowTextWrap, styles.scheduleTimeInputWrap]}>
+                    <Text style={styles.scheduleRowLabel}>Time (24h)</Text>
+                    <TextInput
+                      style={styles.scheduleTimeInput}
+                      placeholder="e.g. 20:15"
+                      placeholderTextColor="#6b7280"
+                      value={scheduledTime}
+                      onChangeText={setScheduledTime}
+                      keyboardType="numbers-and-punctuation"
+                      maxLength={5}
+                    />
                   </View>
-                  <Icon name="chevron-right" size={24} color="#6b7280" />
-                </TouchableOpacity>
+                </View>
               </View>
 
               <Modal visible={showDatePicker} transparent animationType="fade">
@@ -459,35 +466,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                       )}
                     </View>
                     <TouchableOpacity style={styles.pickerCancel} onPress={() => setShowDatePicker(false)}>
-                      <Text style={styles.pickerCancelText}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-              </Modal>
-
-              <Modal visible={showTimePicker} transparent animationType="fade">
-                <TouchableOpacity
-                  style={styles.pickerOverlay}
-                  activeOpacity={1}
-                  onPress={() => setShowTimePicker(false)}>
-                  <View style={styles.pickerCard} onStartShouldSetResponder={() => true}>
-                    <Text style={styles.pickerTitle}>Select time</Text>
-                    <ScrollView style={styles.pickerScroll} showsVerticalScrollIndicator={false}>
-                      {timeOptions.map((opt) => (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.pickerOption, scheduledTime === opt.value && styles.pickerOptionActive]}
-                          onPress={() => {
-                            setScheduledTime(opt.value);
-                            setShowTimePicker(false);
-                          }}>
-                          <Text style={[styles.pickerOptionText, scheduledTime === opt.value && styles.pickerOptionTextActive]}>
-                            {formatDisplayTime(opt.value)}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                    <TouchableOpacity style={styles.pickerCancel} onPress={() => setShowTimePicker(false)}>
                       <Text style={styles.pickerCancelText}>Close</Text>
                     </TouchableOpacity>
                   </View>
@@ -721,6 +699,18 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: '#374151',
     marginLeft: 74,
+  },
+  scheduleTimeInputWrap: {
+    flex: 1,
+  },
+  scheduleTimeInput: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    marginTop: 2,
+    minHeight: 28,
   },
   pickerOverlay: {
     flex: 1,

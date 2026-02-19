@@ -250,7 +250,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
             <>
               <View style={styles.sectionHeader}>
                 <Icon name="clock-outline" size={20} color={accentColor} />
-                <Text style={styles.sectionTitle}>Muda Ulio Baki</Text>
+                <Text style={styles.sectionTitle}>Muda uliobaki ni</Text>
               </View>
               <View style={styles.countdownContainer}>
                 <View style={styles.countdownItem}>
@@ -275,7 +275,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
               </View>
               <View style={styles.countdownTextContainer}>
                 <Text style={styles.countdownText}>
-                  Umebakiwa na siku {timeRemaining.days}, masaa {timeRemaining.hours}, dakika {timeRemaining.minutes} na sekunde {timeRemaining.seconds}
+                 Muda wa matumizi ulio salia kwa mteja wa malipo
                 </Text>
                 {subscriptionEndDate && (
                   <Text style={[styles.countdownText, styles.expiresOnText]}>
