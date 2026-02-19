@@ -89,6 +89,8 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   const [slideInfoIcon, setSlideInfoIcon] = useState('clockcircleo');
   const [slideSortOrder, setSlideSortOrder] = useState('0');
   const [savingSlide, setSavingSlide] = useState(false);
+  const [deleteConfirmSlide, setDeleteConfirmSlide] = useState(null);
+  const [deletingSlide, setDeletingSlide] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
@@ -995,6 +997,42 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           </View>
         </View>
       </Modal>
+      {/* Delete Carousel Slide Confirmation Modal */}
+      <Modal
+        visible={!!deleteConfirmSlide}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !deletingSlide && setDeleteConfirmSlide(null)}>
+        <View style={styles.deleteConfirmOverlay}>
+          <View style={styles.deleteConfirmCard}>
+            <View style={styles.deleteConfirmIconWrap}>
+              <Icon name="delete-alert" size={40} color="#fef2f2" />
+            </View>
+            <Text style={styles.deleteConfirmTitle}>Delete carousel slide?</Text>
+            <Text style={styles.deleteConfirmMessage}>
+              This will permanently remove "{deleteConfirmSlide?.title || 'this slide'}" from the carousel. This action cannot be undone.
+            </Text>
+            <View style={styles.deleteConfirmActionsRow}>
+              <TouchableOpacity
+                style={styles.deleteConfirmCancel}
+                onPress={() => setDeleteConfirmSlide(null)}
+                disabled={deletingSlide}>
+                <Text style={styles.deleteConfirmCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.deleteConfirmDelete, deletingSlide && styles.deleteConfirmDeleteDisabled]}
+                onPress={() => deleteConfirmSlide && handleDeleteSlide(deleteConfirmSlide.id)}
+                disabled={deletingSlide}>
+                <Icon name="delete" size={18} color="#fff" />
+                <Text style={styles.deleteConfirmDeleteText}>
+                  {deletingSlide ? 'Deleting...' : 'Delete'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Status Modal */}
       <Modal
         visible={statusModalVisible}
@@ -1374,6 +1412,90 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 13,
+  },
+  deleteConfirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  deleteConfirmCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    padding: 28,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  deleteConfirmIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  deleteConfirmTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  deleteConfirmMessage: {
+    fontSize: 15,
+    color: '#cbd5e1',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 24,
+    paddingHorizontal: 8,
+  },
+  deleteConfirmActionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+    justifyContent: 'flex-end',
+  },
+  deleteConfirmCancel: {
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: 'rgba(71, 85, 105, 0.6)',
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  deleteConfirmCancelText: {
+    color: '#e2e8f0',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  deleteConfirmDelete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: '#dc2626',
+    borderWidth: 1,
+    borderColor: '#b91c1c',
+  },
+  deleteConfirmDeleteDisabled: {
+    opacity: 0.7,
+  },
+  deleteConfirmDeleteText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
   },
   topContentList: {
     gap: 16,

@@ -236,38 +236,40 @@ router.get('/channels', async (req, res, next) => {
 });
 
 router.post('/channels', async (req, res, next) => {
-  try {
-    const bodySchema = z.object({
-      name: z.string().min(1),
-      category: z.enum(['football', 'movies', 'habari']),
-      streamUrl: z.string().url(),
-      thumbnailUrl: z.string().url().optional(),
-      thumbnailEmoji: z.string().max(8).optional(),
-      color: z.string().max(16).optional(),
-      isActive: z.boolean().optional().default(true),
-      drmProtected: z.boolean().optional().default(false),
-      ownerUserId: z.number().int().optional(),
-    });
+    try {
+      const bodySchema = z.object({
+        name: z.string().min(1),
+        category: z.enum(['football', 'movies', 'habari']),
+        streamUrl: z.string().url(),
+        thumbnailUrl: z.string().url().optional(),
+        thumbnailEmoji: z.string().max(8).optional(),
+        color: z.string().max(16).optional(),
+        isActive: z.boolean().optional().default(true),
+        drmProtected: z.boolean().optional().default(false),
+        ownerUserId: z.number().int().optional(),
+        pointsRequired: z.coerce.number().int().min(0).optional().default(0),
+      });
 
-    const data = bodySchema.parse(req.body);
+      const data = bodySchema.parse(req.body);
 
-    const result = await query(
-      `INSERT INTO channels
-         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, owner_user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      const result = await query(
+        `INSERT INTO channels
+         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, owner_user_id, points_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING *`,
-      [
-        data.name,
-        data.category,
-        data.streamUrl,
-        data.thumbnailUrl || null,
-        data.thumbnailEmoji || null,
-        data.color || null,
-        data.isActive,
-        data.drmProtected,
-        data.ownerUserId || null,
-      ],
-    );
+        [
+          data.name,
+          data.category,
+          data.streamUrl,
+          data.thumbnailUrl || null,
+          data.thumbnailEmoji || null,
+          data.color || null,
+          data.isActive,
+          data.drmProtected,
+          data.ownerUserId || null,
+          data.pointsRequired ?? 0,
+        ],
+      );
 
     return res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -289,6 +291,7 @@ router.put('/channels/:id', async (req, res, next) => {
       color: z.string().max(16).optional(),
       isActive: z.boolean().optional(),
       drmProtected: z.boolean().optional(),
+      pointsRequired: z.coerce.number().int().min(0).optional(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -298,7 +301,7 @@ router.put('/channels/:id', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
-    Object.entries({
+    const updates = {
       name: data.name,
       category: data.category,
       stream_url: data.streamUrl,
@@ -307,7 +310,9 @@ router.put('/channels/:id', async (req, res, next) => {
       color: data.color,
       is_active: data.isActive,
       drm_protected: data.drmProtected,
-    }).forEach(([key, value]) => {
+      points_required: data.pointsRequired,
+    };
+    Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) {
         fields.push(`${key} = $${idx}`);
         values.push(value);

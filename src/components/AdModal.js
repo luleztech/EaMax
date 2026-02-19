@@ -11,13 +11,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { userAPI } from '../config/api';
 
-let REWARDED_AD_UNIT_ID = 'ca-app-pub-3940256099942544/5224354917';
+let REWARDED_AD_UNIT_ID = null;
 try {
   const adsConfig = require('../config/ads');
   if (adsConfig.REWARDED_AD_UNIT_ID) REWARDED_AD_UNIT_ID = adsConfig.REWARDED_AD_UNIT_ID;
-} catch (e) {
-  // use default test ID
-}
+} catch (e) {}
 
 const POINTS_PER_REWARD = 20;
 
@@ -45,7 +43,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
     earnedRewardRef.current = false;
     setPointsEarned(POINTS_PER_REWARD);
 
-    if (!RewardedAdModule || !RewardedAdEventType) {
+    const showFallbackAndComplete = () => {
       setStatus('fallback');
       const t = setTimeout(async () => {
         try {
@@ -61,46 +59,67 @@ const AdModal = ({ visible, onClose, onComplete }) => {
         setStatus('rewarded');
       }, 3000);
       return () => clearTimeout(t);
+    };
+
+    if (!RewardedAdModule || !RewardedAdEventType) {
+      showFallbackAndComplete();
+      return;
     }
 
-    const unitId = REWARDED_AD_UNIT_ID || (TestIds && TestIds.REWARDED) || 'ca-app-pub-3940256099942544/5224354917';
-    const rewarded = RewardedAdModule.createForAdRequest(unitId, {
-      requestNonPersonalizedAdsOnly: false,
-    });
+    let unsubLoaded, unsubEarned, unsubClosed, unsubError;
+    try {
+      const unitId = REWARDED_AD_UNIT_ID || 'ca-app-pub-5619803043988422/7188294959';
+      const rewarded = RewardedAdModule.createForAdRequest(unitId, {
+        requestNonPersonalizedAdsOnly: false,
+      });
 
-    const unsubLoaded = rewarded.addAdEventListener(RewardedAdEventType.LOADED, () => {
-      setStatus('showing');
-      rewarded.show();
-    });
+      unsubLoaded = rewarded.addAdEventListener(RewardedAdEventType.LOADED, () => {
+        try {
+          setStatus('showing');
+          rewarded.show();
+        } catch (e) {
+          console.warn('Rewarded ad show error:', e);
+          setStatus('error');
+        }
+      });
 
-    const unsubEarned = rewarded.addAdEventListener(RewardedAdEventType.EARNED_REWARD, (reward) => {
-      earnedRewardRef.current = true;
-      recordAdWatchedAndComplete();
-    });
+      unsubEarned = rewarded.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
+        earnedRewardRef.current = true;
+        recordAdWatchedAndComplete();
+      });
 
-    const unsubClosed = rewarded.addAdEventListener(RewardedAdEventType.CLOSED, () => {
-      if (earnedRewardRef.current) {
-        setStatus('rewarded');
-      } else {
-        setStatus('closed');
-        setTimeout(() => onClose && onClose(), 0);
-      }
-    });
+      unsubClosed = rewarded.addAdEventListener(RewardedAdEventType.CLOSED, () => {
+        if (earnedRewardRef.current) {
+          setStatus('rewarded');
+        } else {
+          setStatus('closed');
+          setTimeout(() => onClose && onClose(), 0);
+        }
+      });
 
-    const unsubError = rewarded.addAdEventListener(RewardedAdEventType.ERROR, (err) => {
-      console.warn('Rewarded ad error:', err);
-      setStatus('error');
-    });
+      unsubError = rewarded.addAdEventListener(RewardedAdEventType.ERROR, (err) => {
+        console.warn('Rewarded ad error:', err);
+        setStatus('error');
+      });
 
-    rewardedAdRef.current = rewarded;
-    setStatus('loading');
-    rewarded.load();
+      rewardedAdRef.current = rewarded;
+      setStatus('loading');
+      rewarded.load();
+    } catch (e) {
+      console.warn('AdModal setup error:', e);
+      showFallbackAndComplete();
+      return;
+    }
 
     return () => {
-      unsubLoaded && unsubLoaded();
-      unsubEarned && unsubEarned();
-      unsubClosed && unsubClosed();
-      unsubError && unsubError();
+      try {
+        if (typeof unsubLoaded === 'function') unsubLoaded();
+        if (typeof unsubEarned === 'function') unsubEarned();
+        if (typeof unsubClosed === 'function') unsubClosed();
+        if (typeof unsubError === 'function') unsubError();
+      } catch (e) {
+        console.warn('AdModal cleanup:', e);
+      }
     };
   }, [visible]);
 

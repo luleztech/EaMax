@@ -23,7 +23,15 @@ router.get('/', async (req, res, next) => {
     sql += ' ORDER BY created_at DESC';
 
     const result = await query(sql, params);
-    return res.json(result.rows);
+    const rows = (result.rows || []).map((row) => {
+      const pts = row.points_required != null ? Number(row.points_required) : 0;
+      return {
+        ...row,
+        points_required: pts,
+        pointsRequired: Number.isNaN(pts) ? 0 : pts,
+      };
+    });
+    return res.json(rows);
   } catch (err) {
     return next(err);
   }

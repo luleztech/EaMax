@@ -36,6 +36,14 @@ Example using `psql`:
 psql "$DATABASE_URL" -f sql/schema.sql
 ```
 
+**If channel "points required" don't save (e.g. on an existing Railway DB):** the `channels` table may be missing the `points_required` column. Run:
+
+```bash
+psql "$DATABASE_URL" -f sql/migration_add_points_required.sql
+```
+
+On Railway: open your PostgreSQL service → **Data** / **Query** (or connect with `psql` using the connection string from Variables), then run the contents of `sql/migration_add_points_required.sql`.
+
 ### 4. Run the backend locally
 
 ```bash

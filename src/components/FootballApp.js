@@ -18,6 +18,7 @@ import { settingsAPI, channelsAPI, matchesAPI, userAPI } from '../config/api';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
+import ChannelUnlockModal from './ChannelUnlockModal';
 import VideoPlayer from './VideoPlayer';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -30,6 +31,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
   const [footballChannels, setFootballChannels] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [insufficientPointsModalVisible, setInsufficientPointsModalVisible] = useState(false);
+  const [channelUnlockModalVisible, setChannelUnlockModalVisible] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState(null);
   const [currentUserPoints, setCurrentUserPoints] = useState(userPoints);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
@@ -98,24 +100,28 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
   const loadFootballChannels = async () => {
     try {
       const data = await channelsAPI.getChannels('football');
-      const mapped = (data || []).map((ch) => ({
-        id: ch.id,
-        name: ch.name,
-        icon:
-          ch.category === 'football'
-            ? 'soccer'
-            : ch.category === 'movies'
-            ? 'movie'
-            : 'television',
-        color: ch.color || '#22c55e',
-        currentShow: ch.stream_url ? 'Live Channel' : 'Football Channel',
-        isLive: ch.is_active,
-        category: ch.category || 'Football',
-        pointsRequired: ch.points_required || 0,
-        streamUrl: ch.stream_url,
-        thumbnailUrl: ch.thumbnail_url,
-        thumbnailEmoji: ch.thumbnail_emoji,
-      }));
+      const mapped = (data || []).map((ch) => {
+        const raw = ch.pointsRequired ?? ch.points_required ?? 0;
+        const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;
+        return {
+          id: ch.id,
+          name: ch.name,
+          icon:
+            ch.category === 'football'
+              ? 'soccer'
+              : ch.category === 'movies'
+              ? 'movie'
+              : 'television',
+          color: ch.color || '#22c55e',
+          currentShow: ch.stream_url ? 'Live Channel' : 'Football Channel',
+          isLive: ch.is_active,
+          category: ch.category || 'Football',
+          pointsRequired,
+          streamUrl: ch.stream_url,
+          thumbnailUrl: ch.thumbnail_url,
+          thumbnailEmoji: ch.thumbnail_emoji,
+        };
+      });
       setFootballChannels(mapped);
     } catch (error) {
       console.error('Failed to load football channels:', error);
@@ -139,7 +145,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
     return currentUserPoints;
   };
 
-  // Handle channel click: real premium = free; toggle ON = direct to payment; toggle OFF = points per view (every time)
+  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
+  const getChannelBadgeText = (pointsRequired, withPts = false) => {
+    if (isPremium) return 'Unlocked';
+    if (premiumToggleOn) return 'Premium';
+    const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
+    if (pts <= 0) return 'Bure';
+    return withPts ? `${pts} pts` : `${pts}`;
+  };
+
+  // Handle channel click: premium = play; 0 points = free play; toggle ON = payment; else show unlock choice modal
   const handleChannelClick = async (channel) => {
     if (!channel.streamUrl) {
       console.log('No stream URL available for this channel');
@@ -152,39 +167,37 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
       return;
     }
 
+    const pointsRequired = channel.pointsRequired ?? 0;
+    if (pointsRequired === 0) {
+      setPlayingChannel(channel);
+      setVideoPlayerVisible(true);
+      return;
+    }
+
     if (premiumToggleOn) {
       handleGoPremium();
       return;
     }
 
-    const pointsRequired = channel.pointsRequired || 0;
-    if (pointsRequired === 0) {
-      handleGoPremium();
-      return;
-    }
-    if (currentUserPoints < pointsRequired) {
-      setSelectedChannel(channel);
-      setInsufficientPointsModalVisible(true);
-      return;
-    }
+    setSelectedChannel(channel);
+    setChannelUnlockModalVisible(true);
+  };
 
+  const handleUnlockFromModal = async () => {
+    if (!selectedChannel) return;
     try {
       const currentUserId = userId || await AsyncStorage.getItem('userId');
-      if (!currentUserId) {
-        console.error('User ID not found');
-        return;
-      }
-      await userAPI.unlockChannel(currentUserId, channel.id);
+      if (!currentUserId) return;
+      await userAPI.unlockChannel(currentUserId, selectedChannel.id);
       await refreshUserPoints();
       if (onPointsRefresh) await onPointsRefresh();
-      setPlayingChannel(channel);
+      setChannelUnlockModalVisible(false);
+      setPlayingChannel(selectedChannel);
       setVideoPlayerVisible(true);
+      setSelectedChannel(null);
     } catch (error) {
       console.error('Failed to unlock channel:', error);
-      if (error?.message?.includes('Insufficient') || error?.pointsRequired != null) {
-        setSelectedChannel(channel);
-        setInsufficientPointsModalVisible(true);
-      }
+      setInsufficientPointsModalVisible(true);
     }
   };
 
@@ -276,6 +289,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
       ) : activeTab === 'channels' ? (
         <ScrollView 
           style={styles.scrollView} 
+          contentContainerStyle={styles.scrollContentContainer}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -318,14 +332,12 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                                 <Text style={styles.channelLiveText}>LIVE</Text>
                               </View>
                             )}
-                            {!isPremium && (
-                              <View style={styles.channelPointsBadgeTop}>
-                                <AntDesign name="star" size={14} color="#fbbf24" />
+                            <View style={styles.channelPointsBadgeTop}>
+                                <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                 <Text style={styles.channelPointsTextTop}>
-                                  {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                  {getChannelBadgeText(channel.pointsRequired)}
                                 </Text>
                               </View>
-                            )}
                           </View>
                           <View style={styles.channelContent}>
                             <Text style={styles.channelName}>{channel.name}</Text>
@@ -376,14 +388,12 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                               {channel.category}
                             </Text>
                           </View>
-                          {!isPremium && (
-                            <View style={styles.channelPointsBadge}>
-                              <AntDesign name="star" size={12} color="#fbbf24" />
+                          <View style={styles.channelPointsBadge}>
+                              <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                               <Text style={styles.channelPointsText}>
-                                {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
+                                {getChannelBadgeText(channel.pointsRequired, true)}
                               </Text>
                             </View>
-                          )}
                         </View>
                         <TouchableOpacity
                           style={[
@@ -454,14 +464,12 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                                 <Text style={styles.channelLiveText}>LIVE</Text>
                               </View>
                             )}
-                            {!isPremium && (
-                              <View style={styles.channelPointsBadgeTop}>
-                                <AntDesign name="star" size={14} color="#fbbf24" />
-                                <Text style={styles.channelPointsTextTop}>
-                                  {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
-                                </Text>
-                              </View>
-                            )}
+                            <View style={styles.channelPointsBadgeTop}>
+                              <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                              <Text style={styles.channelPointsTextTop}>
+                                {getChannelBadgeText(channel.pointsRequired)}
+                              </Text>
+                            </View>
                           </View>
                           <View style={styles.channelContent}>
                             <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
@@ -489,26 +497,22 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                               <Icon name={channel.icon || 'soccer'} size={32} color={channel.color || '#22c55e'} />
                             )}
                           </View>
-                          {!isPremium && (
-                            <View style={styles.channelPointsBadgeTop}>
-                              <AntDesign name="star" size={14} color="#fbbf24" />
+                          <View style={styles.channelPointsBadgeTop}>
+                              <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                               <Text style={styles.channelPointsTextTop}>
-                                {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                {getChannelBadgeText(channel.pointsRequired)}
                               </Text>
                             </View>
-                          )}
                         </View>
                         <View style={styles.channelContent}>
                           <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
                           <Text style={styles.channelShow} numberOfLines={1}>{channel.currentShow}</Text>
-                          {!isPremium && (
-                            <View style={styles.channelPointsBadge}>
-                              <AntDesign name="star" size={12} color="#fbbf24" />
-                              <Text style={styles.channelPointsText}>
-                                {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
-                              </Text>
-                            </View>
-                          )}
+                          <View style={styles.channelPointsBadge}>
+                            <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                            <Text style={styles.channelPointsText}>
+                              {getChannelBadgeText(channel.pointsRequired, true)}
+                            </Text>
+                          </View>
                         </View>
                         <TouchableOpacity
                           style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
@@ -650,6 +654,21 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
         </TouchableOpacity>
       </View>
 
+      {/* Channel Unlock Choice Modal (non-premium) */}
+      <ChannelUnlockModal
+        visible={channelUnlockModalVisible}
+        onClose={() => {
+          setChannelUnlockModalVisible(false);
+          setSelectedChannel(null);
+        }}
+        channelName={selectedChannel?.name || ''}
+        pointsRequired={selectedChannel?.pointsRequired ?? 0}
+        currentPoints={currentUserPoints}
+        onUnlock={handleUnlockFromModal}
+        onWatchAd={onWatchAd}
+        onGoPremium={handleGoPremium}
+      />
+
       {/* Insufficient Points Modal */}
       <InsufficientPointsModal
         visible={insufficientPointsModalVisible}
@@ -765,6 +784,9 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+  },
+  scrollContentContainer: {
+    paddingBottom: 100,
   },
   heroContainer: {
     padding: 16,

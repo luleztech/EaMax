@@ -18,6 +18,7 @@ import ImageCarousel from './ImageCarousel';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
+import ChannelUnlockModal from './ChannelUnlockModal';
 import VideoPlayer from './VideoPlayer';
 import { settingsAPI, channelsAPI, userAPI } from '../config/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -30,6 +31,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
   const [carouselItems, setCarouselItems] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [insufficientPointsModalVisible, setInsufficientPointsModalVisible] = useState(false);
+  const [channelUnlockModalVisible, setChannelUnlockModalVisible] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState(null);
   const [currentUserPoints, setCurrentUserPoints] = useState(userPoints);
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
@@ -107,6 +109,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       (allChannels || []).forEach((ch) => {
         const category = ch.category?.toLowerCase();
         if (categories.includes(category) && ch.is_active) {
+          const raw = ch.pointsRequired ?? ch.points_required ?? 0;
+          const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;
           categorized[category].push({
             id: ch.id,
             name: ch.name,
@@ -115,7 +119,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
             thumbnailEmoji: ch.thumbnail_emoji,
             color: ch.color || '#7c3aed',
             category: ch.category,
-            pointsRequired: ch.points_required || 0,
+            pointsRequired,
           });
         }
       });
@@ -150,7 +154,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     return currentUserPoints;
   };
 
-  // Handle channel click: real premium = free; toggle ON = direct to payment; toggle OFF = points per view (every time)
+  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
+  const getChannelBadgeText = (pointsRequired, withPts = false) => {
+    if (isPremium) return 'Unlocked';
+    if (premiumToggleOn) return 'Premium';
+    const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
+    if (pts <= 0) return 'Bure';
+    return withPts ? `${pts} pts` : `${pts}`;
+  };
+
+  // Handle channel click: premium = play; 0 points = free play; toggle ON = payment; else show unlock choice modal
   const handleChannelClick = async (channel) => {
     if (!channel.streamUrl) {
       console.log('No stream URL available for this channel');
@@ -163,39 +176,37 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       return;
     }
 
+    const pointsRequired = channel.pointsRequired ?? 0;
+    if (pointsRequired === 0) {
+      setPlayingChannel(channel);
+      setVideoPlayerVisible(true);
+      return;
+    }
+
     if (premiumToggleOn) {
       handleGoPremium();
       return;
     }
 
-    const pointsRequired = channel.pointsRequired || 0;
-    if (pointsRequired === 0) {
-      handleGoPremium();
-      return;
-    }
-    if (currentUserPoints < pointsRequired) {
-      setSelectedChannel(channel);
-      setInsufficientPointsModalVisible(true);
-      return;
-    }
+    setSelectedChannel(channel);
+    setChannelUnlockModalVisible(true);
+  };
 
+  const handleUnlockFromModal = async () => {
+    if (!selectedChannel) return;
     try {
       const currentUserId = userId || await AsyncStorage.getItem('userId');
-      if (!currentUserId) {
-        console.error('User ID not found');
-        return;
-      }
-      await userAPI.unlockChannel(currentUserId, channel.id);
+      if (!currentUserId) return;
+      await userAPI.unlockChannel(currentUserId, selectedChannel.id);
       await refreshUserPoints();
       if (onPointsRefresh) await onPointsRefresh();
-      setPlayingChannel(channel);
+      setChannelUnlockModalVisible(false);
+      setPlayingChannel(selectedChannel);
       setVideoPlayerVisible(true);
+      setSelectedChannel(null);
     } catch (error) {
       console.error('Failed to unlock channel:', error);
-      if (error?.message?.includes('Insufficient') || error?.pointsRequired != null) {
-        setSelectedChannel(channel);
-        setInsufficientPointsModalVisible(true);
-      }
+      setInsufficientPointsModalVisible(true);
     }
   };
 
@@ -296,6 +307,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       ) : activeTab === 'search' ? (
         <ScrollView 
           style={styles.scrollView} 
+          contentContainerStyle={styles.scrollContentContainer}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -355,14 +367,12 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                 <View style={[styles.searchChannelColorOverlay, { backgroundColor: channelColor + '50' }]} />
                                 <View style={styles.searchChannelGradient}>
                                   <View style={styles.searchChannelHeader}>
-                                    {!isPremium && (
-                                      <View style={styles.searchChannelPointsBadgeTop}>
-                                        <AntDesign name="star" size={14} color="#fbbf24" />
+                                    <View style={styles.searchChannelPointsBadgeTop}>
+                                        <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                         <Text style={styles.searchChannelPointsTextTop}>
-                                          {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                          {getChannelBadgeText(channel.pointsRequired)}
                                         </Text>
                                       </View>
-                                    )}
                                   </View>
                                   <View style={styles.searchChannelContent}>
                                     <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
@@ -392,28 +402,24 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                       <Icon name={genre.icon} size={32} color={channelColor} />
                                     )}
                                   </View>
-                                  {!isPremium && (
-                                    <View style={styles.searchChannelPointsBadgeTop}>
-                                      <AntDesign name="star" size={14} color="#fbbf24" />
+                                  <View style={styles.searchChannelPointsBadgeTop}>
+                                      <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                       <Text style={styles.searchChannelPointsTextTop}>
-                                        {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                        {getChannelBadgeText(channel.pointsRequired)}
                                       </Text>
                                     </View>
-                                  )}
                                 </View>
                                 <View style={styles.searchChannelContent}>
                                   <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
                                   <Text style={styles.searchChannelShow} numberOfLines={1}>
                                     {channel.currentShow || channel.category || genre.name}
                                   </Text>
-                                  {!isPremium && (
-                                    <View style={styles.searchChannelPointsBadge}>
-                                      <AntDesign name="star" size={12} color="#fbbf24" />
-                                      <Text style={styles.searchChannelPointsText}>
-                                        {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
-                                      </Text>
-                                    </View>
-                                  )}
+                                  <View style={styles.searchChannelPointsBadge}>
+                                    <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                    <Text style={styles.searchChannelPointsText}>
+                                      {getChannelBadgeText(channel.pointsRequired, true)}
+                                    </Text>
+                                  </View>
                                 </View>
                                 <TouchableOpacity
                                   style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
@@ -484,14 +490,12 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                             ) : null}
                             <View style={styles.channelGradient}>
                               <View style={styles.channelHeader}>
-                                {!isPremium && (
-                                  <View style={styles.channelPointsBadgeTop}>
-                                    <AntDesign name="star" size={14} color="#fbbf24" />
+                                <View style={styles.channelPointsBadgeTop}>
+                                    <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.channelPointsTextTop}>
-                                      {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                      {getChannelBadgeText(channel.pointsRequired)}
                                     </Text>
                                   </View>
-                                )}
                               </View>
                               <View style={styles.channelContent}>
                                 <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
@@ -521,28 +525,24 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                   <Icon name={genre.icon} size={32} color={channelColor} />
                                 )}
                               </View>
-                              {!isPremium && (
-                                <View style={styles.channelPointsBadgeTop}>
-                                  <AntDesign name="star" size={14} color="#fbbf24" />
+                              <View style={styles.channelPointsBadgeTop}>
+                                  <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                   <Text style={styles.channelPointsTextTop}>
-                                    {channel.pointsRequired > 0 ? channel.pointsRequired : 'Premium'}
+                                    {getChannelBadgeText(channel.pointsRequired)}
                                   </Text>
                                 </View>
-                              )}
                             </View>
                             <View style={styles.channelContent}>
                               <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
                               <Text style={styles.channelShow} numberOfLines={1}>
                                 {channel.currentShow || channel.category || genre.name}
                               </Text>
-                              {!isPremium && (
-                                <View style={styles.channelPointsBadge}>
-                                  <AntDesign name="star" size={12} color="#fbbf24" />
-                                  <Text style={styles.channelPointsText}>
-                                    {channel.pointsRequired > 0 ? `${channel.pointsRequired} pts` : 'Premium'}
-                                  </Text>
-                                </View>
-                              )}
+                              <View style={styles.channelPointsBadge}>
+                                <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                <Text style={styles.channelPointsText}>
+                                  {getChannelBadgeText(channel.pointsRequired, true)}
+                                </Text>
+                              </View>
                             </View>
                             <TouchableOpacity
                               style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
@@ -629,6 +629,21 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Channel Unlock Choice Modal (non-premium) */}
+      <ChannelUnlockModal
+        visible={channelUnlockModalVisible}
+        onClose={() => {
+          setChannelUnlockModalVisible(false);
+          setSelectedChannel(null);
+        }}
+        channelName={selectedChannel?.name || ''}
+        pointsRequired={selectedChannel?.pointsRequired ?? 0}
+        currentPoints={currentUserPoints}
+        onUnlock={handleUnlockFromModal}
+        onWatchAd={onWatchAd}
+        onGoPremium={handleGoPremium}
+      />
 
       {/* Insufficient Points Modal */}
       <InsufficientPointsModal
@@ -937,6 +952,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9ca3af',
     textAlign: 'center',
+  },
+  scrollContentContainer: {
+    paddingBottom: 100,
   },
   bottomNav: {
     position: 'absolute',

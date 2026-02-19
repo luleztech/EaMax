@@ -86,32 +86,30 @@ If the Admin app shows an error when you tap **Send Now**:
 
 4. **EaAdmin API key:** The value in EaAdmin’s `X-Admin-Key` header must exactly match Railway’s `ADMIN_API_KEY`.
 
-### Notification Not Appearing
+### Notification Not Appearing (still not received)
 
-1. **Check FCM Token:**
-   ```bash
-   adb logcat | grep "FCM Token"
-   ```
-   - Should see a token string
-   - If not, check Firebase setup
+1. **Same Firebase project**
+   - Backend `FIREBASE_SERVICE_ACCOUNT_KEY` and the app’s `android/app/google-services.json` must be from the **same Firebase project**. If not, FCM tokens from the app are invalid for the backend and pushes never arrive.
+   - In Firebase Console → Project settings, confirm the Android app package name matches your app (e.g. `com.eamax`).
 
-2. **Check Backend Logs:**
-   - Check Railway logs for "Firebase Admin initialized successfully"
-   - Check for any errors when sending notification
+2. **Token in database**
+   - In Railway → Postgres → **Data** → `users` table, check that the test user’s row has **`fcm_token`** and **`fcm_token_updated_at`** filled (not NULL).
+   - If they are NULL, the app never registered the token. See step 3.
 
-3. **Check Device Settings:**
-   - Go to Settings → Apps → EaMax → Notifications
-   - Ensure notifications are enabled
-   - Check "Show on lock screen" if needed
+3. **App logs (logcat)**
+   - Run: `adb logcat | grep -E "FCM|notification|Notifee"`
+   - You should see: `[FCM] Token registered successfully with backend` (and earlier `FCM Token: ...`).
+   - If you see `[FCM] Register token failed:` or `Could not get FCM token`, fix that first (user not found, no permission, or wrong Firebase config).
+   - If you see `Notification permission not granted`, allow notifications in device Settings → Apps → EaMax → Notifications.
 
-4. **Check Do Not Disturb:**
-   - Ensure device is not in "Do Not Disturb" mode
-   - Check notification settings
+4. **Rebuild and reinstall the user app**
+   - After any change to `google-services.json`, notification code, or AndroidManifest, do a full rebuild and reinstall on the device, then open the app and allow notifications.
 
-5. **Verify Firebase Setup:**
-   - Check that `google-services.json` is in `android/app/`
-   - Verify `FIREBASE_SERVICE_ACCOUNT_KEY` is set in Railway
-   - Check Firebase Console → Cloud Messaging for sent notifications
+5. **Backend has tokens when sending**
+   - When you tap “Send Now”, the backend selects users where `fcm_token IS NOT NULL`. If all are NULL, no push is sent. Fix token registration (steps 2–3) first.
+
+6. **Device:** Settings → Apps → EaMax → Notifications enabled; not in Do Not Disturb.
+7. **Firebase:** Same project for app and backend; Cloud Messaging for delivery stats.
 
 ### Notification Appears But No Sound
 

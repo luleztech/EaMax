@@ -123,7 +123,8 @@ const ContentSection = () => {
       return;
     }
 
-    // Build payload without sending explicit nulls (backend treats missing fields as optional)
+    // Build payload – always include pointsRequired so backend saves it
+    const pointsNum = parseInt(String(pointsRequired).trim() || '0', 10);
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
@@ -131,7 +132,7 @@ const ContentSection = () => {
       color: selectedColor,
       isActive,
       drmProtected: drmProtector,
-      pointsRequired: parseInt(pointsRequired || '0', 10),
+      pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
     };
 
     if (!useEmoji && thumbnailUrl.trim()) {
@@ -315,7 +316,7 @@ const ContentSection = () => {
                         channel.owner_user_id ? String(channel.owner_user_id) : '',
                       );
                       setPointsRequired(
-                        channel.points_required ? String(channel.points_required) : '0',
+                        String(channel.points_required ?? channel.pointsRequired ?? 0),
                       );
                       setAddChannelModalVisible(true);
                     }}>
