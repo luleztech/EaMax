@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { RewardedAd, RewardedAdEventType, AdEventType } from 'react-native-google-mobile-ads';
 import { 
@@ -18,6 +17,7 @@ import {
   preloadRewardedAd 
 } from '../config/ads';
 import { userAPI } from '../config/api';
+import { getOrCreateUserId } from '../services/userId';
 
 // Helper function to get the correct ad unit ID
 const getRewardedUnitId = () => {
@@ -43,7 +43,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
 
   const recordAdWatchedAndComplete = useCallback(async () => {
     try {
-      const userId = await AsyncStorage.getItem('userId');
+      const userId = await getOrCreateUserId();
       if (userId) {
         console.log('[AdModal] Recording ad watch for user:', userId);
         const result = await userAPI.recordAdWatched(userId, POINTS_PER_REWARD);

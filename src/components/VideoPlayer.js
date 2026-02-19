@@ -34,13 +34,15 @@ const PlaybackState = {
 };
 
 // Stream format detection - matches ExoPlayerEngine.detectStreamFormat (DASH, HLS, PROGRESSIVE)
+// Default unknown URLs to HLS to avoid MEDIA_ELEMENT_ERROR when a manifest is loaded as progressive
 const detectStreamFormat = (url) => {
   if (!url || typeof url !== 'string') return 'PROGRESSIVE';
   const u = url.toLowerCase();
   if (u.includes('.mpd') || (u.includes('dash') && !u.includes('.m3u8')) || (u.includes('/manifest') && !u.includes('.m3u8'))) return 'DASH';
   if (u.includes('.m3u8') || u.includes('.m3u') || u.includes('hls') || u.includes('playlist.m3u')) return 'HLS';
-  if (u.includes('.mp4') || u.includes('.m4v') || u.includes('.webm') || u.includes('.mkv') || u.includes('.ts')) return 'PROGRESSIVE';
-  return 'PROGRESSIVE';
+  if (u.includes('.mp4') || u.includes('.m4v') || u.includes('.webm') || u.includes('.mkv')) return 'PROGRESSIVE';
+  if (u.includes('.ts') && !u.includes('m3u8') && !u.includes('playlist')) return 'PROGRESSIVE';
+  return 'HLS';
 };
 
 // User-Agent from WebViewEngine - matches stream provider expectations
@@ -66,6 +68,9 @@ const getErrorMessage = (codeOrMessage) => {
   if (msg.includes('not supported') || msg.includes('unsupported')) return 'This stream format is not supported on this device.';
   if (msg.includes('hls not supported')) return 'HLS playback is not supported in this browser.';
   if (msg.includes('dash not supported')) return 'DASH playback is not supported in this browser.';
+  if (msg.includes('media_element_error') || msg.includes('format error') || msg.includes('decode') || msg.includes('src_not_supported') || msg.includes('mediasource')) {
+    return 'This stream format or codec is not supported. Try another channel or update the stream URL in the admin app.';
+  }
   return msg ? `Playback error: ${codeOrMessage}` : 'Playback error. Please try again.';
 };
 
@@ -343,7 +348,15 @@ const VideoPlayer = ({
     video.addEventListener('play', function() { send({ type: 'play' }); });
     video.addEventListener('ended', function() { send({ type: 'ended' }); });
     video.addEventListener('error', function(e) {
-      var msg = (video.error && (video.error.message || video.error.code)) || 'Unknown error';
+      var msg = 'Unknown error';
+      if (video.error) {
+        var c = video.error.code;
+        if (c === 1) msg = 'MEDIA_ERR_ABORTED';
+        else if (c === 2) msg = 'MEDIA_ERR_NETWORK';
+        else if (c === 3) msg = 'MEDIA_ELEMENT_ERROR format error (decode)';
+        else if (c === 4) msg = 'MEDIA_ELEMENT_ERROR format error (not supported)';
+        else msg = video.error.message || ('MEDIA_ELEMENT_ERROR code ' + c);
+      }
       send({ type: 'error', message: msg });
     });
     playPauseBtn.addEventListener('click', function(e) {
@@ -503,29 +516,27 @@ const VideoPlayer = ({
       supportedOrientations={isFullscreen ? ['landscape'] : ['portrait']}
       statusBarTranslucent>
       <View style={styles.container}>
-        <View style={styles.topBar}>
-          <TouchableOpacity onPress={handleClose} style={styles.iconBtn} activeOpacity={0.7}>
-            <Icon name="arrow-left" size={26} color="#fff" />
-          </TouchableOpacity>
-          <Text style={styles.channelName} numberOfLines={1}>{channelName || 'Video'}</Text>
-          <TouchableOpacity
-            onPress={isFullscreen ? handleRestore : handleExpand}
-            style={styles.iconBtn}
-            activeOpacity={0.7}
-            accessibilityLabel={isFullscreen ? 'Restore to portrait' : 'Expand to landscape'}>
-            <Icon
-              name={isFullscreen ? 'fullscreen-exit' : 'fullscreen'}
-              size={24}
-              color="#fff"
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setShowQualityMenu(!showQualityMenu)}
-            style={styles.iconBtn}
-            activeOpacity={0.7}>
-            <Icon name="quality-high" size={24} color="#fff" />
-          </TouchableOpacity>
-        </View>
+        {!isFullscreen && (
+          <View style={styles.topBar}>
+            <TouchableOpacity onPress={handleClose} style={styles.iconBtn} activeOpacity={0.7}>
+              <Icon name="arrow-left" size={26} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.channelName} numberOfLines={1}>{channelName || 'Video'}</Text>
+            <TouchableOpacity
+              onPress={handleExpand}
+              style={styles.iconBtn}
+              activeOpacity={0.7}
+              accessibilityLabel="Expand to landscape">
+              <Icon name="fullscreen" size={24} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setShowQualityMenu(!showQualityMenu)}
+              style={styles.iconBtn}
+              activeOpacity={0.7}>
+              <Icon name="quality-high" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={styles.playerWrap}>
           {videoUrl ? (

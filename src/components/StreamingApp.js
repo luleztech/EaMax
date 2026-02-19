@@ -18,6 +18,7 @@ import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
 import { userAPI } from '../config/api';
+import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
   setupNotificationHandlers,
@@ -67,12 +68,24 @@ const StreamingApp = () => {
     return userPoints;
   };
 
+  // Ensure user ID exists and is registered as soon as app loads (home screen), so ads and points work before they open Profile
   useEffect(() => {
-    refreshUserPoints();
+    let cancelled = false;
+    (async () => {
+      try {
+        const userId = await getOrCreateUserId();
+        if (cancelled) return;
+        if (userId) {
+          await refreshUserPoints();
+        }
+      } catch (e) {
+        console.warn('App user init:', e?.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Register FCM token and set up notification handlers as soon as we have a user
-  // (so notifications work even if the user never opens Profile)
   useEffect(() => {
     let cancelled = false;
     (async () => {

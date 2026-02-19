@@ -14,6 +14,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { userAPI } from '../config/api';
+import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
   setupNotificationHandlers,
@@ -42,48 +43,20 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
   });
   const [subscriptionEndDate, setSubscriptionEndDate] = useState(null);
 
-  // Generate unique user ID
-  const generateUserId = () => {
-    const prefix = 'User-';
-    const randomChars = 'ABCDEF0123456789';
-    let randomPart = '';
-    for (let i = 0; i < 5; i++) {
-      randomPart += randomChars.charAt(Math.floor(Math.random() * randomChars.length));
-    }
-    return prefix + randomPart;
-  };
-
-  // Load user data function
+  // Load user data: use shared getOrCreateUserId (ID already created on app load), then fetch latest from backend
   const loadUserData = async (showLoading = false) => {
     try {
       if (showLoading) {
         setLoading(true);
       }
-      let storedUserId = await AsyncStorage.getItem('userId');
+      const storedUserId = await getOrCreateUserId();
       if (!storedUserId) {
-        storedUserId = generateUserId();
-        await AsyncStorage.setItem('userId', storedUserId);
+        setLoading(false);
+        return;
       }
       setUserId(storedUserId);
 
-      // Register user with backend
-      try {
-        const userData = await userAPI.register(storedUserId);
-        const premium = userData.isPremium ?? userData.is_premium ?? false;
-        const endDateRaw = userData.subscriptionEndDate ?? userData.premium_expires_at;
-        setIsPremium(!!premium);
-        if (parentPoints === undefined || parentPoints === null) {
-          setUserPoints(userData.points ?? 0);
-        }
-        if (premium && endDateRaw) {
-          const d = new Date(endDateRaw);
-          if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
-        }
-      } catch (apiError) {
-        console.error('Failed to register user:', apiError);
-      }
-
-      // Fetch latest user data (source of truth for paid/admin-granted premium and remaining time)
+      // Fetch latest user data (source of truth for points, premium, subscription)
       try {
         const userData = await userAPI.getUser(storedUserId);
         setIsPremium(userData.isPremium ?? false);
@@ -100,9 +73,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
         console.error('Failed to fetch user data:', fetchError);
       }
     } catch (error) {
-      console.error('Error loading user ID:', error);
-      const fallbackId = generateUserId();
-      setUserId(fallbackId);
+      console.error('Error loading user data:', error);
     } finally {
       if (showLoading) {
         setLoading(false);
