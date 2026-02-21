@@ -9,6 +9,8 @@ import {
   TextInput,
   RefreshControl,
   ImageBackground,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -37,6 +39,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
   const [playingChannel, setPlayingChannel] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [loadingChannelId, setLoadingChannelId] = useState(null);
   const [channelsByCategory, setChannelsByCategory] = useState({
     tamthilia: [],
     wanyama: [],
@@ -163,29 +166,36 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
-  // Fetch stream URL from backend (admin) for the clicked channel, then open player for fast play
+  // Open player immediately (pro: instant UI), then set stream URL when we have it from admin
   const openPlayerWithChannel = (channel, streamUrl) => {
-    const ch = { ...channel, streamUrl: streamUrl || channel.streamUrl };
-    setPlayingChannel(ch);
+    setPlayingChannel({ ...channel, streamUrl: streamUrl || channel.streamUrl || null });
     setVideoPlayerVisible(true);
   };
 
-  // Handle channel click: fetch URL from admin app, then play (open immediately when we have URL for speed)
+  // Fetch stream URL from backend (admin) and update player – single source of truth, play as soon as URL arrives
+  const fetchAndSetStreamUrl = (channel) => {
+    if (!channel?.id) return;
+    channelsAPI
+      .getChannel(channel.id)
+      .then((data) => {
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel((prev) =>
+            prev && prev.id === channel.id ? { ...prev, streamUrl: url } : prev
+          );
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Handle channel click: open player instantly, fetch URL from admin and play (pro: fast + always admin URL)
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
 
     const canPlay = isPremium || pointsRequired === 0;
     if (canPlay) {
-      if (channel.streamUrl) {
-        openPlayerWithChannel(channel, channel.streamUrl);
-        fetchAndUpdateStreamUrl(channel);
-      } else {
-        try {
-          const data = await channelsAPI.getChannel(channel.id);
-          const url = data.streamUrl || data.stream_url;
-          if (url) openPlayerWithChannel(channel, url);
-        } catch (_) {}
-      }
+      openPlayerWithChannel(channel, channel.streamUrl);
+      fetchAndSetStreamUrl(channel);
       return;
     }
 
@@ -196,22 +206,6 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
 
     setSelectedChannel(channel);
     setChannelUnlockModalVisible(true);
-  };
-
-  // Fetch latest stream URL from backend (admin) and update player if URL changed (no block – play faster)
-  const fetchAndUpdateStreamUrl = (channel) => {
-    if (!channel || !channel.id) return;
-    channelsAPI
-      .getChannel(channel.id)
-      .then((data) => {
-        const url = data.streamUrl || data.stream_url;
-        if (url) {
-          setPlayingChannel((prev) =>
-            prev && prev.id === channel.id && prev.streamUrl !== url ? { ...prev, streamUrl: url } : prev
-          );
-        }
-      })
-      .catch(() => {});
   };
 
   const handleUnlockFromModal = async () => {
@@ -225,8 +219,22 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       setChannelUnlockModalVisible(false);
       const ch = selectedChannel;
       setSelectedChannel(null);
-      openPlayerWithChannel(ch, ch.streamUrl);
-      fetchAndUpdateStreamUrl(ch);
+      setLoadingChannelId(ch.id);
+      try {
+        const data = await channelsAPI.getChannel(ch.id);
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel({ ...ch, streamUrl: url });
+          setVideoPlayerVisible(true);
+        } else {
+          Alert.alert('Stream unavailable', 'No stream URL for this channel.');
+        }
+      } catch (err) {
+        console.error('Failed to load stream URL:', err);
+        Alert.alert('Could not load stream', 'Check your connection and try again.');
+      } finally {
+        setLoadingChannelId(null);
+      }
     } catch (error) {
       console.error('Failed to unlock channel:', error);
       setInsufficientPointsModalVisible(true);
@@ -381,7 +389,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                             key={channel.id}
                             style={styles.searchChannelCard}
                             activeOpacity={0.8}
-                            onPress={() => handleChannelClick(channel)}>
+                            onPress={() => handleChannelClick(channel)}
+                            disabled={loadingChannelId === channel.id}>
                             {channel.thumbnailUrl ? (
                               <ImageBackground
                                 source={{ uri: channel.thumbnailUrl }}
@@ -402,9 +411,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                   </View>
                                   <TouchableOpacity
                                     style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
-                                    onPress={() => handleChannelClick(channel)}>
-                                    <Icon name="play" size={16} color="#fff" />
-                                    <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                    onPress={() => handleChannelClick(channel)}
+                                    disabled={loadingChannelId === channel.id}>
+                                    {loadingChannelId === channel.id ? (
+                                      <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                      <>
+                                        <Icon name="play" size={16} color="#fff" />
+                                        <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                      </>
+                                    )}
                                   </TouchableOpacity>
                                 </View>
                               </ImageBackground>
@@ -440,9 +456,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                 </View>
                                 <TouchableOpacity
                                   style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
-                                  onPress={() => handleChannelClick(channel)}>
-                                  <Icon name="play" size={16} color="#fff" />
-                                  <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                  onPress={() => handleChannelClick(channel)}
+                                  disabled={loadingChannelId === channel.id}>
+                                  {loadingChannelId === channel.id ? (
+                                    <ActivityIndicator size="small" color="#fff" />
+                                  ) : (
+                                    <>
+                                      <Icon name="play" size={16} color="#fff" />
+                                      <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                    </>
+                                  )}
                                 </TouchableOpacity>
                               </LinearGradient>
                             )}
@@ -520,9 +543,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                               </View>
                               <TouchableOpacity
                                 style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
-                                onPress={() => handleChannelClick(channel)}>
-                                <Icon name="play" size={16} color="#fff" />
-                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                                onPress={() => handleChannelClick(channel)}
+                                disabled={loadingChannelId === channel.id}>
+                                {loadingChannelId === channel.id ? (
+                                  <ActivityIndicator size="small" color="#fff" />
+                                ) : (
+                                  <>
+                                    <Icon name="play" size={16} color="#fff" />
+                                    <Text style={styles.channelWatchText}>Watch Now</Text>
+                                  </>
+                                )}
                               </TouchableOpacity>
                             </View>
                           </ImageBackground>
@@ -558,9 +588,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                             </View>
                             <TouchableOpacity
                               style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
-                              onPress={() => handleChannelClick(channel)}>
-                              <Icon name="play" size={16} color="#fff" />
-                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                              onPress={() => handleChannelClick(channel)}
+                              disabled={loadingChannelId === channel.id}>
+                              {loadingChannelId === channel.id ? (
+                                <ActivityIndicator size="small" color="#fff" />
+                              ) : (
+                                <>
+                                  <Icon name="play" size={16} color="#fff" />
+                                  <Text style={styles.channelWatchText}>Watch Now</Text>
+                                </>
+                              )}
                             </TouchableOpacity>
                           </LinearGradient>
                         )}

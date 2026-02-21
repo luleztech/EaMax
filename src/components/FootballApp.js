@@ -8,6 +8,8 @@ import {
   Dimensions,
   RefreshControl,
   ImageBackground,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -37,6 +39,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
   const [videoPlayerVisible, setVideoPlayerVisible] = useState(false);
   const [playingChannel, setPlayingChannel] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [loadingChannelId, setLoadingChannelId] = useState(null);
 
   useEffect(() => {
     if (onPaymentsActiveChange) {
@@ -154,44 +157,35 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
-  // Fetch stream URL from backend (admin) for the clicked channel, then open player for fast play
+  // Open player only when we have a stream URL from backend (admin) – guarantees playback
   const openPlayerWithChannel = (channel, streamUrl) => {
-    const ch = { ...channel, streamUrl: streamUrl || channel.streamUrl };
-    setPlayingChannel(ch);
+    const url = streamUrl || channel.streamUrl;
+    if (!url) return;
+    setPlayingChannel({ ...channel, streamUrl: url });
     setVideoPlayerVisible(true);
   };
 
-  // Fetch latest stream URL from backend (admin) and update player if URL changed (no block – play faster)
-  const fetchAndUpdateStreamUrl = (channel) => {
-    if (!channel || !channel.id) return;
-    channelsAPI
-      .getChannel(channel.id)
-      .then((data) => {
-        const url = data.streamUrl || data.stream_url;
-        if (url) {
-          setPlayingChannel((prev) =>
-            prev && prev.id === channel.id && prev.streamUrl !== url ? { ...prev, streamUrl: url } : prev
-          );
-        }
-      })
-      .catch(() => {});
-  };
-
-  // Handle channel click: fetch URL from admin app, then play (open immediately when we have URL for speed)
+  // Handle channel click: fetch stream URL from backend first, then open player and play
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
 
     const canPlay = isPremium || pointsRequired === 0;
     if (canPlay) {
-      if (channel.streamUrl) {
-        openPlayerWithChannel(channel, channel.streamUrl);
-        fetchAndUpdateStreamUrl(channel);
-      } else {
-        try {
-          const data = await channelsAPI.getChannel(channel.id);
-          const url = data.streamUrl || data.stream_url;
-          if (url) openPlayerWithChannel(channel, url);
-        } catch (_) {}
+      setLoadingChannelId(channel.id);
+      try {
+        const data = await channelsAPI.getChannel(channel.id);
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel({ ...channel, streamUrl: url });
+          setVideoPlayerVisible(true);
+        } else {
+          Alert.alert('Stream unavailable', 'No stream URL for this channel.');
+        }
+      } catch (err) {
+        console.error('Failed to load stream URL:', err);
+        Alert.alert('Could not load stream', 'Check your connection and try again.');
+      } finally {
+        setLoadingChannelId(null);
       }
       return;
     }
@@ -216,8 +210,22 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
       setChannelUnlockModalVisible(false);
       const ch = selectedChannel;
       setSelectedChannel(null);
-      openPlayerWithChannel(ch, ch.streamUrl);
-      fetchAndUpdateStreamUrl(ch);
+      setLoadingChannelId(ch.id);
+      try {
+        const data = await channelsAPI.getChannel(ch.id);
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel({ ...ch, streamUrl: url });
+          setVideoPlayerVisible(true);
+        } else {
+          Alert.alert('Stream unavailable', 'No stream URL for this channel.');
+        }
+      } catch (err) {
+        console.error('Failed to load stream URL:', err);
+        Alert.alert('Could not load stream', 'Check your connection and try again.');
+      } finally {
+        setLoadingChannelId(null);
+      }
     } catch (error) {
       console.error('Failed to unlock channel:', error);
       setInsufficientPointsModalVisible(true);
@@ -337,7 +345,8 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                     key={channel.id}
                     style={styles.channelCard}
                     activeOpacity={0.8}
-                    onPress={() => handleChannelClick(channel)}>
+                    onPress={() => handleChannelClick(channel)}
+                    disabled={loadingChannelId === channel.id}>
                     {channel.thumbnailUrl ? (
                       <ImageBackground
                         source={{ uri: channel.thumbnailUrl }}
@@ -370,9 +379,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                               styles.channelWatchButton,
                               { backgroundColor: channel.color },
                             ]}
-                            onPress={() => handleChannelClick(channel)}>
-                            <Icon name="play" size={16} color="#fff" />
-                            <Text style={styles.channelWatchText}>Watch Now</Text>
+                            onPress={() => handleChannelClick(channel)}
+                            disabled={loadingChannelId === channel.id}>
+                            {loadingChannelId === channel.id ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <>
+                                <Icon name="play" size={16} color="#fff" />
+                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                              </>
+                            )}
                           </TouchableOpacity>
                         </View>
                       </ImageBackground>
@@ -421,9 +437,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                             styles.channelWatchButton,
                             { backgroundColor: channel.color },
                           ]}
-                          onPress={() => handleChannelClick(channel)}>
-                          <Icon name="play" size={16} color="#fff" />
-                          <Text style={styles.channelWatchText}>Watch Now</Text>
+                          onPress={() => handleChannelClick(channel)}
+                          disabled={loadingChannelId === channel.id}>
+                          {loadingChannelId === channel.id ? (
+                            <ActivityIndicator size="small" color="#fff" />
+                          ) : (
+                            <>
+                              <Icon name="play" size={16} color="#fff" />
+                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                            </>
+                          )}
                         </TouchableOpacity>
                       </LinearGradient>
                     )}
@@ -468,7 +491,8 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                     key={channel.id}
                     style={styles.homeChannelCard}
                     activeOpacity={0.8}
-                    onPress={() => handleChannelClick(channel)}>
+                    onPress={() => handleChannelClick(channel)}
+                    disabled={loadingChannelId === channel.id}>
                     {channel.thumbnailUrl ? (
                       <ImageBackground
                         source={{ uri: channel.thumbnailUrl }}
@@ -497,9 +521,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                           </View>
                           <TouchableOpacity
                             style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
-                            onPress={() => handleChannelClick(channel)}>
-                            <Icon name="play" size={16} color="#fff" />
-                            <Text style={styles.channelWatchText}>Watch Now</Text>
+                            onPress={() => handleChannelClick(channel)}
+                            disabled={loadingChannelId === channel.id}>
+                            {loadingChannelId === channel.id ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <>
+                                <Icon name="play" size={16} color="#fff" />
+                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                              </>
+                            )}
                           </TouchableOpacity>
                         </View>
                       </ImageBackground>
@@ -535,9 +566,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                         </View>
                         <TouchableOpacity
                           style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
-                          onPress={() => handleChannelClick(channel)}>
-                          <Icon name="play" size={16} color="#fff" />
-                          <Text style={styles.channelWatchText}>Watch Now</Text>
+                          onPress={() => handleChannelClick(channel)}
+                          disabled={loadingChannelId === channel.id}>
+                          {loadingChannelId === channel.id ? (
+                            <ActivityIndicator size="small" color="#fff" />
+                          ) : (
+                            <>
+                              <Icon name="play" size={16} color="#fff" />
+                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                            </>
+                          )}
                         </TouchableOpacity>
                       </LinearGradient>
                     )}

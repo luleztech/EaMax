@@ -350,10 +350,12 @@ router.delete('/channels/:id', async (req, res, next) => {
       id: z.string().regex(/^\d+$/),
     });
     const { id } = paramsSchema.parse(req.params);
+    const channelId = Number(id);
 
-    const result = await query('DELETE FROM channels WHERE id = $1', [
-      Number(id),
-    ]);
+    // Delete dependent rows first (user_unlocked_channels references channels)
+    await query('DELETE FROM user_unlocked_channels WHERE channel_id = $1', [channelId]);
+
+    const result = await query('DELETE FROM channels WHERE id = $1', [channelId]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Channel not found' });
@@ -740,9 +742,11 @@ router.post('/notifications', async (req, res, next) => {
              AND TRIM(fcm_token) != ''`
           );
 
-          const fcmTokens = (tokensResult.rows || [])
+          const rawTokens = (tokensResult.rows || [])
             .map((row) => row && row.fcm_token)
             .filter((token) => token && String(token).trim() !== '');
+          // Deduplicate so each device receives exactly one notification
+          const fcmTokens = [...new Set(rawTokens)];
 
           if (fcmTokens.length > 0 && typeof sendPush === 'function') {
             await sendPush(
