@@ -16,7 +16,7 @@ import AntDesign from 'react-native-vector-icons/AntDesign';
 
 const { width, height } = Dimensions.get('window');
 
-// Optional: use orientation locker for reliable portrait on close (no crash if not installed)
+// Optional: use orientation locker for reliable portrait on close
 let Orientation = null;
 try {
   Orientation = require('react-native-orientation-locker').default;
@@ -24,23 +24,7 @@ try {
   Orientation = null;
 }
 
-/**
- * ========================================================================
- * REACT NATIVE VIDEO PLAYER – Conversion of Kotlin player (flutter player)
- * ========================================================================
- * Source: /home/ayoub/MySecretes/flutter player
- * - PlayerManager.kt: lifecycle, play/pause/stop, seek, quality, state callbacks
- * - ExoPlayerEngine.kt: format detection, DASH/HLS/PROGRESSIVE, DRM, quality, errors
- * - StreamSessionHandler.kt: session validation, HLS/DASH media source
- * - WebViewEngine.kt: User-Agent, WebView settings
- * - supportcode/PlaybackState.kt, StreamSession.kt, PlayerConfig.kt, StreamQuality
- *
- * videoUrl here maps to StreamSession.mpdUrl. Same PlaybackState, StreamQuality,
- * format detection, and error mapping as Kotlin; playback via WebView (hls.js / dash.js).
- * ========================================================================
- */
-
-// PlaybackState – matches Kotlin domain.model.PlaybackState exactly
+// PlaybackState – matches Kotlin domain.model.PlaybackState
 const PlaybackState = {
   IDLE: 'IDLE',
   BUFFERING: 'BUFFERING',
@@ -50,41 +34,31 @@ const PlaybackState = {
   ENDED: 'ENDED',
 };
 
-// Stream format detection – matches ExoPlayerEngine.detectStreamFormat() order and patterns
-// (DASH, HLS, PROGRESSIVE; relay patterns; default DASH for unknown)
+// Stream format detection – ExoPlayerEngine-style; .php/.html use WebView (isExternalWebPage)
 const detectStreamFormat = (url) => {
   if (!url || typeof url !== 'string') return 'PROGRESSIVE';
   const u = url.toLowerCase();
-  // DASH/MPD
   if (u.includes('.mpd')) return 'DASH';
   if ((u.includes('dash') || u.includes('/manifest')) && !u.includes('.m3u8')) return 'DASH';
-  if (u.includes('application/dash+xml')) return 'DASH';
-  // Relay/proxy (ExoPlayerEngine)
   if (u.includes('/relay/stream') || u.includes('/api/relay/')) return 'DASH';
   if (u.includes('/relay/m3u8')) return 'HLS';
-  // HLS/M3U8
-  if (u.includes('.m3u8') || u.includes('.m3u')) return 'HLS';
-  if (u.includes('hls') || u.includes('playlist.m3u')) return 'HLS';
-  if (u.includes('application/vnd.apple.mpegurl') || u.includes('application/x-mpegurl')) return 'HLS';
-  // Progressive (ExoPlayerEngine: mp4, m4v, m4a, webm, mkv, avi, mov, flv, ts)
+  if (u.includes('.m3u8') || u.includes('.m3u') || u.includes('hls') || u.includes('playlist.m3u')) return 'HLS';
   if (u.includes('.mp4') || u.includes('.m4v') || u.includes('.m4a')) return 'PROGRESSIVE';
   if (u.includes('.webm') || u.includes('.mkv') || u.includes('.avi') || u.includes('.mov') || u.includes('.flv')) return 'PROGRESSIVE';
   if (u.includes('.ts') && !u.includes('m3u8') && !u.includes('playlist')) return 'PROGRESSIVE';
-  // Default HLS for unknown URLs so WebView actually plays (many streams are HLS; DASH would stick on loading)
   return 'HLS';
 };
 
-// User-Agent – exact from WebViewEngine.kt DESKTOP_USER_AGENT (site allows access when this is sent)
 const PLAYER_USER_AGENT = 'ReactNativeVideo/3.0 (Linux;Android 11) ExoPlayerLib/2.10.4';
 
-// External web page (e.g. lipopotv.live/spl.php) – WebViewEngine.kt: load in WebView with User-Agent so site allows access
 const isExternalWebPage = (url) => {
   if (!url || typeof url !== 'string') return false;
   const u = url.toLowerCase();
   return u.includes('.php') || u.includes('.html') || u.endsWith('.htm');
 };
 
-// StreamQuality / PlayerConfig – matches Kotlin StreamQuality enum and PlayerConfig.availableQualities
+const PLAYER_USER_AGENT = 'ReactNativeVideo/3.0 (Linux;Android 11) ExoPlayerLib/2.10.4';
+
 const QUALITY_OPTIONS = [
   { label: 'Auto (ABR)', value: 'auto', recommended: true },
   { label: '240p', value: '240', recommended: false },
@@ -94,10 +68,10 @@ const QUALITY_OPTIONS = [
   { label: '1080p', value: '1080', recommended: false },
 ];
 
-// Error messages – matches ExoPlayerEngine PlayerEventListener.onPlayerError mapping
 const getErrorMessage = (codeOrMessage) => {
   const msg = String(codeOrMessage || '').toLowerCase();
-  if (msg.includes('network') || msg.includes('connection') || msg.includes('failed')) return 'Network connection failed. Please check your internet connection.';
+  if (msg.includes('network') || msg.includes('connection') || msg.includes('failed')) 
+    return 'Network connection failed. Please check your internet connection.';
   if (msg.includes('timeout')) return 'Connection timeout. Please try again.';
   if (msg.includes('bad_http_status') || msg.includes('server returned')) return 'Server returned an error. Please try again later.';
   if (msg.includes('cors') || msg.includes('cross-origin')) return 'Stream access denied. Please try again later.';
@@ -115,11 +89,6 @@ const getErrorMessage = (codeOrMessage) => {
   return msg ? `Playback error: ${codeOrMessage}` : 'Playback error. Please try again.';
 };
 
-/**
- * VideoPlayer – WebView implementation of Kotlin player (PlayerManager + ExoPlayerEngine + WebViewEngine).
- * - videoUrl maps to StreamSession.mpdUrl
- * - Same PlaybackState, StreamQuality, format detection, User-Agent, and error mapping as Kotlin.
- */
 const VideoPlayer = ({
   visible,
   onClose,
@@ -141,7 +110,6 @@ const VideoPlayer = ({
   const controlsTimeoutRef = useRef(null);
   const closeTimeoutRef = useRef(null);
 
-  // Back / close: lock to portrait first, then close after rotation settles (smooth, no errors)
   const handleClose = () => {
     if (closeTimeoutRef.current) {
       clearTimeout(closeTimeoutRef.current);
@@ -152,6 +120,7 @@ const VideoPlayer = ({
         Orientation.lockToPortrait();
       }
     } catch (_) {}
+    
     if (isFullscreen) {
       setIsFullscreen(false);
       closeTimeoutRef.current = setTimeout(() => {
@@ -163,7 +132,7 @@ const VideoPlayer = ({
     }
   };
 
-  // Expand: rotate player to landscape (lock orientation then update UI)
+  // Expand to fullscreen
   const handleExpand = () => {
     try {
       if (Orientation && typeof Orientation.lockToLandscape === 'function') {
@@ -173,7 +142,6 @@ const VideoPlayer = ({
     setIsFullscreen(true);
   };
 
-  // Restore: rotate player back to portrait
   const handleRestore = () => {
     try {
       if (Orientation && typeof Orientation.lockToPortrait === 'function') {
@@ -195,58 +163,17 @@ const VideoPlayer = ({
     return `${m}:${sec < 10 ? '0' : ''}${sec}`;
   };
 
-  useEffect(() => {
-    if (videoUrl) {
-      setSelectedQuality('auto');
-      setPlaybackState(PlaybackState.IDLE);
-      setShowControls(true);
-      setError(null);
-      setCurrentTime(0);
-      setDuration(0);
-      setIsFullscreen(false);
-    }
-  }, [videoUrl]);
-
-  // When modal closes, ensure app returns to portrait (no rotation left for the rest of the app)
-  useEffect(() => {
-    if (!visible) {
-      if (closeTimeoutRef.current) {
-        clearTimeout(closeTimeoutRef.current);
-        closeTimeoutRef.current = null;
-      }
-      if (Orientation && typeof Orientation.lockToPortrait === 'function') {
-        try {
-          Orientation.lockToPortrait();
-        } catch (_) {}
-      }
-    }
-    return () => {
-      if (closeTimeoutRef.current) {
-        clearTimeout(closeTimeoutRef.current);
-        closeTimeoutRef.current = null;
-      }
-    };
-  }, [visible]);
-
-  useEffect(() => {
-    if (playbackState === PlaybackState.PLAYING && showControls) {
-      controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
-    }
-    return () => {
-      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    };
-  }, [playbackState, showControls]);
-
   if (!visible) return null;
 
-  const isLoading = playbackState === PlaybackState.IDLE || playbackState === PlaybackState.BUFFERING;
+  const isLoading = playbackState === PlaybackState.IDLE || 
+                    playbackState === PlaybackState.BUFFERING;
 
   return (
     <Modal
       visible={visible}
       animationType="slide"
       onRequestClose={handleClose}
-      supportedOrientations={isFullscreen ? ['landscape'] : ['portrait']}
+      supportedOrientations={['portrait', 'landscape']}
       statusBarTranslucent>
       <View style={styles.container}>
         {!isFullscreen && (
@@ -258,16 +185,17 @@ const VideoPlayer = ({
             <TouchableOpacity
               onPress={handleExpand}
               style={styles.iconBtn}
-              activeOpacity={0.7}
-              accessibilityLabel="Expand to landscape">
+              activeOpacity={0.7}>
               <Icon name="fullscreen" size={24} color="#fff" />
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setShowQualityMenu(!showQualityMenu)}
-              style={styles.iconBtn}
-              activeOpacity={0.7}>
-              <Icon name="quality-high" size={24} color="#fff" />
-            </TouchableOpacity>
+            {isHLS && (
+              <TouchableOpacity
+                onPress={() => setShowQualityMenu(!showQualityMenu)}
+                style={styles.iconBtn}
+                activeOpacity={0.7}>
+                <Icon name="quality-high" size={24} color="#fff" />
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -353,39 +281,35 @@ const VideoPlayer = ({
             </View>
           )}
 
-          {isLoading && !error && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#22c55e" />
-              <Text style={styles.loadingText}>
-                {playbackState === PlaybackState.BUFFERING ? 'Buffering...' : 'Loading...'}
-              </Text>
+          {error && (
+            <View style={styles.errorOverlay}>
+              <Icon name="alert-circle" size={48} color="#ef4444" />
+              <Text style={styles.errorText}>{error}</Text>
+              <View style={styles.errorButtons}>
+                <TouchableOpacity 
+                  style={[styles.errorButton, styles.retryButton]} 
+                  onPress={() => setError(null)}
+                >
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.errorButton, styles.closeButton]} 
+                  onPress={handleClose}
+                >
+                  <Text style={styles.closeButtonText}>Close</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
-
-          {error ? (
-            <View style={styles.errorOverlay}>
-              <Icon name="alert-circle" size={40} color="#ef4444" />
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
+          
+          {!error && !isLoading && playbackState === PlaybackState.PLAYING && (
+            <TouchableOpacity
+              style={styles.controlsToggle}
+              activeOpacity={1}
+              onPress={() => setShowControls(!showControls)}
+            />
+          )}
         </View>
-
-        {showControls && !isLoading && !error && playbackState !== PlaybackState.IDLE && (
-          <TouchableOpacity
-            style={styles.controlsOverlay}
-            activeOpacity={1}
-            onPress={() => setShowControls(!showControls)}>
-            <View style={styles.bottomBar}>
-              <View style={styles.progressBar}>
-                <View style={[styles.progressFill, { width: `${duration ? (currentTime / duration) * 100 : 0}%` }]} />
-              </View>
-              <View style={styles.timeRow}>
-                <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
-                <Text style={styles.timeText}>{formatTime(duration)}</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        )}
 
         {showQualityMenu && (
           <View style={styles.qualityMenu}>
@@ -421,9 +345,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 10,
     paddingTop: Platform.OS === 'android' ? 40 : 10,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.9)',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: 'rgba(255,255,255,0.1)',
   },
   iconBtn: {
     padding: 8,
@@ -431,13 +355,14 @@ const styles = StyleSheet.create({
   channelName: {
     flex: 1,
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#fff',
     marginHorizontal: 8,
   },
   playerWrap: {
     flex: 1,
     backgroundColor: '#000',
+    position: 'relative',
   },
   webview: {
     flex: 1,
@@ -457,8 +382,12 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.8)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -468,48 +397,57 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  errorText: {
-    color: '#ef4444',
-    marginTop: 12,
-    fontSize: 16,
-    textAlign: 'center',
-    paddingHorizontal: 24,
-  },
-  controlsOverlay: {
     position: 'absolute',
+    top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    zIndex: 1000,
   },
-  bottomBar: {
-    padding: 16,
-    paddingBottom: 24,
+  errorText: {
+    color: '#ef4444',
+    marginTop: 16,
+    marginBottom: 24,
+    fontSize: 16,
+    textAlign: 'center',
   },
-  progressBar: {
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#22c55e',
-    borderRadius: 2,
-  },
-  timeRow: {
+  errorButtons: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    gap: 12,
   },
-  timeText: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 12,
+  errorButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  retryButton: {
+    backgroundColor: '#22c55e',
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  closeButton: {
+    backgroundColor: '#374151',
+  },
+  closeButtonText: {
+    color: '#fff',
+    fontSize: 16,
+  },
+  controlsToggle: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   qualityMenu: {
     position: 'absolute',
@@ -517,8 +455,8 @@ const styles = StyleSheet.create({
     right: 16,
     backgroundColor: '#1f2937',
     borderRadius: 12,
-    padding: 10,
-    minWidth: 180,
+    padding: 12,
+    minWidth: 200,
     borderWidth: 1,
     borderColor: '#374151',
     elevation: 8,
@@ -526,20 +464,23 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
+    zIndex: 2000,
   },
   qualityMenuTitle: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     color: '#fff',
-    marginBottom: 10,
+    marginBottom: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#374151',
   },
   qualityRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 8,
     borderRadius: 8,
-    marginBottom: 4,
   },
   qualityRowActive: {
     backgroundColor: 'rgba(34, 197, 94, 0.2)',
