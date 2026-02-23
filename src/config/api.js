@@ -150,13 +150,14 @@ export const matchesAPI = {
  * Payments API
  */
 export const paymentsAPI = {
-  // Start ZenoPay mobile money payment
-  startZenoPayment: async ({ externalId, bundle, phone, email, name }) => {
+  // Start ZenoPay mobile money payment (amount = exact TZS user selected: 2000, 5000, 12000)
+  startZenoPayment: async ({ externalId, bundle, amount, phone, email, name }) => {
     return apiRequest('/api/payments/zeno/start', {
       method: 'POST',
       body: JSON.stringify({
         externalId,
         bundle,
+        amount,
         phone,
         email,
         name,

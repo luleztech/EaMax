@@ -106,6 +106,7 @@ const PaymentsScreen = ({ accentColor = ACCENT }) => {
       const result = await paymentsAPI.startZenoPayment({
         externalId: userId,
         bundle: bundle.id,
+        amount: bundle.value,
         phone: cleanPhone,
         email: `${userId}@eamax.app`,
         name: userId,

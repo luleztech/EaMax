@@ -28,6 +28,7 @@ router.post('/zeno/start', async (req, res, next) => {
     const bodySchema = z.object({
       externalId: z.string().min(1),
       bundle: z.enum(['week', 'month', 'year']),
+      amount: z.number().int().min(1).optional(), // exact amount user selected (2000, 5000, 12000)
       phone: z.string().min(9).max(15),
       email: z.string().email().optional(),
       name: z.string().optional(),
@@ -83,6 +84,14 @@ router.post('/zeno/start', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid bundle plan' });
     }
 
+    // Use the exact amount the user selected. If client sends amount, it must match the bundle (anti-tamper).
+    if (data.amount != null && data.amount !== planInfo.amount) {
+      return res.status(400).json({
+        error: `Amount for ${data.bundle} must be ${planInfo.amount} TZS.`,
+      });
+    }
+    const amountToSend = data.amount != null ? data.amount : planInfo.amount;
+
     const orderId = `${userId}-${Date.now()}`;
 
     const webhookUrl =
@@ -93,9 +102,6 @@ router.post('/zeno/start', async (req, res, next) => {
     // Try local format first (as per docs), but we can switch to international if needed
     // For now, use local format (0XXXXXXXXX) as shown in ZenoPay documentation
     const phoneForZeno = normalizedPhone; // Local format: 0XXXXXXXXX
-
-    // Send exact amount only: 2000 / 5000 / 12000 TZS — no fees or rounding added
-    const amountToSend = planInfo.amount;
 
     const payload = {
       order_id: orderId,

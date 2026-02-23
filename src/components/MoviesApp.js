@@ -6,12 +6,14 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  Platform,
   TextInput,
   RefreshControl,
   ImageBackground,
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
@@ -27,8 +29,13 @@ import { settingsAPI, channelsAPI, userAPI } from '../config/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
+const BOTTOM_NAV_BASE_HEIGHT = 56;
 
 const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
+  const contentBottomPadding = BOTTOM_NAV_BASE_HEIGHT + bottomInset;
+
   const [activeTab, setActiveTab] = useState('home');
   const [initialLoading, setInitialLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -345,7 +352,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       ) : activeTab === 'search' ? (
         <ScrollView 
           style={styles.scrollView} 
-          contentContainerStyle={styles.scrollContentContainer}
+          contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -489,7 +496,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       ) : (
         <ScrollView 
           style={styles.scrollView} 
-          contentContainerStyle={styles.scrollContentContainer}
+          contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -653,8 +660,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       </ScrollView>
       )}
 
-      {/* Bottom Navigation */}
-      <View style={styles.bottomNav}>
+      {/* Bottom Navigation - safe area so not covered by system nav/gesture bar */}
+      <View style={[styles.bottomNav, { paddingBottom: bottomInset }]}>
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => setActiveTab('home')}>
@@ -1083,14 +1090,21 @@ const styles = StyleSheet.create({
     right: 0,
     flexDirection: 'row',
     justifyContent: 'space-around',
+    alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    paddingVertical: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    minHeight: BOTTOM_NAV_BASE_HEIGHT,
     borderTopWidth: 1,
     borderTopColor: '#1f2937',
   },
   navItem: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 4,
+    paddingVertical: 6,
+    minWidth: 0,
   },
   navText: {
     fontSize: 12,
