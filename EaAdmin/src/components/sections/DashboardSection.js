@@ -623,7 +623,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         <View style={styles.carouselHeader}>
           <View style={styles.carouselTitleRow}>
             <Icon name="calendar-clock" size={20} color="#f59e0b" />
-            <Text style={styles.chartTitle}>Upcoming Matches</Text>
+            <Text style={styles.chartTitle}>Ratiba</Text>
           </View>
           <TouchableOpacity
             style={styles.carouselAddButton}

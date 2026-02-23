@@ -17,11 +17,18 @@ import LinearGradient from 'react-native-linear-gradient';
 import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
+import NotificationPermissionModal from './NotificationPermissionModal';
 import { userAPI } from '../config/api';
 import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
   setupNotificationHandlers,
+  markNotificationPermissionAsked,
+  hasAskedNotificationPermission,
+  isNotificationPermissionGranted,
+  requestNotificationPermission,
+  getFCMToken,
+  registerFCMToken,
 } from '../services/notifications';
 
 const { width } = Dimensions.get('window');
@@ -35,6 +42,7 @@ const StreamingApp = () => {
   const [isPaymentsActive, setIsPaymentsActive] = useState(false);
   const [congratsModalVisible, setCongratsModalVisible] = useState(false);
   const [hasShownCongrats, setHasShownCongrats] = useState(false);
+  const [notifPermissionVisible, setNotifPermissionVisible] = useState(false);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const indicatorAnim = useRef(new Animated.Value(0)).current;
@@ -85,21 +93,78 @@ const StreamingApp = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Register FCM token and set up notification handlers as soon as we have a user
+  // Show notification permission modal on first launch. Always show on first launch,
+  // and initialize notifications properly when permission is granted.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const userId = await AsyncStorage.getItem('userId');
+        const userId = await getOrCreateUserId();
         if (cancelled || !userId) return;
-        await initializeNotifications(userId);
-        setupNotificationHandlers(() => {});
+
+        const hasAsked = await hasAskedNotificationPermission();
+        const isGranted = await isNotificationPermissionGranted();
+
+        // If already granted, initialize notifications immediately
+        if (isGranted) {
+          await initializeNotifications(userId);
+          setupNotificationHandlers(() => {});
+        }
+
+        // Show modal if we haven't asked yet (first launch)
+        if (!hasAsked) {
+          const showModal = () => {
+            if (!cancelled) setNotifPermissionVisible(true);
+          };
+          setTimeout(showModal, 1500);
+        }
       } catch (e) {
         console.warn('App notification init:', e?.message || e);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const handleNotifAllow = async () => {
+    // Mark as asked so we don't show our modal again regardless of outcome
+    await markNotificationPermissionAsked();
+
+    // IMPORTANT: Close our React Native Modal FIRST before requesting the OS
+    // permission dialog. On Android, the system permission dialog cannot appear
+    // on top of a React Native Modal — it gets blocked. We must dismiss ours
+    // first, then wait one frame for it to fully unmount, then request.
+    setNotifPermissionVisible(false);
+
+    // Wait for modal to fully close (2 frames is enough on Android)
+    await new Promise(resolve => setTimeout(resolve, 400));
+
+    try {
+      // Now the OS dialog will appear without any modal blocking it
+      const granted = await requestNotificationPermission();
+      console.log('[NotifModal] Permission granted:', granted);
+
+      if (granted) {
+        // Get FCM token and register with backend so user receives pushes
+        const userId = await getOrCreateUserId();
+        if (userId) {
+          // Initialize notifications fully - this handles registration and setup
+          await initializeNotifications(userId);
+          // Set up foreground/background message listeners
+          setupNotificationHandlers(() => {});
+          console.log('[NotifModal] Notifications initialized successfully');
+        }
+      } else {
+        console.log('[NotifModal] Permission was denied by user');
+      }
+    } catch (e) {
+      console.warn('[NotifModal] Allow error:', e?.message || e);
+    }
+  };
+
+  const handleNotifSkip = async () => {
+    setNotifPermissionVisible(false);
+    await markNotificationPermissionAsked();
+  };
 
   // Premium: turn ON "Ondoa Matangazo" (no ads) and keep it ON until subscription ends
   useEffect(() => {
@@ -220,7 +285,7 @@ const StreamingApp = () => {
                   styles.switchButtonText,
                   currentApp === 'movies' && styles.switchButtonTextActive,
                 ]}>
-                Movies na Habari
+                Tamthilia zote
               </Text>
             </TouchableOpacity>
           </View>
@@ -285,6 +350,12 @@ const StreamingApp = () => {
         visible={adModalVisible}
         onClose={handleCloseAd}
         onComplete={handleAdComplete}
+      />
+
+      <NotificationPermissionModal
+        visible={notifPermissionVisible}
+        onAllow={handleNotifAllow}
+        onSkip={handleNotifSkip}
       />
 
       {/* Congrats modal when user becomes premium */}

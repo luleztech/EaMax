@@ -86,12 +86,54 @@ android {
         versionCode 1
         versionName "1.0"
     }
-    signingConfigs {
-        debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+    def keystorePropertiesFile = file("keystore.properties")
+    def useReleaseKeystore = false
+    if (keystorePropertiesFile.exists()) {
+        def keystoreProperties = new Properties()
+        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+        def alias = keystoreProperties['keyAlias'] ?: ''
+        def storePass = keystoreProperties['storePassword'] ?: ''
+        def keyPass = keystoreProperties['keyPassword'] ?: ''
+        // Skip release keystore if still using example placeholders
+        useReleaseKeystore = alias != 'your_key_alias' && !storePass.contains('your_') && !keyPass.contains('your_')
+        if (!useReleaseKeystore && (alias == 'your_key_alias' || storePass.contains('your_') || keyPass.contains('your_'))) {
+            println "WARNING: keystore.properties has placeholder values. Edit it with your real storePassword, keyPassword, keyAlias for Play Store. Using debug signing for now."
+        }
+    }
+    if (useReleaseKeystore) {
+        def keystoreProperties = new Properties()
+        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+        def sp = (keystoreProperties['storePassword'] ?: '').trim()
+        def kp = (keystoreProperties['keyPassword'] ?: '').trim()
+        def ka = (keystoreProperties['keyAlias'] ?: '').trim()
+        signingConfigs {
+            debug {
+                storeFile file('debug.keystore')
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+            release {
+                storeFile file('eamax-release.keystore')
+                storePassword sp
+                keyAlias ka
+                keyPassword kp
+            }
+        }
+    } else {
+        signingConfigs {
+            debug {
+                storeFile file('debug.keystore')
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+            release {
+                storeFile file('debug.keystore')
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
     }
     buildTypes {
@@ -99,9 +141,7 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

@@ -11,8 +11,10 @@ import { name as appName } from './app.json';
 // was offline: messages are queued by FCM and delivered as soon as the device has
 // internet again, even if the app is minimized or in the background.
 try {
-  const messaging = require('@react-native-firebase/messaging').default;
-  messaging().setBackgroundMessageHandler(async (remoteMessage) => {
+  const { getApp } = require('@react-native-firebase/app');
+  const { getMessaging, setBackgroundMessageHandler } = require('@react-native-firebase/messaging');
+  const messaging = getMessaging(getApp());
+  setBackgroundMessageHandler(messaging, async (remoteMessage) => {
     try {
       const notifee = require('@notifee/react-native').default;
       const { AndroidImportance } = require('@notifee/react-native');

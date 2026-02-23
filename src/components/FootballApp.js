@@ -16,6 +16,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import ImageCarousel from './ImageCarousel';
+import ShimmerPlaceholder from './ShimmerPlaceholder';
 import { settingsAPI, channelsAPI, matchesAPI, userAPI } from '../config/api';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
@@ -40,6 +41,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
   const [playingChannel, setPlayingChannel] = useState(null);
   const [userId, setUserId] = useState(null);
   const [loadingChannelId, setLoadingChannelId] = useState(null);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {
     if (onPaymentsActiveChange) {
@@ -253,15 +255,23 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
 
   // Load all data on mount
   useEffect(() => {
-    loadSlides();
-    loadMatches();
-    loadFootballChannels();
-    refreshUserPoints();
-    
-    // Get user ID
+    let cancelled = false;
+    (async () => {
+      try {
+        await Promise.all([
+          loadSlides(),
+          loadMatches(),
+          loadFootballChannels(),
+        ]);
+        if (!cancelled) setInitialLoading(false);
+      } catch (_) {
+        if (!cancelled) setInitialLoading(false);
+      }
+    })();
     AsyncStorage.getItem('userId').then((id) => {
       if (id) setUserId(id);
     });
+    return () => { cancelled = true; };
   }, []);
 
   // Update currentUserPoints when userPoints prop changes
@@ -327,11 +337,25 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
           }>
           <View style={styles.channelsContainer}>
             <View style={styles.channelsHeader}>
-              <Text style={styles.channelsTitle}>Football Channels</Text>
+              <Text style={styles.channelsTitle}>Vituo</Text>
               <Text style={styles.channelsSubtitle}>Chagua channel unayotaka kuangalia</Text>
             </View>
 
-            {footballChannels.length === 0 ? (
+          {(initialLoading || refreshing) ? (
+            <View style={styles.channelsShimmerGrid}>
+                {[1, 2, 3, 4].map((i) => (
+                  <View key={i} style={styles.shimmerChannelCardWrapChannels}>
+                    <ShimmerPlaceholder
+                      width={(width - 48) / 2}
+                      height={120}
+                      borderRadius={14}
+                      baseColor="#1e1b4b"
+                      highlightColor="rgba(74, 222, 128, 0.15)"
+                    />
+                  </View>
+                ))}
+              </View>
+            ) : footballChannels.length === 0 ? (
               <View style={{ paddingVertical: 24, alignItems: 'center' }}>
                 <Text style={{ color: '#9ca3af' }}>
                   Bado hakuna channels za mpira.
@@ -386,7 +410,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                             ) : (
                               <>
                                 <Icon name="play" size={16} color="#fff" />
-                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                                <Text style={styles.channelWatchText}>Play Now</Text>
                               </>
                             )}
                           </TouchableOpacity>
@@ -444,7 +468,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                           ) : (
                             <>
                               <Icon name="play" size={16} color="#fff" />
-                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                              <Text style={styles.channelWatchText}>Play Now</Text>
                             </>
                           )}
                         </TouchableOpacity>
@@ -458,11 +482,87 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
         </ScrollView>
       ) : (
         <ScrollView 
-          style={styles.scrollView} 
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContentContainer}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }>
+          {(initialLoading || refreshing) ? (
+            <View style={styles.shimmerContainer}>
+              <View style={styles.shimmerCarouselWrap}>
+                <ShimmerPlaceholder
+                  width={width - 32}
+                  height={180}
+                  borderRadius={16}
+                  baseColor="#1e1b4b"
+                  highlightColor="rgba(74, 222, 128, 0.18)"
+                />
+              </View>
+              <View style={styles.homeChannelsSection}>
+                <View style={styles.sectionHeader}>
+                  <ShimmerPlaceholder
+                    width={120}
+                    height={20}
+                    borderRadius={6}
+                    baseColor="#1e1b4b"
+                    highlightColor="rgba(74, 222, 128, 0.15)"
+                  />
+                  <ShimmerPlaceholder
+                    width={72}
+                    height={16}
+                    borderRadius={6}
+                    baseColor="#1e1b4b"
+                    highlightColor="rgba(74, 222, 128, 0.15)"
+                  />
+                </View>
+                <View style={styles.homeChannelsGrid}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <View key={i} style={styles.shimmerChannelCardWrap}>
+                      <ShimmerPlaceholder
+                        width={(width - 48) / 2}
+                        height={120}
+                        borderRadius={14}
+                        baseColor="#1e1b4b"
+                        highlightColor="rgba(74, 222, 128, 0.15)"
+                      />
+                    </View>
+                  ))}
+                </View>
+              </View>
+              <View style={[styles.homeChannelsSection, { marginTop: 8 }]}>
+                <View style={styles.sectionHeader}>
+                  <ShimmerPlaceholder
+                    width={120}
+                    height={20}
+                    borderRadius={6}
+                    baseColor="#1e1b4b"
+                    highlightColor="rgba(74, 222, 128, 0.15)"
+                  />
+                  <ShimmerPlaceholder
+                    width={72}
+                    height={16}
+                    borderRadius={6}
+                    baseColor="#1e1b4b"
+                    highlightColor="rgba(74, 222, 128, 0.15)"
+                  />
+                </View>
+                <View style={styles.matchesShimmerRow}>
+                  {[1, 2].map((i) => (
+                    <ShimmerPlaceholder
+                      key={i}
+                      width={width - 32}
+                      height={72}
+                      borderRadius={12}
+                      baseColor="#1e1b4b"
+                      highlightColor="rgba(74, 222, 128, 0.15)"
+                    />
+                  ))}
+                </View>
+              </View>
+            </View>
+          ) : (
+            <>
           {/* Image Carousel */}
           <ImageCarousel
             items={carouselItems}
@@ -475,7 +575,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
           {/* Channels preview (4 channels + View all → channels tab) */}
           <View style={styles.homeChannelsSection}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Football Channels</Text>
+              <Text style={styles.sectionTitle}>Tranding</Text>
               <TouchableOpacity onPress={() => setActiveTab('channels')}>
                 <Text style={styles.viewAllText}>View all</Text>
               </TouchableOpacity>
@@ -528,7 +628,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                             ) : (
                               <>
                                 <Icon name="play" size={16} color="#fff" />
-                                <Text style={styles.channelWatchText}>Watch Now</Text>
+                                <Text style={styles.channelWatchText}>Play Now</Text>
                               </>
                             )}
                           </TouchableOpacity>
@@ -573,7 +673,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                           ) : (
                             <>
                               <Icon name="play" size={16} color="#fff" />
-                              <Text style={styles.channelWatchText}>Watch Now</Text>
+                              <Text style={styles.channelWatchText}>Play Now</Text>
                             </>
                           )}
                         </TouchableOpacity>
@@ -588,7 +688,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
           {/* Upcoming Matches */}
           <View style={styles.matchesSection}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Upcoming Matches</Text>
+            <Text style={styles.sectionTitle}>Ratiba ya michezo</Text>
             <TouchableOpacity>
               <Text style={styles.viewAllText}>View All</Text>
             </TouchableOpacity>
@@ -640,7 +740,9 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
             })
           )}
         </View>
-      </ScrollView>
+            </>
+          )}
+        </ScrollView>
       )}
 
       {/* Bottom Navigation */}
@@ -658,7 +760,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
               styles.navText,
               activeTab === 'home' && styles.navTextActive,
             ]}>
-            Home
+            Nyumbani
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -674,7 +776,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
               styles.navText,
               activeTab === 'channels' && styles.navTextActive,
             ]}>
-            Channels
+            Vituo
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -690,7 +792,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
               styles.navText,
               activeTab === 'payments' && styles.navTextActive,
             ]}>
-            Payments
+            Malipo
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -706,7 +808,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
               styles.navText,
               activeTab === 'profile' && styles.navTextActive,
             ]}>
-            Profile
+            Salio
           </Text>
         </TouchableOpacity>
       </View>
@@ -844,6 +946,39 @@ const styles = StyleSheet.create({
   },
   scrollContentContainer: {
     paddingBottom: 100,
+  },
+  shimmerContainer: {
+    padding: 16,
+    paddingBottom: 100,
+  },
+  shimmerCarouselWrap: {
+    marginBottom: 24,
+    alignSelf: 'center',
+  },
+  matchesShimmerRow: {
+    gap: 12,
+  },
+  shimmerChannelCardWrap: {
+    width: (width - 48) / 2,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  shimmerChannelCardWrapChannels: {
+    width: (width - 44) / 2,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 8,
   },
   heroContainer: {
     padding: 16,
@@ -1099,6 +1234,13 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     justifyContent: 'space-between',
     gap: 16,
+  },
+  channelsShimmerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 16,
+    width: '100%',
   },
   channelCard: {
     width: (width - 48) / 2,

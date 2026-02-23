@@ -271,7 +271,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}>
                       <AntDesign name="plus" size={16} color="#fff" />
-                      <Text style={styles.adsButtonText}>Ads</Text>
+                      <Text style={styles.adsButtonText}>Vuna Points</Text>
                     </LinearGradient>
                   </TouchableOpacity>
                 )}

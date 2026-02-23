@@ -15,9 +15,9 @@ const ensureZenoConfigured = () => {
 
 // Map bundle to amount and duration
 const PLAN_CONFIG = {
-  week: { amount: 3000, interval: '7 days' },
-  month: { amount: 8000, interval: '30 days' },
-  year: { amount: 15000, interval: '365 days' },
+  week: { amount: 2000, interval: '7 days' },
+  month: { amount: 5000, interval: '30 days' },
+  year: { amount: 12000, interval: '365 days' },
 };
 
 // Start a ZenoPay Mobile Money payment
@@ -94,21 +94,24 @@ router.post('/zeno/start', async (req, res, next) => {
     // For now, use local format (0XXXXXXXXX) as shown in ZenoPay documentation
     const phoneForZeno = normalizedPhone; // Local format: 0XXXXXXXXX
 
+    // Send exact amount only: 2000 / 5000 / 12000 TZS — no fees or rounding added
+    const amountToSend = planInfo.amount;
+
     const payload = {
       order_id: orderId,
       buyer_email: data.email || 'user@eamax.app',
       buyer_name: data.name || data.externalId,
       buyer_phone: phoneForZeno, // Local format (0XXXXXXXXX) as per ZenoPay docs
-      amount: planInfo.amount,
+      amount: amountToSend,
       webhook_url: webhookUrl,
     };
 
     // eslint-disable-next-line no-console
-    console.log('[ZenoPay] Sending payment request:', {
+    console.log('[ZenoPay] Sending payment request (exact amount):', {
       orderId,
       phone: phoneForZeno,
       phonePrefix: phoneForZeno.substring(0, 3),
-      amount: planInfo.amount,
+      amount: amountToSend,
       bundle: data.bundle,
       network: phoneForZeno.startsWith('061') || phoneForZeno.startsWith('062')
         ? 'Halotel'

@@ -1,5 +1,24 @@
-import { Platform } from 'react-native';
+import { Platform, PermissionsAndroid } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getApp } from '@react-native-firebase/app';
+import {
+  getMessaging,
+  hasPermission,
+  requestPermission,
+  getToken,
+  onMessage,
+  getInitialNotification,
+  onNotificationOpenedApp,
+  onTokenRefresh,
+  AuthorizationStatus,
+} from '@react-native-firebase/messaging';
 import { userAPI, notificationsAPI } from '../config/api';
+
+const NOTIFICATION_PERMISSION_ASKED_KEY = 'notificationPermissionAsked';
+
+function getMessagingInstance() {
+  return getMessaging(getApp());
+}
 
 // Record notification click on backend so admin panel can show clicks
 function recordNotificationClick(messageOrData) {
@@ -14,35 +33,96 @@ function recordNotificationClick(messageOrData) {
 // sends with high priority and 28-day TTL, so when the device has internet again
 // (app minimized or in background), FCM delivers and we show in the status bar.
 
-// Request notification permissions (safe: no crash if Firebase/Notifee missing)
+// Check if we've already asked the user for notification permission
+export const hasAskedNotificationPermission = async () => {
+  try {
+    const value = await AsyncStorage.getItem(NOTIFICATION_PERMISSION_ASKED_KEY);
+    return value === 'true';
+  } catch {
+    return false;
+  }
+};
+
+// Mark that we have asked the user (so we never show the prompt again)
+export const markNotificationPermissionAsked = async () => {
+  try {
+    await AsyncStorage.setItem(NOTIFICATION_PERMISSION_ASKED_KEY, 'true');
+  } catch {}
+};
+
+// Check actual OS-level notification permission status.
+// Returns true if notifications are currently granted/authorized.
+// Returns false if denied, not determined, or Firebase unavailable.
+export const isNotificationPermissionGranted = async () => {
+  try {
+    // On Android 13+ check the real OS permission via PermissionsAndroid
+    if (Platform.OS === 'android' && Platform.Version >= 33) {
+      const status = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+      );
+      return status === true;
+    }
+
+    // On iOS (and Android < 13 where permission is auto-granted), use Firebase modular API
+    const messaging = getMessagingInstance();
+    const authStatus = await hasPermission(messaging);
+    return (
+      authStatus === AuthorizationStatus.AUTHORIZED ||
+      authStatus === AuthorizationStatus.PROVISIONAL
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Request notification permissions — handles Android 13+ POST_NOTIFICATIONS
+// and iOS authorization in one call. Safe: no crash if Firebase/Notifee missing.
 export const requestNotificationPermission = async () => {
   try {
     const notifee = require('@notifee/react-native').default;
     const { AndroidImportance } = require('@notifee/react-native');
-    const messaging = require('@react-native-firebase/messaging').default;
+    const messaging = getMessagingInstance();
 
     if (Platform.OS === 'android') {
+      // Step 1: Create the notification channel (required for Android 8+)
       await notifee.createChannel({
         id: 'default',
         name: 'Default Channel',
         importance: AndroidImportance.HIGH,
         sound: 'default',
       });
+
+      // Step 2: On Android 13+ (API 33+), request POST_NOTIFICATIONS via
+      // PermissionsAndroid — this triggers the real OS permission dialog.
+      if (Platform.Version >= 33) {
+        const status = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+          {
+            title: 'Ruhusu Arifa',
+            message: 'Ruhusu EaMax ikutumie arifa za mechi, channels mpya na ofa maalum.',
+            buttonPositive: 'Ruhusu',
+            buttonNegative: 'Kataa',
+          },
+        );
+        const granted = status === PermissionsAndroid.RESULTS.GRANTED;
+        console.log('[FCM] Android POST_NOTIFICATIONS:', status);
+        if (!granted) return false;
+      }
+
+      // Step 3: Also request via Notifee (handles its own internal state)
+      await notifee.requestPermission();
     }
 
-    const authStatus = await messaging().requestPermission();
+    // Step 4: Request via Firebase Messaging (needed on iOS + syncs Android state)
+    const authStatus = await requestPermission(messaging);
     const enabled =
-      authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-      authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+      authStatus === AuthorizationStatus.AUTHORIZED ||
+      authStatus === AuthorizationStatus.PROVISIONAL;
 
-    if (enabled) {
-      console.log('Notification permission granted');
-      return true;
-    }
-    console.log('Notification permission denied');
-    return false;
+    console.log('[FCM] Permission status:', authStatus, '| enabled:', enabled);
+    return enabled;
   } catch (error) {
-    console.warn('Notification permission error:', error?.message || error);
+    console.warn('[FCM] requestNotificationPermission error:', error?.message || error);
     return false;
   }
 };
@@ -50,8 +130,8 @@ export const requestNotificationPermission = async () => {
 // Get FCM token
 export const getFCMToken = async () => {
   try {
-    const messaging = require('@react-native-firebase/messaging').default;
-    const token = await messaging().getToken();
+    const messaging = getMessagingInstance();
+    const token = await getToken(messaging);
     console.log('FCM Token:', token);
     return token;
   } catch (error) {
@@ -148,8 +228,8 @@ export const initializeNotifications = async (externalId) => {
     await registerFCMToken(externalId, fcmToken);
 
     // When user comes back online, FCM may refresh the token; re-register so backend has it
-    const messaging = require('@react-native-firebase/messaging').default;
-    messaging().onTokenRefresh(async (token) => {
+    const messaging = getMessagingInstance();
+    onTokenRefresh(messaging, async (token) => {
       console.log('FCM token refreshed:', token);
       if (externalId) {
         await registerFCMToken(externalId, token);
@@ -172,10 +252,10 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
   _handlersSetup = true;
   let unsubscribeForeground = () => {};
   try {
-    const messaging = require('@react-native-firebase/messaging').default;
+    const messaging = getMessagingInstance();
     const notifee = require('@notifee/react-native').default;
 
-    unsubscribeForeground = messaging().onMessage(async (remoteMessage) => {
+    unsubscribeForeground = onMessage(messaging, async (remoteMessage) => {
       try {
         const { notification, data } = remoteMessage || {};
         if (notification) {
@@ -191,7 +271,7 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
       }
     });
 
-    messaging().getInitialNotification().then((remoteMessage) => {
+    getInitialNotification(messaging).then((remoteMessage) => {
       if (remoteMessage) {
         recordNotificationClick(remoteMessage);
         if (onNotificationReceived) onNotificationReceived(remoteMessage);
@@ -204,7 +284,7 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
       }
     }).catch(() => {});
 
-    messaging().onNotificationOpenedApp((remoteMessage) => {
+    onNotificationOpenedApp(messaging, (remoteMessage) => {
       if (remoteMessage) {
         recordNotificationClick(remoteMessage);
         if (onNotificationReceived) onNotificationReceived(remoteMessage);

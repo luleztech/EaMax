@@ -17,6 +17,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import ImageCarousel from './ImageCarousel';
+import ShimmerPlaceholder from './ShimmerPlaceholder';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -29,6 +30,7 @@ const { width } = Dimensions.get('window');
 
 const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
   const [activeTab, setActiveTab] = useState('home');
+  const [initialLoading, setInitialLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [carouselItems, setCarouselItems] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -261,14 +263,19 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
   };
 
   useEffect(() => {
-    loadSlides();
-    loadChannels();
-    refreshUserPoints();
-    
-    // Get user ID
+    let cancelled = false;
+    (async () => {
+      try {
+        await Promise.all([loadSlides(), loadChannels()]);
+        if (!cancelled) setInitialLoading(false);
+      } catch (_) {
+        if (!cancelled) setInitialLoading(false);
+      }
+    })();
     AsyncStorage.getItem('userId').then((id) => {
       if (id) setUserId(id);
     });
+    return () => { cancelled = true; };
   }, []);
 
   // Update currentUserPoints when userPoints prop changes
@@ -294,7 +301,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
 
   const genres = [
     { name: 'Tamthilia', key: 'tamthilia', icon: 'drama-masks', color: '#ec4899' },
-    { name: 'Movies', key: 'movies', icon: 'movie', color: '#3b82f6' },
+    { name: 'Filamu', key: 'movies', icon: 'movie', color: '#3b82f6' },
     { name: 'Wanyama', key: 'wanyama', icon: 'paw', color: '#10b981' },
     { name: 'Katuni', key: 'katuni', icon: 'animation', color: '#f59e0b' },
     { name: 'Habari', key: 'habari', icon: 'newspaper-variant', color: '#ef4444' },
@@ -322,7 +329,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               <Text style={styles.pointsText}>{userPoints} pts</Text>
             </View>
             {!isPremium && (
-              <TouchableOpacity style={styles.premiumButton}>
+              <TouchableOpacity style={styles.premiumButton} onPress={handleGoPremium} activeOpacity={0.8}>
                 <AntDesign name="star" size={14} color="#fff" />
                 <Text style={styles.premiumButtonText}>Go Premium</Text>
               </TouchableOpacity>
@@ -418,7 +425,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                     ) : (
                                       <>
                                         <Icon name="play" size={16} color="#fff" />
-                                        <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                        <Text style={styles.searchChannelWatchText}>Play Now</Text>
                                       </>
                                     )}
                                   </TouchableOpacity>
@@ -463,7 +470,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                   ) : (
                                     <>
                                       <Icon name="play" size={16} color="#fff" />
-                                      <Text style={styles.searchChannelWatchText}>Watch Now</Text>
+                                      <Text style={styles.searchChannelWatchText}>Play Now</Text>
                                     </>
                                   )}
                                 </TouchableOpacity>
@@ -487,6 +494,39 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }>
+          {(initialLoading || refreshing) ? (
+            <View style={styles.moviesShimmerContainer}>
+              <View style={styles.moviesShimmerCarousel}>
+                <ShimmerPlaceholder
+                  width={width - 32}
+                  height={180}
+                  borderRadius={16}
+                  baseColor="#1e1b4b"
+                  highlightColor="rgba(168, 85, 247, 0.18)"
+                />
+              </View>
+              <View style={styles.moviesShimmerCategory}>
+                <View style={styles.sectionHeader}>
+                  <ShimmerPlaceholder width={120} height={20} borderRadius={6} />
+                  <ShimmerPlaceholder width={72} height={16} borderRadius={6} />
+                </View>
+                <View style={styles.moviesShimmerGrid}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <View key={i} style={styles.shimmerChannelCardWrap}>
+                      <ShimmerPlaceholder
+                        width={(width - 48) / 2}
+                        height={120}
+                        borderRadius={14}
+                        baseColor="#1e1b4b"
+                        highlightColor="rgba(168, 85, 247, 0.15)"
+                      />
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </View>
+          ) : (
+            <>
           {/* Image Carousel */}
           {carouselItems.length > 0 && (
             <ImageCarousel
@@ -550,7 +590,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                 ) : (
                                   <>
                                     <Icon name="play" size={16} color="#fff" />
-                                    <Text style={styles.channelWatchText}>Watch Now</Text>
+                                    <Text style={styles.channelWatchText}>Play Now</Text>
                                   </>
                                 )}
                               </TouchableOpacity>
@@ -595,7 +635,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                               ) : (
                                 <>
                                   <Icon name="play" size={16} color="#fff" />
-                                  <Text style={styles.channelWatchText}>Watch Now</Text>
+                                  <Text style={styles.channelWatchText}>Play Now</Text>
                                 </>
                               )}
                             </TouchableOpacity>
@@ -608,6 +648,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               </View>
             );
           })}
+            </>
+          )}
       </ScrollView>
       )}
 
@@ -626,7 +668,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               styles.navText,
               activeTab === 'home' && styles.navTextActive,
             ]}>
-            Home
+            Nyumbani
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -658,7 +700,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               styles.navText,
               activeTab === 'payments' && styles.navTextActive,
             ]}>
-            Payments
+            Malipo
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -674,7 +716,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               styles.navText,
               activeTab === 'profile' && styles.navTextActive,
             ]}>
-            Profile
+            Salio
           </Text>
         </TouchableOpacity>
       </View>
@@ -1004,6 +1046,35 @@ const styles = StyleSheet.create({
   },
   scrollContentContainer: {
     paddingBottom: 100,
+  },
+  moviesShimmerContainer: {
+    padding: 16,
+    paddingBottom: 100,
+  },
+  moviesShimmerCarousel: {
+    marginBottom: 24,
+    alignSelf: 'center',
+  },
+  moviesShimmerCategory: {
+    marginBottom: 24,
+  },
+  moviesShimmerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+  },
+  shimmerChannelCardWrap: {
+    width: (width - 48) / 2,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 8,
   },
   bottomNav: {
     position: 'absolute',

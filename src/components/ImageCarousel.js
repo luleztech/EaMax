@@ -143,7 +143,7 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
                       }
                     }}>
                     <Icon name="play" size={20} color="#fff" />
-                    <Text style={styles.watchButtonText}>Watch Now</Text>
+                    <Text style={styles.watchButtonText}>Play Now</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -160,9 +160,9 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
         <View style={styles.lockedModalOverlay}>
           <View style={styles.lockedModalContent}>
             <Icon name="lock" size={40} color="#fbbf24" style={styles.lockedModalIcon} />
-            <Text style={styles.lockedModalTitle}>Content Imefungwa</Text>
+            <Text style={styles.lockedModalTitle}>Hauna Kifurushi</Text>
             <Text style={styles.lockedModalMessage}>
-              Jiandikishe Premium au angalia matangazo kupata points (tangazo 1 = {POINTS_PER_AD} pts) uangalie bure. Points zinaongezwa kwenye profile yako.
+              lipia kifurushi cha premium au angalia matangazo kupata points (tangazo 1 = {POINTS_PER_AD} pts) uangalie bure. Points zinaongezwa kwenye profile yako.
             </Text>
             <TouchableOpacity
               style={styles.lockedModalPrimaryBtn}
