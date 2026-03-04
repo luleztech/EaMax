@@ -332,6 +332,7 @@ const StreamingApp = () => {
               onWatchAd={handleWatchAd}
               onPaymentsActiveChange={setIsPaymentsActive}
               onPointsRefresh={refreshUserPoints}
+              onSwitchToMovies={() => switchApp('movies')}
             />
           ) : (
             <MoviesApp

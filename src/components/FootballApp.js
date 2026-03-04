@@ -30,7 +30,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { width, height } = Dimensions.get('window');
 const BOTTOM_NAV_BASE_HEIGHT = 56;
 
-const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
+const FootballApp = ({
+  isPremium,
+  premiumToggleOn,
+  userPoints,
+  onWatchAd,
+  onPaymentsActiveChange,
+  onPointsRefresh,
+  onSwitchToMovies,
+}) => {
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
   const contentBottomPadding = BOTTOM_NAV_BASE_HEIGHT + bottomInset;
@@ -164,6 +172,16 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
     const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
     if (pts <= 0) return 'Bure';
     return withPts ? `${pts} pts` : `${pts}`;
+  };
+
+  const handlePlayCarouselSlide = (slide) => {
+    if (!slide?.videoUrl) return;
+    setPlayingChannel({
+      id: slide.id || null,
+      name: slide.title || 'Video',
+      streamUrl: slide.videoUrl,
+    });
+    setVideoPlayerVisible(true);
   };
 
   // Open player only when we have a stream URL from backend (admin) – guarantees playback
@@ -497,30 +515,33 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
           }>
           {(initialLoading || refreshing) ? (
             <View style={styles.shimmerContainer}>
+              {/* Hero carousel shimmer */}
               <View style={styles.shimmerCarouselWrap}>
                 <ShimmerPlaceholder
                   width={width - 32}
-                  height={180}
-                  borderRadius={16}
-                  baseColor="#1e1b4b"
-                  highlightColor="rgba(74, 222, 128, 0.18)"
+                  height={190}
+                  borderRadius={20}
+                  baseColor="#020617"
+                  highlightColor="rgba(74, 222, 128, 0.16)"
                 />
               </View>
+
+              {/* Trending channels shimmer */}
               <View style={styles.homeChannelsSection}>
                 <View style={styles.sectionHeader}>
                   <ShimmerPlaceholder
-                    width={120}
+                    width={130}
                     height={20}
-                    borderRadius={6}
-                    baseColor="#1e1b4b"
-                    highlightColor="rgba(74, 222, 128, 0.15)"
+                    borderRadius={10}
+                    baseColor="#020617"
+                    highlightColor="rgba(74, 222, 128, 0.18)"
                   />
                   <ShimmerPlaceholder
-                    width={72}
+                    width={70}
                     height={16}
-                    borderRadius={6}
-                    baseColor="#1e1b4b"
-                    highlightColor="rgba(74, 222, 128, 0.15)"
+                    borderRadius={10}
+                    baseColor="#020617"
+                    highlightColor="rgba(74, 222, 128, 0.18)"
                   />
                 </View>
                 <View style={styles.homeChannelsGrid}>
@@ -529,29 +550,31 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                       <ShimmerPlaceholder
                         width={(width - 48) / 2}
                         height={120}
-                        borderRadius={14}
-                        baseColor="#1e1b4b"
-                        highlightColor="rgba(74, 222, 128, 0.15)"
+                        borderRadius={18}
+                        baseColor="#020617"
+                        highlightColor="rgba(74, 222, 128, 0.2)"
                       />
                     </View>
                   ))}
                 </View>
               </View>
-              <View style={[styles.homeChannelsSection, { marginTop: 8 }]}>
+
+              {/* Matches section shimmer */}
+              <View style={[styles.homeChannelsSection, { marginTop: 10 }]}>
                 <View style={styles.sectionHeader}>
                   <ShimmerPlaceholder
-                    width={120}
+                    width={150}
                     height={20}
-                    borderRadius={6}
-                    baseColor="#1e1b4b"
-                    highlightColor="rgba(74, 222, 128, 0.15)"
+                    borderRadius={10}
+                    baseColor="#020617"
+                    highlightColor="rgba(74, 222, 128, 0.18)"
                   />
                   <ShimmerPlaceholder
-                    width={72}
+                    width={70}
                     height={16}
-                    borderRadius={6}
-                    baseColor="#1e1b4b"
-                    highlightColor="rgba(74, 222, 128, 0.15)"
+                    borderRadius={10}
+                    baseColor="#020617"
+                    highlightColor="rgba(74, 222, 128, 0.18)"
                   />
                 </View>
                 <View style={styles.matchesShimmerRow}>
@@ -559,10 +582,10 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                     <ShimmerPlaceholder
                       key={i}
                       width={width - 32}
-                      height={72}
-                      borderRadius={12}
-                      baseColor="#1e1b4b"
-                      highlightColor="rgba(74, 222, 128, 0.15)"
+                      height={76}
+                      borderRadius={16}
+                      baseColor="#020617"
+                      highlightColor="rgba(74, 222, 128, 0.2)"
                     />
                   ))}
                 </View>
@@ -577,9 +600,10 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
             onGoPremium={handleGoPremium}
             isPremium={isPremium}
             premiumToggleOn={premiumToggleOn}
+            onPlaySlide={handlePlayCarouselSlide}
           />
 
-          {/* Channels preview (4 channels + View all → channels tab) */}
+          {/* Channels preview (Tranding) */}
           <View style={styles.homeChannelsSection}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Tranding</Text>
@@ -593,7 +617,7 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
               </View>
             ) : (
               <View style={styles.homeChannelsGrid}>
-                {(footballChannels.slice(0, 4)).map((channel) => (
+                {(footballChannels.slice(0, 6)).map((channel) => (
                   <TouchableOpacity
                     key={channel.id}
                     style={styles.homeChannelCard}
@@ -690,6 +714,36 @@ const FootballApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaym
                 ))}
               </View>
             )}
+          </View>
+
+          {/* CTA: Switch to Movies */}
+          <View style={styles.moviesCtaSection}>
+            <TouchableOpacity
+              style={styles.moviesCtaButton}
+              activeOpacity={0.9}
+              onPress={() => {
+                if (onSwitchToMovies) {
+                  onSwitchToMovies();
+                }
+              }}>
+              <LinearGradient
+                colors={['#7c3aed', '#ec4899']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.moviesCtaGradient}>
+                <View style={styles.moviesCtaContent}>
+                  <View style={styles.moviesCtaTextWrap}>
+                    <Text style={styles.moviesCtaTitle}>Tazama movies hapa</Text>
+                    <Text style={styles.moviesCtaSubtitle}>
+                      Fungua sehemu ya movies na uone channels zote za filamu.
+                    </Text>
+                  </View>
+                  <View style={styles.moviesCtaIconWrap}>
+                    <Icon name="movie-open" size={26} color="#f9fafb" />
+                  </View>
+                </View>
+              </LinearGradient>
+            </TouchableOpacity>
           </View>
 
           {/* Upcoming Matches */}
@@ -1128,6 +1182,48 @@ const styles = StyleSheet.create({
   viewAllText: {
     color: '#4ade80',
     fontSize: 14,
+  },
+  moviesCtaSection: {
+    paddingHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  moviesCtaButton: {
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  moviesCtaGradient: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+  },
+  moviesCtaContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  moviesCtaTextWrap: {
+    flex: 1,
+    marginRight: 8,
+  },
+  moviesCtaTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#f9fafb',
+    marginBottom: 4,
+  },
+  moviesCtaSubtitle: {
+    fontSize: 13,
+    color: '#e5e7eb',
+  },
+  moviesCtaIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15,23,42,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   matchCard: {
     backgroundColor: 'rgba(31, 41, 55, 0.5)',

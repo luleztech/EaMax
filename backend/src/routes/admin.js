@@ -223,12 +223,32 @@ router.post('/users/:id/special-access', async (req, res, next) => {
   }
 });
 
-// Admin: create or update channels
+// Admin: list channels (with view counts for Most Watched)
 router.get('/channels', async (req, res, next) => {
   try {
-    const result = await query(
-      'SELECT * FROM channels ORDER BY created_at DESC LIMIT 500',
-    );
+    let result;
+    try {
+      result = await query(`
+        SELECT c.*,
+               COALESCE(v.view_count, 0)::int AS view_count
+        FROM channels c
+        LEFT JOIN (
+          SELECT channel_id, COUNT(*) AS view_count
+          FROM channel_watch_events
+          GROUP BY channel_id
+        ) v ON c.id = v.channel_id
+        ORDER BY c.created_at DESC
+        LIMIT 500
+      `);
+    } catch (e) {
+      if (e.message && e.message.includes('channel_watch_events')) {
+        result = await query(
+          'SELECT *, 0 AS view_count FROM channels ORDER BY created_at DESC LIMIT 500',
+        );
+      } else {
+        throw e;
+      }
+    }
     return res.json(result.rows);
   } catch (err) {
     return next(err);
@@ -393,9 +413,9 @@ router.get('/carousel', async (req, res, next) => {
 router.post('/carousel', async (req, res, next) => {
   try {
     const bodySchema = z.object({
-      title: z.string().min(1),
-      subtitle: z.string().optional(),
-      badge: z.string().optional(),
+      title: z.union([z.string(), z.null()]).optional(),
+      subtitle: z.union([z.string(), z.null()]).optional(),
+      badge: z.union([z.string(), z.null()]).optional(),
       imageUrl: z.string().optional(),
       gradientStart: z.string().optional(),
       gradientMid: z.string().optional(),
@@ -418,7 +438,7 @@ router.post('/carousel', async (req, res, next) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
-        data.title,
+        data.title || null,
         data.subtitle || null,
         data.badge || null,
         data.imageUrl || null,
@@ -447,9 +467,9 @@ router.put('/carousel/:id', async (req, res, next) => {
       id: z.string().regex(/^\d+$/),
     });
     const bodySchema = z.object({
-      title: z.string().optional(),
-      subtitle: z.string().optional(),
-      badge: z.string().optional(),
+      title: z.union([z.string(), z.null()]).optional(),
+      subtitle: z.union([z.string(), z.null()]).optional(),
+      badge: z.union([z.string(), z.null()]).optional(),
       imageUrl: z.string().optional(),
       gradientStart: z.string().optional(),
       gradientMid: z.string().optional(),

@@ -118,6 +118,49 @@ router.post('/:externalId/ads/watched', async (req, res, next) => {
   }
 });
 
+// Record channel watch (for "Most Watched" analytics in admin)
+router.post('/:externalId/channels/:channelId/watch', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      externalId: z.string().min(1),
+      channelId: z.string().min(1),
+    });
+    const { externalId, channelId } = paramsSchema.parse(req.params);
+
+    const channelIdNum = parseInt(channelId, 10);
+    if (Number.isNaN(channelIdNum)) {
+      return res.status(400).json({ error: 'Invalid channel id' });
+    }
+
+    const userResult = await query(
+      'SELECT id FROM users WHERE external_id = $1',
+      [externalId],
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const userId = userResult.rows[0].id;
+
+    const channelResult = await query(
+      'SELECT id FROM channels WHERE id = $1 AND is_active = TRUE',
+      [channelIdNum],
+    );
+    if (channelResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+
+    await query(
+      `INSERT INTO channel_watch_events (user_id, channel_id)
+       VALUES ($1, $2)`,
+      [userId, channelIdNum],
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Spend points to watch a channel (per view – no persistent unlock; each watch requires points again)
 router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) => {
   try {

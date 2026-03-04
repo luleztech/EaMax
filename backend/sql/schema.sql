@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS ad_events (
 CREATE INDEX IF NOT EXISTS idx_ad_events_user ON ad_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_ad_events_watched_at ON ad_events(watched_at);
 
+CREATE TABLE IF NOT EXISTS channel_watch_events (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  channel_id INTEGER NOT NULL REFERENCES channels(id),
+  watched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_channel_watch_events_channel ON channel_watch_events(channel_id);
+CREATE INDEX IF NOT EXISTS idx_channel_watch_events_watched_at ON channel_watch_events(watched_at);
+
 CREATE TABLE IF NOT EXISTS subscription_payments (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -79,7 +88,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE TABLE IF NOT EXISTS carousel_slides (
   id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
+  title TEXT,
   subtitle TEXT,
   badge TEXT,
   image_url TEXT,

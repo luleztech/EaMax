@@ -72,6 +72,26 @@ export const userAPI = {
     });
   },
 
+  // Record channel watch (for admin "Most Watched" analytics)
+  recordChannelWatch: async (externalId, channelId) => {
+    return apiRequest(`/api/users/${externalId}/channels/${channelId}/watch`, {
+      method: 'POST',
+    });
+  },
+
+  // Get unlocked carousel slide IDs (for points-to-unlock slides)
+  getUnlockedCarouselSlides: async (externalId) => {
+    const data = await apiRequest(`/api/users/${externalId}/carousel-unlocked`);
+    return data.slideIds || [];
+  },
+
+  // Unlock carousel slide with points (one-time)
+  unlockCarouselSlide: async (externalId, slideId) => {
+    return apiRequest(`/api/users/${externalId}/carousel/${slideId}/unlock`, {
+      method: 'POST',
+    });
+  },
+
   // Register FCM token for push notifications
   registerFCMToken: async (externalId, fcmToken) => {
     return apiRequest(`/api/users/${externalId}/fcm-token`, {

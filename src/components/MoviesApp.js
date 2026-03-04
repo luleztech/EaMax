@@ -175,6 +175,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
+  const handlePlayCarouselSlide = (slide) => {
+    if (!slide?.videoUrl) return;
+    setPlayingChannel({
+      id: slide.id || null,
+      name: slide.title || 'Video',
+      streamUrl: slide.videoUrl,
+    });
+    setVideoPlayerVisible(true);
+  };
+
   // Open player immediately (pro: instant UI), then set stream URL when we have it from admin
   const openPlayerWithChannel = (channel, streamUrl) => {
     setPlayingChannel({ ...channel, streamUrl: streamUrl || channel.streamUrl || null });
@@ -542,6 +552,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
               onGoPremium={handleGoPremium}
               isPremium={isPremium}
               premiumToggleOn={premiumToggleOn}
+              onPlaySlide={handlePlayCarouselSlide}
             />
           )}
 

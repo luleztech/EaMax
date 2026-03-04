@@ -23,6 +23,7 @@ import Video from 'react-native-video';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import { lockToPortrait, unlockAllOrientations, setPlayerVisible } from '../utils/orientation';
+import { userAPI } from '../config/api';
 
 let WebView = null;
 try {
@@ -85,6 +86,11 @@ export default function VideoPlayer({
   const [isPortrait, setIsPortrait] = useState(true);
   const [rotateHintDismissed, setRotateHintDismissed] = useState(false);
   const rotateAnim = useRef(new Animated.Value(0)).current;
+  const [selectedVideoTrack, setSelectedVideoTrack] = useState({
+    type: 'resolution',
+    value: 240,
+  });
+  const recordedWatchRef = useRef(null);
 
   const url = videoUrl || '';
   const isWebPage = isWebPageUrl(url);
@@ -108,6 +114,10 @@ export default function VideoPlayer({
       setSourceKey((k) => k + 1);
       setLayoutSize({ width: 0, height: 0 });
       setUseWebView(startWithWebView);
+      setSelectedVideoTrack({
+        type: 'resolution',
+        value: 240,
+      });
       setRotateHintDismissed(false);
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
@@ -117,6 +127,18 @@ export default function VideoPlayer({
     }
     return () => setPlayerVisible(false);
   }, [visible, url, startWithWebView]);
+
+  // Record channel watch for admin "Most Watched" analytics (once per open)
+  useEffect(() => {
+    if (!visible || !userId || !channelId) {
+      if (!visible) recordedWatchRef.current = null;
+      return;
+    }
+    const key = `${userId}-${channelId}`;
+    if (recordedWatchRef.current === key) return;
+    recordedWatchRef.current = key;
+    userAPI.recordChannelWatch(userId, String(channelId)).catch(() => {});
+  }, [visible, userId, channelId]);
 
   useEffect(() => {
     const updateOrientation = () => {
@@ -272,6 +294,7 @@ export default function VideoPlayer({
             resizeMode="contain"
             paused={paused}
             controls={true}
+            selectedVideoTrack={selectedVideoTrack}
             onLoad={onLoad}
             onReadyForDisplay={onReadyForDisplay}
             onProgress={onProgress}

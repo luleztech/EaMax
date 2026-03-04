@@ -172,11 +172,12 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
 
       const top = channels
         .filter((ch) => ch.is_active)
+        .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
         .slice(0, 5)
         .map((ch, index) => ({
           title: ch.name,
-          views: ch.is_active ? 'Active channel' : 'Inactive channel',
-          change: '+0%',
+          views: typeof ch.view_count === 'number' ? `${ch.view_count} views` : (ch.view_count != null ? `${ch.view_count} views` : '0 views'),
+          change: typeof ch.view_count === 'number' && ch.view_count > 0 ? '—' : '—',
           icon:
             ch.category === 'football'
               ? 'soccer'
@@ -292,18 +293,13 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   };
 
   const handleSaveSlide = async () => {
-    if (!slideTitle.trim()) {
-      showStatusModal('error', 'Missing title', 'Please enter slide title.');
-      return;
-    }
-
     if (!slideImageUrl.trim()) {
       showStatusModal('error', 'Missing image', 'Please enter carousel image URL.');
       return;
     }
 
     const payload = {
-      title: slideTitle.trim(),
+      title: slideTitle.trim() ? slideTitle.trim() : null,
       subtitle: slideSubtitle.trim() || undefined,
       badge: slideBadge.trim() || undefined,
       imageUrl: slideImageUrl.trim(),
@@ -329,7 +325,8 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       showStatusModal('success', 'Slide saved', 'Carousel slide saved successfully.');
     } catch (error) {
       console.error('Failed to save slide:', error);
-      showStatusModal('error', 'Save failed', 'Failed to save slide. Please try again.');
+      const message = error?.message || 'Failed to save slide. Please try again.';
+      showStatusModal('error', 'Save failed', message);
     } finally {
       setSavingSlide(false);
     }
@@ -541,7 +538,9 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                         <Text style={styles.carouselBadgeText}>{slide.badge}</Text>
                       </View>
                     )}
-                    <Text style={styles.carouselTitle}>{slide.title}</Text>
+                    {slide.title ? (
+                      <Text style={styles.carouselTitle}>{slide.title}</Text>
+                    ) : null}
                     {slide.subtitle && (
                       <Text style={styles.carouselSubtitle}>{slide.subtitle}</Text>
                     )}
@@ -600,7 +599,9 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                         <Text style={styles.carouselBadgeText}>{slide.badge}</Text>
                       </View>
                     )}
-                    <Text style={styles.carouselTitle}>{slide.title}</Text>
+                    {slide.title ? (
+                      <Text style={styles.carouselTitle}>{slide.title}</Text>
+                    ) : null}
                     {slide.subtitle && (
                       <Text style={styles.carouselSubtitle}>{slide.subtitle}</Text>
                     )}
@@ -834,10 +835,10 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                     <Text style={[styles.categoryButtonText, slideCategory === 'habari' && styles.categoryButtonTextActive]}>Habari</Text>
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.inputLabel}>Title *</Text>
+                <Text style={styles.inputLabel}>Title (optional)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. MAN UTD vs LIVERPOOL"
+                  placeholder="e.g. MAN UTD vs LIVERPOOL — leave empty if no title"
                   placeholderTextColor="#6b7280"
                   value={slideTitle}
                   onChangeText={setSlideTitle}

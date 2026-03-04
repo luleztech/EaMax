@@ -11,20 +11,11 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { RewardedAd, RewardedAdEventType, AdEventType } from 'react-native-google-mobile-ads';
 import { 
   REWARDED_AD_UNIT_ID, 
-  TEST_REWARDED_ID,
-  USE_TEST_ADS, 
   getPreloadedRewardedAd, 
   preloadRewardedAd 
 } from '../config/ads';
 import { userAPI } from '../config/api';
 import { getOrCreateUserId } from '../services/userId';
-
-// Helper function to get the correct ad unit ID
-const getRewardedUnitId = () => {
-  const unitId = USE_TEST_ADS ? TEST_REWARDED_ID : REWARDED_AD_UNIT_ID;
-  console.log('[AdModal] Using ad unit ID:', unitId);
-  return unitId;
-};
 
 const POINTS_PER_REWARD = 20;
 const MAX_AUTO_RETRIES = 2;
@@ -118,7 +109,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
           console.log(`[AdModal] Retrying ad load (${loadRetriesRef.current}/${MAX_AUTO_RETRIES})`);
           setStatus('loading');
           
-          const retryUnitId = getRewardedUnitId();
+          const retryUnitId = REWARDED_AD_UNIT_ID;
           const newAd = RewardedAd.createForAdRequest(retryUnitId, { 
             requestNonPersonalizedAdsOnly: false 
           });

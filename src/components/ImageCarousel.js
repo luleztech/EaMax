@@ -8,7 +8,6 @@ import {
   Animated,
   ScrollView,
   ImageBackground,
-  Linking,
   Modal,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -19,7 +18,7 @@ const CAROUSEL_WIDTH = width - 32; // Full width minus padding
 const AUTO_SLIDE_INTERVAL = 4000; // 4 seconds
 const POINTS_PER_AD = 20;
 
-const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggleOn }) => {
+const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggleOn, onPlaySlide }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [lockedModalVisible, setLockedModalVisible] = useState(false);
   const scrollViewRef = useRef(null);
@@ -100,7 +99,9 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
                   </View>
                 )}
                 <View style={styles.slideContent}>
-                  <Text style={styles.slideTitle}>{item.title}</Text>
+                  {item.title ? (
+                    <Text style={styles.slideTitle}>{item.title}</Text>
+                  ) : null}
                   {item.subtitle && (
                     <Text style={styles.slideSubtitle}>{item.subtitle}</Text>
                   )}
@@ -118,23 +119,10 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
                   )}
                   <TouchableOpacity
                     style={styles.watchButton}
-                    onPress={async () => {
-                      if (item.videoUrl && isPremium) {
-                        try {
-                          const supported = await Linking.canOpenURL(item.videoUrl);
-                          if (supported) {
-                            await Linking.openURL(item.videoUrl);
-                          }
-                        } catch (error) {
-                          console.error('Failed to open video URL:', error);
-                        }
-                      } else if (isPremium) {
-                        // Premium, no video URL – do nothing or open link if any
-                        if (item.videoUrl) {
-                          try {
-                            const supported = await Linking.canOpenURL(item.videoUrl);
-                            if (supported) await Linking.openURL(item.videoUrl);
-                          } catch (e) {}
+                    onPress={() => {
+                      if (isPremium) {
+                        if (item.videoUrl && onPlaySlide) {
+                          onPlaySlide(item);
                         }
                       } else if (premiumToggleOn) {
                         if (onGoPremium) onGoPremium();
