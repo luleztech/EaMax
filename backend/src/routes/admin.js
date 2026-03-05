@@ -1,6 +1,6 @@
 const express = require('express');
 const { z } = require('zod');
-const { query } = require('../db');
+const { query, pool } = require('../db');
 
 const router = express.Router();
 
@@ -72,8 +72,8 @@ router.get('/dashboard', async (req, res, next) => {
       query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
       payments_exists
         ? query(
-            "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
-          )
+          "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
+        )
         : Promise.resolve({ rows: [{ total: 0 }] }),
     ]);
 
@@ -229,7 +229,9 @@ router.get('/channels', async (req, res, next) => {
     let result;
     try {
       result = await query(`
-        SELECT c.*,
+        SELECT c.id, c.name, c.category, c.stream_url, c.thumbnail_url, c.thumbnail_emoji,
+               c.color, c.points_required, c.is_active, c.drm_protected, c.drm_clear_key,
+               c.owner_user_id, c.created_at,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
         LEFT JOIN (
@@ -242,56 +244,82 @@ router.get('/channels', async (req, res, next) => {
       `);
     } catch (e) {
       if (e.message && e.message.includes('channel_watch_events')) {
-        result = await query(
-          'SELECT *, 0 AS view_count FROM channels ORDER BY created_at DESC LIMIT 500',
-        );
+        result = await query(`
+          SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji,
+                 color, points_required, is_active, drm_protected, drm_clear_key,
+                 owner_user_id, created_at,
+                 0 AS view_count
+          FROM channels
+          ORDER BY created_at DESC
+          LIMIT 500
+        `);
       } else {
         throw e;
       }
     }
-    return res.json(result.rows);
+    return res.json(
+      result.rows.map((row) => {
+        const clearKey = row.drm_clear_key != null ? String(row.drm_clear_key) : (row.drmClearKey != null ? String(row.drmClearKey) : '');
+        return {
+          ...row,
+          drm_clear_key: row.drm_clear_key,
+          drmClearKey: clearKey,
+        };
+      })
+    );
   } catch (err) {
     return next(err);
   }
 });
 
 router.post('/channels', async (req, res, next) => {
-    try {
-      const bodySchema = z.object({
-        name: z.string().min(1),
-        category: z.enum(['football', 'movies', 'habari']),
-        streamUrl: z.string().url(),
-        thumbnailUrl: z.string().url().optional(),
-        thumbnailEmoji: z.string().max(8).optional(),
-        color: z.string().max(16).optional(),
-        isActive: z.boolean().optional().default(true),
-        drmProtected: z.boolean().optional().default(false),
-        ownerUserId: z.number().int().optional(),
-        pointsRequired: z.coerce.number().int().min(0).optional().default(0),
-      });
+  try {
+    const bodySchema = z.object({
+      name: z.string().min(1),
+      category: z.enum(['football', 'movies', 'habari']),
+      streamUrl: z.string().url(),
+      thumbnailUrl: z.string().url().optional(),
+      thumbnailEmoji: z.string().max(8).optional(),
+      color: z.string().max(16).optional(),
+      isActive: z.boolean().optional().default(true),
+      drmProtected: z.boolean().optional().default(false),
+      drmClearKey: z.string().max(2048).optional().nullable(),
+      ownerUserId: z.number().int().optional(),
+      pointsRequired: z.coerce.number().int().min(0).optional().default(0),
+    });
 
-      const data = bodySchema.parse(req.body);
+    const data = bodySchema.parse(req.body);
 
-      const result = await query(
-        `INSERT INTO channels
-         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, owner_user_id, points_required)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    const drmKeyValue = Object.prototype.hasOwnProperty.call(req.body, 'drmClearKey')
+      ? (req.body.drmClearKey != null && String(req.body.drmClearKey).trim() !== ''
+        ? String(req.body.drmClearKey).trim()
+        : null)
+      : null;
+
+    const result = await query(
+      `INSERT INTO channels
+         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_clear_key, owner_user_id, points_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
-        [
-          data.name,
-          data.category,
-          data.streamUrl,
-          data.thumbnailUrl || null,
-          data.thumbnailEmoji || null,
-          data.color || null,
-          data.isActive,
-          data.drmProtected,
-          data.ownerUserId || null,
-          data.pointsRequired ?? 0,
-        ],
-      );
+      [
+        data.name,
+        data.category,
+        data.streamUrl,
+        data.thumbnailUrl || null,
+        data.thumbnailEmoji || null,
+        data.color || null,
+        data.isActive,
+        data.drmProtected,
+        drmKeyValue,
+        data.ownerUserId || null,
+        data.pointsRequired ?? 0,
+      ],
+    );
 
-    return res.status(201).json(result.rows[0]);
+    return res.status(201).json({
+      ...result.rows[0],
+      drmClearKey: result.rows[0].drm_clear_key ?? result.rows[0].drmClearKey,
+    });
   } catch (err) {
     return next(err);
   }
@@ -306,17 +334,19 @@ router.put('/channels/:id', async (req, res, next) => {
       name: z.string().min(1).optional(),
       category: z.enum(['football', 'movies', 'habari']).optional(),
       streamUrl: z.string().url().optional(),
-      thumbnailUrl: z.string().url().optional(),
-      thumbnailEmoji: z.string().max(8).optional(),
+      thumbnailUrl: z.string().url().optional().nullable(),
+      thumbnailEmoji: z.string().max(8).optional().nullable(),
       color: z.string().max(16).optional(),
       isActive: z.boolean().optional(),
       drmProtected: z.boolean().optional(),
+      drmClearKey: z.string().max(2048).optional().nullable(),
       pointsRequired: z.coerce.number().int().min(0).optional(),
     });
 
     const { id } = paramsSchema.parse(req.params);
     const data = bodySchema.parse(req.body);
 
+    const channelId = Number(id);
     const fields = [];
     const values = [];
     let idx = 1;
@@ -331,7 +361,11 @@ router.put('/channels/:id', async (req, res, next) => {
       is_active: data.isActive,
       drm_protected: data.drmProtected,
       points_required: data.pointsRequired,
+      drm_clear_key: data.drmClearKey !== undefined
+        ? (data.drmClearKey != null && String(data.drmClearKey).trim() !== '' ? String(data.drmClearKey).trim() : null)
+        : undefined,
     };
+
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) {
         fields.push(`${key} = $${idx}`);
@@ -344,13 +378,10 @@ router.put('/channels/:id', async (req, res, next) => {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
-    values.push(Number(id));
+    values.push(channelId);
 
     const updated = await query(
-      `UPDATE channels
-          SET ${fields.join(', ')}
-        WHERE id = $${idx}
-        RETURNING *`,
+      `UPDATE channels SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
       values,
     );
 
@@ -358,7 +389,11 @@ router.put('/channels/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Channel not found' });
     }
 
-    return res.json(updated.rows[0]);
+    const row = updated.rows[0];
+    return res.json({
+      ...row,
+      drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
+    });
   } catch (err) {
     return next(err);
   }
@@ -366,22 +401,43 @@ router.put('/channels/:id', async (req, res, next) => {
 
 router.delete('/channels/:id', async (req, res, next) => {
   try {
-    const paramsSchema = z.object({
-      id: z.string().regex(/^\d+$/),
-    });
-    const { id } = paramsSchema.parse(req.params);
-    const channelId = Number(id);
-
-    // Delete dependent rows first (user_unlocked_channels references channels)
-    await query('DELETE FROM user_unlocked_channels WHERE channel_id = $1', [channelId]);
-
-    const result = await query('DELETE FROM channels WHERE id = $1', [channelId]);
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Channel not found' });
+    const idParam = req.params.id;
+    const channelId = Number(idParam);
+    if (!idParam || String(channelId) !== String(idParam) || channelId < 1) {
+      return res.status(400).json({ error: 'Invalid channel ID' });
     }
 
-    return res.status(204).send();
+    const client = await pool.connect();
+    try {
+      // Allow up to 2 minutes for channels with many watch events (e.g. BBC News)
+      await client.query('SET statement_timeout = 120000');
+
+      let result;
+      try {
+        result = await client.query(
+          `WITH
+            _u AS (DELETE FROM user_unlocked_channels WHERE channel_id = $1),
+            _w AS (DELETE FROM channel_watch_events WHERE channel_id = $1)
+           DELETE FROM channels WHERE id = $1 RETURNING id`,
+          [channelId]
+        );
+      } catch (e) {
+        const msg = e.message || '';
+        const missingTable = msg.includes('does not exist') || (e.code === '42P01');
+        if (!missingTable) throw e;
+        // Fallback when dependent tables don't exist
+        await client.query('DELETE FROM user_unlocked_channels WHERE channel_id = $1', [channelId]).catch(() => { });
+        await client.query('DELETE FROM channel_watch_events WHERE channel_id = $1', [channelId]).catch(() => { });
+        result = await client.query('DELETE FROM channels WHERE id = $1 RETURNING id', [channelId]);
+      }
+
+      if (!result || result.rowCount === 0) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+      return res.status(204).send();
+    } finally {
+      client.release();
+    }
   } catch (err) {
     return next(err);
   }
@@ -391,17 +447,17 @@ router.delete('/channels/:id', async (req, res, next) => {
 router.get('/carousel', async (req, res, next) => {
   try {
     const category = req.query.category; // football | movies | undefined (all)
-    
+
     let queryStr = 'SELECT * FROM carousel_slides';
     let params = [];
-    
+
     if (category) {
       queryStr += ' WHERE category = $1';
       params.push(category);
     }
-    
+
     queryStr += ' ORDER BY sort_order ASC, created_at DESC';
-    
+
     const result = await query(queryStr, params);
     return res.json(result.rows);
   } catch (err) {
