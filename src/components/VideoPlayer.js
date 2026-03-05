@@ -193,6 +193,7 @@ export default function VideoPlayer({
   const recordedWatchRef = useRef(null);
   const dashLoadFallbackRef = useRef(null);
   const nativeLoadTimeoutRef = useRef(null);
+  const prevDrmKeyRef = useRef(null); // tracks last seen drmClearKey to restart player when key arrives
 
   const url = videoUrl || '';
   const isWebPage = isWebPageUrl(url);
@@ -273,7 +274,6 @@ export default function VideoPlayer({
 
   // When the DRM clearKey prop changes (arrives from backend after the player was already open),
   // restart the Video source so ExoPlayer initialises with the correct key.
-  const prevDrmKeyRef = useRef(null);
   useEffect(() => {
     if (!visible || !url) return;
     const keyChanged = drmClearKey !== prevDrmKeyRef.current;
