@@ -25,7 +25,7 @@ import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
 import ChannelUnlockModal from './ChannelUnlockModal';
 import VideoPlayer from './VideoPlayer';
-import { settingsAPI, channelsAPI, userAPI } from '../config/api';
+import { settingsAPI, channelsAPI, userAPI, API_BASE_URL } from '../config/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -86,11 +86,11 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
           info:
             slide.info_text
               ? [
-                  {
-                    icon: slide.info_icon || 'clockcircleo',
-                    text: slide.info_text,
-                  },
-                ]
+                {
+                  icon: slide.info_icon || 'clockcircleo',
+                  text: slide.info_text,
+                },
+              ]
               : [],
         }));
         setCarouselItems(mapped);
@@ -108,7 +108,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     try {
       const categories = ['tamthilia', 'wanyama', 'katuni', 'habari', 'sayansi', 'movies'];
       const allChannels = await channelsAPI.getChannels();
-      
+
       const categorized = {
         tamthilia: [],
         wanyama: [],
@@ -191,7 +191,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     setVideoPlayerVisible(true);
   };
 
-  // Fetch stream URL from backend (admin) and update player – single source of truth, play as soon as URL arrives
+  // Fetch stream URL + DRM keys from backend (admin) and update player
   const fetchAndSetStreamUrl = (channel) => {
     if (!channel?.id) return;
     channelsAPI
@@ -200,11 +200,18 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         const url = data.streamUrl || data.stream_url;
         if (url) {
           setPlayingChannel((prev) =>
-            prev && prev.id === channel.id ? { ...prev, streamUrl: url } : prev
+            prev && prev.id === channel.id
+              ? {
+                ...prev,
+                streamUrl: url,
+                drmProtected: !!data.drmProtected,
+                drmClearKey: data.drmClearKey || data.drm_clear_key || null,
+              }
+              : prev
           );
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   };
 
   // Handle channel click: open player instantly, fetch URL from admin and play (pro: fast + always admin URL)
@@ -243,7 +250,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         const data = await channelsAPI.getChannel(ch.id);
         const url = data.streamUrl || data.stream_url;
         if (url) {
-          setPlayingChannel({ ...ch, streamUrl: url });
+          setPlayingChannel({ ...ch, ...data, streamUrl: url });
           setVideoPlayerVisible(true);
         } else {
           Alert.alert('Stream unavailable', 'No stream URL for this channel.');
@@ -360,8 +367,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       ) : activeTab === 'profile' ? (
         <ProfileScreen accentColor="#a855f7" onWatchAd={onWatchAd} userPoints={userPoints} onPointsRefresh={onPointsRefresh} />
       ) : activeTab === 'search' ? (
-        <ScrollView 
-          style={styles.scrollView} 
+        <ScrollView
+          style={styles.scrollView}
           contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -424,14 +431,14 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                 <View style={styles.searchChannelGradient}>
                                   <View style={styles.searchChannelHeader}>
                                     <View style={styles.searchChannelPointsBadgeTop}>
-                                        <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                                        <Text style={styles.searchChannelPointsTextTop}>
-                                          {getChannelBadgeText(channel.pointsRequired)}
-                                        </Text>
-                                      </View>
+                                      <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                      <Text style={styles.searchChannelPointsTextTop}>
+                                        {getChannelBadgeText(channel.pointsRequired)}
+                                      </Text>
+                                    </View>
                                   </View>
                                   <View style={styles.searchChannelContent}>
-                                  <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
+                                    <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
                                   </View>
                                   <TouchableOpacity
                                     style={[styles.searchChannelWatchButton, { backgroundColor: channelColor }]}
@@ -463,11 +470,11 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                                     )}
                                   </View>
                                   <View style={styles.searchChannelPointsBadgeTop}>
-                                      <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                                      <Text style={styles.searchChannelPointsTextTop}>
-                                        {getChannelBadgeText(channel.pointsRequired)}
-                                      </Text>
-                                    </View>
+                                    <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                    <Text style={styles.searchChannelPointsTextTop}>
+                                      {getChannelBadgeText(channel.pointsRequired)}
+                                    </Text>
+                                  </View>
                                 </View>
                                 <View style={styles.searchChannelContent}>
                                   <Text style={styles.searchChannelName} numberOfLines={2}>{channel.name}</Text>
@@ -504,8 +511,8 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
           </View>
         </ScrollView>
       ) : (
-        <ScrollView 
-          style={styles.scrollView} 
+        <ScrollView
+          style={styles.scrollView}
           contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -544,131 +551,131 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
             </View>
           ) : (
             <>
-          {/* Image Carousel */}
-          {carouselItems.length > 0 && (
-            <ImageCarousel
-              items={carouselItems}
-              onWatchAd={onWatchAd}
-              onGoPremium={handleGoPremium}
-              isPremium={isPremium}
-              premiumToggleOn={premiumToggleOn}
-              onPlaySlide={handlePlayCarouselSlide}
-            />
-          )}
+              {/* Image Carousel */}
+              {carouselItems.length > 0 && (
+                <ImageCarousel
+                  items={carouselItems}
+                  onWatchAd={onWatchAd}
+                  onGoPremium={handleGoPremium}
+                  isPremium={isPremium}
+                  premiumToggleOn={premiumToggleOn}
+                  onPlaySlide={handlePlayCarouselSlide}
+                />
+              )}
 
-          {/* Channels by Category - same style as Football/Kabumbu */}
-          {genres.map((genre) => {
-            const channels = channelsByCategory[genre.key] || [];
-            if (channels.length === 0) return null;
+              {/* Channels by Category - same style as Football/Kabumbu */}
+              {genres.map((genre) => {
+                const channels = channelsByCategory[genre.key] || [];
+                if (channels.length === 0) return null;
 
-            return (
-              <View key={genre.key} style={styles.categorySection}>
-                <View style={styles.sectionHeader}>
-                  <View style={styles.sectionHeaderLeft}>
-                    <Icon name={genre.icon} size={20} color={genre.color} />
-                    <Text style={styles.sectionTitle}>{genre.name}</Text>
-                  </View>
-                  <Text style={styles.sectionCount}>{channels.length} channels</Text>
-                </View>
-                <View style={styles.channelsGrid}>
-                  {channels.map((channel) => {
-                    const channelColor = channel.color || genre.color || '#a855f7';
-                    return (
-                      <TouchableOpacity
-                        key={channel.id}
-                        style={styles.channelCard}
-                        activeOpacity={0.8}
-                        onPress={() => handleChannelClick(channel)}>
-                        {channel.thumbnailUrl ? (
-                          <ImageBackground
-                            source={{ uri: channel.thumbnailUrl }}
-                            style={styles.channelImageBackground}
-                            imageStyle={styles.channelImage}>
-                            {channelColor ? (
-                              <View style={[styles.channelColorOverlay, { backgroundColor: channelColor + '50' }]} />
-                            ) : null}
-                            <View style={styles.channelGradient}>
-                              <View style={styles.channelHeader}>
-                                <View style={styles.channelPointsBadgeTop}>
+                return (
+                  <View key={genre.key} style={styles.categorySection}>
+                    <View style={styles.sectionHeader}>
+                      <View style={styles.sectionHeaderLeft}>
+                        <Icon name={genre.icon} size={20} color={genre.color} />
+                        <Text style={styles.sectionTitle}>{genre.name}</Text>
+                      </View>
+                      <Text style={styles.sectionCount}>{channels.length} channels</Text>
+                    </View>
+                    <View style={styles.channelsGrid}>
+                      {channels.map((channel) => {
+                        const channelColor = channel.color || genre.color || '#a855f7';
+                        return (
+                          <TouchableOpacity
+                            key={channel.id}
+                            style={styles.channelCard}
+                            activeOpacity={0.8}
+                            onPress={() => handleChannelClick(channel)}>
+                            {channel.thumbnailUrl ? (
+                              <ImageBackground
+                                source={{ uri: channel.thumbnailUrl }}
+                                style={styles.channelImageBackground}
+                                imageStyle={styles.channelImage}>
+                                {channelColor ? (
+                                  <View style={[styles.channelColorOverlay, { backgroundColor: channelColor + '50' }]} />
+                                ) : null}
+                                <View style={styles.channelGradient}>
+                                  <View style={styles.channelHeader}>
+                                    <View style={styles.channelPointsBadgeTop}>
+                                      <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                      <Text style={styles.channelPointsTextTop}>
+                                        {getChannelBadgeText(channel.pointsRequired)}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                  <View style={styles.channelContent}>
+                                    <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                                  </View>
+                                  <TouchableOpacity
+                                    style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
+                                    onPress={() => handleChannelClick(channel)}
+                                    disabled={loadingChannelId === channel.id}>
+                                    {loadingChannelId === channel.id ? (
+                                      <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                      <>
+                                        <Icon name="play" size={16} color="#fff" />
+                                        <Text style={styles.channelWatchText}>Play Now</Text>
+                                      </>
+                                    )}
+                                  </TouchableOpacity>
+                                </View>
+                              </ImageBackground>
+                            ) : (
+                              <LinearGradient
+                                colors={[channelColor + '20', channelColor + '10', 'transparent']}
+                                style={styles.channelGradient}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}>
+                                <View style={styles.channelHeader}>
+                                  <View style={[styles.channelIconContainer, { backgroundColor: channelColor + '30' }]}>
+                                    {channel.thumbnailEmoji ? (
+                                      <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
+                                    ) : (
+                                      <Icon name={genre.icon} size={32} color={channelColor} />
+                                    )}
+                                  </View>
+                                  <View style={styles.channelPointsBadgeTop}>
                                     <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.channelPointsTextTop}>
                                       {getChannelBadgeText(channel.pointsRequired)}
                                     </Text>
                                   </View>
-                              </View>
-                              <View style={styles.channelContent}>
-                                <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                              </View>
-                              <TouchableOpacity
-                                style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
-                                onPress={() => handleChannelClick(channel)}
-                                disabled={loadingChannelId === channel.id}>
-                                {loadingChannelId === channel.id ? (
-                                  <ActivityIndicator size="small" color="#fff" />
-                                ) : (
-                                  <>
-                                    <Icon name="play" size={16} color="#fff" />
-                                    <Text style={styles.channelWatchText}>Play Now</Text>
-                                  </>
-                                )}
-                              </TouchableOpacity>
-                            </View>
-                          </ImageBackground>
-                        ) : (
-                          <LinearGradient
-                            colors={[channelColor + '20', channelColor + '10', 'transparent']}
-                            style={styles.channelGradient}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 1 }}>
-                            <View style={styles.channelHeader}>
-                              <View style={[styles.channelIconContainer, { backgroundColor: channelColor + '30' }]}>
-                                {channel.thumbnailEmoji ? (
-                                  <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
-                                ) : (
-                                  <Icon name={genre.icon} size={32} color={channelColor} />
-                                )}
-                              </View>
-                              <View style={styles.channelPointsBadgeTop}>
-                                  <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                                  <Text style={styles.channelPointsTextTop}>
-                                    {getChannelBadgeText(channel.pointsRequired)}
-                                  </Text>
                                 </View>
-                            </View>
-                            <View style={styles.channelContent}>
-                              <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                              <View style={styles.channelPointsBadge}>
-                                <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                                <Text style={styles.channelPointsText}>
-                                  {getChannelBadgeText(channel.pointsRequired, true)}
-                                </Text>
-                              </View>
-                            </View>
-                            <TouchableOpacity
-                              style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
-                              onPress={() => handleChannelClick(channel)}
-                              disabled={loadingChannelId === channel.id}>
-                              {loadingChannelId === channel.id ? (
-                                <ActivityIndicator size="small" color="#fff" />
-                              ) : (
-                                <>
-                                  <Icon name="play" size={16} color="#fff" />
-                                  <Text style={styles.channelWatchText}>Play Now</Text>
-                                </>
-                              )}
-                            </TouchableOpacity>
-                          </LinearGradient>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-            );
-          })}
+                                <View style={styles.channelContent}>
+                                  <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                                  <View style={styles.channelPointsBadge}>
+                                    <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                    <Text style={styles.channelPointsText}>
+                                      {getChannelBadgeText(channel.pointsRequired, true)}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <TouchableOpacity
+                                  style={[styles.channelWatchButton, { backgroundColor: channelColor }]}
+                                  onPress={() => handleChannelClick(channel)}
+                                  disabled={loadingChannelId === channel.id}>
+                                  {loadingChannelId === channel.id ? (
+                                    <ActivityIndicator size="small" color="#fff" />
+                                  ) : (
+                                    <>
+                                      <Icon name="play" size={16} color="#fff" />
+                                      <Text style={styles.channelWatchText}>Play Now</Text>
+                                    </>
+                                  )}
+                                </TouchableOpacity>
+                              </LinearGradient>
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                );
+              })}
             </>
           )}
-      </ScrollView>
+        </ScrollView>
       )}
 
       {/* Bottom Navigation - safe area so not covered by system nav/gesture bar */}
@@ -796,6 +803,9 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         onUnlockChannel={handleUnlockChannel}
         channelId={playingChannel?.id}
         userId={userId}
+        drmProtected={!!playingChannel?.drmProtected}
+        drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
+        drmLicenseUrl={playingChannel?.drmProtected && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
       />
     </View>
   );

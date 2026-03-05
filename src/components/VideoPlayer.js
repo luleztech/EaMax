@@ -28,7 +28,7 @@ import { userAPI } from '../config/api';
 let WebView = null;
 try {
   WebView = require('react-native-webview').WebView;
-} catch (_) {}
+} catch (_) { }
 
 // ─── User-Agent (match Kotlin ExoPlayerEngine.kt + WebViewEngine.kt) ─────────
 const NATIVE_USER_AGENT = 'ExoPlayerLib/2.18.0 (Linux;Android 11) ReactNativeVideo/3.0';
@@ -49,6 +49,100 @@ function isWebPageUrl(url) {
   return !isDirect;
 }
 
+function isMpdUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const u = url.toLowerCase();
+  return u.includes('.mpd');
+}
+
+// Parse a stored clearkey string into the clearKeys map ExoPlayer expects.
+// Supported formats:
+//   - "KID_hex:KEY_hex"  (most common – entered by admin)
+//   - "KID_hex,KEY_hex"
+//   - A single hex value (used as both KID and KEY)
+// Returns null when no valid key is found.
+function parseClearKeys(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const str = raw.trim();
+  let kidHex = '';
+  let keyHex = '';
+  if (str.includes(':')) {
+    const parts = str.split(':').map((s) => s.trim());
+    kidHex = parts[0];
+    keyHex = parts[1] || parts[0];
+  } else if (str.includes(',')) {
+    const parts = str.split(',').map((s) => s.trim());
+    kidHex = parts[0];
+    keyHex = parts[1] || parts[0];
+  } else {
+    kidHex = str;
+    keyHex = str;
+  }
+  if (!kidHex || !keyHex) return null;
+  return { [kidHex]: keyHex };
+}
+
+// When the native player fails and we fall back to WebView,
+// opening an .mpd URL directly will usually just download the file.
+// Instead, render a minimal HTML page that uses dash.js to play the manifest.
+// Uses versioned CDN + fast-start ABR so .mpd plays quickly like other URLs.
+function buildDashHtml(url) {
+  if (!url) return '<html><body style="background:#000;color:#fff;">Missing MPD URL</body></html>';
+  const encodedUrl = encodeURIComponent(url);
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <title>Player</title>
+    <link rel="preconnect" href="https://cdn.dashjs.org" crossorigin />
+    <script src="https://cdn.dashjs.org/v4.7.2/dash.all.min.js"></script>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        height: 100%;
+        overflow: hidden;
+      }
+      #videoPlayer {
+        width: 100%;
+        height: 100%;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="videoPlayer" controls autoplay playsinline></video>
+    <script>
+      (function () {
+        function post(msg) {
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage)
+              window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+          } catch (e) {}
+        }
+        try {
+          var mpdUrl = decodeURIComponent('${encodedUrl}');
+          var video = document.getElementById('videoPlayer');
+          if (!video || !window.dashjs) return;
+          var player = window.dashjs.MediaPlayer().create();
+          player.updateSettings({
+            streaming: { abr: { initialBitrate: 400 } }
+          });
+          player.initialize(video, mpdUrl, true);
+          video.addEventListener('playing', function() { post({ type: 'playing' }); });
+          video.addEventListener('error', function() { post({ type: 'error' }); });
+        } catch (e) {
+          post({ type: 'error' });
+        }
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
 function buildSource(url, headers = {}) {
   if (!url) return null;
   const h = {
@@ -59,7 +153,10 @@ function buildSource(url, headers = {}) {
     'User-Agent': NATIVE_USER_AGENT,
     ...headers,
   };
-  return { uri: url, headers: h };
+  const src = { uri: url, headers: h };
+  // Hint DASH so ExoPlayer uses DashMediaSource immediately (faster, more reliable).
+  if (isMpdUrl(url)) src.type = 'mpd';
+  return src;
 }
 
 export default function VideoPlayer({
@@ -72,6 +169,9 @@ export default function VideoPlayer({
   onUnlockChannel,
   channelId,
   userId,
+  drmProtected,
+  drmClearKey,
+  drmLicenseUrl,
 }) {
   const videoRef = useRef(null);
   const [paused, setPaused] = useState(false);
@@ -91,16 +191,39 @@ export default function VideoPlayer({
     value: 240,
   });
   const recordedWatchRef = useRef(null);
+  const dashLoadFallbackRef = useRef(null);
+  const nativeLoadTimeoutRef = useRef(null);
 
   const url = videoUrl || '';
   const isWebPage = isWebPageUrl(url);
-  const startWithWebView = !!(url && WebView && isWebPage);
+  // Never fall back to WebView for DRM streams – WebView can't decrypt ClearKey DASH
+  const isDrm = !!(drmProtected && (drmClearKey || drmLicenseUrl));
+  const startWithWebView = !!(url && WebView && isWebPage && !isDrm);
+  const isMpd = isMpdUrl(url);
 
   const mergedHeaders = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...customHeaders,
   };
   const source = buildSource(url, mergedHeaders);
+
+  if (isDrm) {
+    // Prefer direct clearKeys injection (most reliable for ExoPlayer ClearKey)
+    const clearKeysMap = parseClearKeys(drmClearKey);
+    if (clearKeysMap) {
+      source.drm = {
+        type: 'clearkey',
+        clearKeys: clearKeysMap,
+      };
+    } else if (drmLicenseUrl) {
+      // Fall back to license server if no inline key provided
+      source.drm = {
+        type: 'clearkey',
+        licenseServer: drmLicenseUrl,
+        headers: mergedHeaders,
+      };
+    }
+  }
 
   useEffect(() => {
     setPlayerVisible(visible);
@@ -122,11 +245,31 @@ export default function VideoPlayer({
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
     } else {
+      if (dashLoadFallbackRef.current) clearTimeout(dashLoadFallbackRef.current);
+      dashLoadFallbackRef.current = null;
       StatusBar.setHidden(false, 'fade');
       lockToPortrait();
     }
     return () => setPlayerVisible(false);
   }, [visible, url, startWithWebView]);
+
+  // If native player is stuck loading (no onLoad/onReady), switch to WebView so stream can play.
+  // Skip for DRM streams – WebView cannot decrypt ClearKey DASH, and DRM init needs more time.
+  useEffect(() => {
+    if (!visible || !url || useWebView || !WebView || !loading || isDrm) return;
+    nativeLoadTimeoutRef.current = setTimeout(() => {
+      nativeLoadTimeoutRef.current = null;
+      setUseWebView(true);
+      setError(null);
+      setLoading(true);
+      setLoadingMsg('Trying browser player…');
+      setSourceKey((k) => k + 1);
+    }, 18000);
+    return () => {
+      if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
+      nativeLoadTimeoutRef.current = null;
+    };
+  }, [visible, url, useWebView, loading, isDrm]);
 
   // Record channel watch for admin "Most Watched" analytics (once per open)
   useEffect(() => {
@@ -137,7 +280,7 @@ export default function VideoPlayer({
     const key = `${userId}-${channelId}`;
     if (recordedWatchRef.current === key) return;
     recordedWatchRef.current = key;
-    userAPI.recordChannelWatch(userId, String(channelId)).catch(() => {});
+    userAPI.recordChannelWatch(userId, String(channelId)).catch(() => { });
   }, [visible, userId, channelId]);
 
   useEffect(() => {
@@ -220,12 +363,19 @@ export default function VideoPlayer({
       lower.includes('2004') ||
       lower.includes('io_bad_http') ||
       lower.includes('response code');
+    const isRetryableError =
+      lower.includes('network') ||
+      lower.includes('timeout') ||
+      lower.includes('connection') ||
+      lower.includes('failed to load') ||
+      lower.includes('unable to connect');
 
-    if (isContainerError && WebView && !useWebView) {
+    if (WebView && !useWebView && (isContainerError || isRetryableError)) {
       setUseWebView(true);
       setError(null);
       setLoading(true);
       setLoadingMsg('Switching to browser player…');
+      setSourceKey((k) => k + 1);
       return;
     }
     setError(msg);
@@ -271,7 +421,7 @@ export default function VideoPlayer({
         {url && useWebView && WebView ? (
           <WebView
             key={`wv-${sourceKey}`}
-            source={{ uri: url }}
+            source={isMpd ? { html: buildDashHtml(url) } : { uri: url }}
             style={[styles.video, { width: w, height: h }]}
             userAgent={WEBVIEW_USER_AGENT}
             allowsInlineMediaPlayback
@@ -281,7 +431,24 @@ export default function VideoPlayer({
             originWhitelist={['*']}
             mixedContentMode="always"
             onLoadEnd={() => {
-              setLoading(false);
+              if (isMpd) {
+                if (dashLoadFallbackRef.current) clearTimeout(dashLoadFallbackRef.current);
+                dashLoadFallbackRef.current = setTimeout(() => setLoading(false), 4000);
+              } else {
+                setLoading(false);
+              }
+            }}
+            onMessage={(e) => {
+              if (!isMpd) return;
+              try {
+                const d = JSON.parse(e.nativeEvent?.data ?? '{}');
+                if (d.type === 'playing') {
+                  if (dashLoadFallbackRef.current) clearTimeout(dashLoadFallbackRef.current);
+                  dashLoadFallbackRef.current = null;
+                  setLoading(false);
+                }
+                if (d.type === 'error') setError('Playback failed');
+              } catch (_) { }
             }}
             onError={() => setError('Page could not be loaded.')}
           />

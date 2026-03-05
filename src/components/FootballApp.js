@@ -19,7 +19,7 @@ import AntDesign from 'react-native-vector-icons/AntDesign';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import ImageCarousel from './ImageCarousel';
 import ShimmerPlaceholder from './ShimmerPlaceholder';
-import { settingsAPI, channelsAPI, matchesAPI, userAPI } from '../config/api';
+import { settingsAPI, channelsAPI, matchesAPI, userAPI, API_BASE_URL } from '../config/api';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -86,11 +86,11 @@ const FootballApp = ({
           info:
             slide.info_text
               ? [
-                  {
-                    icon: slide.info_icon || 'clockcircleo',
-                    text: slide.info_text,
-                  },
-                ]
+                {
+                  icon: slide.info_icon || 'clockcircleo',
+                  text: slide.info_text,
+                },
+              ]
               : [],
         }));
         setCarouselItems(mapped);
@@ -130,8 +130,8 @@ const FootballApp = ({
             ch.category === 'football'
               ? 'soccer'
               : ch.category === 'movies'
-              ? 'movie'
-              : 'television',
+                ? 'movie'
+                : 'television',
           color: ch.color || '#22c55e',
           currentShow: ch.stream_url ? 'Live Channel' : 'Football Channel',
           isLive: ch.is_active,
@@ -203,7 +203,7 @@ const FootballApp = ({
         const data = await channelsAPI.getChannel(channel.id);
         const url = data.streamUrl || data.stream_url;
         if (url) {
-          setPlayingChannel({ ...channel, streamUrl: url });
+          setPlayingChannel({ ...channel, ...data, streamUrl: url });
           setVideoPlayerVisible(true);
         } else {
           Alert.alert('Stream unavailable', 'No stream URL for this channel.');
@@ -353,8 +353,8 @@ const FootballApp = ({
       ) : activeTab === 'profile' ? (
         <ProfileScreen accentColor="#4ade80" onWatchAd={onWatchAd} userPoints={userPoints} onPointsRefresh={onPointsRefresh} />
       ) : activeTab === 'channels' ? (
-        <ScrollView 
-          style={styles.scrollView} 
+        <ScrollView
+          style={styles.scrollView}
           contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -366,8 +366,8 @@ const FootballApp = ({
               <Text style={styles.channelsSubtitle}>Chagua channel unayotaka kuangalia</Text>
             </View>
 
-          {(initialLoading || refreshing) ? (
-            <View style={styles.channelsShimmerGrid}>
+            {(initialLoading || refreshing) ? (
+              <View style={styles.channelsShimmerGrid}>
                 {[1, 2, 3, 4].map((i) => (
                   <View key={i} style={styles.shimmerChannelCardWrapChannels}>
                     <ShimmerPlaceholder
@@ -386,7 +386,7 @@ const FootballApp = ({
                   Bado hakuna channels za mpira.
                 </Text>
               </View>
-              
+
             ) : (
               <View style={styles.channelsGrid}>
                 {footballChannels.map((channel) => (
@@ -414,11 +414,11 @@ const FootballApp = ({
                               </View>
                             )}
                             <View style={styles.channelPointsBadgeTop}>
-                                <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                                <Text style={styles.channelPointsTextTop}>
-                                  {getChannelBadgeText(channel.pointsRequired)}
-                                </Text>
-                              </View>
+                              <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                              <Text style={styles.channelPointsTextTop}>
+                                {getChannelBadgeText(channel.pointsRequired)}
+                              </Text>
+                            </View>
                           </View>
                           <View style={styles.channelContent}>
                             <Text style={styles.channelName}>{channel.name}</Text>
@@ -475,11 +475,11 @@ const FootballApp = ({
                             </Text>
                           </View>
                           <View style={styles.channelPointsBadge}>
-                              <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                              <Text style={styles.channelPointsText}>
-                                {getChannelBadgeText(channel.pointsRequired, true)}
-                              </Text>
-                            </View>
+                            <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                            <Text style={styles.channelPointsText}>
+                              {getChannelBadgeText(channel.pointsRequired, true)}
+                            </Text>
+                          </View>
                         </View>
                         <TouchableOpacity
                           style={[
@@ -506,7 +506,7 @@ const FootballApp = ({
           </View>
         </ScrollView>
       ) : (
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[styles.scrollContentContainer, { paddingBottom: contentBottomPadding }]}
           showsVerticalScrollIndicator={false}
@@ -593,214 +593,214 @@ const FootballApp = ({
             </View>
           ) : (
             <>
-          {/* Image Carousel */}
-          <ImageCarousel
-            items={carouselItems}
-            onWatchAd={onWatchAd}
-            onGoPremium={handleGoPremium}
-            isPremium={isPremium}
-            premiumToggleOn={premiumToggleOn}
-            onPlaySlide={handlePlayCarouselSlide}
-          />
+              {/* Image Carousel */}
+              <ImageCarousel
+                items={carouselItems}
+                onWatchAd={onWatchAd}
+                onGoPremium={handleGoPremium}
+                isPremium={isPremium}
+                premiumToggleOn={premiumToggleOn}
+                onPlaySlide={handlePlayCarouselSlide}
+              />
 
-          {/* Channels preview (Tranding) */}
-          <View style={styles.homeChannelsSection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Tranding</Text>
-              <TouchableOpacity onPress={() => setActiveTab('channels')}>
-                <Text style={styles.viewAllText}>View all</Text>
-              </TouchableOpacity>
-            </View>
-            {footballChannels.length === 0 ? (
-              <View style={styles.homeChannelsEmpty}>
-                <Text style={styles.homeChannelsEmptyText}>Bado hakuna channels.</Text>
-              </View>
-            ) : (
-              <View style={styles.homeChannelsGrid}>
-                {(footballChannels.slice(0, 6)).map((channel) => (
-                  <TouchableOpacity
-                    key={channel.id}
-                    style={styles.homeChannelCard}
-                    activeOpacity={0.8}
-                    onPress={() => handleChannelClick(channel)}
-                    disabled={loadingChannelId === channel.id}>
-                    {channel.thumbnailUrl ? (
-                      <ImageBackground
-                        source={{ uri: channel.thumbnailUrl }}
-                        style={styles.channelImageBackground}
-                        imageStyle={styles.channelImage}>
-                        {channel.color ? (
-                          <View style={[styles.channelColorOverlay, { backgroundColor: (channel.color || '#000') + '50' }]} />
-                        ) : null}
-                        <View style={styles.channelGradient}>
-                          <View style={styles.channelHeader}>
-                            {channel.isLive && (
-                              <View style={styles.channelLiveBadge}>
-                                <View style={styles.channelLiveDot} />
-                                <Text style={styles.channelLiveText}>LIVE</Text>
-                              </View>
-                            )}
-                            <View style={styles.channelPointsBadgeTop}>
-                              <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                              <Text style={styles.channelPointsTextTop}>
-                                {getChannelBadgeText(channel.pointsRequired)}
-                              </Text>
-                            </View>
-                          </View>
-                          <View style={styles.channelContent}>
-                            <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                          </View>
-                          <TouchableOpacity
-                            style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
-                            onPress={() => handleChannelClick(channel)}
-                            disabled={loadingChannelId === channel.id}>
-                            {loadingChannelId === channel.id ? (
-                              <ActivityIndicator size="small" color="#fff" />
-                            ) : (
-                              <>
-                                <Icon name="play" size={16} color="#fff" />
-                                <Text style={styles.channelWatchText}>Play Now</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                        </View>
-                      </ImageBackground>
-                    ) : (
-                      <LinearGradient
-                        colors={[(channel.color || '#22c55e') + '20', (channel.color || '#22c55e') + '10', 'transparent']}
-                        style={styles.channelGradient}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}>
-                        <View style={styles.channelHeader}>
-                          <View style={[styles.channelIconContainer, { backgroundColor: (channel.color || '#22c55e') + '30' }]}>
-                            {channel.thumbnailEmoji ? (
-                              <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
-                            ) : (
-                              <Icon name={channel.icon || 'soccer'} size={32} color={channel.color || '#22c55e'} />
-                            )}
-                          </View>
-                          <View style={styles.channelPointsBadgeTop}>
-                              <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                              <Text style={styles.channelPointsTextTop}>
-                                {getChannelBadgeText(channel.pointsRequired)}
-                              </Text>
-                            </View>
-                        </View>
-                        <View style={styles.channelContent}>
-                          <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
-                          <View style={styles.channelPointsBadge}>
-                            <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
-                            <Text style={styles.channelPointsText}>
-                              {getChannelBadgeText(channel.pointsRequired, true)}
-                            </Text>
-                          </View>
-                        </View>
-                        <TouchableOpacity
-                          style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
-                          onPress={() => handleChannelClick(channel)}
-                          disabled={loadingChannelId === channel.id}>
-                          {loadingChannelId === channel.id ? (
-                            <ActivityIndicator size="small" color="#fff" />
-                          ) : (
-                            <>
-                              <Icon name="play" size={16} color="#fff" />
-                              <Text style={styles.channelWatchText}>Play Now</Text>
-                            </>
-                          )}
-                        </TouchableOpacity>
-                      </LinearGradient>
-                    )}
+              {/* Channels preview (Tranding) */}
+              <View style={styles.homeChannelsSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Tranding</Text>
+                  <TouchableOpacity onPress={() => setActiveTab('channels')}>
+                    <Text style={styles.viewAllText}>View all</Text>
                   </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* CTA: Switch to Movies */}
-          <View style={styles.moviesCtaSection}>
-            <TouchableOpacity
-              style={styles.moviesCtaButton}
-              activeOpacity={0.9}
-              onPress={() => {
-                if (onSwitchToMovies) {
-                  onSwitchToMovies();
-                }
-              }}>
-              <LinearGradient
-                colors={['#7c3aed', '#ec4899']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.moviesCtaGradient}>
-                <View style={styles.moviesCtaContent}>
-                  <View style={styles.moviesCtaTextWrap}>
-                    <Text style={styles.moviesCtaTitle}>Tazama movies hapa</Text>
-                    <Text style={styles.moviesCtaSubtitle}>
-                      Fungua sehemu ya movies na uone channels zote za filamu.
-                    </Text>
-                  </View>
-                  <View style={styles.moviesCtaIconWrap}>
-                    <Icon name="movie-open" size={26} color="#f9fafb" />
-                  </View>
                 </View>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
-
-          {/* Upcoming Matches */}
-          <View style={styles.matchesSection}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Ratiba ya michezo</Text>
-            <TouchableOpacity>
-              <Text style={styles.viewAllText}>View All</Text>
-            </TouchableOpacity>
-          </View>
-
-          {upcomingMatches.length === 0 ? (
-            <View style={styles.emptyMatchesContainer}>
-              <Text style={styles.emptyMatchesText}>
-                .
-              </Text>
-            </View>
-          ) : (
-            upcomingMatches.map((match) => {
-              const matchDate = new Date(match.match_time);
-              const timeStr = matchDate.toLocaleString('sw-TZ', {
-                day: '2-digit',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              });
-              return (
-                <View key={match.id} style={styles.matchCard}>
-                  <Text style={styles.matchLeague}>{match.league}</Text>
-                  <View style={styles.matchTeams}>
-                    <View style={styles.teamInfo}>
-                      <Text style={styles.matchTeamName}>{match.team1}</Text>
-                    </View>
-                    <Text style={styles.vs}>VS</Text>
-                    <View style={styles.teamInfo}>
-                      <Text style={styles.matchTeamName}>{match.team2}</Text>
-                    </View>
+                {footballChannels.length === 0 ? (
+                  <View style={styles.homeChannelsEmpty}>
+                    <Text style={styles.homeChannelsEmptyText}>Bado hakuna channels.</Text>
                   </View>
-                  <View style={styles.matchFooter}>
-                    <View style={styles.timeContainer}>
-                      <Icon name="clock-outline" size={14} color="#9ca3af" />
-                      <Text style={styles.timeText}>{timeStr}</Text>
-                    </View>
-                    {!isPremium && (
-                      <View style={styles.earnPointsBadge}>
-                        <AntDesign name="star" size={12} color="#fbbf24" />
-                        <Text style={styles.earnPointsText}>
-                          Earn {match.points_required || 15} pts
+                ) : (
+                  <View style={styles.homeChannelsGrid}>
+                    {(footballChannels.slice(0, 6)).map((channel) => (
+                      <TouchableOpacity
+                        key={channel.id}
+                        style={styles.homeChannelCard}
+                        activeOpacity={0.8}
+                        onPress={() => handleChannelClick(channel)}
+                        disabled={loadingChannelId === channel.id}>
+                        {channel.thumbnailUrl ? (
+                          <ImageBackground
+                            source={{ uri: channel.thumbnailUrl }}
+                            style={styles.channelImageBackground}
+                            imageStyle={styles.channelImage}>
+                            {channel.color ? (
+                              <View style={[styles.channelColorOverlay, { backgroundColor: (channel.color || '#000') + '50' }]} />
+                            ) : null}
+                            <View style={styles.channelGradient}>
+                              <View style={styles.channelHeader}>
+                                {channel.isLive && (
+                                  <View style={styles.channelLiveBadge}>
+                                    <View style={styles.channelLiveDot} />
+                                    <Text style={styles.channelLiveText}>LIVE</Text>
+                                  </View>
+                                )}
+                                <View style={styles.channelPointsBadgeTop}>
+                                  <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                  <Text style={styles.channelPointsTextTop}>
+                                    {getChannelBadgeText(channel.pointsRequired)}
+                                  </Text>
+                                </View>
+                              </View>
+                              <View style={styles.channelContent}>
+                                <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                              </View>
+                              <TouchableOpacity
+                                style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
+                                onPress={() => handleChannelClick(channel)}
+                                disabled={loadingChannelId === channel.id}>
+                                {loadingChannelId === channel.id ? (
+                                  <ActivityIndicator size="small" color="#fff" />
+                                ) : (
+                                  <>
+                                    <Icon name="play" size={16} color="#fff" />
+                                    <Text style={styles.channelWatchText}>Play Now</Text>
+                                  </>
+                                )}
+                              </TouchableOpacity>
+                            </View>
+                          </ImageBackground>
+                        ) : (
+                          <LinearGradient
+                            colors={[(channel.color || '#22c55e') + '20', (channel.color || '#22c55e') + '10', 'transparent']}
+                            style={styles.channelGradient}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}>
+                            <View style={styles.channelHeader}>
+                              <View style={[styles.channelIconContainer, { backgroundColor: (channel.color || '#22c55e') + '30' }]}>
+                                {channel.thumbnailEmoji ? (
+                                  <Text style={styles.channelEmoji}>{channel.thumbnailEmoji}</Text>
+                                ) : (
+                                  <Icon name={channel.icon || 'soccer'} size={32} color={channel.color || '#22c55e'} />
+                                )}
+                              </View>
+                              <View style={styles.channelPointsBadgeTop}>
+                                <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                <Text style={styles.channelPointsTextTop}>
+                                  {getChannelBadgeText(channel.pointsRequired)}
+                                </Text>
+                              </View>
+                            </View>
+                            <View style={styles.channelContent}>
+                              <Text style={styles.channelName} numberOfLines={1}>{channel.name}</Text>
+                              <View style={styles.channelPointsBadge}>
+                                <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
+                                <Text style={styles.channelPointsText}>
+                                  {getChannelBadgeText(channel.pointsRequired, true)}
+                                </Text>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={[styles.channelWatchButton, { backgroundColor: channel.color || '#22c55e' }]}
+                              onPress={() => handleChannelClick(channel)}
+                              disabled={loadingChannelId === channel.id}>
+                              {loadingChannelId === channel.id ? (
+                                <ActivityIndicator size="small" color="#fff" />
+                              ) : (
+                                <>
+                                  <Icon name="play" size={16} color="#fff" />
+                                  <Text style={styles.channelWatchText}>Play Now</Text>
+                                </>
+                              )}
+                            </TouchableOpacity>
+                          </LinearGradient>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              {/* CTA: Switch to Movies */}
+              <View style={styles.moviesCtaSection}>
+                <TouchableOpacity
+                  style={styles.moviesCtaButton}
+                  activeOpacity={0.9}
+                  onPress={() => {
+                    if (onSwitchToMovies) {
+                      onSwitchToMovies();
+                    }
+                  }}>
+                  <LinearGradient
+                    colors={['#7c3aed', '#ec4899']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.moviesCtaGradient}>
+                    <View style={styles.moviesCtaContent}>
+                      <View style={styles.moviesCtaTextWrap}>
+                        <Text style={styles.moviesCtaTitle}>Tazama movies hapa</Text>
+                        <Text style={styles.moviesCtaSubtitle}>
+                          Fungua sehemu ya movies na uone channels zote za filamu.
                         </Text>
                       </View>
-                    )}
-                  </View>
+                      <View style={styles.moviesCtaIconWrap}>
+                        <Icon name="movie-open" size={26} color="#f9fafb" />
+                      </View>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+
+              {/* Upcoming Matches */}
+              <View style={styles.matchesSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Ratiba ya michezo</Text>
+                  <TouchableOpacity>
+                    <Text style={styles.viewAllText}>View All</Text>
+                  </TouchableOpacity>
                 </View>
-              );
-            })
-          )}
-        </View>
+
+                {upcomingMatches.length === 0 ? (
+                  <View style={styles.emptyMatchesContainer}>
+                    <Text style={styles.emptyMatchesText}>
+                      .
+                    </Text>
+                  </View>
+                ) : (
+                  upcomingMatches.map((match) => {
+                    const matchDate = new Date(match.match_time);
+                    const timeStr = matchDate.toLocaleString('sw-TZ', {
+                      day: '2-digit',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                    return (
+                      <View key={match.id} style={styles.matchCard}>
+                        <Text style={styles.matchLeague}>{match.league}</Text>
+                        <View style={styles.matchTeams}>
+                          <View style={styles.teamInfo}>
+                            <Text style={styles.matchTeamName}>{match.team1}</Text>
+                          </View>
+                          <Text style={styles.vs}>VS</Text>
+                          <View style={styles.teamInfo}>
+                            <Text style={styles.matchTeamName}>{match.team2}</Text>
+                          </View>
+                        </View>
+                        <View style={styles.matchFooter}>
+                          <View style={styles.timeContainer}>
+                            <Icon name="clock-outline" size={14} color="#9ca3af" />
+                            <Text style={styles.timeText}>{timeStr}</Text>
+                          </View>
+                          {!isPremium && (
+                            <View style={styles.earnPointsBadge}>
+                              <AntDesign name="star" size={12} color="#fbbf24" />
+                              <Text style={styles.earnPointsText}>
+                                Earn {match.points_required || 15} pts
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+              </View>
             </>
           )}
         </ScrollView>
@@ -931,6 +931,9 @@ const FootballApp = ({
         onUnlockChannel={handleUnlockChannel}
         channelId={playingChannel?.id}
         userId={userId}
+        drmProtected={!!playingChannel?.drmProtected}
+        drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
+        drmLicenseUrl={playingChannel?.drmProtected && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
       />
     </View>
   );
