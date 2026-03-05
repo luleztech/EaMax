@@ -185,43 +185,27 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
     setVideoPlayerVisible(true);
   };
 
-  // Open player immediately (pro: instant UI), then set stream URL when we have it from admin
-  const openPlayerWithChannel = (channel, streamUrl) => {
-    setPlayingChannel({ ...channel, streamUrl: streamUrl || channel.streamUrl || null });
-    setVideoPlayerVisible(true);
-  };
-
-  // Fetch stream URL + DRM keys from backend (admin) and update player
-  const fetchAndSetStreamUrl = (channel) => {
-    if (!channel?.id) return;
-    channelsAPI
-      .getChannel(channel.id)
-      .then((data) => {
-        const url = data.streamUrl || data.stream_url;
-        if (url) {
-          setPlayingChannel((prev) =>
-            prev && prev.id === channel.id
-              ? {
-                ...prev,
-                streamUrl: url,
-                drmProtected: !!data.drmProtected,
-                drmClearKey: data.drmClearKey || data.drm_clear_key || null,
-              }
-              : prev
-          );
-        }
-      })
-      .catch(() => { });
-  };
-
-  // Handle channel click: open player instantly, fetch URL from admin and play (pro: fast + always admin URL)
+  // Handle channel click: fetch stream URL + DRM keys, then open player (guarantees DRM config is ready)
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
-
     const canPlay = isPremium || pointsRequired === 0;
     if (canPlay) {
-      openPlayerWithChannel(channel, channel.streamUrl);
-      fetchAndSetStreamUrl(channel);
+      setLoadingChannelId(channel.id);
+      try {
+        const data = await channelsAPI.getChannel(channel.id);
+        const url = data.streamUrl || data.stream_url;
+        if (url) {
+          setPlayingChannel({ ...channel, ...data, streamUrl: url });
+          setVideoPlayerVisible(true);
+        } else {
+          Alert.alert('Stream unavailable', 'No stream URL for this channel.');
+        }
+      } catch (err) {
+        console.error('Failed to load stream URL:', err);
+        Alert.alert('Could not load stream', 'Check your connection and try again.');
+      } finally {
+        setLoadingChannelId(null);
+      }
       return;
     }
 

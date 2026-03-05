@@ -230,7 +230,7 @@ export default function VideoPlayer({
     if (visible) {
       setPaused(false);
       setLoading(true);
-      setLoadingMsg('Connecting…');
+      setLoadingMsg(isDrm ? 'Decrypting DRM stream…' : 'Connecting…');
       setError(null);
       setDuration(0);
       setCurrentTime(0);
@@ -264,12 +264,29 @@ export default function VideoPlayer({
       setLoading(true);
       setLoadingMsg('Trying browser player…');
       setSourceKey((k) => k + 1);
-    }, 18000);
+    }, 10000); // 10 s is enough for normal streams
     return () => {
       if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
       nativeLoadTimeoutRef.current = null;
     };
   }, [visible, url, useWebView, loading, isDrm]);
+
+  // When the DRM clearKey prop changes (arrives from backend after the player was already open),
+  // restart the Video source so ExoPlayer initialises with the correct key.
+  const prevDrmKeyRef = useRef(null);
+  useEffect(() => {
+    if (!visible || !url) return;
+    const keyChanged = drmClearKey !== prevDrmKeyRef.current;
+    prevDrmKeyRef.current = drmClearKey;
+    // Only trigger a restart if the key just arrived (was null, now has a value)
+    if (keyChanged && drmClearKey) {
+      setLoading(true);
+      setLoadingMsg('Decrypting DRM stream…');
+      setError(null);
+      setUseWebView(false);
+      setSourceKey((k) => k + 1);
+    }
+  }, [drmClearKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Record channel watch for admin "Most Watched" analytics (once per open)
   useEffect(() => {
