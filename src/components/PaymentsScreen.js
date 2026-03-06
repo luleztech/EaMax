@@ -33,6 +33,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
   const [pollingOrderId, setPollingOrderId] = useState(null);
   const [pollingIntervalId, setPollingIntervalId] = useState(null);
   const [consecutiveOrderNotFound, setConsecutiveOrderNotFound] = useState(0);
+  const [simulating, setSimulating] = useState(false);
 
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
@@ -91,7 +92,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         console.log(`[Payment] Status response:`, { status: paymentStatus, raw: response.raw });
 
         if (paymentStatus === 'COMPLETED') {
-          // Payment successful!
+          // Payment successful! Backend has already applied unlock + premium + revenue
           clearInterval(pollingIntervalId);
           setPollingIntervalId(null);
           setPollingOrderId(null);
@@ -104,10 +105,14 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             true,
           );
 
-          // Trigger parent callback after a short delay
-          setTimeout(() => {
+          // Refresh user data (premium, remaining time, channels) then notify parent
+          setTimeout(async () => {
             if (onPaymentSuccess) {
-              onPaymentSuccess();
+              try {
+                await Promise.resolve(onPaymentSuccess());
+              } catch (e) {
+                console.warn('Payment success callback error:', e);
+              }
             }
           }, 1000);
         }
@@ -186,6 +191,21 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     setStatusModalVisible(true);
   };
 
+  const handleOpenWhatsApp = () => {
+    if (!whatsappNumber) {
+      showStatusModal(
+        'Hakuna namba ya WhatsApp',
+        'Tafadhali wasiliana na admin kuongeza namba ya WhatsApp kwenye sehemu ya Settings.',
+        false,
+      );
+      return;
+    }
+    const phone = whatsappNumber.startsWith('+') ? whatsappNumber.slice(1) : whatsappNumber;
+    Linking.openURL(`https://wa.me/${phone}`).catch(() => {
+      showStatusModal('Tatizo', 'Imeshindwa kufungua WhatsApp kwenye kifaa chako.', false);
+    });
+  };
+
   const handleSendRequest = async () => {
     if (!selectedBundle) {
       showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.', false);
@@ -224,10 +244,9 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         email: `${userId}@eamax.app`,
         name: userId,
       });
-      
-      // Start polling for payment status
+
       setPollingOrderId(result.orderId);
-      
+
       showStatusModal(
         'Ombi limetumwa',
         result.message ||
@@ -248,19 +267,30 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     }
   };
 
-  const handleOpenWhatsApp = () => {
-    if (!whatsappNumber) {
+  const handleSimulateSuccess = async () => {
+    if (!pollingOrderId || simulating) return;
+    setSimulating(true);
+    try {
+      await paymentsAPI.completePaymentForTesting(pollingOrderId);
+      if (pollingIntervalId) clearInterval(pollingIntervalId);
+      setPollingIntervalId(null);
+      setPollingOrderId(null);
       showStatusModal(
-        'Hakuna namba ya WhatsApp',
-        'Tafadhali wasiliana na admin kuongeza namba ya WhatsApp kwenye sehemu ya Settings.',
+        'Habari Njema!',
+        'Malipo yamefanikiwa (jaribio). Umebadilisha kuwa Premium. Chaneli zote sasa zimefunguliwa.',
+        true,
+      );
+      if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess());
+    } catch (e) {
+      console.error('Simulate success failed:', e);
+      showStatusModal(
+        'Tatizo',
+        e?.message || 'Imeshindikana kukamilisha. Hakikisha backend iko deployed.',
         false,
       );
-      return;
+    } finally {
+      setSimulating(false);
     }
-    const phone = whatsappNumber.startsWith('+') ? whatsappNumber.slice(1) : whatsappNumber;
-    Linking.openURL(`https://wa.me/${phone}`).catch(() => {
-      showStatusModal('Tatizo', 'Imeshindwa kufungua WhatsApp kwenye kifaa chako.', false);
-    });
   };
 
   return (
@@ -386,6 +416,20 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             )}
           </LinearGradient>
         </TouchableOpacity>
+
+        {/* Test: Simulate payment success (shows while waiting for ZenoPay – for emulator/debug) */}
+        {pollingOrderId ? (
+          <TouchableOpacity
+            style={styles.simulateBtn}
+            onPress={handleSimulateSuccess}
+            disabled={simulating}>
+            {simulating ? (
+              <ActivityIndicator size="small" color="#64748b" />
+            ) : (
+              <Text style={styles.simulateBtnText}>Test: Mark as paid (unlock Premium now)</Text>
+            )}
+          </TouchableOpacity>
+        ) : null}
 
         {/* Info + WhatsApp */}
         <View style={styles.footerInfo}>
@@ -647,6 +691,20 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: '#fff',
+  },
+  simulateBtn: {
+    marginBottom: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(100, 116, 139, 0.25)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(100, 116, 139, 0.4)',
+    alignItems: 'center',
+  },
+  simulateBtnText: {
+    fontSize: 13,
+    color: '#94a3b8',
   },
   footerInfo: {
     gap: 14,

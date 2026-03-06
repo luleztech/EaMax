@@ -1,6 +1,6 @@
 const express = require('express');
 const { z } = require('zod');
-const { query } = require('../db');
+const { query, pool } = require('../db');
 
 const router = express.Router();
 
@@ -184,11 +184,12 @@ router.post('/zeno/start', async (req, res, next) => {
   }
 });
 
-// Internal helper: apply completed payment to user
+// Internal helper: apply completed payment to user (uses single DB client so transaction works)
+// On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
 const applyCompletedPayment = async (orderId, meta) => {
   console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta);
   const payRes = await query(
-    'SELECT * FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+    'SELECT id, user_id, plan, amount_cents, currency, status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
     [orderId],
   );
   if (payRes.rows.length === 0) {
@@ -196,58 +197,78 @@ const applyCompletedPayment = async (orderId, meta) => {
     return null;
   }
   const payment = payRes.rows[0];
-  console.log('[Payment] Found payment:', payment);
+
+  // Validate real data from DB
+  const userId = Number(payment.user_id);
+  const paymentId = Number(payment.id);
+  const plan = payment.plan && String(payment.plan).toLowerCase();
+
+  if (!userId || !paymentId || Number.isNaN(userId) || Number.isNaN(paymentId)) {
+    console.error('[Payment] Invalid payment row:', { user_id: payment.user_id, id: payment.id });
+    return null;
+  }
+
+  const planInfo = PLAN_CONFIG[plan];
+  if (!planInfo || !planInfo.interval) {
+    console.error('[Payment] Invalid or missing plan:', plan);
+    return null;
+  }
 
   if (payment.status === 'completed') {
     console.log('[Payment] Payment already completed:', orderId);
     return payment;
   }
 
-  const planInfo = PLAN_CONFIG[payment.plan];
-  if (!planInfo) {
-    return payment;
-  }
+  console.log('[Payment] Found payment:', { id: paymentId, user_id: userId, plan, amount_cents: payment.amount_cents, interval: planInfo.interval });
 
-  // Mark payment as completed and update user premium
-  console.log('[Payment] Starting transaction for payment:', orderId);
-  await query('BEGIN');
+  const client = await pool.connect();
   try {
-    console.log('[Payment] Updating payment status');
-    await query(
-      `UPDATE subscription_payments
-         SET status = 'completed',
-             provider_ref = $1
-       WHERE id = $2`,
-      [meta.transid || meta.reference || orderId, payment.id],
-    );
+    await client.query('BEGIN');
 
-    console.log('[Payment] Updating user premium status');
-    await query(
+    // 1) Mark payment completed → revenue in admin (SUM(amount_cents) WHERE status='completed')
+    const payUpdate = await client.query(
+      `UPDATE subscription_payments SET status = 'completed' WHERE id = $1 RETURNING id, status`,
+      [paymentId],
+    );
+    if (payUpdate.rowCount !== 1) {
+      throw new Error(`Failed to update payment id=${paymentId} (rowCount=${payUpdate.rowCount})`);
+    }
+    console.log('[Payment] Payment status set to completed, id:', paymentId);
+
+    // 2) Set user premium + remaining time → premium users count in admin
+    const userUpdate = await client.query(
       `UPDATE users
-          SET is_premium = TRUE,
-              premium_expires_at = GREATEST(
-                COALESCE(premium_expires_at, now()),
-                now()
-              ) + $2::interval
-        WHERE id = $1`,
-      [payment.user_id, planInfo.interval],
+         SET is_premium = TRUE,
+             premium_expires_at = GREATEST(COALESCE(premium_expires_at, now()), now()) + $2::interval
+       WHERE id = $1
+       RETURNING id, is_premium, premium_expires_at`,
+      [userId, planInfo.interval],
     );
+    if (userUpdate.rowCount !== 1) {
+      throw new Error(`Failed to update user id=${userId} (rowCount=${userUpdate.rowCount})`);
+    }
+    const updatedUser = userUpdate.rows[0];
+    console.log('[Payment] User premium updated:', { id: userId, premium_expires_at: updatedUser.premium_expires_at });
 
-    console.log('[Payment] Unlocking channels for user:', payment.user_id);
-    // Unlock all active channels for this user
-    await query(
+    // 3) Unlock all active channels for this user
+    const unlockResult = await client.query(
       `INSERT INTO user_unlocked_channels (user_id, channel_id)
        SELECT $1, id FROM channels WHERE is_active = TRUE
        ON CONFLICT (user_id, channel_id) DO NOTHING`,
-      [payment.user_id],
+      [userId],
     );
+    console.log('[Payment] Channels unlocked for user:', userId, 'rows inserted/updated:', unlockResult.rowCount);
 
-    await query('COMMIT');
-    console.log('[Payment] Transaction committed successfully for order:', orderId);
+    await client.query('COMMIT');
+    console.log('[Payment] Transaction committed for order:', orderId, '- revenue and premium users will reflect in admin.');
   } catch (err) {
     console.error('[Payment] Transaction failed, rolling back:', err);
-    await query('ROLLBACK');
+    await client.query('ROLLBACK').catch((rollbackErr) => {
+      console.error('[Payment] Rollback error:', rollbackErr);
+    });
     throw err;
+  } finally {
+    client.release();
   }
 
   return payment;
@@ -290,11 +311,33 @@ router.get('/zeno/status', async (req, res, next) => {
       },
     );
 
-    const statusData = await statusResp.json();
+    let statusData = {};
+    try {
+      const text = await statusResp.text();
+      if (text && text.trim()) statusData = JSON.parse(text);
+    } catch (_) {
+      // ZenoPay might return non-JSON (e.g. HTML) for 404
+    }
     console.log(`[Backend] ZenoPay status response for ${orderId}:`, {
       status: statusResp.status,
       data: statusData
     });
+
+    // "Order not found" from ZenoPay is normal right after creating the order (or in sandbox) – return PENDING so app keeps polling
+    const zenoMessage = String(statusData.message || statusData.error || '').toLowerCase();
+    const isOrderNotFound = !statusResp.ok && (
+      zenoMessage.includes('no order found') ||
+      zenoMessage.includes('order not found') ||
+      (zenoMessage.includes('order_id') && zenoMessage.includes('not found')) ||
+      statusResp.status === 404
+    );
+    if (isOrderNotFound) {
+      console.log(`[Backend] ZenoPay has no order yet for ${orderId}, returning PENDING so app keeps polling`);
+      return res.json({
+        status: 'PENDING',
+        raw: statusData,
+      });
+    }
 
     if (!statusResp.ok) {
       console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
@@ -307,16 +350,26 @@ router.get('/zeno/status', async (req, res, next) => {
       statusData.data &&
       Array.isArray(statusData.data) &&
       statusData.data[0]?.payment_status;
-    
-    console.log(`[Backend] Payment status for ${orderId}: ${paymentStatus}`);
 
-    if (paymentStatus === 'COMPLETED') {
+    // Also accept data[0].paymentStatus or top-level payment_status / paymentStatus / result
+    const firstItem = statusData.data && Array.isArray(statusData.data) ? statusData.data[0] : null;
+    const statusNormalized =
+      (firstItem && (firstItem.payment_status || firstItem.paymentStatus)) ||
+      statusData.payment_status ||
+      statusData.paymentStatus ||
+      (statusData.result && String(statusData.result).toUpperCase() === 'COMPLETED' ? 'COMPLETED' : null);
+    const isCompleted = (paymentStatus && String(paymentStatus).toUpperCase() === 'COMPLETED') ||
+      (statusNormalized && String(statusNormalized).toUpperCase() === 'COMPLETED');
+
+    console.log(`[Backend] Payment status for ${orderId}:`, paymentStatus || statusNormalized, 'isCompleted:', isCompleted);
+
+    if (isCompleted) {
       console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
-      await applyCompletedPayment(orderId, statusData.data[0]);
+      await applyCompletedPayment(orderId, firstItem || statusData || {});
     }
 
     return res.json({
-      status: statusData.result || paymentStatus || 'UNKNOWN',
+      status: isCompleted ? 'COMPLETED' : (statusData.result || paymentStatus || statusNormalized || 'UNKNOWN'),
       raw: statusData,
     });
   } catch (err) {
@@ -338,22 +391,31 @@ router.post('/zeno/webhook', async (req, res, next) => {
     }
 
     const bodySchema = z.object({
-      order_id: z.string(),
-      payment_status: z.string(),
+      order_id: z.string().optional(),
+      orderId: z.string().optional(),
+      payment_status: z.string().optional(),
+      paymentStatus: z.string().optional(),
       reference: z.string().optional(),
       transid: z.string().optional(),
       metadata: z.any().optional(),
-    }).passthrough(); // Allow additional fields
+    }).passthrough();
 
     const payload = bodySchema.parse(req.body);
-    console.log('[ZenoPay] Webhook payload parsed:', payload);
+    const orderId = payload.order_id || payload.orderId;
+    const paymentStatus = (payload.payment_status || payload.paymentStatus || '').toUpperCase();
+    console.log('[ZenoPay] Webhook payload parsed:', { orderId, paymentStatus });
 
-    if (payload.payment_status === 'COMPLETED') {
-      console.log('[ZenoPay] Processing completed payment:', payload.order_id);
-      await applyCompletedPayment(payload.order_id, payload);
-      console.log('[ZenoPay] Payment processing completed for:', payload.order_id);
+    if (!orderId) {
+      console.log('[ZenoPay] Webhook missing order_id/orderId');
+      return res.status(400).json({ error: 'Missing order_id' });
+    }
+
+    if (paymentStatus === 'COMPLETED') {
+      console.log('[ZenoPay] Processing completed payment:', orderId);
+      await applyCompletedPayment(orderId, payload);
+      console.log('[ZenoPay] Payment processing completed for:', orderId);
     } else {
-      console.log('[ZenoPay] Ignoring non-completed payment status:', payload.payment_status);
+      console.log('[ZenoPay] Ignoring non-completed payment status:', paymentStatus || '(empty)');
     }
 
     return res.json({ received: true });

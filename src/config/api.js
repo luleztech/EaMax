@@ -185,9 +185,26 @@ export const paymentsAPI = {
     });
   },
 
-  // Check ZenoPay order status (optional polling)
+  // Check ZenoPay order status (optional polling). Backend returns 200 with PENDING when ZenoPay has no order yet.
   checkZenoStatus: async (orderId) => {
-    return apiRequest(`/api/payments/zeno/status?orderId=${encodeURIComponent(orderId)}`);
+    try {
+      return await apiRequest(`/api/payments/zeno/status?orderId=${encodeURIComponent(orderId)}`);
+    } catch (error) {
+      // "No order found" from ZenoPay is normal right after starting payment – treat as PENDING so polling continues
+      const msg = (error.message || '').toLowerCase();
+      if (msg.includes('no order found') || msg.includes('order not found') || (msg.includes('order') && msg.includes('not found'))) {
+        return { status: 'PENDING', raw: {} };
+      }
+      throw error;
+    }
+  },
+
+  // Mark payment as completed on backend (for testing when ZenoPay doesn't complete, e.g. emulator).
+  // After this, next status poll will return COMPLETED and app will refresh to Premium + unlocked channels.
+  completePaymentForTesting: async (orderId) => {
+    return apiRequest(`/api/payments/zeno/complete/${encodeURIComponent(orderId)}`, {
+      method: 'POST',
+    });
   },
 };
 
