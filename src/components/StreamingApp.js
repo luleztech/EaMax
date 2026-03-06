@@ -18,7 +18,7 @@ import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
 import NotificationPermissionModal from './NotificationPermissionModal';
-import { userAPI } from '../config/api';
+import { userAPI, paymentsAPI } from '../config/api';
 import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
@@ -85,6 +85,18 @@ const StreamingApp = () => {
         if (cancelled) return;
         if (userId) {
           await refreshUserPoints();
+          // If user had a pending payment (e.g. they paid and closed the app), check once so we unlock Premium
+          const pendingOrderId = await AsyncStorage.getItem('pendingPaymentOrderId');
+          if (pendingOrderId && typeof pendingOrderId === 'string' && pendingOrderId.trim()) {
+            try {
+              const res = await paymentsAPI.checkZenoStatus(pendingOrderId.trim());
+              const status = (res && (res.status || res.raw?.data?.[0]?.payment_status)) || '';
+              if (String(status).toUpperCase() === 'COMPLETED') {
+                await AsyncStorage.removeItem('pendingPaymentOrderId');
+                await refreshUserPoints();
+              }
+            } catch (_) {}
+          }
         }
       } catch (e) {
         console.warn('App user init:', e?.message || e);

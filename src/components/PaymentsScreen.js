@@ -69,6 +69,23 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     };
     loadUserId();
 
+    // When opening Payments screen, if there was a pending payment (e.g. user paid and left), check once so we can refresh to Premium
+    const checkPendingPayment = async () => {
+      try {
+        const pending = await AsyncStorage.getItem('pendingPaymentOrderId');
+        if (!pending || !pending.trim()) return;
+        const res = await paymentsAPI.checkZenoStatus(pending.trim());
+        const status = res?.status || res?.raw?.data?.[0]?.payment_status;
+        if (status === 'COMPLETED') {
+          await AsyncStorage.removeItem('pendingPaymentOrderId');
+          if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess());
+        } else {
+          setPollingOrderId(pending.trim());
+        }
+      } catch (_) {}
+    };
+    checkPendingPayment();
+
     // Cleanup polling on unmount
     return () => {
       if (pollingIntervalId) {
@@ -97,6 +114,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           setPollingIntervalId(null);
           setPollingOrderId(null);
           setConsecutiveOrderNotFound(0);
+          AsyncStorage.removeItem('pendingPaymentOrderId');
 
           // Show success modal
           showStatusModal(
@@ -154,7 +172,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       }
     };
 
-    // Start polling after a 15-second delay to allow ZenoPay to create the order
+    // Start polling after a short delay so we catch COMPLETED quickly (user may complete payment on phone within seconds)
     const timeoutId = setTimeout(() => {
       setConsecutiveOrderNotFound(0); // Reset counter when starting polling
       let pollCount = 0;
@@ -173,7 +191,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       }, 3000); // Poll every 3 seconds
 
       setPollingIntervalId(interval);
-    }, 5000); // Wait 5 seconds before starting polling
+    }, 2000); // Start polling after 2 seconds (was 5s – catch real payments faster)
 
     return () => {
       clearTimeout(timeoutId);
@@ -246,6 +264,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       });
 
       setPollingOrderId(result.orderId);
+      await AsyncStorage.setItem('pendingPaymentOrderId', result.orderId);
 
       showStatusModal(
         'Ombi limetumwa',
@@ -275,6 +294,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       if (pollingIntervalId) clearInterval(pollingIntervalId);
       setPollingIntervalId(null);
       setPollingOrderId(null);
+      AsyncStorage.removeItem('pendingPaymentOrderId');
       showStatusModal(
         'Habari Njema!',
         'Malipo yamefanikiwa (jaribio). Umebadilisha kuwa Premium. Chaneli zote sasa zimefunguliwa.',
@@ -417,8 +437,8 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           </LinearGradient>
         </TouchableOpacity>
 
-        {/* Test: Simulate payment success (shows while waiting for ZenoPay – for emulator/debug) */}
-        {pollingOrderId ? (
+        {/* Only in development/debug: simulate payment success for testing without real ZenoPay (hidden in release) */}
+        {__DEV__ && pollingOrderId ? (
           <TouchableOpacity
             style={styles.simulateBtn}
             onPress={handleSimulateSuccess}

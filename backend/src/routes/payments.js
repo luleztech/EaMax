@@ -358,10 +358,16 @@ router.get('/zeno/status', async (req, res, next) => {
       statusData.payment_status ||
       statusData.paymentStatus ||
       (statusData.result && String(statusData.result).toUpperCase() === 'COMPLETED' ? 'COMPLETED' : null);
-    const isCompleted = (paymentStatus && String(paymentStatus).toUpperCase() === 'COMPLETED') ||
-      (statusNormalized && String(statusNormalized).toUpperCase() === 'COMPLETED');
 
-    console.log(`[Backend] Payment status for ${orderId}:`, paymentStatus || statusNormalized, 'isCompleted:', isCompleted);
+    // Treat any completion-like value as COMPLETED (ZenoPay may use "Completed", "SUCCESS", etc. in production)
+    const rawStatus = String(paymentStatus || statusNormalized || statusData.result || '').toUpperCase().trim();
+    const isCompleted =
+      rawStatus === 'COMPLETED' ||
+      rawStatus === 'SUCCESS' ||
+      rawStatus === 'PAID' ||
+      (statusData.status && String(statusData.status).toLowerCase() === 'success' && (rawStatus || firstItem?.payment_status));
+
+    console.log(`[Backend] Payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
 
     if (isCompleted) {
       console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
