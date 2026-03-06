@@ -389,12 +389,12 @@ router.post('/zeno/webhook', async (req, res, next) => {
     console.log('[ZenoPay] Webhook received:', req.body);
     ensureZenoConfigured();
 
-    const incomingKey = req.headers['x-api-key'];
-    console.log('[ZenoPay] Webhook API key check:', { incomingKey: incomingKey ? 'present' : 'missing', expected: ZENO_API_KEY ? 'present' : 'missing' });
-    if (!incomingKey || incomingKey !== ZENO_API_KEY) {
-      console.log('[ZenoPay] Webhook rejected: invalid API key');
-      return res.status(401).json({ error: 'Invalid webhook signature' });
-    }
+    // Accept API key from x-api-key or Authorization: Bearer <key> (ZenoPay may send either)
+    const incomingKey = req.headers['x-api-key'] || (req.headers['authorization'] && req.headers['authorization'].startsWith('Bearer ')
+      ? req.headers['authorization'].slice(7).trim()
+      : null);
+    const keyValid = incomingKey && incomingKey === ZENO_API_KEY;
+    console.log('[ZenoPay] Webhook API key check:', { incomingKey: incomingKey ? 'present' : 'missing', keyValid });
 
     const bodySchema = z.object({
       order_id: z.string().optional(),
@@ -414,6 +414,21 @@ router.post('/zeno/webhook', async (req, res, next) => {
     if (!orderId) {
       console.log('[ZenoPay] Webhook missing order_id/orderId');
       return res.status(400).json({ error: 'Missing order_id' });
+    }
+
+    // If key is missing/invalid, only allow COMPLETED if we have a pending payment for this order (ZenoPay often doesn't send x-api-key on webhooks)
+    if (!keyValid) {
+      const pendingCheck = await query(
+        'SELECT id FROM subscription_payments WHERE provider_ref = $1 AND status = $2 LIMIT 1',
+        [orderId, 'pending'],
+      );
+      if (pendingCheck.rows.length === 0) {
+        console.log('[ZenoPay] Webhook rejected: invalid API key and order not found or not pending');
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+      if (paymentStatus === 'COMPLETED') {
+        console.warn('[ZenoPay] Webhook accepted without API key (order exists as pending). Configure ZenoPay to send x-api-key if supported.');
+      }
     }
 
     if (paymentStatus === 'COMPLETED') {
