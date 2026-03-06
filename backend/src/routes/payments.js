@@ -92,11 +92,13 @@ router.post('/zeno/start', async (req, res, next) => {
     }
     const amountToSend = data.amount != null ? data.amount : planInfo.amount;
 
-    const orderId = `${userId}-${Date.now()}`;
+    const orderId = `${userId}_${Date.now()}`;
+    console.log(`[Backend] Generated orderId: ${orderId}`);
 
     const webhookUrl =
       process.env.ZENO_WEBHOOK_URL ||
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
+    console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
     // ZenoPay docs show local format (0744963858), but some networks may need international
     // Try local format first (as per docs), but we can switch to international if needed
@@ -184,16 +186,20 @@ router.post('/zeno/start', async (req, res, next) => {
 
 // Internal helper: apply completed payment to user
 const applyCompletedPayment = async (orderId, meta) => {
+  console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta);
   const payRes = await query(
     'SELECT * FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
     [orderId],
   );
   if (payRes.rows.length === 0) {
+    console.log('[Payment] No payment found for order:', orderId);
     return null;
   }
   const payment = payRes.rows[0];
+  console.log('[Payment] Found payment:', payment);
 
   if (payment.status === 'completed') {
+    console.log('[Payment] Payment already completed:', orderId);
     return payment;
   }
 
@@ -203,8 +209,10 @@ const applyCompletedPayment = async (orderId, meta) => {
   }
 
   // Mark payment as completed and update user premium
+  console.log('[Payment] Starting transaction for payment:', orderId);
   await query('BEGIN');
   try {
+    console.log('[Payment] Updating payment status');
     await query(
       `UPDATE subscription_payments
          SET status = 'completed',
@@ -213,6 +221,7 @@ const applyCompletedPayment = async (orderId, meta) => {
       [meta.transid || meta.reference || orderId, payment.id],
     );
 
+    console.log('[Payment] Updating user premium status');
     await query(
       `UPDATE users
           SET is_premium = TRUE,
@@ -224,6 +233,7 @@ const applyCompletedPayment = async (orderId, meta) => {
       [payment.user_id, planInfo.interval],
     );
 
+    console.log('[Payment] Unlocking channels for user:', payment.user_id);
     // Unlock all active channels for this user
     await query(
       `INSERT INTO user_unlocked_channels (user_id, channel_id)
@@ -233,7 +243,9 @@ const applyCompletedPayment = async (orderId, meta) => {
     );
 
     await query('COMMIT');
+    console.log('[Payment] Transaction committed successfully for order:', orderId);
   } catch (err) {
+    console.error('[Payment] Transaction failed, rolling back:', err);
     await query('ROLLBACK');
     throw err;
   }
@@ -250,6 +262,21 @@ router.get('/zeno/status', async (req, res, next) => {
       orderId: z.string().min(1),
     });
     const { orderId } = paramsSchema.parse(req.query);
+    console.log(`[Backend] Checking status for orderId: ${orderId}`);
+
+    // First check if payment is already completed in our database
+    const dbCheck = await query(
+      'SELECT status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+      [orderId],
+    );
+    
+    if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
+      console.log(`[Backend] Payment already completed in database for ${orderId}`);
+      return res.json({
+        status: 'COMPLETED',
+        raw: { data: [{ payment_status: 'COMPLETED' }] },
+      });
+    }
 
     const statusResp = await fetch(
       `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(
@@ -264,8 +291,13 @@ router.get('/zeno/status', async (req, res, next) => {
     );
 
     const statusData = await statusResp.json();
+    console.log(`[Backend] ZenoPay status response for ${orderId}:`, {
+      status: statusResp.status,
+      data: statusData
+    });
 
     if (!statusResp.ok) {
+      console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
       return res
         .status(400)
         .json({ error: statusData.message || 'Failed to fetch order status' });
@@ -275,8 +307,11 @@ router.get('/zeno/status', async (req, res, next) => {
       statusData.data &&
       Array.isArray(statusData.data) &&
       statusData.data[0]?.payment_status;
+    
+    console.log(`[Backend] Payment status for ${orderId}: ${paymentStatus}`);
 
     if (paymentStatus === 'COMPLETED') {
+      console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
       await applyCompletedPayment(orderId, statusData.data[0]);
     }
 
@@ -292,10 +327,13 @@ router.get('/zeno/status', async (req, res, next) => {
 // Webhook endpoint for ZenoPay
 router.post('/zeno/webhook', async (req, res, next) => {
   try {
+    console.log('[ZenoPay] Webhook received:', req.body);
     ensureZenoConfigured();
 
     const incomingKey = req.headers['x-api-key'];
+    console.log('[ZenoPay] Webhook API key check:', { incomingKey: incomingKey ? 'present' : 'missing', expected: ZENO_API_KEY ? 'present' : 'missing' });
     if (!incomingKey || incomingKey !== ZENO_API_KEY) {
+      console.log('[ZenoPay] Webhook rejected: invalid API key');
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
@@ -305,16 +343,41 @@ router.post('/zeno/webhook', async (req, res, next) => {
       reference: z.string().optional(),
       transid: z.string().optional(),
       metadata: z.any().optional(),
-    });
+    }).passthrough(); // Allow additional fields
 
     const payload = bodySchema.parse(req.body);
+    console.log('[ZenoPay] Webhook payload parsed:', payload);
 
     if (payload.payment_status === 'COMPLETED') {
+      console.log('[ZenoPay] Processing completed payment:', payload.order_id);
       await applyCompletedPayment(payload.order_id, payload);
+      console.log('[ZenoPay] Payment processing completed for:', payload.order_id);
+    } else {
+      console.log('[ZenoPay] Ignoring non-completed payment status:', payload.payment_status);
     }
 
     return res.json({ received: true });
   } catch (err) {
+    console.error('[ZenoPay] Webhook error:', err);
+    return next(err);
+  }
+});
+
+// Manual payment completion for testing (remove in production)
+router.post('/zeno/complete/:orderId', async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    console.log('[Manual] Completing payment for order:', orderId);
+    
+    const result = await applyCompletedPayment(orderId, { manual: true });
+    
+    if (result) {
+      res.json({ success: true, message: 'Payment completed manually' });
+    } else {
+      res.status(404).json({ error: 'Payment not found' });
+    }
+  } catch (err) {
+    console.error('[Manual] Completion error:', err);
     return next(err);
   }
 });

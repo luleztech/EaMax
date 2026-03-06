@@ -32,6 +32,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
   const [statusIsSuccess, setStatusIsSuccess] = useState(true);
   const [pollingOrderId, setPollingOrderId] = useState(null);
   const [pollingIntervalId, setPollingIntervalId] = useState(null);
+  const [consecutiveOrderNotFound, setConsecutiveOrderNotFound] = useState(0);
 
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
@@ -77,23 +78,29 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
 
   // Poll for payment status if we have an order ID
   useEffect(() => {
-    if (!pollingOrderId) return;
+    if (!pollingOrderId) {
+      setConsecutiveOrderNotFound(0);
+      return;
+    }
 
     const pollPaymentStatus = async () => {
       try {
+        console.log(`[Payment] Checking status for order: ${pollingOrderId}`);
         const response = await paymentsAPI.checkZenoStatus(pollingOrderId);
         const paymentStatus = response.status || response.raw?.data?.[0]?.payment_status;
+        console.log(`[Payment] Status response:`, { status: paymentStatus, raw: response.raw });
 
         if (paymentStatus === 'COMPLETED') {
           // Payment successful!
           clearInterval(pollingIntervalId);
           setPollingIntervalId(null);
           setPollingOrderId(null);
+          setConsecutiveOrderNotFound(0);
 
           // Show success modal
           showStatusModal(
             'Habari Njema!',
-            'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
+            'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote. Ikiwa chaneli bado hazifunguki, tafadhali subiri dakika chache au fungua tena programu.',
             true,
           );
 
@@ -106,30 +113,69 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         }
       } catch (error) {
         console.error('Error checking payment status:', error);
-        // Continue polling even if there's an error
+        // Check if it's an "order not found" error - this is expected initially
+        const isOrderNotFound = error.message?.includes('no order found') || 
+                               error.message?.includes('order not found') ||
+                               error.message?.includes('not found');
+        
+        if (isOrderNotFound) {
+          console.log(`[Payment] Order ${pollingOrderId} not found yet, continuing to poll...`);
+          setConsecutiveOrderNotFound(prev => {
+            const newCount = prev + 1;
+            console.log(`[Payment] Consecutive order not found: ${newCount}`);
+            
+            // If we've had too many consecutive "order not found" errors, stop polling
+            if (newCount >= 20) { // 20 * 3 seconds = 1 minute of failures
+              console.error('[Payment] Too many consecutive "order not found" errors, stopping polling');
+              clearInterval(pollingIntervalId);
+              setPollingIntervalId(null);
+              setPollingOrderId(null);
+              setConsecutiveOrderNotFound(0);
+              
+              // Show success message anyway, assuming webhook will handle completion
+              showStatusModal(
+                'Malipo Inasubiri uthibitisho',
+                'Malipo yako yamepokelewa. Ikiwa haitafanyiwa kazi mara moja, tafadhali subiri dakika chache kisha ufungue tena programu. Msaada utapatikana ikiwa tatizo litaendelea.',
+                true,
+              );
+            }
+            return newCount;
+          });
+        } else {
+          // Only log as error for unexpected errors, continue polling for "order not found"
+          console.warn('Unexpected error checking payment status (continuing to poll):', error.message);
+        }
+        // Continue polling even if there's an error (including "order not found")
       }
     };
 
-    // Start polling every 3 seconds, for up to 5 minutes
-    let pollCount = 0;
-    const maxPolls = 100; // 100 polls × 3 seconds = 5 minutes
+    // Start polling after a 15-second delay to allow ZenoPay to create the order
+    const timeoutId = setTimeout(() => {
+      setConsecutiveOrderNotFound(0); // Reset counter when starting polling
+      let pollCount = 0;
+      const maxPolls = 100; // 100 polls × 3 seconds = 5 minutes
 
-    const interval = setInterval(async () => {
-      pollCount += 1;
-      await pollPaymentStatus();
+      const interval = setInterval(async () => {
+        pollCount += 1;
+        await pollPaymentStatus();
 
-      // Stop polling after max attempts
-      if (pollCount >= maxPolls) {
-        clearInterval(interval);
-        setPollingIntervalId(null);
-        setPollingOrderId(null);
-      }
-    }, 3000); // Poll every 3 seconds
+        // Stop polling after max attempts
+        if (pollCount >= maxPolls) {
+          clearInterval(interval);
+          setPollingIntervalId(null);
+          setPollingOrderId(null);
+        }
+      }, 3000); // Poll every 3 seconds
 
-    setPollingIntervalId(interval);
+      setPollingIntervalId(interval);
+    }, 5000); // Wait 5 seconds before starting polling
 
     return () => {
-      clearInterval(interval);
+      clearTimeout(timeoutId);
+      if (pollingIntervalId) {
+        clearInterval(pollingIntervalId);
+      }
+      setConsecutiveOrderNotFound(0);
     };
   }, [pollingOrderId]);
 
