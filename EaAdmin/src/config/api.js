@@ -26,36 +26,38 @@ const apiRequest = async (endpoint, options = {}) => {
 
   try {
     const response = await fetch(url, config);
-    
-    // Handle empty responses (e.g., 204 No Content for DELETE requests)
-    if (response.status === 204 || response.status === 200) {
+
+    // Success with no body (204 No Content) – return immediately, do not read body
+    if (response.status === 204) {
+      if (!response.ok) return {};
+      return {};
+    }
+
+    // Success with optional JSON body (e.g. 200)
+    if (response.ok && response.status === 200) {
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
-        // Return empty object for non-JSON responses
         return {};
       }
     }
-    
-    // Get response text first to check if it's empty
+
+    // Get response text for error or JSON body
     const text = await response.text();
-    
-    // If response is empty, return empty object
+
     if (!text || text.trim() === '') {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       return {};
     }
-    
-    // Try to parse as JSON
+
     let data;
     try {
       data = JSON.parse(text);
     } catch (parseError) {
-      // If parsing fails, throw with the response text
       throw new Error(`Invalid JSON response: ${text.substring(0, 100)}`);
     }
-    
+
     if (!response.ok) {
       const msg = data.error || `HTTP error! status: ${response.status}`;
       const details = data.details ? ` ${data.details}` : '';

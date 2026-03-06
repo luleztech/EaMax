@@ -123,16 +123,18 @@ const ContentSection = () => {
       return;
     }
 
-    // Build payload – always include pointsRequired so backend saves it
+    // Build payload – drmClearKey must always be present so backend can persist it
     const pointsNum = parseInt(String(pointsRequired).trim() || '0', 10);
+    const clearKeyTrimmed = clearKey;
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
       streamUrl: videoUrl.trim(),
       color: selectedColor,
       isActive,
-      drmProtected: drmProtector,
+      drmProtected: !!drmProtector,
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
+      drmClearKey: drmProtector ? (clearKeyTrimmed || null) : null,
     };
 
     if (!useEmoji && thumbnailUrl.trim()) {
@@ -148,11 +150,22 @@ const ContentSection = () => {
     try {
       setSavingChannel(true);
       if (editingChannel) {
-        await adminChannelsAPI.updateChannel(editingChannel.id, payload);
+        const updated = await adminChannelsAPI.updateChannel(editingChannel.id, payload);
         showStatusModal('Channel updated', 'Channel updated successfully.');
+        setChannels((prev) =>
+          prev.map((ch) =>
+            ch.id === updated.id
+              ? { ...ch, ...updated, drm_clear_key: updated.drm_clear_key ?? updated.drmClearKey, drmClearKey: updated.drmClearKey }
+              : ch
+          )
+        );
       } else {
-        await adminChannelsAPI.createChannel(payload);
+        const created = await adminChannelsAPI.createChannel(payload);
         showStatusModal('Channel added', 'Channel added successfully.');
+        setChannels((prev) => [
+          { ...created, drm_clear_key: created.drm_clear_key ?? created.drmClearKey, drmClearKey: created.drmClearKey },
+          ...prev,
+        ]);
       }
       setAddChannelModalVisible(false);
       resetForm();
@@ -296,7 +309,7 @@ const ContentSection = () => {
                     onPress={() => {
                       setEditingChannel(channel);
                       setChannelName(channel.name || '');
-                    setChannelCategory(channel.category || 'football');
+                      setChannelCategory(channel.category || 'football');
                       setThumbnailUrl(channel.thumbnail_url || '');
                       setThumbnailEmoji(channel.thumbnail_emoji || '');
                       setUseEmoji(!!channel.thumbnail_emoji);
@@ -312,6 +325,8 @@ const ContentSection = () => {
                           ? channel.drm_protected
                           : false,
                       );
+                      const savedClearKey = channel.drm_clear_key ?? channel.drmClearKey;
+                      setClearKey(savedClearKey != null ? String(savedClearKey) : '');
                       setUserId(
                         channel.owner_user_id ? String(channel.owner_user_id) : '',
                       );
@@ -549,19 +564,21 @@ const ContentSection = () => {
                     thumbColor="#fff"
                   />
                 </View>
-                {drmProtector && (
-                  <View style={styles.inputSection}>
-                    <Text style={styles.inputLabel}>DRM ClearKey</Text>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="Hex or base64 key"
-                      placeholderTextColor="#6b7280"
-                      value={clearKey}
-                      onChangeText={setClearKey}
-                      autoCapitalize="none"
-                    />
-                  </View>
-                )}
+                <View style={styles.inputSection}>
+                  <Text style={styles.inputLabel}>DRM ClearKey</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder={drmProtector ? "Enter DRM ClearKey (base64 or URL)" : "Enable DRM Protector to enter ClearKey"}
+                    placeholderTextColor="#6b7280"
+                    value={clearKey}
+                    onChangeText={setClearKey}
+                    autoCapitalize="none"
+                    multiline={true}
+                    numberOfLines={2}
+                    maxLength={2048}
+                    autoFocus={true}
+                  />
+                </View>
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Owner user ID (optional)</Text>
                   <TextInput
@@ -631,21 +648,21 @@ const ContentSection = () => {
                 ]}
                 onPress={async () => {
                   if (!deleteConfirmChannel) return;
+                  const channelToDelete = deleteConfirmChannel;
                   try {
                     setDeletingChannel(true);
-                    await adminChannelsAPI.deleteChannel(deleteConfirmChannel.id);
+                    await adminChannelsAPI.deleteChannel(channelToDelete.id);
                     setDeleteConfirmChannel(null);
-                    fetchChannels();
+                    setChannels((prev) => prev.filter((ch) => ch.id !== channelToDelete.id));
                     showStatusModal(
                       'Channel deleted',
                       'The channel has been deleted successfully.',
                     );
+                    fetchChannels();
                   } catch (error) {
                     console.error('Failed to delete channel:', error);
-                    showStatusModal(
-                      'Delete failed',
-                      'Failed to delete channel. Please try again.',
-                    );
+                    const message = error?.message || 'Failed to delete channel. Please try again.';
+                    showStatusModal('Delete failed', message);
                   } finally {
                     setDeletingChannel(false);
                   }

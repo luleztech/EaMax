@@ -347,9 +347,15 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       )}
 
       {activeTab === 'payments' ? (
-        <PaymentsScreen accentColor="#a855f7" />
+        <PaymentsScreen accentColor="#a855f7" bottomPadding={contentBottomPadding} onPaymentSuccess={onPointsRefresh} />
       ) : activeTab === 'profile' ? (
-        <ProfileScreen accentColor="#a855f7" onWatchAd={onWatchAd} userPoints={userPoints} onPointsRefresh={onPointsRefresh} />
+        <ProfileScreen
+          accentColor="#a855f7"
+          onWatchAd={onWatchAd}
+          userPoints={userPoints}
+          onPointsRefresh={onPointsRefresh}
+          bottomPadding={contentBottomPadding}
+        />
       ) : activeTab === 'search' ? (
         <ScrollView
           style={styles.scrollView}
@@ -759,12 +765,16 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         onGoPremium={handleGoPremium}
         onPointsUpdated={async () => {
           const updatedPoints = await handlePointsUpdated();
-          // If user now has enough points, unlock and play
+          // If user now has enough points, unlock and play with full channel data (including DRM ClearKey)
           if (selectedChannel && updatedPoints >= selectedChannel.pointsRequired) {
             try {
               await handleUnlockChannel(selectedChannel.id);
-              setPlayingChannel(selectedChannel);
-              setVideoPlayerVisible(true);
+              const data = await channelsAPI.getChannel(selectedChannel.id);
+              const url = data.streamUrl || data.stream_url;
+              if (url) {
+                setPlayingChannel({ ...selectedChannel, ...data, streamUrl: url });
+                setVideoPlayerVisible(true);
+              }
               setInsufficientPointsModalVisible(false);
               setSelectedChannel(null);
             } catch (error) {

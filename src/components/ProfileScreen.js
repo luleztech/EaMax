@@ -22,7 +22,7 @@ import {
 
 const { width } = Dimensions.get('window');
 
-const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentPoints, onPointsRefresh }) => {
+const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentPoints, onPointsRefresh, bottomPadding = 0 }) => {
   const [userId, setUserId] = useState(null);
   const [isPremium, setIsPremium] = useState(false);
   const [userPoints, setUserPoints] = useState(parentPoints ?? 0);
@@ -192,7 +192,8 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
       />
       
       <ScrollView 
-        style={styles.scrollView} 
+        style={styles.scrollView}
+        contentContainerStyle={{ paddingBottom: 100 + bottomPadding }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -334,7 +335,6 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
-    paddingBottom: 100,
   },
   headerSection: {
     alignItems: 'center',

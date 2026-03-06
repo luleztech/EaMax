@@ -20,7 +20,7 @@ import { settingsAPI, paymentsAPI } from '../config/api';
 const ACCENT = '#22c55e';
 const ACCENT_DARK = '#16a34a';
 
-const PaymentsScreen = ({ accentColor = ACCENT }) => {
+const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSuccess }) => {
   const [selectedBundle, setSelectedBundle] = useState(null);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState(null);
@@ -30,6 +30,8 @@ const PaymentsScreen = ({ accentColor = ACCENT }) => {
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
   const [statusIsSuccess, setStatusIsSuccess] = useState(true);
+  const [pollingOrderId, setPollingOrderId] = useState(null);
+  const [pollingIntervalId, setPollingIntervalId] = useState(null);
 
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
@@ -64,7 +66,72 @@ const PaymentsScreen = ({ accentColor = ACCENT }) => {
       }
     };
     loadUserId();
-  }, []);
+
+    // Cleanup polling on unmount
+    return () => {
+      if (pollingIntervalId) {
+        clearInterval(pollingIntervalId);
+      }
+    };
+  }, [pollingIntervalId]);
+
+  // Poll for payment status if we have an order ID
+  useEffect(() => {
+    if (!pollingOrderId) return;
+
+    const pollPaymentStatus = async () => {
+      try {
+        const response = await paymentsAPI.checkZenoStatus(pollingOrderId);
+        const paymentStatus = response.status || response.raw?.data?.[0]?.payment_status;
+
+        if (paymentStatus === 'COMPLETED') {
+          // Payment successful!
+          clearInterval(pollingIntervalId);
+          setPollingIntervalId(null);
+          setPollingOrderId(null);
+
+          // Show success modal
+          showStatusModal(
+            'Habari Njema!',
+            'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
+            true,
+          );
+
+          // Trigger parent callback after a short delay
+          setTimeout(() => {
+            if (onPaymentSuccess) {
+              onPaymentSuccess();
+            }
+          }, 1000);
+        }
+      } catch (error) {
+        console.error('Error checking payment status:', error);
+        // Continue polling even if there's an error
+      }
+    };
+
+    // Start polling every 3 seconds, for up to 5 minutes
+    let pollCount = 0;
+    const maxPolls = 100; // 100 polls × 3 seconds = 5 minutes
+
+    const interval = setInterval(async () => {
+      pollCount += 1;
+      await pollPaymentStatus();
+
+      // Stop polling after max attempts
+      if (pollCount >= maxPolls) {
+        clearInterval(interval);
+        setPollingIntervalId(null);
+        setPollingOrderId(null);
+      }
+    }, 3000); // Poll every 3 seconds
+
+    setPollingIntervalId(interval);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [pollingOrderId]);
 
   const showStatusModal = (title, message, isSuccess = true) => {
     setStatusModalTitle(title);
@@ -111,6 +178,10 @@ const PaymentsScreen = ({ accentColor = ACCENT }) => {
         email: `${userId}@eamax.app`,
         name: userId,
       });
+      
+      // Start polling for payment status
+      setPollingOrderId(result.orderId);
+      
       showStatusModal(
         'Ombi limetumwa',
         result.message ||
@@ -157,7 +228,7 @@ const PaymentsScreen = ({ accentColor = ACCENT }) => {
 
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 48 + bottomPadding }]}
         showsVerticalScrollIndicator={false}>
         {/* Hero header */}
         <View style={styles.hero}>
@@ -334,7 +405,6 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 28,
-    paddingBottom: 48,
   },
   hero: {
     alignItems: 'center',

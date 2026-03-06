@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
+  ImageBackground,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -46,7 +47,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       title: 'Revenue',
       value: '$0',
       change: '+0%',
-      subtitle: 'this month',
+      subtitle: 'Mwezi huuyamepokelewa',
       gradient: ['#7c3aed', '#6d28d9'],
       icon: 'currency-usd',
     },
@@ -54,7 +55,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       title: 'Ads Watched per Month',
       value: '0',
       change: '+0%',
-      subtitle: 'this month',
+      subtitle: '',
       gradient: ['#f97316', '#ea580c'],
       icon: 'eye',
     },
@@ -141,7 +142,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           title: 'Revenue',
           value: `${formatTsh(revenueTsh)} TSh`,
           change: 'this month',
-          subtitle: 'successful payments only',
+          subtitle: '',
           gradient: ['#7c3aed', '#6d28d9'],
           icon: 'currency-usd',
         },
@@ -149,7 +150,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           title: 'Ads Watched',
           value: formatNumber(data.adsWatchedThisMonth ?? data.adsWatchedToday ?? 0),
           change: 'this month',
-          subtitle: 'real ad_events data',
+          subtitle: '',
           gradient: ['#f97316', '#ea580c'],
           icon: 'eye',
         },
@@ -233,18 +234,15 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       setAllNotifications(mapped);
 
       const mapSlides = (slides) =>
-        (slides || [])
-          .filter((s) => s.is_active)
-          .slice(0, 5)
-          .map((s) => ({
-            ...s,
-            imageUrl: s.image_url,
-            gradient: [
-              s.gradient_start || '#14532d',
-              s.gradient_mid || '#111827',
-              s.gradient_end || '#000000',
-            ],
-          }));
+        (slides || []).map((s) => ({
+          ...s,
+          imageUrl: s.image_url,
+          gradient: [
+            s.gradient_start || '#14532d',
+            s.gradient_mid || '#111827',
+            s.gradient_end || '#000000',
+          ],
+        }));
 
       setFootballCarouselSlides(mapSlides(footballSlides));
       setMoviesCarouselSlides(mapSlides(moviesSlides));
@@ -521,37 +519,52 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.carouselList}>
+            contentContainerStyle={styles.slideCardScrollContent}>
             {footballCarouselSlides.map((slide) => (
-              <View key={slide.id} style={styles.carouselCardWrapper}>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() => openEditSlideModal(slide)}
-                  style={styles.carouselCardTouchable}>
+              <View key={slide.id} style={styles.slideCard}>
+                <ImageBackground
+                  source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
+                  style={styles.slideCardImage}
+                  imageStyle={styles.slideCardImageBg}>
                   <LinearGradient
-                    colors={slide.gradient}
-                    style={styles.carouselCard}
+                    colors={slide.gradient || ['#14532d', '#111827', '#000000']}
+                    style={styles.slideCardOverlay}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}>
-                    {slide.badge && (
-                      <View style={styles.carouselBadge}>
-                        <Text style={styles.carouselBadgeText}>{slide.badge}</Text>
+                    {slide.badge ? (
+                      <View style={styles.slideCardBadge}>
+                        <Text style={styles.slideCardBadgeText}>{slide.badge}</Text>
                       </View>
-                    )}
-                    {slide.title ? (
-                      <Text style={styles.carouselTitle}>{slide.title}</Text>
                     ) : null}
-                    {slide.subtitle && (
-                      <Text style={styles.carouselSubtitle}>{slide.subtitle}</Text>
-                    )}
+                    <View style={styles.slideCardTextWrap}>
+                      {slide.title ? (
+                        <Text style={styles.slideCardTitle} numberOfLines={2}>{slide.title}</Text>
+                      ) : null}
+                      {slide.subtitle ? (
+                        <Text style={styles.slideCardSubtitle} numberOfLines={1}>{slide.subtitle}</Text>
+                      ) : null}
+                    </View>
                   </LinearGradient>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.carouselDeleteButton}
-                  onPress={() => setDeleteConfirmSlide(slide)}
-                  activeOpacity={0.7}>
-                  <Icon name="delete" size={16} color="#ef4444" />
-                </TouchableOpacity>
+                </ImageBackground>
+                <View style={styles.slideCardBody}>
+                  <Text style={styles.slideCardCategory}>Football</Text>
+                  <View style={styles.slideCardActions}>
+                    <TouchableOpacity
+                      style={styles.slideCardEditBtn}
+                      onPress={() => openEditSlideModal(slide)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <Icon name="pencil" size={18} color="#3b82f6" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.slideCardDeleteBtn}
+                      onPress={() => setDeleteConfirmSlide(slide)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <Icon name="delete" size={18} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
               </View>
             ))}
           </ScrollView>
@@ -582,37 +595,52 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.carouselList}>
+            contentContainerStyle={styles.slideCardScrollContent}>
             {moviesCarouselSlides.map((slide) => (
-              <View key={slide.id} style={styles.carouselCardWrapper}>
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() => openEditSlideModal(slide)}
-                  style={styles.carouselCardTouchable}>
+              <View key={slide.id} style={styles.slideCard}>
+                <ImageBackground
+                  source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
+                  style={styles.slideCardImage}
+                  imageStyle={styles.slideCardImageBg}>
                   <LinearGradient
-                    colors={slide.gradient}
-                    style={styles.carouselCard}
+                    colors={slide.gradient || ['#4c1d95', '#111827', '#000000']}
+                    style={styles.slideCardOverlay}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}>
-                    {slide.badge && (
-                      <View style={styles.carouselBadge}>
-                        <Text style={styles.carouselBadgeText}>{slide.badge}</Text>
+                    {slide.badge ? (
+                      <View style={styles.slideCardBadge}>
+                        <Text style={styles.slideCardBadgeText}>{slide.badge}</Text>
                       </View>
-                    )}
-                    {slide.title ? (
-                      <Text style={styles.carouselTitle}>{slide.title}</Text>
                     ) : null}
-                    {slide.subtitle && (
-                      <Text style={styles.carouselSubtitle}>{slide.subtitle}</Text>
-                    )}
+                    <View style={styles.slideCardTextWrap}>
+                      {slide.title ? (
+                        <Text style={styles.slideCardTitle} numberOfLines={2}>{slide.title}</Text>
+                      ) : null}
+                      {slide.subtitle ? (
+                        <Text style={styles.slideCardSubtitle} numberOfLines={1}>{slide.subtitle}</Text>
+                      ) : null}
+                    </View>
                   </LinearGradient>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.carouselDeleteButton}
-                  onPress={() => setDeleteConfirmSlide(slide)}
-                  activeOpacity={0.7}>
-                  <Icon name="delete" size={16} color="#ef4444" />
-                </TouchableOpacity>
+                </ImageBackground>
+                <View style={styles.slideCardBody}>
+                  <Text style={styles.slideCardCategory}>Movies</Text>
+                  <View style={styles.slideCardActions}>
+                    <TouchableOpacity
+                      style={styles.slideCardEditBtn}
+                      onPress={() => openEditSlideModal(slide)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <Icon name="pencil" size={18} color="#3b82f6" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.slideCardDeleteBtn}
+                      onPress={() => setDeleteConfirmSlide(slide)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <Icon name="delete" size={18} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
               </View>
             ))}
           </ScrollView>
@@ -1204,6 +1232,94 @@ const styles = StyleSheet.create({
   emptyCarouselText: {
     fontSize: 13,
     color: '#9ca3af',
+  },
+  slideCardScrollContent: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 4,
+    paddingRight: 4,
+  },
+  slideCard: {
+    width: 180,
+    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    overflow: 'hidden',
+  },
+  slideCardImage: {
+    height: 140,
+    position: 'relative',
+  },
+  slideCardImageBg: {
+    borderTopLeftRadius: 15,
+    borderTopRightRadius: 15,
+  },
+  slideCardOverlay: {
+    flex: 1,
+    padding: 12,
+    justifyContent: 'flex-end',
+  },
+  slideCardBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    marginBottom: 8,
+  },
+  slideCardBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#e5e7eb',
+    textTransform: 'uppercase',
+  },
+  slideCardTextWrap: {
+    marginTop: 'auto',
+  },
+  slideCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 2,
+  },
+  slideCardSubtitle: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.9)',
+  },
+  slideCardBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(31, 41, 55, 0.6)',
+  },
+  slideCardCategory: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '500',
+  },
+  slideCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  slideCardEditBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  slideCardDeleteBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   carouselList: {
     flexDirection: 'row',

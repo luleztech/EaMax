@@ -24,6 +24,16 @@ app.use(
 app.use(express.json());
 app.use(morgan('dev'));
 
+// Ensure drm_clear_key column exists on channels (run once on startup)
+query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS drm_clear_key TEXT`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration drm_clear_key (non-fatal):', err.message);
+  }
+});
+
 // Simple health check (no DB required)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'EaMax backend is running' });
@@ -67,7 +77,9 @@ app.use((err, req, res, next) => {
     const message = err.errors?.map((e) => `${e.path?.join('.') || 'field'}: ${e.message}`).join('; ') || err.message;
     return res.status(400).json({ error: 'Validation failed', details: message });
   }
-  res.status(500).json({ error: 'Internal server error' });
+  const message = err.message || 'Internal server error';
+  const details = process.env.NODE_ENV === 'development' ? (err.stack || undefined) : undefined;
+  return res.status(500).json({ error: message, details });
 });
 
 const PORT = process.env.PORT || 4000;

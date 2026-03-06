@@ -55,31 +55,57 @@ function isMpdUrl(url) {
   return u.includes('.mpd');
 }
 
+// Hex → base64url helper (mirror backend ClearKey conversion)
+function hexToBase64Url(hexString) {
+  try {
+    if (!hexString || typeof hexString !== 'string') return hexString;
+    const normalized = hexString.trim();
+    if (!/^[0-9a-fA-F]+$/.test(normalized) || normalized.length % 2 !== 0) return hexString;
+    const bytes = [];
+    for (let i = 0; i < normalized.length; i += 2) {
+      bytes.push(parseInt(normalized.substr(i, 2), 16));
+    }
+    const bin = String.fromCharCode(...bytes);
+    const b64 = typeof btoa === 'function'
+      ? btoa(bin)
+      : Buffer.from(bin, 'binary').toString('base64');
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  } catch {
+    return hexString;
+  }
+}
+
 // Parse a stored clearkey string into the clearKeys map ExoPlayer expects.
-// Supported formats:
-//   - "KID_hex:KEY_hex"  (most common – entered by admin)
+// Supported admin formats:
+//   - "KID_hex:KEY_hex"  (recommended)
 //   - "KID_hex,KEY_hex"
 //   - A single hex value (used as both KID and KEY)
+// All hex values are converted to base64url so ExoPlayer ClearKey can decrypt.
 // Returns null when no valid key is found.
 function parseClearKeys(raw) {
   if (!raw || typeof raw !== 'string') return null;
   const str = raw.trim();
-  let kidHex = '';
-  let keyHex = '';
+  if (!str) return null;
+
+  let kid = '';
+  let key = '';
   if (str.includes(':')) {
     const parts = str.split(':').map((s) => s.trim());
-    kidHex = parts[0];
-    keyHex = parts[1] || parts[0];
+    kid = parts[0];
+    key = parts[1] || parts[0];
   } else if (str.includes(',')) {
     const parts = str.split(',').map((s) => s.trim());
-    kidHex = parts[0];
-    keyHex = parts[1] || parts[0];
+    kid = parts[0];
+    key = parts[1] || parts[0];
   } else {
-    kidHex = str;
-    keyHex = str;
+    kid = str;
+    key = str;
   }
-  if (!kidHex || !keyHex) return null;
-  return { [kidHex]: keyHex };
+  if (!kid || !key) return null;
+
+  const kidB64 = hexToBase64Url(kid);
+  const keyB64 = hexToBase64Url(key);
+  return { [kidB64]: keyB64 };
 }
 
 // When the native player fails and we fall back to WebView,
@@ -155,7 +181,7 @@ function buildSource(url, headers = {}) {
   };
   const src = { uri: url, headers: h };
   // Hint DASH so ExoPlayer uses DashMediaSource immediately (faster, more reliable).
-  if (isMpdUrl(url)) src.type = 'mpd';
+  if (isMpdUrl(url)) src.type = 'dash';
   return src;
 }
 
@@ -208,21 +234,24 @@ export default function VideoPlayer({
   };
   const source = buildSource(url, mergedHeaders);
 
-  if (isDrm) {
-    // Prefer direct clearKeys injection (most reliable for ExoPlayer ClearKey)
-    const clearKeysMap = parseClearKeys(drmClearKey);
-    if (clearKeysMap) {
-      source.drm = {
-        type: 'clearkey',
-        clearKeys: clearKeysMap,
-      };
-    } else if (drmLicenseUrl) {
-      // Fall back to license server if no inline key provided
+  if (isDrm && source) {
+    // For maximum reliability, always use backend ClearKey license endpoint when available.
+    // This reuses the same proven JSON JWK response used by the Web player.
+    if (drmLicenseUrl) {
       source.drm = {
         type: 'clearkey',
         licenseServer: drmLicenseUrl,
         headers: mergedHeaders,
       };
+    } else {
+      // Fallback: inline clearKeys when no license URL is configured for this channel.
+      const clearKeysMap = parseClearKeys(drmClearKey);
+      if (clearKeysMap) {
+        source.drm = {
+          type: 'clearkey',
+          clearKeys: clearKeysMap,
+        };
+      }
     }
   }
 
@@ -385,6 +414,7 @@ export default function VideoPlayer({
       lower.includes('timeout') ||
       lower.includes('connection') ||
       lower.includes('failed to load') ||
+      lower.includes('cannot be loaded') ||
       lower.includes('unable to connect');
 
     if (WebView && !useWebView && (isContainerError || isRetryableError)) {

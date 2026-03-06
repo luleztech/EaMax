@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { dashboardAPI } from '../../config/api';
+import { dashboardAPI, adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 
@@ -48,34 +48,37 @@ const AnalyticsSection = () => {
     },
   ]);
 
-  const mostWatchedPlatforms = [
+  const [mostWatchedPlatforms, setMostWatchedPlatforms] = useState([
     {
       name: 'Movies',
-      views: '0',
+      views: 0,
       percentage: 0,
       gradient: ['#7c3aed', '#6d28d9'],
       icon: 'movie',
     },
     {
       name: 'Football',
-      views: '0',
+      views: 0,
       percentage: 0,
       gradient: ['#10b981', '#059669'],
       icon: 'soccer',
     },
     {
       name: 'Habari',
-      views: '0',
+      views: 0,
       percentage: 0,
       gradient: ['#ef4444', '#dc2626'],
       icon: 'newspaper-variant',
     },
-  ];
+  ]);
 
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
-        const data = await dashboardAPI.getStats();
+        const [data, channels] = await Promise.all([
+          dashboardAPI.getStats(),
+          adminChannelsAPI.getChannels().catch(() => []),
+        ]);
 
         const formatCurrency = (cents) =>
           `Tsh. ${(cents / 100).toFixed(0)}`;
@@ -114,6 +117,40 @@ const AnalyticsSection = () => {
             icon: 'delete',
           },
         ]);
+
+        // Aggregate channel watch data by category (platform) for Most Watched Platforms
+        const viewsByCategory = { football: 0, movies: 0, habari: 0 };
+        const list = Array.isArray(channels) ? channels : [];
+        list.forEach((ch) => {
+          const cat = (ch.category || 'football').toLowerCase();
+          const views = Number(ch.view_count ?? ch.viewCount) || 0;
+          if (viewsByCategory[cat] !== undefined) viewsByCategory[cat] += views;
+        });
+        const totalViews = viewsByCategory.football + viewsByCategory.movies + viewsByCategory.habari;
+        const pct = (v) => (totalViews > 0 ? Math.round((v / totalViews) * 100) : 0);
+        setMostWatchedPlatforms([
+          {
+            name: 'Movies',
+            views: viewsByCategory.movies,
+            percentage: pct(viewsByCategory.movies),
+            gradient: ['#7c3aed', '#6d28d9'],
+            icon: 'movie',
+          },
+          {
+            name: 'Football',
+            views: viewsByCategory.football,
+            percentage: pct(viewsByCategory.football),
+            gradient: ['#10b981', '#059669'],
+            icon: 'soccer',
+          },
+          {
+            name: 'Habari',
+            views: viewsByCategory.habari,
+            percentage: pct(viewsByCategory.habari),
+            gradient: ['#ef4444', '#dc2626'],
+            icon: 'newspaper-variant',
+          },
+        ].sort((a, b) => b.views - a.views));
       } catch (error) {
         console.error('Failed to fetch analytics stats:', error);
       }

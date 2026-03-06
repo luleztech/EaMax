@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -179,7 +179,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       setTimeout(() => setStatusMessage({ type: null, text: '' }), 6000);
     } finally {
       setLoading(false);
-      sendingRef.current = false;
     }
   };
 

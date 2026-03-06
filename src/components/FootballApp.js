@@ -349,9 +349,15 @@ const FootballApp = ({
       )}
 
       {activeTab === 'payments' ? (
-        <PaymentsScreen accentColor="#4ade80" />
+        <PaymentsScreen accentColor="#4ade80" bottomPadding={contentBottomPadding} onPaymentSuccess={onPointsRefresh} />
       ) : activeTab === 'profile' ? (
-        <ProfileScreen accentColor="#4ade80" onWatchAd={onWatchAd} userPoints={userPoints} onPointsRefresh={onPointsRefresh} />
+        <ProfileScreen
+          accentColor="#4ade80"
+          onWatchAd={onWatchAd}
+          userPoints={userPoints}
+          onPointsRefresh={onPointsRefresh}
+          bottomPadding={contentBottomPadding}
+        />
       ) : activeTab === 'channels' ? (
         <ScrollView
           style={styles.scrollView}
@@ -903,12 +909,16 @@ const FootballApp = ({
         onGoPremium={handleGoPremium}
         onPointsUpdated={async () => {
           const updatedPoints = await handlePointsUpdated();
-          // If user now has enough points, unlock and play
+          // If user now has enough points, unlock and play with full channel data (including DRM ClearKey)
           if (selectedChannel && updatedPoints >= selectedChannel.pointsRequired) {
             try {
               await handleUnlockChannel(selectedChannel.id);
-              setPlayingChannel(selectedChannel);
-              setVideoPlayerVisible(true);
+              const data = await channelsAPI.getChannel(selectedChannel.id);
+              const url = data.streamUrl || data.stream_url;
+              if (url) {
+                setPlayingChannel({ ...selectedChannel, ...data, streamUrl: url });
+                setVideoPlayerVisible(true);
+              }
               setInsufficientPointsModalVisible(false);
               setSelectedChannel(null);
             } catch (error) {

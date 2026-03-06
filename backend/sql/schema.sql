@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS channels (
   points_required INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   drm_protected BOOLEAN NOT NULL DEFAULT FALSE,
+  drm_clear_key TEXT,
   owner_user_id INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

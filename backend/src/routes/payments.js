@@ -224,6 +224,14 @@ const applyCompletedPayment = async (orderId, meta) => {
       [payment.user_id, planInfo.interval],
     );
 
+    // Unlock all active channels for this user
+    await query(
+      `INSERT INTO user_unlocked_channels (user_id, channel_id)
+       SELECT $1, id FROM channels WHERE is_active = TRUE
+       ON CONFLICT (user_id, channel_id) DO NOTHING`,
+      [payment.user_id],
+    );
+
     await query('COMMIT');
   } catch (err) {
     await query('ROLLBACK');
