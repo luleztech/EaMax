@@ -45,6 +45,7 @@ const ContentSection = () => {
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
+  const [channelSearchQuery, setChannelSearchQuery] = useState('');
 
   const showStatusModal = (title, message) => {
     setStatusModalTitle(title);
@@ -189,6 +190,15 @@ const ContentSection = () => {
     ? channels
     : channels.filter(channel => channel.category === activeFilter);
 
+  const searchTrimmed = (channelSearchQuery || '').trim().toLowerCase();
+  const searchedChannels = searchTrimmed
+    ? filteredChannels.filter(
+        (ch) =>
+          (ch.name && String(ch.name).toLowerCase().includes(searchTrimmed)) ||
+          (ch.category && String(ch.category).toLowerCase().includes(searchTrimmed))
+      )
+    : filteredChannels;
+
   if (loading) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
@@ -235,22 +245,47 @@ const ContentSection = () => {
         </TouchableOpacity>
       </ScrollView>
 
+      {/* Search box */}
+      <View style={styles.searchContainer}>
+        <Icon name="magnify" size={20} color="#6b7280" style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search channels by name or category..."
+          placeholderTextColor="#6b7280"
+          value={channelSearchQuery}
+          onChangeText={setChannelSearchQuery}
+          maxLength={100}
+        />
+        {channelSearchQuery.length > 0 ? (
+          <TouchableOpacity
+            style={styles.searchClearButton}
+            onPress={() => setChannelSearchQuery('')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Icon name="close-circle" size={20} color="#6b7280" />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
       {/* Channels Grid */}
       <View style={styles.contentGrid}>
-        {filteredChannels.length === 0 ? (
+        {searchedChannels.length === 0 ? (
           <View style={styles.emptyState}>
             <Icon name="television-off" size={48} color="#6b7280" />
             <Text style={styles.emptyStateText}>
-              {activeFilter === 'all'
+              {searchTrimmed
+                ? 'No channels match your search'
+                : activeFilter === 'all'
                 ? 'No channels yet'
                 : 'No channels in this category'}
             </Text>
             <Text style={styles.emptyStateSubtext}>
-              Add a new channel using the + button above
+              {searchTrimmed
+                ? 'Try a different search or clear the search box'
+                : 'Add a new channel using the + button above'}
             </Text>
           </View>
         ) : (
-          filteredChannels.map((channel) => (
+          searchedChannels.map((channel) => (
             <View key={channel.id} style={styles.contentCard}>
               <ImageBackground
                 source={
@@ -748,6 +783,29 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(31, 41, 55, 0.8)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    minHeight: 48,
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 15,
+    paddingVertical: 12,
+  },
+  searchClearButton: {
+    padding: 4,
   },
   contentGrid: {
     flexDirection: 'row',

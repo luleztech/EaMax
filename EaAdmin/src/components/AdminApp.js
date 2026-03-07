@@ -35,13 +35,13 @@ const AdminApp = () => {
           />
         );
       case 'users':
-        return <UsersSection />;
+        return <UsersSection isActive={activeTab === 'users'} />;
       case 'content':
         return <ContentSection />;
       case 'ads':
         return <AdsSection />;
       case 'analytics':
-        return <AnalyticsSection />;
+        return <AnalyticsSection isActive={activeTab === 'analytics'} />;
       case 'settings':
         return <SettingsSection />;
       default:

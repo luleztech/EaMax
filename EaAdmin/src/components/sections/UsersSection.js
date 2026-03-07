@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -41,7 +41,7 @@ const getInitials = (externalId) => {
   return externalId.substring(0, 2).toUpperCase();
 };
 
-const UsersSection = () => {
+const UsersSection = ({ isActive }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -56,24 +56,28 @@ const UsersSection = () => {
   const [statusModalMessage, setStatusModalMessage] = useState('');
   const [statusModalType, setStatusModalType] = useState('success'); // 'success' or 'error'
   const [grantingAccess, setGrantingAccess] = useState(false);
+  const wasActiveRef = useRef(false);
 
-  // Fetch users from backend
+  // Fetch users from backend (includes is_premium, premium_expires_at so payment success shows as Premium)
   const fetchUsers = async () => {
     try {
       const data = await adminUsersAPI.getUsers(200, 0);
       
-      // Format users for display
-      const formattedUsers = data.map((user, index) => ({
-        id: user.id,
-        name: user.external_id || `User-${user.id}`,
-        initials: getInitials(user.external_id),
-        status: user.is_premium && (!user.premium_expires_at || new Date(user.premium_expires_at) > new Date()) 
-          ? 'Premium' 
-          : 'Free',
-        gradient: getGradientColors(index),
-        blocked: user.blocked || false,
-        rawData: user, // Keep original data for API calls
-      }));
+      // Format users for display (premium status from is_premium + premium_expires_at so payment success shows)
+      const formattedUsers = data.map((user, index) => {
+        const isPremium =
+          user.is_premium === true &&
+          (!user.premium_expires_at || new Date(user.premium_expires_at) > new Date());
+        return {
+          id: user.id,
+          name: user.external_id || `User-${user.id}`,
+          initials: getInitials(user.external_id),
+          status: isPremium ? 'Premium' : 'Free',
+          gradient: getGradientColors(index),
+          blocked: user.blocked || false,
+          rawData: user,
+        };
+      });
       
       setUsers(formattedUsers);
     } catch (error) {
@@ -88,6 +92,14 @@ const UsersSection = () => {
   useEffect(() => {
     fetchUsers();
   }, []);
+
+  // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      fetchUsers();
+    }
+    wasActiveRef.current = !!isActive;
+  }, [isActive]);
 
   const onRefresh = () => {
     setRefreshing(true);

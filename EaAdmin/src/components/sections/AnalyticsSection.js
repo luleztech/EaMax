@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -12,7 +13,9 @@ import { dashboardAPI, adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 
-const AnalyticsSection = () => {
+const AnalyticsSection = ({ isActive }) => {
+  const [refreshing, setRefreshing] = useState(false);
+  const wasActiveRef = useRef(false);
   const [stats, setStats] = useState([
     {
       title: 'Premium Payments',
@@ -75,26 +78,29 @@ const AnalyticsSection = () => {
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
+        setRefreshing(true);
         const [data, channels] = await Promise.all([
           dashboardAPI.getStats(),
           adminChannelsAPI.getChannels().catch(() => []),
         ]);
 
+        // Use same revenue as Dashboard (month revenue from completed subscription_payments)
+        const revenueCents = Number(data.revenueTsh) || 0;
         const formatCurrency = (cents) =>
-          `Tsh. ${(cents / 100).toFixed(0)}`;
+          `Tsh. ${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 
         setStats([
           {
             title: 'Premium Payments',
-            value: formatCurrency(data.premiumPaymentsCents || 0),
-            change: '+0%',
-            subtitle: 'this month',
+            value: formatCurrency(revenueCents),
+            change: 'this month',
+            subtitle: 'revenue',
             gradient: ['#7c3aed', '#6d28d9'],
             icon: 'currency-usd',
           },
           {
             title: 'New Users',
-            value: String(data.newUsersThisMonth || 0),
+            value: String(data.newUsersThisMonth ?? 0),
             change: '+0%',
             subtitle: 'this month',
             gradient: ['#10b981', '#059669'],
@@ -102,7 +108,7 @@ const AnalyticsSection = () => {
           },
           {
             title: 'Total Users',
-            value: String(data.totalUsers || 0),
+            value: String(data.totalUsers ?? 0),
             change: '+0%',
             subtitle: 'all time',
             gradient: ['#2563eb', '#1e40af'],
@@ -110,7 +116,7 @@ const AnalyticsSection = () => {
           },
           {
             title: 'Uninstall Users',
-            value: String(data.uninstallUsersThisMonth || 0),
+            value: String(data.uninstallUsersThisMonth ?? 0),
             change: '-0%',
             subtitle: 'this month',
             gradient: ['#ef4444', '#dc2626'],
@@ -153,14 +159,100 @@ const AnalyticsSection = () => {
         ].sort((a, b) => b.views - a.views));
       } catch (error) {
         console.error('Failed to fetch analytics stats:', error);
+      } finally {
+        setRefreshing(false);
       }
     };
 
     fetchAnalytics();
   }, []);
 
+  // Refetch when user switches to Analytics tab so revenue/premium payments stay in sync with Dashboard
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      const fetchAnalytics = async () => {
+        try {
+          const [data, channels] = await Promise.all([
+            dashboardAPI.getStats(),
+            adminChannelsAPI.getChannels().catch(() => []),
+          ]);
+          const revenueCents = Number(data.revenueTsh) || 0;
+          const formatCurrency = (cents) =>
+            `Tsh. ${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+          setStats((prev) => {
+            const next = [...prev];
+            const premiumCard = next.find((s) => s.title === 'Premium Payments');
+            if (premiumCard) premiumCard.value = formatCurrency(revenueCents);
+            const newUsersCard = next.find((s) => s.title === 'New Users');
+            if (newUsersCard) newUsersCard.value = String(data.newUsersThisMonth ?? 0);
+            const totalCard = next.find((s) => s.title === 'Total Users');
+            if (totalCard) totalCard.value = String(data.totalUsers ?? 0);
+            const uninstallCard = next.find((s) => s.title === 'Uninstall Users');
+            if (uninstallCard) uninstallCard.value = String(data.uninstallUsersThisMonth ?? 0);
+            return next;
+          });
+          const viewsByCategory = { football: 0, movies: 0, habari: 0 };
+          const list = Array.isArray(channels) ? channels : [];
+          list.forEach((ch) => {
+            const cat = (ch.category || 'football').toLowerCase();
+            const views = Number(ch.view_count ?? ch.viewCount) || 0;
+            if (viewsByCategory[cat] !== undefined) viewsByCategory[cat] += views;
+          });
+          const totalViews = viewsByCategory.football + viewsByCategory.movies + viewsByCategory.habari;
+          const pct = (v) => (totalViews > 0 ? Math.round((v / totalViews) * 100) : 0);
+          setMostWatchedPlatforms([
+            { name: 'Movies', views: viewsByCategory.movies, percentage: pct(viewsByCategory.movies), gradient: ['#7c3aed', '#6d28d9'], icon: 'movie' },
+            { name: 'Football', views: viewsByCategory.football, percentage: pct(viewsByCategory.football), gradient: ['#10b981', '#059669'], icon: 'soccer' },
+            { name: 'Habari', views: viewsByCategory.habari, percentage: pct(viewsByCategory.habari), gradient: ['#ef4444', '#dc2626'], icon: 'newspaper-variant' },
+          ].sort((a, b) => b.views - a.views));
+        } catch (e) {
+          console.warn('Analytics tab refetch:', e);
+        }
+      };
+      fetchAnalytics();
+    }
+    wasActiveRef.current = !!isActive;
+  }, [isActive]);
+
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.container}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            Promise.all([
+              dashboardAPI.getStats(),
+              adminChannelsAPI.getChannels().catch(() => []),
+            ]).then(([data, channels]) => {
+              const revenueCents = Number(data.revenueTsh) || 0;
+              const formatCurrency = (c) => `Tsh. ${(c / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+              setStats((prev) => [
+                { ...prev[0], value: formatCurrency(revenueCents) },
+                { ...prev[1], value: String(data.newUsersThisMonth ?? 0) },
+                { ...prev[2], value: String(data.totalUsers ?? 0) },
+                { ...prev[3], value: String(data.uninstallUsersThisMonth ?? 0) },
+              ]);
+              const viewsByCategory = { football: 0, movies: 0, habari: 0 };
+              (Array.isArray(channels) ? channels : []).forEach((ch) => {
+                const cat = (ch.category || 'football').toLowerCase();
+                const v = Number(ch.view_count ?? ch.viewCount) || 0;
+                if (viewsByCategory[cat] !== undefined) viewsByCategory[cat] += v;
+              });
+              const total = viewsByCategory.football + viewsByCategory.movies + viewsByCategory.habari;
+              const pct = (x) => (total > 0 ? Math.round((x / total) * 100) : 0);
+              setMostWatchedPlatforms([
+                { name: 'Movies', views: viewsByCategory.movies, percentage: pct(viewsByCategory.movies), gradient: ['#7c3aed', '#6d28d9'], icon: 'movie' },
+                { name: 'Football', views: viewsByCategory.football, percentage: pct(viewsByCategory.football), gradient: ['#10b981', '#059669'], icon: 'soccer' },
+                { name: 'Habari', views: viewsByCategory.habari, percentage: pct(viewsByCategory.habari), gradient: ['#ef4444', '#dc2626'], icon: 'newspaper-variant' },
+              ].sort((a, b) => b.views - a.views));
+            }).catch((e) => console.warn('Analytics refresh:', e))
+            .finally(() => setRefreshing(false));
+          }}
+        />
+      }>
       {/* Stats Cards */}
       <View style={styles.statsContainer}>
         {stats.map((stat, index) => (
