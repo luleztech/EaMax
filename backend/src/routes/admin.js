@@ -811,21 +811,29 @@ router.post('/notifications', async (req, res, next) => {
         const isInit = firebase.isInitialized;
 
         if (typeof isInit === 'function' && isInit()) {
+          // Get all active users with FCM tokens (including those who haven't opened app recently)
           const tokensResult = await query(
-            `SELECT fcm_token FROM users 
-             WHERE fcm_token IS NOT NULL 
-             AND blocked = FALSE 
-             AND TRIM(fcm_token) != ''`
+            `SELECT u.id as user_id, u.fcm_token 
+             FROM users u
+             WHERE u.fcm_token IS NOT NULL 
+             AND u.blocked = FALSE 
+             AND TRIM(u.fcm_token) != ''
+             AND u.uninstalled_at IS NULL`
           );
 
-          const rawTokens = (tokensResult.rows || [])
-            .map((row) => row && row.fcm_token)
-            .filter((token) => token && String(token).trim() !== '');
-          // Deduplicate so each device receives exactly one notification
-          const fcmTokens = [...new Set(rawTokens)];
+          const userTokenMap = new Map();
+          (tokensResult.rows || []).forEach((row) => {
+            const token = row?.fcm_token;
+            if (token && String(token).trim() !== '') {
+              userTokenMap.set(row.user_id, token);
+            }
+          });
+
+          // Deduplicate tokens so each device receives exactly one notification
+          const fcmTokens = [...new Set(userTokenMap.values())];
 
           if (fcmTokens.length > 0 && typeof sendPush === 'function') {
-            await sendPush(
+            const pushResult = await sendPush(
               fcmTokens,
               data.title,
               data.message,
@@ -835,6 +843,43 @@ router.post('/notifications', async (req, res, next) => {
                 type: 'notification',
               }
             );
+
+            // Track delivery attempts in database
+            const deliveryRecords = [];
+            for (const [userId, token] of userTokenMap.entries()) {
+              deliveryRecords.push([notification.id, userId, token]);
+            }
+
+            if (deliveryRecords.length > 0) {
+              // Batch insert delivery records
+              const deliveryValues = deliveryRecords
+                .map((_, idx) => {
+                  const base = idx * 3;
+                  return `($${base + 1}, $${base + 2}, $${base + 3})`;
+                })
+                .join(',');
+              
+              const deliveryParams = deliveryRecords.flat();
+              
+              await query(
+                `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token)
+                 VALUES ${deliveryValues}
+                 ON CONFLICT (notification_id, user_id) DO NOTHING`,
+                deliveryParams
+              ).catch((err) => {
+                console.warn('Failed to insert delivery records:', err.message);
+              });
+
+              // Update sent count on notification
+              await query(
+                `UPDATE notifications SET sent_count = $1 WHERE id = $2`,
+                [fcmTokens.length, notification.id]
+              ).catch((err) => {
+                console.warn('Failed to update sent_count:', err.message);
+              });
+            }
+
+            console.log(`Notification ${notification.id} sent to ${fcmTokens.length} devices (${pushResult?.sent || 0} successful, ${pushResult?.failed || 0} failed)`);
           }
         }
       } catch (pushErr) {

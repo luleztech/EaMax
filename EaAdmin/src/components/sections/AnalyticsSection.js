@@ -84,15 +84,15 @@ const AnalyticsSection = ({ isActive }) => {
           adminChannelsAPI.getChannels().catch(() => []),
         ]);
 
-        // Use same revenue as Dashboard (month revenue from completed subscription_payments)
-        const revenueCents = Number(data.revenueTsh) || 0;
-        const formatCurrency = (cents) =>
-          `Tsh. ${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+        // Use same revenue as Dashboard (revenueTsh is amount in TZS, not cents - match formatTsh)
+        const revenueTsh = Number(data.revenueTsh) || 0;
+        const formatTsh = (n) =>
+          n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString();
 
         setStats([
           {
             title: 'Premium Payments',
-            value: formatCurrency(revenueCents),
+            value: `${formatTsh(revenueTsh)} TSh`,
             change: 'this month',
             subtitle: 'revenue',
             gradient: ['#7c3aed', '#6d28d9'],
@@ -176,13 +176,13 @@ const AnalyticsSection = ({ isActive }) => {
             dashboardAPI.getStats(),
             adminChannelsAPI.getChannels().catch(() => []),
           ]);
-          const revenueCents = Number(data.revenueTsh) || 0;
-          const formatCurrency = (cents) =>
-            `Tsh. ${(cents / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+          const revenueTsh = Number(data.revenueTsh) || 0;
+          const formatTsh = (n) =>
+            n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString();
           setStats((prev) => {
             const next = [...prev];
             const premiumCard = next.find((s) => s.title === 'Premium Payments');
-            if (premiumCard) premiumCard.value = formatCurrency(revenueCents);
+            if (premiumCard) premiumCard.value = `${formatTsh(revenueTsh)} TSh`;
             const newUsersCard = next.find((s) => s.title === 'New Users');
             if (newUsersCard) newUsersCard.value = String(data.newUsersThisMonth ?? 0);
             const totalCard = next.find((s) => s.title === 'Total Users');
@@ -227,10 +227,11 @@ const AnalyticsSection = ({ isActive }) => {
               dashboardAPI.getStats(),
               adminChannelsAPI.getChannels().catch(() => []),
             ]).then(([data, channels]) => {
-              const revenueCents = Number(data.revenueTsh) || 0;
-              const formatCurrency = (c) => `Tsh. ${(c / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+              const revenueTsh = Number(data.revenueTsh) || 0;
+              const formatTsh = (n) =>
+                n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString();
               setStats((prev) => [
-                { ...prev[0], value: formatCurrency(revenueCents) },
+                { ...prev[0], value: `${formatTsh(revenueTsh)} TSh` },
                 { ...prev[1], value: String(data.newUsersThisMonth ?? 0) },
                 { ...prev[2], value: String(data.totalUsers ?? 0) },
                 { ...prev[3], value: String(data.uninstallUsersThisMonth ?? 0) },

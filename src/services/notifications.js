@@ -165,11 +165,29 @@ export const registerFCMToken = async (externalId, fcmToken) => {
   }
 };
 
+// Confirm notification delivery to backend
+const confirmNotificationDelivery = async (notificationId, externalId) => {
+  try {
+    if (!notificationId || !externalId) return;
+    await notificationsAPI.confirmDelivery(String(notificationId), externalId);
+    console.log(`[FCM] Confirmed delivery of notification ${notificationId}`);
+  } catch (error) {
+    console.warn('[FCM] Failed to confirm delivery:', error?.message || error);
+  }
+};
+
 // Display local notification using Notifee
-export const displayNotification = async (title, body, data = {}) => {
+export const displayNotification = async (title, body, data = {}, externalId = null) => {
   try {
     const notifee = require('@notifee/react-native').default;
     const { AndroidImportance } = require('@notifee/react-native');
+    
+    // Confirm delivery to backend for tracking
+    const notificationId = data?.notificationId || data?.notification_id;
+    if (notificationId && externalId) {
+      confirmNotificationDelivery(notificationId, externalId);
+    }
+    
     if (Platform.OS === 'android') {
       await notifee.displayNotification({
         title: title || 'EaMax',
@@ -245,9 +263,12 @@ export const initializeNotifications = async (externalId) => {
 
 // Only attach FCM/Notifee listeners once (avoid duplicate when both StreamingApp and ProfileScreen init)
 let _handlersSetup = false;
+let _cachedExternalId = null;
 
 // Setup notification handlers (safe: returns no-op if Firebase/Notifee unavailable)
-export const setupNotificationHandlers = (onNotificationReceived) => {
+export const setupNotificationHandlers = (onNotificationReceived, externalId = null) => {
+  if (externalId) _cachedExternalId = externalId;
+  
   if (_handlersSetup) return () => {};
   _handlersSetup = true;
   let unsubscribeForeground = () => {};
@@ -255,6 +276,7 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
     const messaging = getMessagingInstance();
     const notifee = require('@notifee/react-native').default;
 
+    // Foreground message handler - displays notification and confirms delivery
     unsubscribeForeground = onMessage(messaging, async (remoteMessage) => {
       try {
         const { notification, data } = remoteMessage || {};
@@ -262,7 +284,8 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
           await displayNotification(
             notification.title || 'EaMax',
             notification.body || '',
-            data || {}
+            data || {},
+            _cachedExternalId
           );
         }
         if (onNotificationReceived) onNotificationReceived(remoteMessage);
@@ -271,30 +294,51 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
       }
     });
 
+    // App opened from killed state via notification
     getInitialNotification(messaging).then((remoteMessage) => {
       if (remoteMessage) {
         recordNotificationClick(remoteMessage);
+        // Confirm delivery when app opened from notification
+        const notificationId = remoteMessage?.data?.notificationId || remoteMessage?.data?.notification_id;
+        if (notificationId && _cachedExternalId) {
+          confirmNotificationDelivery(notificationId, _cachedExternalId);
+        }
         if (onNotificationReceived) onNotificationReceived(remoteMessage);
       }
     }).catch(() => {});
 
+    // Notifee initial notification
     notifee.getInitialNotification().then((initial) => {
       if (initial?.notification?.data) {
         recordNotificationClick({ data: initial.notification.data });
+        const notificationId = initial.notification.data?.notificationId || initial.notification.data?.notification_id;
+        if (notificationId && _cachedExternalId) {
+          confirmNotificationDelivery(notificationId, _cachedExternalId);
+        }
       }
     }).catch(() => {});
 
+    // App opened from background via notification
     onNotificationOpenedApp(messaging, (remoteMessage) => {
       if (remoteMessage) {
         recordNotificationClick(remoteMessage);
+        const notificationId = remoteMessage?.data?.notificationId || remoteMessage?.data?.notification_id;
+        if (notificationId && _cachedExternalId) {
+          confirmNotificationDelivery(notificationId, _cachedExternalId);
+        }
         if (onNotificationReceived) onNotificationReceived(remoteMessage);
       }
     });
 
+    // Notifee foreground event (user taps notification)
     notifee.onForegroundEvent(({ type, detail }) => {
       if (type === 1 && detail?.notification) {
         const data = detail.notification.data || {};
         recordNotificationClick({ data });
+        const notificationId = data?.notificationId || data?.notification_id;
+        if (notificationId && _cachedExternalId) {
+          confirmNotificationDelivery(notificationId, _cachedExternalId);
+        }
         if (onNotificationReceived) {
           onNotificationReceived({
             notification: {
@@ -307,7 +351,15 @@ export const setupNotificationHandlers = (onNotificationReceived) => {
       }
     });
 
-    notifee.onBackgroundEvent(() => {});
+    // Background event handler - confirms delivery even when app is in background
+    notifee.onBackgroundEvent(async ({ type, detail }) => {
+      if (detail?.notification?.data) {
+        const notificationId = detail.notification.data?.notificationId || detail.notification.data?.notification_id;
+        if (notificationId && _cachedExternalId) {
+          confirmNotificationDelivery(notificationId, _cachedExternalId);
+        }
+      }
+    });
   } catch (error) {
     console.warn('Setup notification handlers error:', error?.message || error);
   }

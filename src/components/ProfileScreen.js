@@ -96,7 +96,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
       });
       unsubscribe = setupNotificationHandlers((remoteMessage) => {
         if (remoteMessage) console.log('Notification received');
-      });
+      }, userId);
     } catch (err) {
       console.warn('Notification setup error:', err?.message || err);
     }

@@ -28,10 +28,18 @@ const { width } = Dimensions.get('window');
 const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   const [stats, setStats] = useState([
     {
+      title: 'Daily Installs',
+      value: '0',
+      change: '+0%',
+      subtitle: 'New users today',
+      gradient: ['#06b6d4', '#0891b2'],
+      icon: 'download',
+    },
+    {
       title: 'Total Users',
       value: '0',
       change: '+0%',
-      subtitle: 'vs last month',
+      subtitle: 'All active users',
       gradient: ['#2563eb', '#1e40af'],
       icon: 'account-group',
     },
@@ -39,25 +47,49 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       title: 'Premium Users',
       value: '0',
       change: '+0%',
-      subtitle: 'conversion rate',
+      subtitle: 'Active subscriptions',
       gradient: ['#10b981', '#059669'],
       icon: 'star',
     },
     {
+      title: 'Free Users',
+      value: '0',
+      change: '0%',
+      subtitle: 'Non-premium users',
+      gradient: ['#64748b', '#475569'],
+      icon: 'account',
+    },
+    {
       title: 'Revenue',
-      value: '$0',
+      value: 'TSh 0',
       change: '+0%',
-      subtitle: 'Mwezi huuyamepokelewa',
+      subtitle: 'This month',
       gradient: ['#7c3aed', '#6d28d9'],
       icon: 'currency-usd',
     },
     {
-      title: 'Ads Watched per Month',
+      title: 'Ads Watched',
       value: '0',
       change: '+0%',
-      subtitle: '',
+      subtitle: 'This month',
       gradient: ['#f97316', '#ea580c'],
       icon: 'eye',
+    },
+    {
+      title: 'Notifications',
+      value: '0',
+      change: '0%',
+      subtitle: 'Delivery rate',
+      gradient: ['#ec4899', '#db2777'],
+      icon: 'bell',
+    },
+    {
+      title: 'Expired Subs',
+      value: '0',
+      change: '0%',
+      subtitle: 'Need renewal',
+      gradient: ['#ef4444', '#dc2626'],
+      icon: 'alert-circle',
     },
   ]);
   const [loading, setLoading] = useState(true);
@@ -118,41 +150,76 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         return num.toString();
       };
 
-      const revenueTsh = Number(data.revenueTsh) || 0;
-      const formatTsh = (n) => (n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString());
+      const formatTsh = (n) => {
+        if (n >= 1000000) return `TSh ${(n / 1000000).toFixed(1)}M`;
+        if (n >= 1000) return `TSh ${(n / 1000).toFixed(1)}K`;
+        return `TSh ${n}`;
+      };
 
       setStats([
+        {
+          title: 'Daily Installs',
+          value: formatNumber(data.todayInstalls || 0),
+          change: data.installChange || '+0%',
+          subtitle: 'New users today',
+          gradient: ['#06b6d4', '#0891b2'],
+          icon: 'download',
+        },
         {
           title: 'Total Users',
           value: formatNumber(data.totalUsers || 0),
           change: '+0%',
-          subtitle: 'registered',
+          subtitle: 'All active users',
           gradient: ['#2563eb', '#1e40af'],
           icon: 'account-group',
         },
         {
           title: 'Premium Users',
           value: formatNumber(data.premiumUsers || 0),
-          change: '+0%',
-          subtitle: 'active subscription',
+          change: data.premiumChange || '+0%',
+          subtitle: data.premiumPercentage || '0%',
           gradient: ['#10b981', '#059669'],
           icon: 'star',
         },
         {
+          title: 'Free Users',
+          value: formatNumber(data.freeUsers || 0),
+          change: '0%',
+          subtitle: 'Non-premium users',
+          gradient: ['#64748b', '#475569'],
+          icon: 'account',
+        },
+        {
           title: 'Revenue',
-          value: `${formatTsh(revenueTsh)} TSh`,
-          change: 'this month',
-          subtitle: '',
+          value: formatTsh(data.revenue || 0),
+          change: data.revenueChange || '+0%',
+          subtitle: 'This month',
           gradient: ['#7c3aed', '#6d28d9'],
           icon: 'currency-usd',
         },
         {
           title: 'Ads Watched',
-          value: formatNumber(data.adsWatchedThisMonth ?? data.adsWatchedToday ?? 0),
-          change: 'this month',
-          subtitle: '',
+          value: formatNumber(data.adsWatched || 0),
+          change: data.adsChange || '+0%',
+          subtitle: 'This month',
           gradient: ['#f97316', '#ea580c'],
           icon: 'eye',
+        },
+        {
+          title: 'Notifications',
+          value: formatNumber(data.notifications?.delivered || 0),
+          change: data.notifications?.deliveryRate || '0%',
+          subtitle: 'Delivery rate',
+          gradient: ['#ec4899', '#db2777'],
+          icon: 'bell',
+        },
+        {
+          title: 'Expired Subs',
+          value: formatNumber(data.expiredSubscriptions || 0),
+          change: '0%',
+          subtitle: 'Need renewal',
+          gradient: ['#ef4444', '#dc2626'],
+          icon: 'alert-circle',
         },
       ]);
     } catch (error) {
@@ -422,6 +489,13 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       }
     };
     init();
+
+    // Auto-refresh dashboard stats every 30 seconds
+    const interval = setInterval(() => {
+      fetchDashboardStats();
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, []);
 
   // Refetch recent notifications when a new one is sent (e.g. from NotificationsPanel)

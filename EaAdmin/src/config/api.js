@@ -250,6 +250,31 @@ export const adminMatchesAPI = {
   },
 };
 
+/**
+ * Dashboard API
+ */
+export const dashboardAPI = {
+  // Get dashboard statistics
+  getStats: async () => {
+    return apiRequest('/api/dashboard/stats');
+  },
+
+  // Get users with filters
+  getUsers: async (limit = 200, offset = 0, filter = 'all', search = '') => {
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+      offset: offset.toString(),
+      filter,
+    });
+    
+    if (search.trim()) {
+      params.append('search', search.trim());
+    }
+    
+    return apiRequest(`/api/dashboard/users?${params.toString()}`);
+  },
+};
+
 export default {
   API_BASE_URL,
   ADMIN_API_KEY,

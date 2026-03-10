@@ -120,7 +120,7 @@ const StreamingApp = () => {
         // If already granted, initialize notifications immediately
         if (isGranted) {
           await initializeNotifications(userId);
-          setupNotificationHandlers(() => {});
+          setupNotificationHandlers(() => {}, userId);
         }
 
         // Show modal if we haven't asked yet (first launch)
@@ -161,8 +161,8 @@ const StreamingApp = () => {
         if (userId) {
           // Initialize notifications fully - this handles registration and setup
           await initializeNotifications(userId);
-          // Set up foreground/background message listeners
-          setupNotificationHandlers(() => {});
+          // Set up foreground/background message listeners with userId for delivery tracking
+          setupNotificationHandlers(() => {}, userId);
           console.log('[NotifModal] Notifications initialized successfully');
         }
       } else {

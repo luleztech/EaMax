@@ -11,7 +11,8 @@ router.get('/', async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const result = await query(
-      `SELECT id, title, message, category, type, sent_at, scheduled_for, clicks
+      `SELECT id, title, message, category, type, sent_at, scheduled_for, clicks,
+              sent_count, delivered_count
          FROM notifications
         WHERE sent_at IS NOT NULL OR scheduled_for IS NOT NULL
         ORDER BY (CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) ASC,
@@ -40,6 +41,68 @@ router.post('/:id/click', async (req, res, next) => {
         WHERE id = $1
         RETURNING id, clicks`,
       [Number(id)],
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    return res.json(updated.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Public: confirm notification delivery (called by app when notification is received on device)
+router.post('/:id/delivered', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({
+      id: z.string().regex(/^\d+$/),
+    });
+    const bodySchema = z.object({
+      userId: z.number().int().positive().optional(),
+      externalId: z.string().optional(),
+    });
+
+    const { id } = paramsSchema.parse(req.params);
+    const body = bodySchema.parse(req.body);
+
+    const notificationId = Number(id);
+    let userId = body.userId;
+
+    // If externalId provided, look up userId
+    if (!userId && body.externalId) {
+      const userResult = await query(
+        `SELECT id FROM users WHERE external_id = $1`,
+        [body.externalId]
+      );
+      if (userResult.rows.length > 0) {
+        userId = userResult.rows[0].id;
+      }
+    }
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId or externalId required' });
+    }
+
+    // Mark as delivered in notification_deliveries table
+    await query(
+      `UPDATE notification_deliveries
+          SET delivered_at = now()
+        WHERE notification_id = $1 AND user_id = $2 AND delivered_at IS NULL`,
+      [notificationId, userId]
+    );
+
+    // Increment delivered_count on notifications table
+    const updated = await query(
+      `UPDATE notifications
+          SET delivered_count = (
+            SELECT COUNT(*) FROM notification_deliveries
+            WHERE notification_id = $1 AND delivered_at IS NOT NULL
+          )
+        WHERE id = $1
+        RETURNING id, delivered_count`,
+      [notificationId]
     );
 
     if (updated.rows.length === 0) {

@@ -131,6 +131,15 @@ export const notificationsAPI = {
       method: 'POST',
     });
   },
+
+  // Confirm notification delivery
+  confirmDelivery: async (notificationId, externalId) => {
+    return apiRequest(`/api/notifications/${notificationId}/delivered`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ externalId }),
+    });
+  },
 };
 
 /**

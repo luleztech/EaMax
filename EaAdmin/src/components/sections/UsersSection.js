@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { adminUsersAPI } from '../../config/api';
+import { adminUsersAPI, dashboardAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 
@@ -56,33 +56,51 @@ const UsersSection = ({ isActive }) => {
   const [statusModalMessage, setStatusModalMessage] = useState('');
   const [statusModalType, setStatusModalType] = useState('success'); // 'success' or 'error'
   const [grantingAccess, setGrantingAccess] = useState(false);
+  const [filter, setFilter] = useState('all'); // 'all', 'free', 'premium', 'expired'
+  const [totalUsers, setTotalUsers] = useState(0);
   const wasActiveRef = useRef(false);
 
-  // Fetch users from backend (includes is_premium, premium_expires_at so payment success shows as Premium)
+  // Fetch users from backend with filters
   const fetchUsers = async () => {
     try {
-      const data = await adminUsersAPI.getUsers(200, 0);
+      const { users: data, total } = await dashboardAPI.getUsers(200, 0, filter, searchQuery);
       
-      // Format users for display (premium status from is_premium + premium_expires_at so payment success shows)
+      // Format users for display
       const formattedUsers = data.map((user, index) => {
         const isPremium =
           user.is_premium === true &&
           (!user.premium_expires_at || new Date(user.premium_expires_at) > new Date());
+        
+        const isExpired =
+          user.is_premium === true &&
+          user.premium_expires_at &&
+          new Date(user.premium_expires_at) <= new Date();
+        
+        let statusText = 'Free';
+        if (isPremium) {
+          statusText = 'Premium';
+        } else if (isExpired) {
+          statusText = 'Expired';
+        }
+        
         return {
           id: user.id,
           name: user.external_id || `User-${user.id}`,
           initials: getInitials(user.external_id),
-          status: isPremium ? 'Premium' : 'Free',
+          status: statusText,
           gradient: getGradientColors(index),
           blocked: user.blocked || false,
+          premiumExpiresAt: user.premium_expires_at,
+          createdAt: user.created_at,
           rawData: user,
         };
       });
       
       setUsers(formattedUsers);
+      setTotalUsers(total);
     } catch (error) {
       console.error('Failed to fetch users:', error);
-      // Don't show modal on initial load, just log the error
+      showStatusModal('error', 'Error', 'Failed to load users. Please try again.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -91,7 +109,7 @@ const UsersSection = ({ isActive }) => {
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+  }, [filter, searchQuery]);
 
   // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
   useEffect(() => {
@@ -101,15 +119,17 @@ const UsersSection = ({ isActive }) => {
     wasActiveRef.current = !!isActive;
   }, [isActive]);
 
+  // Auto-refresh every 15s while Users tab is active so premium status updates when payment succeeds
+  useEffect(() => {
+    if (!isActive) return;
+    const id = setInterval(() => fetchUsers(), 15000);
+    return () => clearInterval(id);
+  }, [isActive, filter, searchQuery]);
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchUsers();
   };
-
-  // Filter users based on search query
-  const filteredUsers = users.filter((user) =>
-    user.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   // Show status modal
   const showStatusModal = (type, title, message) => {
@@ -187,6 +207,26 @@ const UsersSection = ({ isActive }) => {
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }>
+      {/* Header Stats */}
+      <View style={styles.statsRow}>
+        <View style={styles.statCard}>
+          <Text style={styles.statValue}>{totalUsers}</Text>
+          <Text style={styles.statLabel}>Total</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statValue}>{users.filter(u => u.status === 'Premium').length}</Text>
+          <Text style={styles.statLabel}>Premium</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statValue}>{users.filter(u => u.status === 'Free').length}</Text>
+          <Text style={styles.statLabel}>Free</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statValue}>{users.filter(u => u.status === 'Expired').length}</Text>
+          <Text style={styles.statLabel}>Expired</Text>
+        </View>
+      </View>
+
       {/* Search */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBox}>
@@ -201,24 +241,95 @@ const UsersSection = ({ isActive }) => {
         </View>
       </View>
 
+      {/* Filter Tabs */}
+      <ScrollView 
+        horizontal 
+        showsHorizontalScrollIndicator={false} 
+        style={styles.filterContainer}
+        contentContainerStyle={styles.filterScroll}>
+        <TouchableOpacity
+          style={[styles.filterTab, filter === 'all' && styles.filterTabActive]}
+          onPress={() => setFilter('all')}
+          activeOpacity={0.7}>
+          <Icon 
+            name="account-group" 
+            size={16} 
+            color={filter === 'all' ? '#fff' : '#9ca3af'} 
+          />
+          <Text style={[styles.filterTabText, filter === 'all' && styles.filterTabTextActive]}>
+            All
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.filterTab, filter === 'premium' && styles.filterTabActive]}
+          onPress={() => setFilter('premium')}
+          activeOpacity={0.7}>
+          <Icon 
+            name="star" 
+            size={16} 
+            color={filter === 'premium' ? '#fff' : '#9ca3af'} 
+          />
+          <Text style={[styles.filterTabText, filter === 'premium' && styles.filterTabTextActive]}>
+            Premium
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.filterTab, filter === 'free' && styles.filterTabActive]}
+          onPress={() => setFilter('free')}
+          activeOpacity={0.7}>
+          <Icon 
+            name="account" 
+            size={16} 
+            color={filter === 'free' ? '#fff' : '#9ca3af'} 
+          />
+          <Text style={[styles.filterTabText, filter === 'free' && styles.filterTabTextActive]}>
+            Free
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.filterTab, filter === 'expired' && styles.filterTabActive]}
+          onPress={() => setFilter('expired')}
+          activeOpacity={0.7}>
+          <Icon 
+            name="clock-alert" 
+            size={16} 
+            color={filter === 'expired' ? '#fff' : '#9ca3af'} 
+          />
+          <Text style={[styles.filterTabText, filter === 'expired' && styles.filterTabTextActive]}>
+            Expired
+          </Text>
+        </TouchableOpacity>
+      </ScrollView>
+
       {/* Users Table */}
       <View style={styles.tableCard}>
         <View style={styles.tableHeader}>
-          <Text style={styles.tableHeaderText}>User</Text>
-          <Text style={styles.tableHeaderText}>Actions</Text>
+          <Text style={styles.tableHeaderText}>
+            {filter === 'all' ? 'All Users' : 
+             filter === 'premium' ? 'Premium Users' : 
+             filter === 'free' ? 'Free Users' : 'Expired'} ({users.length})
+          </Text>
+          {isActive && (
+            <View style={styles.autoRefreshIndicator}>
+              <View style={styles.autoRefreshDot} />
+              <Text style={styles.autoRefreshText}>Live</Text>
+            </View>
+          )}
         </View>
-        {filteredUsers.length === 0 ? (
+        {users.length === 0 ? (
           <View style={styles.emptyState}>
             <Icon name="account-off" size={48} color="#6b7280" />
             <Text style={styles.emptyStateText}>
-              {searchQuery ? 'No users found' : 'No users yet'}
-            </Text>
-            <Text style={styles.emptyStateSubtext}>
-              {searchQuery ? 'Try a different search term' : 'Users will appear here when they register'}
+              {filter === 'all' ? 'No users found' :
+               filter === 'premium' ? 'No premium users' :
+               filter === 'free' ? 'No free users' : 'No expired subscriptions'}
             </Text>
           </View>
         ) : (
-          filteredUsers.map((user) => (
+          users.map((user) => (
           <View key={user.id} style={styles.tableRow}>
             <View style={styles.userCell}>
               <LinearGradient
@@ -235,6 +346,8 @@ const UsersSection = ({ isActive }) => {
                     styles.statusBadge,
                     user.status === 'Premium'
                       ? styles.premiumBadge
+                      : user.status === 'Expired'
+                      ? styles.expiredBadge
                       : styles.freeBadge,
                   ]}>
                   <Text
@@ -242,11 +355,23 @@ const UsersSection = ({ isActive }) => {
                       styles.statusText,
                       user.status === 'Premium'
                         ? styles.premiumText
+                        : user.status === 'Expired'
+                        ? styles.expiredText
                         : styles.freeText,
                     ]}>
                     {user.status}
                   </Text>
                 </View>
+                {user.premiumExpiresAt && user.status === 'Premium' && (
+                  <Text style={styles.expiryText}>
+                    Expires: {new Date(user.premiumExpiresAt).toLocaleDateString()}
+                  </Text>
+                )}
+                {user.premiumExpiresAt && user.status === 'Expired' && (
+                  <Text style={styles.expiredAtText}>
+                    Expired: {new Date(user.premiumExpiresAt).toLocaleDateString()}
+                  </Text>
+                )}
               </View>
             </View>
             <TouchableOpacity
@@ -571,6 +696,9 @@ const styles = StyleSheet.create({
   freeBadge: {
     backgroundColor: 'rgba(55, 65, 81, 0.5)',
   },
+  expiredBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+  },
   statusText: {
     fontSize: 11,
     fontWeight: '600',
@@ -580,6 +708,87 @@ const styles = StyleSheet.create({
   },
   freeText: {
     color: '#d1d5db',
+  },
+  expiredText: {
+    color: '#f87171',
+  },
+  expiryText: {
+    fontSize: 11,
+    color: '#10b981',
+    marginTop: 2,
+  },
+  expiredAtText: {
+    fontSize: 11,
+    color: '#ef4444',
+    marginTop: 2,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1f2937',
+  },
+  statValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  statLabel: {
+    fontSize: 11,
+    color: '#9ca3af',
+    marginTop: 4,
+  },
+  filterContainer: {
+    marginBottom: 16,
+  },
+  filterScroll: {
+    gap: 8,
+  },
+  filterTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    borderWidth: 1,
+    borderColor: '#1f2937',
+  },
+  filterTabActive: {
+    backgroundColor: '#7c3aed',
+    borderColor: '#7c3aed',
+  },
+  filterTabText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#9ca3af',
+  },
+  filterTabTextActive: {
+    color: '#fff',
+  },
+  autoRefreshIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  autoRefreshDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10b981',
+  },
+  autoRefreshText: {
+    fontSize: 11,
+    color: '#10b981',
   },
   modalContainer: {
     flex: 1,
