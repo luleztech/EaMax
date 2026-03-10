@@ -143,10 +143,10 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     try {
       const data = await dashboardAPI.getStats();
       
-      // Format numbers with commas
+      // Helper function to format large numbers with K/M
       const formatNumber = (num) => {
-        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+        if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+        if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
         return num.toString();
       };
 

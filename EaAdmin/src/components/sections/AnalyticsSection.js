@@ -84,43 +84,53 @@ const AnalyticsSection = ({ isActive }) => {
           adminChannelsAPI.getChannels().catch(() => []),
         ]);
 
-        // Use same revenue as Dashboard (revenueTsh is amount in TZS, not cents - match formatTsh)
-        const revenueTsh = Number(data.revenueTsh) || 0;
-        const formatTsh = (n) =>
-          n >= 1000000 ? `${(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toString();
+        // Helper function to format large numbers with K/M
+        const formatNumber = (num) => {
+          if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+          if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+          return num.toString();
+        };
+
+        // Format revenue (data.revenue is already in TSh, not cents)
+        const revenue = Number(data.revenue) || 0;
+        const formatTsh = (n) => {
+          if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M TSh`;
+          if (n >= 1000) return `${(n / 1000).toFixed(1)}K TSh`;
+          return `${n} TSh`;
+        };
 
         setStats([
           {
             title: 'Premium Payments',
-            value: `${formatTsh(revenueTsh)} TSh`,
-            change: 'this month',
-            subtitle: 'revenue',
+            value: formatTsh(revenue),
+            change: data.revenueChange || '+0%',
+            subtitle: 'this month',
             gradient: ['#7c3aed', '#6d28d9'],
             icon: 'currency-usd',
           },
           {
             title: 'New Users',
-            value: String(data.newUsersThisMonth ?? 0),
-            change: '+0%',
-            subtitle: 'this month',
+            value: formatNumber(data.todayInstalls ?? 0),
+            change: data.installChange || '+0%',
+            subtitle: 'today',
             gradient: ['#10b981', '#059669'],
             icon: 'account-plus',
           },
           {
             title: 'Total Users',
-            value: String(data.totalUsers ?? 0),
+            value: formatNumber(data.totalUsers ?? 0),
             change: '+0%',
             subtitle: 'all time',
             gradient: ['#2563eb', '#1e40af'],
             icon: 'account-group',
           },
           {
-            title: 'Uninstall Users',
-            value: String(data.uninstallUsersThisMonth ?? 0),
-            change: '-0%',
+            title: 'Ads Points',
+            value: formatNumber(data.adsWatched ?? 0),
+            change: data.adsChange || '+0%',
             subtitle: 'this month',
-            gradient: ['#ef4444', '#dc2626'],
-            icon: 'delete',
+            gradient: ['#f97316', '#ea580c'],
+            icon: 'eye',
           },
         ]);
 
