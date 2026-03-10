@@ -84,7 +84,7 @@ router.get('/stats', async (req, res, next) => {
     const revenueResult = await query(
       `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
-       WHERE payment_status = 'completed'
+       WHERE status = 'completed'
        AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)`
     );
     const revenue = parseFloat(revenueResult.rows[0].revenue) || 0;
@@ -93,7 +93,7 @@ router.get('/stats', async (req, res, next) => {
     const lastMonthRevenueResult = await query(
       `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
-       WHERE payment_status = 'completed'
+       WHERE status = 'completed'
        AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
     );
     const lastMonthRevenue = parseFloat(lastMonthRevenueResult.rows[0].revenue) || 0;
