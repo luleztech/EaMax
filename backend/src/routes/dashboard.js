@@ -107,7 +107,7 @@ router.get('/stats', async (req, res, next) => {
     const adsWatchedResult = await query(
       `SELECT COUNT(*) as ads
        FROM ad_events
-       WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)`
+       WHERE DATE_TRUNC('month', watched_at) = DATE_TRUNC('month', CURRENT_DATE)`
     );
     const adsWatched = parseInt(adsWatchedResult.rows[0].ads) || 0;
 
@@ -115,7 +115,7 @@ router.get('/stats', async (req, res, next) => {
     const lastMonthAdsResult = await query(
       `SELECT COUNT(*) as ads
        FROM ad_events
-       WHERE DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
+       WHERE DATE_TRUNC('month', watched_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
     );
     const lastMonthAds = parseInt(lastMonthAdsResult.rows[0].ads) || 0;
 
