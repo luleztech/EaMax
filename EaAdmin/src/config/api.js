@@ -71,16 +71,6 @@ const apiRequest = async (endpoint, options = {}) => {
 };
 
 /**
- * Admin Dashboard API
- */
-export const dashboardAPI = {
-  // Get dashboard statistics
-  getStats: async () => {
-    return apiRequest('/api/admin/dashboard');
-  },
-};
-
-/**
  * Admin Users API
  */
 export const adminUsersAPI = {
