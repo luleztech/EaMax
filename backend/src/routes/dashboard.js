@@ -80,9 +80,9 @@ router.get('/stats', async (req, res, next) => {
       ? (((premiumUsers - lastMonthPremium) / lastMonthPremium) * 100).toFixed(1)
       : premiumUsers > 0 ? '+100' : '0';
 
-    // Get this month's revenue
+    // Get this month's revenue (amount_cents / 100 = TSh)
     const revenueResult = await query(
-      `SELECT COALESCE(SUM(amount), 0) as revenue
+      `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
        WHERE payment_status = 'completed'
        AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)`
@@ -91,7 +91,7 @@ router.get('/stats', async (req, res, next) => {
 
     // Get last month's revenue for comparison
     const lastMonthRevenueResult = await query(
-      `SELECT COALESCE(SUM(amount), 0) as revenue
+      `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
        WHERE payment_status = 'completed'
        AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
