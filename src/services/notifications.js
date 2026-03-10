@@ -225,30 +225,53 @@ export const initializeNotifications = async (externalId) => {
       return false;
     }
 
-    // Ensure user exists on backend so fcm-token endpoint can find them
+    // STEP 1: Always create notification channel on startup (not just on permission request)
+    // This ensures the channel exists even if permission was previously granted
+    try {
+      const notifee = require('@notifee/react-native').default;
+      const { AndroidImportance } = require('@notifee/react-native');
+      await notifee.createChannel({
+        id: 'default',
+        name: 'EaMax Notifications',
+        importance: AndroidImportance.HIGH,
+        sound: 'default',
+        vibration: true,
+        lights: true,
+      });
+      console.log('[FCM] Notification channel created/verified');
+    } catch (e) {
+      console.warn('[FCM] Channel creation error (non-fatal):', e?.message || e);
+    }
+
+    // STEP 2: Ensure user exists on backend
     try {
       await userAPI.register(externalId);
     } catch (e) {
       console.warn('[FCM] Register user first failed:', e?.message || e);
     }
 
-    const hasPermission = await requestNotificationPermission();
-    if (!hasPermission) {
+    // STEP 3: Request permission
+    const granted = await requestNotificationPermission();
+    if (!granted) {
       console.log('[FCM] Notification permission not granted');
       return false;
     }
 
+    // STEP 4: Get FCM token
     const fcmToken = await getFCMToken();
     if (!fcmToken) {
       console.warn('[FCM] Could not get FCM token (check Firebase / google-services.json)');
       return false;
     }
-    await registerFCMToken(externalId, fcmToken);
 
-    // When user comes back online, FCM may refresh the token; re-register so backend has it
+    // STEP 5: Register token with backend
+    await registerFCMToken(externalId, fcmToken);
+    console.log('[FCM] Initialization complete for user:', externalId);
+
+    // STEP 6: Listen for token refresh
     const messaging = getMessagingInstance();
     onTokenRefresh(messaging, async (token) => {
-      console.log('FCM token refreshed:', token);
+      console.log('[FCM] Token refreshed, re-registering...');
       if (externalId) {
         await registerFCMToken(externalId, token);
       }
@@ -256,7 +279,7 @@ export const initializeNotifications = async (externalId) => {
 
     return true;
   } catch (error) {
-    console.error('Error initializing notifications:', error);
+    console.error('[FCM] Error initializing notifications:', error);
     return false;
   }
 };

@@ -144,12 +144,26 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
 
       const result = await adminNotificationsAPI.createNotification(notificationData);
 
-      setStatusMessage({ 
-        type: 'success', 
-        text: notificationType === 'scheduled' 
-          ? 'Notification scheduled successfully!' 
-          : 'Notification sent successfully to all users!' 
-      });
+      // Check if Firebase failed (pushError returned in response)
+      if (result?.pushError) {
+        // Notification saved but push failed - show error to admin
+        setStatusMessage({
+          type: 'error',
+          text: `⚠️ Notification saved but NOT sent to users!\n\nReason: ${result.pushError}\n\nFix: Set FIREBASE_SERVICE_ACCOUNT_KEY on Railway.`,
+        });
+        setTimeout(() => setStatusMessage({ type: null, text: '' }), 10000);
+        return;
+      }
+
+      // Success - show sent count
+      const sentCount = result?.sent_count || result?.total_devices || 0;
+      const successText = notificationType === 'scheduled'
+        ? 'Notification scheduled successfully!'
+        : sentCount > 0
+          ? `✅ Sent to ${sentCount.toLocaleString()} devices!`
+          : 'Notification sent successfully!';
+
+      setStatusMessage({ type: 'success', text: successText });
 
       if (onNotificationSent) onNotificationSent();
 
@@ -163,7 +177,7 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         setNotificationType('normal');
         setStatusMessage({ type: null, text: '' });
         onClose();
-      }, 2000);
+      }, 2500);
     } catch (error) {
       console.error('Error sending notification:', error);
       let text = error.message || 'Failed to send notification. Please try again.';
@@ -173,10 +187,13 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         text.includes('Failed to save') ||
         text.includes('ADMIN_API_KEY')
       ) {
-        text += ' Check Railway: set ADMIN_API_KEY and FIREBASE_SERVICE_ACCOUNT_KEY (JSON).';
+        text = 'Server error! Check Railway: set ADMIN_API_KEY and FIREBASE_SERVICE_ACCOUNT_KEY environment variables.';
+      }
+      if (text.includes('Unauthorized') || text.includes('401')) {
+        text = 'Unauthorized! Check ADMIN_API_KEY in Railway variables.';
       }
       setStatusMessage({ type: 'error', text });
-      setTimeout(() => setStatusMessage({ type: null, text: '' }), 6000);
+      setTimeout(() => setStatusMessage({ type: null, text: '' }), 8000);
     } finally {
       setLoading(false);
     }
