@@ -33,7 +33,7 @@ router.get('/stats', async (req, res, next) => {
     // Calculate daily install change percentage
     const installChange = yesterdayInstalls > 0
       ? (((todayInstalls - yesterdayInstalls) / yesterdayInstalls) * 100).toFixed(1)
-      : todayInstalls > 0 ? '+100' : '0';
+      : todayInstalls > 0 ? '100' : '0';
 
     // Get premium users (active subscriptions)
     const premiumUsersResult = await query(
@@ -78,7 +78,7 @@ router.get('/stats', async (req, res, next) => {
     // Calculate premium growth
     const premiumChange = lastMonthPremium > 0
       ? (((premiumUsers - lastMonthPremium) / lastMonthPremium) * 100).toFixed(1)
-      : premiumUsers > 0 ? '+100' : '0';
+      : premiumUsers > 0 ? '100' : '0';
 
     // Get this month's revenue (amount_cents / 100 = TSh)
     const revenueResult = await query(
@@ -101,7 +101,7 @@ router.get('/stats', async (req, res, next) => {
     // Calculate revenue change
     const revenueChange = lastMonthRevenue > 0
       ? (((revenue - lastMonthRevenue) / lastMonthRevenue) * 100).toFixed(1)
-      : revenue > 0 ? '+100' : '0';
+      : revenue > 0 ? '100' : '0';
 
     // Get ads watched this month
     const adsWatchedResult = await query(
@@ -122,7 +122,7 @@ router.get('/stats', async (req, res, next) => {
     // Calculate ads change
     const adsChange = lastMonthAds > 0
       ? (((adsWatched - lastMonthAds) / lastMonthAds) * 100).toFixed(1)
-      : adsWatched > 0 ? '+100' : '0';
+      : adsWatched > 0 ? '100' : '0';
 
     // Get notification stats
     const notificationStatsResult = await query(
@@ -148,19 +148,26 @@ router.get('/stats', async (req, res, next) => {
       ? ((notificationStats.total_delivered / notificationStats.total_devices_sent) * 100).toFixed(1)
       : '0';
 
+    // Format change percentage properly (no double ++)
+    const fmtChange = (val) => {
+      const n = parseFloat(val);
+      if (isNaN(n)) return '+0%';
+      return n >= 0 ? `+${n.toFixed(1)}%` : `${n.toFixed(1)}%`;
+    };
+
     return res.json({
       totalUsers,
       todayInstalls,
-      installChange: installChange >= 0 ? `+${installChange}%` : `${installChange}%`,
+      installChange: fmtChange(installChange),
       premiumUsers,
       freeUsers,
       expiredSubscriptions,
       premiumPercentage: `${premiumPercentage}%`,
-      premiumChange: premiumChange >= 0 ? `+${premiumChange}%` : `${premiumChange}%`,
+      premiumChange: fmtChange(premiumChange),
       revenue,
-      revenueChange: revenueChange >= 0 ? `+${revenueChange}%` : `${revenueChange}%`,
+      revenueChange: fmtChange(revenueChange),
       adsWatched,
-      adsChange: adsChange >= 0 ? `+${adsChange}%` : `${adsChange}%`,
+      adsChange: fmtChange(adsChange),
       notifications: {
         sent: parseInt(notificationStats.total_sent) || 0,
         devicesSent: parseInt(notificationStats.total_devices_sent) || 0,
