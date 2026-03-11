@@ -972,5 +972,200 @@ router.post('/notifications', async (req, res, next) => {
   }
 });
 
+// Admin: Ads statistics – real data from ad_events and users tables
+router.get('/ads/stats', async (req, res, next) => {
+  try {
+    // Check if required tables exist before querying
+    const tableCheck = await query(`
+      SELECT
+        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ad_events') AS ad_events_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') AS users_exists
+    `);
+    const { ad_events_exists, users_exists } = tableCheck.rows[0];
+
+    // Base user stats (always available if users table exists)
+    let totalPointsResult = { rows: [{ total_points: 0, users_with_points: 0 }] };
+    if (users_exists) {
+      try {
+        totalPointsResult = await query(
+          `SELECT COALESCE(SUM(points), 0)::int AS total_points,
+                  COUNT(CASE WHEN points > 0 THEN 1 END)::int AS users_with_points
+           FROM users`
+        );
+      } catch (e) {
+        console.warn('Failed to query users points:', e.message);
+      }
+    }
+
+    // If ad_events table does not exist, return zero stats with user points data
+    if (!ad_events_exists) {
+      const pointsInfo = totalPointsResult.rows[0];
+      return res.json({
+        adsWatchedToday: 0,
+        pointsEarnedToday: 0,
+        adsWatchedYesterday: 0,
+        todayChange: '+0%',
+        adsWatchedThisMonth: 0,
+        pointsEarnedThisMonth: 0,
+        adsWatchedLastMonth: 0,
+        monthChange: '+0%',
+        adsWatchedAllTime: 0,
+        pointsEarnedAllTime: 0,
+        totalPointsCollected: pointsInfo.total_points,
+        usersWithPoints: pointsInfo.users_with_points,
+        topUsers: [],
+        dailyBreakdown: [],
+      });
+    }
+
+    // Check if points_earned column exists in ad_events
+    const colCheck = await query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'ad_events' AND column_name = 'points_earned'
+      ) AS has_points_earned
+    `);
+    const hasPointsEarned = colCheck.rows[0].has_points_earned;
+
+    const pointsExpr = hasPointsEarned
+      ? 'COALESCE(SUM(points_earned), 0)::int'
+      : '0::int';
+
+    const [
+      todayResult,
+      yesterdayResult,
+      thisMonthResult,
+      lastMonthResult,
+      allTimeResult,
+      topUsersResult,
+      dailyBreakdownResult,
+    ] = await Promise.all([
+      // Ads watched today
+      query(
+        `SELECT COUNT(*)::int AS count, ${pointsExpr} AS points
+         FROM ad_events
+         WHERE DATE(watched_at AT TIME ZONE 'UTC') = CURRENT_DATE`
+      ),
+      // Ads watched yesterday
+      query(
+        `SELECT COUNT(*)::int AS count, ${pointsExpr} AS points
+         FROM ad_events
+         WHERE DATE(watched_at AT TIME ZONE 'UTC') = CURRENT_DATE - INTERVAL '1 day'`
+      ),
+      // Ads watched this month
+      query(
+        `SELECT COUNT(*)::int AS count, ${pointsExpr} AS points
+         FROM ad_events
+         WHERE DATE_TRUNC('month', watched_at) = DATE_TRUNC('month', CURRENT_DATE)`
+      ),
+      // Ads watched last month
+      query(
+        `SELECT COUNT(*)::int AS count, ${pointsExpr} AS points
+         FROM ad_events
+         WHERE DATE_TRUNC('month', watched_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
+      ),
+      // All-time ads watched
+      query(
+        `SELECT COUNT(*)::int AS count, ${pointsExpr} AS points
+         FROM ad_events`
+      ),
+      // Top 5 users by points earned from ads (or by ads watched if no points_earned)
+      hasPointsEarned
+        ? query(
+            `SELECT u.external_id, COALESCE(SUM(ae.points_earned), 0)::int AS points_from_ads,
+                    COUNT(ae.id)::int AS ads_watched
+             FROM users u
+             JOIN ad_events ae ON ae.user_id = u.id
+             GROUP BY u.id, u.external_id
+             ORDER BY points_from_ads DESC
+             LIMIT 5`
+          )
+        : query(
+            `SELECT u.external_id, 0::int AS points_from_ads,
+                    COUNT(ae.id)::int AS ads_watched
+             FROM users u
+             JOIN ad_events ae ON ae.user_id = u.id
+             GROUP BY u.id, u.external_id
+             ORDER BY ads_watched DESC
+             LIMIT 5`
+          ),
+      // Daily breakdown for last 7 days
+      query(
+        `SELECT DATE(watched_at AT TIME ZONE 'UTC') AS day,
+                COUNT(*)::int AS ads_count,
+                ${pointsExpr} AS points
+         FROM ad_events
+         WHERE watched_at >= CURRENT_DATE - INTERVAL '6 days'
+         GROUP BY DATE(watched_at AT TIME ZONE 'UTC')
+         ORDER BY day ASC`
+      ),
+    ]);
+
+    const today = todayResult.rows[0];
+    const yesterday = yesterdayResult.rows[0];
+    const thisMonth = thisMonthResult.rows[0];
+    const lastMonth = lastMonthResult.rows[0];
+    const allTime = allTimeResult.rows[0];
+    const pointsInfo = totalPointsResult.rows[0];
+
+    // Calculate change percentages
+    const pct = (current, previous) => {
+      if (previous > 0) return (((current - previous) / previous) * 100).toFixed(1);
+      return current > 0 ? '100' : '0';
+    };
+
+    const fmtChange = (val) => {
+      const n = parseFloat(val);
+      if (isNaN(n)) return '+0%';
+      return n >= 0 ? `+${n.toFixed(1)}%` : `${n.toFixed(1)}%`;
+    };
+
+    return res.json({
+      adsWatchedToday: today.count,
+      pointsEarnedToday: today.points,
+      adsWatchedYesterday: yesterday.count,
+      todayChange: fmtChange(pct(today.count, yesterday.count)),
+      adsWatchedThisMonth: thisMonth.count,
+      pointsEarnedThisMonth: thisMonth.points,
+      adsWatchedLastMonth: lastMonth.count,
+      monthChange: fmtChange(pct(thisMonth.count, lastMonth.count)),
+      adsWatchedAllTime: allTime.count,
+      pointsEarnedAllTime: allTime.points,
+      totalPointsCollected: pointsInfo.total_points,
+      usersWithPoints: pointsInfo.users_with_points,
+      topUsers: topUsersResult.rows.map(row => ({
+        userId: row.external_id,
+        adsWatched: row.ads_watched,
+        pointsFromAds: row.points_from_ads,
+      })),
+      dailyBreakdown: dailyBreakdownResult.rows.map(row => ({
+        day: row.day,
+        adsCount: row.ads_count,
+        points: row.points,
+      })),
+    });
+  } catch (err) {
+    console.error('Ads stats error:', err);
+    // Return zero-state instead of crashing, so admin app never gets an error
+    return res.json({
+      adsWatchedToday: 0,
+      pointsEarnedToday: 0,
+      adsWatchedYesterday: 0,
+      todayChange: '+0%',
+      adsWatchedThisMonth: 0,
+      pointsEarnedThisMonth: 0,
+      adsWatchedLastMonth: 0,
+      monthChange: '+0%',
+      adsWatchedAllTime: 0,
+      pointsEarnedAllTime: 0,
+      totalPointsCollected: 0,
+      usersWithPoints: 0,
+      topUsers: [],
+      dailyBreakdown: [],
+      _error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
+  }
+});
+
 module.exports = router;
 

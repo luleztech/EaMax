@@ -241,6 +241,65 @@ export const adminMatchesAPI = {
 };
 
 /**
+ * Admin Ads API
+ */
+export const adminAdsAPI = {
+  // Get real ads statistics from database
+  getStats: async () => {
+    // First try the dedicated ads/stats endpoint (available after backend update)
+    try {
+      const data = await apiRequest('/api/admin/ads/stats');
+      if (data && typeof data === 'object') return data;
+    } catch (err) {
+      console.warn('[adminAdsAPI] /ads/stats failed, trying dashboard fallback:', err.message);
+    }
+
+    // Fallback: use dashboard endpoint which always exists and has partial ads data
+    try {
+      const dashboard = await apiRequest('/api/admin/dashboard');
+      return {
+        adsWatchedToday: dashboard.adsWatchedToday || 0,
+        pointsEarnedToday: 0,
+        adsWatchedYesterday: 0,
+        todayChange: '+0%',
+        adsWatchedThisMonth: dashboard.adsWatchedThisMonth || 0,
+        pointsEarnedThisMonth: 0,
+        adsWatchedLastMonth: 0,
+        monthChange: '+0%',
+        adsWatchedAllTime: dashboard.adsWatchedThisMonth || 0,
+        pointsEarnedAllTime: 0,
+        totalPointsCollected: dashboard.totalPointsCollected || 0,
+        usersWithPoints: 0,
+        topUsers: [],
+        dailyBreakdown: [],
+        _fallback: true,
+      };
+    } catch (fallbackErr) {
+      console.warn('[adminAdsAPI] dashboard fallback also failed:', fallbackErr.message);
+    }
+
+    // Last resort: return safe zero-state so UI never shows an error screen
+    return {
+      adsWatchedToday: 0,
+      pointsEarnedToday: 0,
+      adsWatchedYesterday: 0,
+      todayChange: '+0%',
+      adsWatchedThisMonth: 0,
+      pointsEarnedThisMonth: 0,
+      adsWatchedLastMonth: 0,
+      monthChange: '+0%',
+      adsWatchedAllTime: 0,
+      pointsEarnedAllTime: 0,
+      totalPointsCollected: 0,
+      usersWithPoints: 0,
+      topUsers: [],
+      dailyBreakdown: [],
+      _fallback: true,
+    };
+  },
+};
+
+/**
  * Dashboard API
  */
 export const dashboardAPI = {
@@ -275,4 +334,5 @@ export default {
   adminNotificationsAPI,
   adminSettingsAPI,
   adminMatchesAPI,
+  adminAdsAPI,
 };
