@@ -232,8 +232,15 @@ export default function VideoPlayer({
   const effectiveDrmClearKey = drmClearKey || fetchedDrmClearKey;
   // Treat as DRM when we have a key, a license URL, or will fetch the key (so we don't fall back to WebView)
   const isDrm = !!(drmProtected && (effectiveDrmClearKey || drmLicenseUrl || (channelId && fetchChannelClearKey)));
-  // For DRM with fetchChannelClearKey: don't start playback until we have the key (avoids buffering then broken WebView fallback)
-  const drmWaitingForKey = !!(drmProtected && channelId && fetchChannelClearKey && !effectiveDrmClearKey);
+  // For DRM that depends on fetchChannelClearKey (no license server): don't start playback until we have the key.
+  // When we have drmLicenseUrl, ExoPlayer handles key fetching natively – no need to wait in JS.
+  const drmWaitingForKey = !!(
+    drmProtected &&
+    !drmLicenseUrl &&
+    channelId &&
+    fetchChannelClearKey &&
+    !effectiveDrmClearKey
+  );
   const startWithWebView = !!(url && WebView && isWebPage && !isDrm);
   const isMpd = isMpdUrl(url);
 
@@ -277,9 +284,10 @@ export default function VideoPlayer({
     { label: '1080p', value: 1080 },
   ];
 
-  // When player opens for a DRM channel but no ClearKey was passed, fetch it from API (admin-configured for this channel)
+  // When player opens for a DRM channel but no ClearKey was passed and we don't have a license server,
+  // fetch ClearKey from API (admin-configured for this channel). For drmLicenseUrl we let ExoPlayer fetch natively.
   useEffect(() => {
-    if (!visible || !channelId || !drmProtected || drmClearKey || !fetchChannelClearKey) {
+    if (!visible || !channelId || !drmProtected || drmClearKey || drmLicenseUrl || !fetchChannelClearKey) {
       if (!visible) setFetchedDrmClearKey(null);
       return;
     }
