@@ -21,6 +21,7 @@ const InsufficientPointsModal = ({
   onWatchAd,
   onGoPremium,
   onPointsUpdated,
+  channelsPremiumOnly = false,
 }) => {
   const [adModalVisible, setAdModalVisible] = useState(false);
   const [watchingAds, setWatchingAds] = useState(false);
@@ -106,35 +107,40 @@ const InsufficientPointsModal = ({
 
             <Text style={styles.modalTitle}>Hakuna Points Zinazotosha</Text>
             <Text style={styles.modalMessage}>
-              Unahitaji points {pointsRequired} kufungua channel "{channelName}". 
-              Una points {currentPoints} tu. Tangazo 1 = 20 pts.
+              {channelsPremiumOnly
+                ? `Channel "${channelName}" inahitaji malipo. Nenda Premium kufungua.`
+                : `Unahitaji points ${pointsRequired} kufungua channel "${channelName}". Una points ${currentPoints} tu. Tangazo 1 = 20 pts.`}
             </Text>
 
-            <View style={styles.pointsInfo}>
-              <View style={styles.pointsInfoRow}>
-                <Text style={styles.pointsInfoLabel}>Points Unazohitaji:</Text>
-                <Text style={styles.pointsInfoValue}>{pointsNeeded} pts</Text>
+            {!channelsPremiumOnly && (
+              <View style={styles.pointsInfo}>
+                <View style={styles.pointsInfoRow}>
+                  <Text style={styles.pointsInfoLabel}>Points Unazohitaji:</Text>
+                  <Text style={styles.pointsInfoValue}>{pointsNeeded} pts</Text>
+                </View>
+                <View style={styles.pointsInfoRow}>
+                  <Text style={styles.pointsInfoLabel}>Points Unazo:</Text>
+                  <Text style={styles.pointsInfoValue}>{currentPoints} pts</Text>
+                </View>
               </View>
-              <View style={styles.pointsInfoRow}>
-                <Text style={styles.pointsInfoLabel}>Points Unazo:</Text>
-                <Text style={styles.pointsInfoValue}>{currentPoints} pts</Text>
-              </View>
-            </View>
+            )}
 
             <View style={styles.buttonContainer}>
-              <TouchableOpacity
-                style={styles.watchAdsButton}
-                onPress={handleWatchAd}
-                activeOpacity={0.8}>
-                <LinearGradient
-                  colors={['#22c55e', '#16a34a']}
-                  style={styles.buttonGradient}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <Icon name="play-circle" size={20} color="#fff" />
-                  <Text style={styles.watchAdsButtonText}>Angalia Matangazo</Text>
-                </LinearGradient>
-              </TouchableOpacity>
+              {!channelsPremiumOnly && (
+                <TouchableOpacity
+                  style={styles.watchAdsButton}
+                  onPress={handleWatchAd}
+                  activeOpacity={0.8}>
+                  <LinearGradient
+                    colors={['#22c55e', '#16a34a']}
+                    style={styles.buttonGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}>
+                    <Icon name="play-circle" size={20} color="#fff" />
+                    <Text style={styles.watchAdsButtonText}>Angalia Matangazo</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
 
               <TouchableOpacity
                 style={styles.premiumButton}

@@ -8,6 +8,7 @@ import {
   TextInput,
   Modal,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminSettingsAPI } from '../../config/api';
@@ -16,6 +17,9 @@ const SettingsSection = () => {
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
+  const [channelsPremiumOnlyLoading, setChannelsPremiumOnlyLoading] = useState(true);
+  const [channelsPremiumOnlySaving, setChannelsPremiumOnlySaving] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
@@ -27,19 +31,22 @@ const SettingsSection = () => {
   };
 
   useEffect(() => {
-    const loadNumber = async () => {
+    const loadSettings = async () => {
       try {
-        const data = await adminSettingsAPI.getWhatsAppNumber();
-        if (data.number) {
-          setWhatsappNumber(data.number);
-        }
+        const [whatsappRes, premiumRes] = await Promise.all([
+          adminSettingsAPI.getWhatsAppNumber(),
+          adminSettingsAPI.getChannelsPremiumOnly().catch(() => ({ channelsPremiumOnly: false })),
+        ]);
+        if (whatsappRes.number) setWhatsappNumber(whatsappRes.number);
+        setChannelsPremiumOnly(!!premiumRes.channelsPremiumOnly);
       } catch (error) {
-        console.error('Failed to load WhatsApp number:', error);
+        console.error('Failed to load settings:', error);
       } finally {
         setLoading(false);
+        setChannelsPremiumOnlyLoading(false);
       }
     };
-    loadNumber();
+    loadSettings();
   }, []);
 
   const handleSaveNumber = async () => {
@@ -61,6 +68,31 @@ const SettingsSection = () => {
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleChannelsPremiumOnlyToggle = async (value) => {
+    if (channelsPremiumOnlySaving) return;
+    const previous = channelsPremiumOnly;
+    setChannelsPremiumOnly(value);
+    try {
+      setChannelsPremiumOnlySaving(true);
+      await adminSettingsAPI.updateChannelsPremiumOnly(value);
+      showStatusModal(
+        'Setting saved',
+        value
+          ? 'Channels are now premium only. Users must pay to watch; no ads or points.'
+          : 'Channels can use points or be free. Users can watch ads to earn points.',
+      );
+    } catch (error) {
+      console.error('Failed to update channels premium-only:', error);
+      setChannelsPremiumOnly(previous);
+      showStatusModal(
+        'Update failed',
+        'Failed to update channels access mode. Please try again.',
+      );
+    } finally {
+      setChannelsPremiumOnlySaving(false);
     }
   };
 
@@ -109,6 +141,39 @@ const SettingsSection = () => {
                 </>
               )}
             </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.settingsCard}>
+        <View style={styles.headerSection}>
+          <Text style={styles.settingsTitle}>Channels access</Text>
+        </View>
+        <Text style={styles.settingsDescription}>
+          Ikiwa ON ni malipo pekee na ikiwa OFF ni matangazo na bure
+        </Text>
+        <View style={styles.contactItem}>
+          <View style={styles.contactHeader}>
+            <View style={styles.contactIconContainer}>
+              <Icon name="lock-outline" size={24} color="#a855f7" />
+            </View>
+            <View style={styles.contactInfo}>
+              <Text style={styles.singleLabel}>Malipo </Text>
+              <Text style={styles.channelsToggleHint}>
+                {channelsPremiumOnly ? 'Malipo' : 'matangazo'}
+              </Text>
+            </View>
+            {channelsPremiumOnlySaving ? (
+              <ActivityIndicator size="small" color="#a855f7" />
+            ) : (
+              <Switch
+                value={channelsPremiumOnly}
+                onValueChange={handleChannelsPremiumOnlyToggle}
+                disabled={channelsPremiumOnlyLoading}
+                trackColor={{ false: '#374151', true: '#7c3aed' }}
+                thumbColor="#fff"
+              />
+            )}
           </View>
         </View>
       </View>
@@ -251,6 +316,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  channelsToggleHint: {
+    fontSize: 13,
+    color: '#9ca3af',
+    marginTop: 2,
   },
   statusModalOverlay: {
     flex: 1,

@@ -13,6 +13,9 @@ import { name as appName } from './app.json';
 try {
   const { getApp } = require('@react-native-firebase/app');
   const { getMessaging, setBackgroundMessageHandler } = require('@react-native-firebase/messaging');
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  const { API_BASE_URL } = require('./src/config/api');
+
   const messaging = getMessaging(getApp());
   setBackgroundMessageHandler(messaging, async (remoteMessage) => {
     try {
@@ -41,6 +44,20 @@ try {
           },
           data: data && typeof data === 'object' ? data : {},
         });
+      }
+      // Confirm delivery to backend even when app was in background (so admin stats are accurate)
+      const notificationId = (data && (data.notificationId || data.notification_id)) || null;
+      if (notificationId) {
+        try {
+          const userId = await AsyncStorage.getItem('userId');
+          if (userId && API_BASE_URL) {
+            await fetch(`${API_BASE_URL}/api/notifications/${notificationId}/delivered`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ externalId: userId }),
+            });
+          }
+        } catch (_) {}
       }
     } catch (err) {
       console.warn('Background notification display failed:', err?.message || err);

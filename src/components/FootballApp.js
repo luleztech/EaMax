@@ -32,7 +32,7 @@ const BOTTOM_NAV_BASE_HEIGHT = 56;
 
 const FootballApp = ({
   isPremium,
-  premiumToggleOn,
+  channelsPremiumOnly,
   userPoints,
   onWatchAd,
   onPaymentsActiveChange,
@@ -168,7 +168,7 @@ const FootballApp = ({
   // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
   const getChannelBadgeText = (pointsRequired, withPts = false) => {
     if (isPremium) return 'Unlocked';
-    if (premiumToggleOn) return 'Premium';
+    if (channelsPremiumOnly) return 'Premium';
     const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
     if (pts <= 0) return 'Bure';
     return withPts ? `${pts} pts` : `${pts}`;
@@ -195,8 +195,8 @@ const FootballApp = ({
   // Handle channel click: fetch stream URL from backend first, then open player and play
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
-
-    const canPlay = isPremium || pointsRequired === 0;
+    // When admin sets "premium only", only premium users can play; otherwise use points or free (0)
+    const canPlay = isPremium || (channelsPremiumOnly ? false : pointsRequired === 0);
     if (canPlay) {
       setLoadingChannelId(channel.id);
       try {
@@ -217,7 +217,7 @@ const FootballApp = ({
       return;
     }
 
-    if (premiumToggleOn) {
+    if (channelsPremiumOnly) {
       handleGoPremium();
       return;
     }
@@ -605,7 +605,7 @@ const FootballApp = ({
                 onWatchAd={onWatchAd}
                 onGoPremium={handleGoPremium}
                 isPremium={isPremium}
-                premiumToggleOn={premiumToggleOn}
+                channelsPremiumOnly={channelsPremiumOnly}
                 onPlaySlide={handlePlayCarouselSlide}
               />
 
@@ -893,6 +893,7 @@ const FootballApp = ({
         onUnlock={handleUnlockFromModal}
         onWatchAd={onWatchAd}
         onGoPremium={handleGoPremium}
+        channelsPremiumOnly={channelsPremiumOnly}
       />
 
       {/* Insufficient Points Modal */}
@@ -907,6 +908,7 @@ const FootballApp = ({
         userPoints={currentUserPoints}
         onWatchAd={onWatchAd}
         onGoPremium={handleGoPremium}
+        channelsPremiumOnly={channelsPremiumOnly}
         onPointsUpdated={async () => {
           const updatedPoints = await handlePointsUpdated();
           // If user now has enough points, unlock and play with full channel data (including DRM ClearKey)

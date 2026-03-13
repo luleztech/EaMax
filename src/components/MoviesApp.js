@@ -31,7 +31,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { width } = Dimensions.get('window');
 const BOTTOM_NAV_BASE_HEIGHT = 56;
 
-const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
+const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
   const contentBottomPadding = BOTTOM_NAV_BASE_HEIGHT + bottomInset;
@@ -169,7 +169,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
   // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
   const getChannelBadgeText = (pointsRequired, withPts = false) => {
     if (isPremium) return 'Unlocked';
-    if (premiumToggleOn) return 'Premium';
+    if (channelsPremiumOnly) return 'Premium';
     const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
     if (pts <= 0) return 'Bure';
     return withPts ? `${pts} pts` : `${pts}`;
@@ -188,7 +188,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
   // Handle channel click: fetch stream URL + DRM keys, then open player (guarantees DRM config is ready)
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
-    const canPlay = isPremium || pointsRequired === 0;
+    const canPlay = isPremium || (channelsPremiumOnly ? false : pointsRequired === 0);
     if (canPlay) {
       setLoadingChannelId(channel.id);
       try {
@@ -209,7 +209,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
       return;
     }
 
-    if (premiumToggleOn) {
+    if (channelsPremiumOnly) {
       handleGoPremium();
       return;
     }
@@ -548,7 +548,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
                   onWatchAd={onWatchAd}
                   onGoPremium={handleGoPremium}
                   isPremium={isPremium}
-                  premiumToggleOn={premiumToggleOn}
+                  channelsPremiumOnly={channelsPremiumOnly}
                   onPlaySlide={handlePlayCarouselSlide}
                 />
               )}
@@ -749,6 +749,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         onUnlock={handleUnlockFromModal}
         onWatchAd={onWatchAd}
         onGoPremium={handleGoPremium}
+        channelsPremiumOnly={channelsPremiumOnly}
       />
 
       {/* Insufficient Points Modal */}
@@ -763,6 +764,7 @@ const MoviesApp = ({ isPremium, premiumToggleOn, userPoints, onWatchAd, onPaymen
         userPoints={currentUserPoints}
         onWatchAd={onWatchAd}
         onGoPremium={handleGoPremium}
+        channelsPremiumOnly={channelsPremiumOnly}
         onPointsUpdated={async () => {
           const updatedPoints = await handlePointsUpdated();
           // If user now has enough points, unlock and play with full channel data (including DRM ClearKey)

@@ -4,10 +4,11 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Switch,
   Animated,
   Dimensions,
   Modal,
+  AppState,
+  InteractionManager,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,17 +19,15 @@ import FootballApp from './FootballApp';
 import MoviesApp from './MoviesApp';
 import AdModal from './AdModal';
 import NotificationPermissionModal from './NotificationPermissionModal';
-import { userAPI, paymentsAPI } from '../config/api';
+import { userAPI, paymentsAPI, settingsAPI } from '../config/api';
 import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
   setupNotificationHandlers,
   markNotificationPermissionAsked,
-  hasAskedNotificationPermission,
   isNotificationPermissionGranted,
   requestNotificationPermission,
-  getFCMToken,
-  registerFCMToken,
+  refreshAndRegisterFCMToken,
 } from '../services/notifications';
 
 const { width } = Dimensions.get('window');
@@ -36,7 +35,7 @@ const { width } = Dimensions.get('window');
 const StreamingApp = () => {
   const [currentApp, setCurrentApp] = useState('football');
   const [isPremium, setIsPremium] = useState(false); // from API – real subscription
-  const [premiumToggleOn, setPremiumToggleOn] = useState(false); // switch: ON = "Premium User" → direct to payment; OFF = "Ondoa Matangazo" → use points
+  const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false); // from admin: ON = pay only, OFF = points/ads or free
   const [userPoints, setUserPoints] = useState(0);
   const [adModalVisible, setAdModalVisible] = useState(false);
   const [isPaymentsActive, setIsPaymentsActive] = useState(false);
@@ -76,16 +75,22 @@ const StreamingApp = () => {
     return userPoints;
   };
 
-  // Ensure user ID exists and is registered as soon as app loads (home screen), so ads and points work before they open Profile
+  // Ensure user ID exists, load settings, and refresh FCM token so all online users receive notifications
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const userId = await getOrCreateUserId();
+        const [userId, settings] = await Promise.all([
+          getOrCreateUserId(),
+          settingsAPI.getChannelsPremiumOnly().catch(() => ({ channelsPremiumOnly: false })),
+        ]);
+        if (!cancelled) setChannelsPremiumOnly(!!settings.channelsPremiumOnly);
         if (cancelled) return;
         if (userId) {
           await refreshUserPoints();
-          // If user had a pending payment (e.g. they paid and closed the app), check once so we unlock Premium
+          // Refresh FCM token on every app open so backend has latest token (even if user hasn't opened app for a long time)
+          refreshAndRegisterFCMToken(userId).catch(() => {});
+          // Pending payment check
           const pendingOrderId = await AsyncStorage.getItem('pendingPaymentOrderId');
           if (pendingOrderId && typeof pendingOrderId === 'string' && pendingOrderId.trim()) {
             try {
@@ -105,8 +110,8 @@ const StreamingApp = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Show notification permission modal on first launch. Always show on first launch,
-  // and initialize notifications properly when permission is granted.
+  // Show notification permission modal for every user who has not granted yet (like YouTube/WhatsApp).
+  // So even if they skipped before or didn't open the app for a long time, they see the modal on next open.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -114,22 +119,20 @@ const StreamingApp = () => {
         const userId = await getOrCreateUserId();
         if (cancelled || !userId) return;
 
-        const hasAsked = await hasAskedNotificationPermission();
         const isGranted = await isNotificationPermissionGranted();
 
-        // If already granted, initialize notifications immediately
+        // If already granted, initialize notifications immediately so they receive in status bar
         if (isGranted) {
           await initializeNotifications(userId);
           setupNotificationHandlers(() => {}, userId);
+          return;
         }
 
-        // Show modal if we haven't asked yet (first launch)
-        if (!hasAsked) {
-          const showModal = () => {
-            if (!cancelled) setNotifPermissionVisible(true);
-          };
-          setTimeout(showModal, 1500);
-        }
+        // Show allow modal whenever permission is NOT granted so all users get a chance to enable notifications
+        const showModal = () => {
+          if (!cancelled) setNotifPermissionVisible(true);
+        };
+        setTimeout(showModal, 600);
       } catch (e) {
         console.warn('App notification init:', e?.message || e);
       }
@@ -138,39 +141,33 @@ const StreamingApp = () => {
   }, []);
 
   const handleNotifAllow = async () => {
-    // Mark as asked so we don't show our modal again regardless of outcome
     await markNotificationPermissionAsked();
 
-    // IMPORTANT: Close our React Native Modal FIRST before requesting the OS
-    // permission dialog. On Android, the system permission dialog cannot appear
-    // on top of a React Native Modal — it gets blocked. We must dismiss ours
-    // first, then wait one frame for it to fully unmount, then request.
+    // Close our modal first — the system "Allow notifications?" dialog cannot show on top of it
     setNotifPermissionVisible(false);
 
-    // Wait for modal to fully close (2 frames is enough on Android)
-    await new Promise(resolve => setTimeout(resolve, 400));
+    // Wait for modal to fully unmount and UI to settle, then show the system permission dialog
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(async () => {
+        try {
+          const granted = await requestNotificationPermission();
+          console.log('[NotifModal] System permission granted:', granted);
 
-    try {
-      // Now the OS dialog will appear without any modal blocking it
-      const granted = await requestNotificationPermission();
-      console.log('[NotifModal] Permission granted:', granted);
-
-      if (granted) {
-        // Get FCM token and register with backend so user receives pushes
-        const userId = await getOrCreateUserId();
-        if (userId) {
-          // Initialize notifications fully - this handles registration and setup
-          await initializeNotifications(userId);
-          // Set up foreground/background message listeners with userId for delivery tracking
-          setupNotificationHandlers(() => {}, userId);
-          console.log('[NotifModal] Notifications initialized successfully');
+          if (granted) {
+            const userId = await getOrCreateUserId();
+            if (userId) {
+              await initializeNotifications(userId);
+              setupNotificationHandlers(() => {}, userId);
+              console.log('[NotifModal] Notifications initialized successfully');
+            }
+          } else {
+            console.log('[NotifModal] Permission denied or system dialog did not show');
+          }
+        } catch (e) {
+          console.warn('[NotifModal] Allow error:', e?.message || e);
         }
-      } else {
-        console.log('[NotifModal] Permission was denied by user');
-      }
-    } catch (e) {
-      console.warn('[NotifModal] Allow error:', e?.message || e);
-    }
+      }, 600);
+    });
   };
 
   const handleNotifSkip = async () => {
@@ -178,14 +175,16 @@ const StreamingApp = () => {
     await markNotificationPermissionAsked();
   };
 
-  // Premium: turn ON "Ondoa Matangazo" (no ads) and keep it ON until subscription ends
+  // Re-register FCM token when app comes to foreground so backend always has valid token
   useEffect(() => {
-    if (isPremium) {
-      setPremiumToggleOn(true);
-    } else {
-      setPremiumToggleOn(false);
-    }
-  }, [isPremium]);
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return;
+      getOrCreateUserId().then((userId) => {
+        if (userId) refreshAndRegisterFCMToken(userId).catch(() => {});
+      });
+    });
+    return () => subscription?.remove();
+  }, []);
 
   useEffect(() => {
     Animated.spring(indicatorAnim, {
@@ -225,12 +224,6 @@ const StreamingApp = () => {
         }),
       ]).start();
     });
-  };
-
-  const togglePremium = (value) => {
-    // Premium users: keep "Ondoa Matangazo" ON until subscription ends (never turn off)
-    if (isPremium) return;
-    setPremiumToggleOn(value);
   };
 
   const handleWatchAd = () => {
@@ -304,29 +297,6 @@ const StreamingApp = () => {
         </View>
       )}
 
-      {!isPaymentsActive && (
-        <View style={styles.premiumToggleContainer}>
-          <Text style={styles.premiumToggleLabel}>Angalia Bure:</Text>
-          <View style={styles.toggleWrapper}>
-            <Switch
-              value={premiumToggleOn}
-              onValueChange={togglePremium}
-              disabled={isPremium}
-              trackColor={{ false: '#374151', true: '#eab308' }}
-              thumbColor="#fff"
-              ios_backgroundColor="#374151"
-            />
-            <Text
-              style={[
-                styles.premiumLabel,
-                premiumToggleOn && styles.premiumLabelActive,
-              ]}>
-              {premiumToggleOn ? 'Premium User' : 'Ondoa Matangazo'}
-            </Text>
-          </View>
-        </View>
-      )}
-
       <View style={styles.appContainer}>
         <Animated.View
           style={[
@@ -339,7 +309,7 @@ const StreamingApp = () => {
           {currentApp === 'football' ? (
             <FootballApp
               isPremium={isPremium}
-              premiumToggleOn={premiumToggleOn}
+              channelsPremiumOnly={channelsPremiumOnly}
               userPoints={userPoints}
               onWatchAd={handleWatchAd}
               onPaymentsActiveChange={setIsPaymentsActive}
@@ -349,7 +319,7 @@ const StreamingApp = () => {
           ) : (
             <MoviesApp
               isPremium={isPremium}
-              premiumToggleOn={premiumToggleOn}
+              channelsPremiumOnly={channelsPremiumOnly}
               userPoints={userPoints}
               onWatchAd={handleWatchAd}
               onPaymentsActiveChange={setIsPaymentsActive}
@@ -466,21 +436,6 @@ const styles = StyleSheet.create({
   },
   switchButtonTextActive: { color: '#fff' },
   appWrapper: { flex: 1 },
-  premiumToggleContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: 'rgba(17, 24, 39, 0.5)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(31, 41, 55, 0.5)',
-  },
-  premiumToggleLabel: { fontSize: 14, color: '#9ca3af' },
-  toggleWrapper: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  premiumLabel: { fontSize: 14, fontWeight: '600', color: '#6b7280' },
-  premiumLabelActive: { color: '#fbbf24' },
   appContainer: { flex: 1 },
   congratsOverlay: {
     flex: 1,

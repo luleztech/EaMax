@@ -18,7 +18,7 @@ const CAROUSEL_WIDTH = width - 32; // Full width minus padding
 const AUTO_SLIDE_INTERVAL = 4000; // 4 seconds
 const POINTS_PER_AD = 20;
 
-const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggleOn, onPlaySlide }) => {
+const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, channelsPremiumOnly, onPlaySlide }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [lockedModalVisible, setLockedModalVisible] = useState(false);
   const scrollViewRef = useRef(null);
@@ -124,7 +124,7 @@ const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, premiumToggle
                         if (item.videoUrl && onPlaySlide) {
                           onPlaySlide(item);
                         }
-                      } else if (premiumToggleOn) {
+                      } else if (channelsPremiumOnly) {
                         if (onGoPremium) onGoPremium();
                       } else {
                         setLockedModalVisible(true);

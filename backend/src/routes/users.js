@@ -176,7 +176,7 @@ router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) =>
     }
 
     const userResult = await query(
-      'SELECT id, points FROM users WHERE external_id = $1',
+      'SELECT id, points, is_premium, premium_expires_at FROM users WHERE external_id = $1',
       [externalId],
     );
     if (userResult.rows.length === 0) {
@@ -184,6 +184,21 @@ router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) =>
     }
     const userId = userResult.rows[0].id;
     const userPoints = userResult.rows[0].points;
+    const isPremium = !!userResult.rows[0].is_premium &&
+      (userResult.rows[0].premium_expires_at == null || new Date(userResult.rows[0].premium_expires_at) > new Date());
+
+    const settingsResult = await query(
+      "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",
+    );
+    const channelsPremiumOnly = settingsResult.rows.length > 0 &&
+      (settingsResult.rows[0].value === 'true' || settingsResult.rows[0].value === '1');
+
+    if (channelsPremiumOnly && !isPremium) {
+      return res.status(403).json({
+        error: 'Channels are premium only',
+        code: 'PREMIUM_ONLY',
+      });
+    }
 
     const channelResult = await query(
       'SELECT id, points_required FROM channels WHERE id = $1 AND is_active = TRUE',

@@ -65,6 +65,22 @@ router.put('/whatsapp', async (req, res, next) => {
   }
 });
 
+// Public: get channels premium-only mode (when true, all channels require payment; no points/ads)
+router.get('/channels-premium-only', async (req, res, next) => {
+  try {
+    const result = await query(
+      "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",
+    );
+    if (result.rows.length === 0) {
+      return res.json({ channelsPremiumOnly: false });
+    }
+    const value = result.rows[0].value;
+    return res.json({ channelsPremiumOnly: value === 'true' || value === '1' });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Public: get section labels for app (Football/Movies section titles)
 router.get('/section-labels', async (req, res, next) => {
   try {

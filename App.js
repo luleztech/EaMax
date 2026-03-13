@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect } from 'react';
-import { StatusBar } from 'react-native';
+import { StatusBar, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import mobileAds from 'react-native-google-mobile-ads';
 import { preloadRewardedAd } from './src/config/ads';
@@ -16,6 +16,24 @@ function App() {
     lockToPortrait();
     const cleanup = lockToPortraitWhenAppActive();
     return cleanup;
+  }, []);
+
+  // Create default notification channel as early as possible so push notifications
+  // show in the device status bar (like YouTube/WhatsApp) even when app is in background.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    try {
+      const notifee = require('@notifee/react-native').default;
+      const { AndroidImportance } = require('@notifee/react-native');
+      notifee.createChannel({
+        id: 'default',
+        name: 'EaMax Notifications',
+        importance: AndroidImportance.HIGH,
+        sound: 'default',
+        vibration: true,
+        lights: true,
+      }).catch(() => {});
+    } catch (_) {}
   }, []);
 
   useEffect(() => {

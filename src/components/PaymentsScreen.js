@@ -350,7 +350,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           <View style={styles.trustDivider} />
           <View style={styles.trustItem}>
             <Icon name="cellphone-check" size={18} color="#10b981" />
-            <Text style={styles.trustText}>M-Pesa, Airtel, Halopesa</Text>
+            <Text style={styles.trustText}>M-Pesa, Airtel,Tigo na Halopesa</Text>
           </View>
         </View>
 
@@ -389,14 +389,14 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
 
         {/* Phone input */}
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Nambari ya simu (Tanzania)</Text>
+          <Text style={styles.sectionLabel}>Namba yako ya simu (Tanzania)</Text>
           <View style={styles.inputWrap}>
             <View style={styles.inputPrefix}>
               <Text style={styles.inputPrefixText}>+255</Text>
             </View>
             <TextInput
               style={styles.input}
-              placeholder="712 345 678"
+              placeholder="Weka namba yako ya simu"
               placeholderTextColor="#64748b"
               value={phoneNumber}
               onChangeText={setPhoneNumber}
@@ -405,7 +405,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             />
           </View>
           <Text style={styles.inputHint}>
-            Ingiza bila +255 (mfano: 0712345678, 0742345678)
+            Weka namba yako ukianza na 0, bila kuandika +255. Mfano: 0712345678
           </Text>
         </View>
 

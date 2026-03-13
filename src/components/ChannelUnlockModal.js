@@ -21,9 +21,10 @@ const ChannelUnlockModal = ({
   onUnlock,
   onWatchAd,
   onGoPremium,
+  channelsPremiumOnly = false,
 }) => {
-  const canUnlockWithPoints = pointsRequired > 0 && currentPoints >= pointsRequired;
-  const isPremiumOnly = pointsRequired === 0;
+  const canUnlockWithPoints = !channelsPremiumOnly && pointsRequired > 0 && currentPoints >= pointsRequired;
+  const isPremiumOnly = channelsPremiumOnly || pointsRequired === 0;
 
   const handleUnlock = () => {
     onClose();
@@ -65,7 +66,9 @@ const ChannelUnlockModal = ({
 
             <Text style={styles.title}>Fungua Channel</Text>
             <Text style={styles.message}>
-              Lipa kwa points au Fanya malipo kufungua channel hii. Points ni bure kwa kutazama matangazo.
+              {channelsPremiumOnly
+                ? 'Channel hii inahitaji malipo. Fanya malipo kufungua.'
+                : 'Lipa kwa points au Fanya malipo kufungua channel hii. Points ni bure kwa kutazama matangazo.'}
             </Text>
 
             {!isPremiumOnly && (
@@ -92,21 +95,23 @@ const ChannelUnlockModal = ({
                 </TouchableOpacity>
               )}
 
-              <TouchableOpacity
-                style={styles.secondaryBtnWrap}
-                onPress={handleWatchAd}
-                activeOpacity={0.85}>
-                <LinearGradient
-                  colors={['#3b82f6', '#2563eb']}
-                  style={styles.secondaryBtn}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <Icon name="television" size={20} color="#fff" />
-                  <Text style={styles.secondaryBtnText}>
-                    Angalia matangazo (pata {POINTS_PER_AD} pts)
-                  </Text>
-                </LinearGradient>
-              </TouchableOpacity>
+              {!channelsPremiumOnly && (
+                <TouchableOpacity
+                  style={styles.secondaryBtnWrap}
+                  onPress={handleWatchAd}
+                  activeOpacity={0.85}>
+                  <LinearGradient
+                    colors={['#3b82f6', '#2563eb']}
+                    style={styles.secondaryBtn}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}>
+                    <Icon name="television" size={20} color="#fff" />
+                    <Text style={styles.secondaryBtnText}>
+                      Angalia matangazo (pata {POINTS_PER_AD} pts)
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
 
               <TouchableOpacity
                 style={styles.premiumBtnWrap}

@@ -16,13 +16,15 @@ const apiRequest = async (endpoint, options = {}) => {
   };
 
   const config = {
-    ...defaultOptions,
-    ...options,
+    method: options.method || 'GET',
     headers: {
       ...defaultOptions.headers,
       ...(options.headers || {}),
     },
   };
+  if (options.body != null) {
+    config.body = options.body;
+  }
 
   try {
     const response = await fetch(url, config);
@@ -203,6 +205,20 @@ export const adminSettingsAPI = {
     return apiRequest('/api/settings/whatsapp', {
       method: 'PUT',
       body: JSON.stringify({ number }),
+    });
+  },
+
+  // Get channels premium-only mode (ON = pay only, OFF = points/ads or free)
+  getChannelsPremiumOnly: async () => {
+    const data = await apiRequest('/api/admin/settings/channels-premium-only');
+    return { channelsPremiumOnly: !!data.channelsPremiumOnly };
+  },
+
+  // Update channels premium-only
+  updateChannelsPremiumOnly: async (channelsPremiumOnly) => {
+    return apiRequest('/api/admin/settings/channels-premium-only', {
+      method: 'PUT',
+      body: JSON.stringify({ channelsPremiumOnly: !!channelsPremiumOnly }),
     });
   },
 };

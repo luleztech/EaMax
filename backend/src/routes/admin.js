@@ -874,15 +874,18 @@ router.post('/notifications', async (req, res, next) => {
           totalSuccess += batchResult?.sent || 0;
           totalFailed += batchResult?.failed || 0;
 
-          // Collect invalid tokens to clean up
+          // Collect invalid tokens to clean up (so we don't keep sending to dead devices)
           if (batchResult?.responses) {
             batchResult.responses.forEach((resp, idx) => {
               if (!resp.success && resp.error) {
-                const errCode = resp.error?.code || '';
-                if (
+                const errCode = String(resp.error.code || resp.error.message || '').toLowerCase();
+                const isInvalid =
                   errCode.includes('registration-token-not-registered') ||
-                  errCode.includes('invalid-registration-token')
-                ) {
+                  errCode.includes('invalid-registration-token') ||
+                  errCode.includes('invalid-argument') ||
+                  errCode.includes('unregistered') ||
+                  errCode.includes('invalid_argument');
+                if (isInvalid && batch[idx]) {
                   invalidTokens.push(batch[idx]);
                 }
               }
@@ -1164,6 +1167,45 @@ router.get('/ads/stats', async (req, res, next) => {
       dailyBreakdown: [],
       _error: process.env.NODE_ENV === 'development' ? err.message : undefined,
     });
+  }
+});
+
+// Admin: get channels premium-only setting (same as public, for admin UI consistency)
+router.get('/settings/channels-premium-only', async (req, res, next) => {
+  try {
+    const result = await query(
+      "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",
+    );
+    if (result.rows.length === 0) {
+      return res.json({ channelsPremiumOnly: false });
+    }
+    const value = result.rows[0].value;
+    return res.json({ channelsPremiumOnly: value === 'true' || value === '1' });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: update channels premium-only (ON = pay only, no ads/points; OFF = points or 0 for free)
+router.put('/settings/channels-premium-only', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const channelsPremiumOnly = body.channelsPremiumOnly === true ||
+      body.channelsPremiumOnly === 'true' || body.channelsPremiumOnly === 1;
+    const value = channelsPremiumOnly ? 'true' : 'false';
+
+    await query(
+      `INSERT INTO app_settings (key, value)
+       VALUES ('channels_premium_only', $1)
+       ON CONFLICT (key)
+       DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [value],
+    );
+
+    return res.json({ channelsPremiumOnly: !!channelsPremiumOnly });
+  } catch (err) {
+    console.error('[Admin] channels-premium-only update error:', err?.message || err);
+    return next(err);
   }
 });
 

@@ -78,6 +78,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
           aps: {
             sound: 'default',
             badge: 1,
+            'content-available': 1,
           },
         },
         headers: {
@@ -131,6 +132,7 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
           aps: {
             sound: 'default',
             badge: 1,
+            'content-available': 1,
           },
         },
         headers: {

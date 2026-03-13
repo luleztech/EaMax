@@ -68,10 +68,34 @@ async function processScheduledNotifications() {
             }
           );
 
-          // Track delivery attempts
+          const invalidTokens = [];
+          if (pushResult?.responses) {
+            pushResult.responses.forEach((resp, idx) => {
+              if (!resp.success && resp.error && fcmTokens[idx]) {
+                const errCode = String(resp.error.code || resp.error.message || '').toLowerCase();
+                const isInvalid =
+                  errCode.includes('registration-token-not-registered') ||
+                  errCode.includes('invalid-registration-token') ||
+                  errCode.includes('invalid-argument') ||
+                  errCode.includes('unregistered') ||
+                  errCode.includes('invalid_argument');
+                if (isInvalid) invalidTokens.push(fcmTokens[idx]);
+              }
+            });
+          }
+          for (const token of invalidTokens) {
+            await query(`UPDATE users SET fcm_token = NULL WHERE fcm_token = $1`, [token]).catch(() => {});
+          }
+          if (invalidTokens.length > 0) {
+            console.log(`[FCM Service] Cleared ${invalidTokens.length} invalid token(s)`);
+          }
+
+          const successCount = pushResult?.sent ?? 0;
           const deliveryRecords = [];
           for (const [userId, token] of userTokenMap.entries()) {
-            deliveryRecords.push([notification.id, userId, token]);
+            if (!invalidTokens.includes(token)) {
+              deliveryRecords.push([notification.id, userId, token]);
+            }
           }
 
           if (deliveryRecords.length > 0) {
@@ -81,9 +105,7 @@ async function processScheduledNotifications() {
                 return `($${base + 1}, $${base + 2}, $${base + 3})`;
               })
               .join(',');
-            
             const deliveryParams = deliveryRecords.flat();
-            
             await query(
               `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token)
                VALUES ${deliveryValues}
@@ -93,11 +115,16 @@ async function processScheduledNotifications() {
 
             await query(
               `UPDATE notifications SET sent_count = $1, sent_at = NOW() WHERE id = $2`,
-              [fcmTokens.length, notification.id]
+              [successCount, notification.id]
+            ).catch(() => {});
+          } else {
+            await query(
+              `UPDATE notifications SET sent_count = 0, sent_at = NOW() WHERE id = $1`,
+              [notification.id]
             ).catch(() => {});
           }
 
-          console.log(`[FCM Service] Sent notification ${notification.id} to ${fcmTokens.length} devices`);
+          console.log(`[FCM Service] Sent notification ${notification.id}: ${successCount} delivered, ${invalidTokens.length} invalid tokens cleared`);
         }
 
         // Mark as sent

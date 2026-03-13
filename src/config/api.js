@@ -151,6 +151,16 @@ export const settingsAPI = {
     return apiRequest('/api/settings/whatsapp');
   },
 
+  // Get channels premium-only mode (when true, all channels require payment; no points/ads)
+  getChannelsPremiumOnly: async () => {
+    try {
+      const data = await apiRequest('/api/settings/channels-premium-only');
+      return { channelsPremiumOnly: !!data.channelsPremiumOnly };
+    } catch (_) {
+      return { channelsPremiumOnly: false };
+    }
+  },
+
   // Get public carousel slides by category
   getCarouselSlides: async (category = 'football') => {
     return apiRequest(`/api/carousel?category=${category}`);

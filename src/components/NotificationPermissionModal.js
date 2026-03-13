@@ -178,7 +178,7 @@ const NotificationPermissionModal = ({ visible, onAllow, onSkip }) => {
             <View style={styles.divider} />
 
             <Text style={styles.noteText}>
-              🔒 Hatutakusumbua. Unaweza kuzima arifa wakati wowote kwenye mipangilio ya simu yako.
+              Arifa zitaonekana kwenye kifa cha simu yako (kama WhatsApp, YouTube) hata app ikiwa imefungwa. Unaweza kuzima wakati wowote kwenye mipangilio.
             </Text>
 
             {/* Allow button */}

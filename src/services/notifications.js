@@ -79,41 +79,36 @@ export const isNotificationPermissionGranted = async () => {
 // and iOS authorization in one call. Safe: no crash if Firebase/Notifee missing.
 export const requestNotificationPermission = async () => {
   try {
+    // On Android 13+, request the system permission FIRST so the OS dialog always shows
+    if (Platform.OS === 'android' && Platform.Version >= 33) {
+      const status = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+        {
+          title: 'Ruhusu Arifa',
+          message: 'Ruhusu EaMax ikutumie arifa za mechi, channels mpya na ofa maalum.',
+          buttonPositive: 'Ruhusu',
+          buttonNegative: 'Kataa',
+        },
+      );
+      const granted = status === PermissionsAndroid.RESULTS.GRANTED;
+      console.log('[FCM] Android POST_NOTIFICATIONS:', status);
+      if (!granted) return false;
+    }
+
     const notifee = require('@notifee/react-native').default;
     const { AndroidImportance } = require('@notifee/react-native');
     const messaging = getMessagingInstance();
 
     if (Platform.OS === 'android') {
-      // Step 1: Create the notification channel (required for Android 8+)
       await notifee.createChannel({
         id: 'default',
         name: 'Default Channel',
         importance: AndroidImportance.HIGH,
         sound: 'default',
       });
-
-      // Step 2: On Android 13+ (API 33+), request POST_NOTIFICATIONS via
-      // PermissionsAndroid — this triggers the real OS permission dialog.
-      if (Platform.Version >= 33) {
-        const status = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-          {
-            title: 'Ruhusu Arifa',
-            message: 'Ruhusu EaMax ikutumie arifa za mechi, channels mpya na ofa maalum.',
-            buttonPositive: 'Ruhusu',
-            buttonNegative: 'Kataa',
-          },
-        );
-        const granted = status === PermissionsAndroid.RESULTS.GRANTED;
-        console.log('[FCM] Android POST_NOTIFICATIONS:', status);
-        if (!granted) return false;
-      }
-
-      // Step 3: Also request via Notifee (handles its own internal state)
       await notifee.requestPermission();
     }
 
-    // Step 4: Request via Firebase Messaging (needed on iOS + syncs Android state)
     const authStatus = await requestPermission(messaging);
     const enabled =
       authStatus === AuthorizationStatus.AUTHORIZED ||
@@ -127,16 +122,34 @@ export const requestNotificationPermission = async () => {
   }
 };
 
-// Get FCM token
+// Get FCM token (returns null if permission not granted or Firebase error)
 export const getFCMToken = async () => {
   try {
     const messaging = getMessagingInstance();
     const token = await getToken(messaging);
-    console.log('FCM Token:', token);
-    return token;
+    if (token) console.log('[FCM] Token obtained');
+    return token || null;
   } catch (error) {
-    console.error('Error getting FCM token:', error);
+    console.warn('[FCM] getFCMToken:', error?.message || error);
     return null;
+  }
+};
+
+// Refresh token and register with backend. Call on every app open and when app becomes active
+// so all online users have a valid token even if they haven't opened the app in a long time.
+export const refreshAndRegisterFCMToken = async (externalId) => {
+  if (!externalId) return false;
+  try {
+    const granted = await isNotificationPermissionGranted();
+    if (!granted) return false;
+    const token = await getFCMToken();
+    if (!token) return false;
+    const ok = await registerFCMToken(externalId, token);
+    if (ok) console.log('[FCM] Token refreshed and registered');
+    return ok;
+  } catch (e) {
+    console.warn('[FCM] refreshAndRegisterFCMToken:', e?.message || e);
+    return false;
   }
 };
 
@@ -217,12 +230,18 @@ export const displayNotification = async (title, body, data = {}, externalId = n
   }
 };
 
-// Initialize notifications
+// Initialize notifications (create channel, request permission if needed, get token, register, setup handlers)
 export const initializeNotifications = async (externalId) => {
   try {
     if (!externalId) {
       console.warn('[FCM] initializeNotifications called without externalId');
       return false;
+    }
+
+    // STEP 0: If permission already granted, register token immediately so we don't depend on request flow
+    const alreadyGranted = await isNotificationPermissionGranted();
+    if (alreadyGranted) {
+      await refreshAndRegisterFCMToken(externalId);
     }
 
     // STEP 1: Always create notification channel on startup (not just on permission request)
