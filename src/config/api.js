@@ -99,6 +99,14 @@ export const userAPI = {
       body: JSON.stringify({ fcmToken }),
     });
   },
+
+  // Refresh stream token (for token-expiring streams). Backend may implement POST /api/refreshStream.
+  refreshStream: async (payload) => {
+    return apiRequest('/api/refreshStream', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  },
 };
 
 /**

@@ -184654,6 +184654,20 @@ index 0c495e1..e2a97e5 100644
                          val drmKeyRequestPropertiesList = ArrayList<String?>()
                          for (i in 0 until drmHeadersArray.size()) {
                              val current = drmHeadersArray.getMap(i)
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/Source.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/Source.kt
+index e9cf5ab..db0ac15 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/Source.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/common/api/Source.kt
+@@ -232,7 +232,8 @@ class Source {
+             source.cropStartMs = safeGetInt(src, PROP_SRC_CROP_START, -1)
+             source.cropEndMs = safeGetInt(src, PROP_SRC_CROP_END, -1)
+             source.contentStartTime = safeGetInt(src, PROP_SRC_CONTENT_START_TIME, -1)
+-            source.extension = safeGetString(src, PROP_SRC_TYPE, null)
++            source.extension = safeGetString(src, PROP_SRC_TYPE, null)?.takeIf { it.isNotBlank() }
++                ?: source.uriString?.let { if (it.lowercase(Locale.ROOT).contains(".mpd")) "mpd" else null }
+             source.drmProps = parse(safeGetMap(src, PROP_SRC_DRM))
+             source.cmcdProps = CMCDProps.parse(safeGetMap(src, PROP_SRC_CMCD))
+             if (BuildConfig.USE_EXOPLAYER_IMA) {
 diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/DRMManager.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/DRMManager.kt
 index 462f47a..1b9af1f 100644
 --- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/DRMManager.kt
