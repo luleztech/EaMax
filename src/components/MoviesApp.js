@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -175,14 +175,43 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
-  const handlePlayCarouselSlide = (slide) => {
-    if (!slide?.videoUrl) return;
-    setPlayingChannel({
-      id: slide.id || null,
-      name: slide.title || 'Video',
-      streamUrl: slide.videoUrl,
-    });
-    setVideoPlayerVisible(true);
+  const handlePlayCarouselSlide = async (slide) => {
+    if (!slide?.videoUrl && !slide?.id) return;
+    const channelId = slide.id || null;
+    if (channelId) {
+      setLoadingChannelId(channelId);
+      try {
+        const data = await channelsAPI.getChannel(channelId);
+        const url = data.streamUrl || data.stream_url || slide.videoUrl;
+        if (url) {
+          setPlayingChannel({
+            ...slide,
+            id: channelId,
+            name: slide.title || data.name || 'Video',
+            streamUrl: url,
+            drmProtected: !!data.drmProtected || !!data.drm_protected,
+            drmClearKey: data.drmClearKey ?? data.drm_clear_key ?? null,
+            drm_clear_key: data.drm_clear_key ?? data.drmClearKey ?? null,
+          });
+          setVideoPlayerVisible(true);
+        }
+      } catch (err) {
+        console.error('Failed to load carousel channel:', err);
+        if (slide.videoUrl) {
+          setPlayingChannel({ id: channelId, name: slide.title || 'Video', streamUrl: slide.videoUrl });
+          setVideoPlayerVisible(true);
+        }
+      } finally {
+        setLoadingChannelId(null);
+      }
+    } else {
+      setPlayingChannel({
+        id: null,
+        name: slide.title || 'Video',
+        streamUrl: slide.videoUrl,
+      });
+      setVideoPlayerVisible(true);
+    }
   };
 
   // Handle channel click: fetch stream URL + DRM keys, then open player (guarantees DRM config is ready)
@@ -802,6 +831,10 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
         drmProtected={!!playingChannel?.drmProtected}
         drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
         drmLicenseUrl={playingChannel?.drmProtected && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
+        fetchChannelClearKey={async (id) => {
+          const d = await channelsAPI.getChannel(id);
+          return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };
+        }}
       />
     </View>
   );

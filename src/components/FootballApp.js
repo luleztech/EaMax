@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -174,22 +174,68 @@ const FootballApp = ({
     return withPts ? `${pts} pts` : `${pts}`;
   };
 
-  const handlePlayCarouselSlide = (slide) => {
-    if (!slide?.videoUrl) return;
-    setPlayingChannel({
-      id: slide.id || null,
-      name: slide.title || 'Video',
-      streamUrl: slide.videoUrl,
-    });
-    setVideoPlayerVisible(true);
+  const handlePlayCarouselSlide = async (slide) => {
+    if (!slide?.videoUrl && !slide?.id) return;
+    const channelId = slide.id || null;
+    if (channelId) {
+      setLoadingChannelId(channelId);
+      try {
+        const data = await channelsAPI.getChannel(channelId);
+        const url = data.streamUrl || data.stream_url || slide.videoUrl;
+        if (url) {
+          setPlayingChannel({
+            ...slide,
+            id: channelId,
+            name: slide.title || data.name || 'Video',
+            streamUrl: url,
+            drmProtected: !!data.drmProtected || !!data.drm_protected,
+            drmClearKey: data.drmClearKey ?? data.drm_clear_key ?? null,
+            drm_clear_key: data.drm_clear_key ?? data.drmClearKey ?? null,
+          });
+          setVideoPlayerVisible(true);
+        }
+      } catch (err) {
+        console.error('Failed to load carousel channel:', err);
+        if (slide.videoUrl) {
+          setPlayingChannel({ id: channelId, name: slide.title || 'Video', streamUrl: slide.videoUrl });
+          setVideoPlayerVisible(true);
+        }
+      } finally {
+        setLoadingChannelId(null);
+      }
+    } else {
+      setPlayingChannel({
+        id: null,
+        name: slide.title || 'Video',
+        streamUrl: slide.videoUrl,
+      });
+      setVideoPlayerVisible(true);
+    }
   };
 
-  // Open player only when we have a stream URL from backend (admin) – guarantees playback
-  const openPlayerWithChannel = (channel, streamUrl) => {
+  // Open player with full channel data (including admin-configured ClearKey for DRM)
+  const openPlayerWithChannel = async (channel, streamUrl) => {
     const url = streamUrl || channel.streamUrl;
-    if (!url) return;
-    setPlayingChannel({ ...channel, streamUrl: url });
-    setVideoPlayerVisible(true);
+    if (!url || !channel?.id) return;
+    setLoadingChannelId(channel.id);
+    try {
+      const data = await channelsAPI.getChannel(channel.id);
+      const finalUrl = data.streamUrl || data.stream_url || url;
+      setPlayingChannel({
+        ...channel,
+        ...data,
+        streamUrl: finalUrl,
+        drmClearKey: data.drmClearKey ?? data.drm_clear_key ?? channel.drmClearKey ?? channel.drm_clear_key ?? null,
+        drm_clear_key: data.drm_clear_key ?? data.drmClearKey ?? channel.drm_clear_key ?? channel.drmClearKey ?? null,
+      });
+      setVideoPlayerVisible(true);
+    } catch (err) {
+      console.error('Failed to load channel for player:', err);
+      setPlayingChannel({ ...channel, streamUrl: url });
+      setVideoPlayerVisible(true);
+    } finally {
+      setLoadingChannelId(null);
+    }
   };
 
   // Handle channel click: fetch stream URL from backend first, then open player and play
@@ -242,7 +288,7 @@ const FootballApp = ({
         const data = await channelsAPI.getChannel(ch.id);
         const url = data.streamUrl || data.stream_url;
         if (url) {
-          setPlayingChannel({ ...ch, streamUrl: url });
+          setPlayingChannel({ ...ch, ...data, streamUrl: url });
           setVideoPlayerVisible(true);
         } else {
           Alert.alert('Stream unavailable', 'No stream URL for this channel.');
@@ -946,6 +992,10 @@ const FootballApp = ({
         drmProtected={!!playingChannel?.drmProtected}
         drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
         drmLicenseUrl={playingChannel?.drmProtected && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
+        fetchChannelClearKey={async (id) => {
+          const d = await channelsAPI.getChannel(id);
+          return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };
+        }}
       />
     </View>
   );

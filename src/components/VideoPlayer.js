@@ -180,8 +180,8 @@ function buildSource(url, headers = {}) {
     ...headers,
   };
   const src = { uri: url, headers: h };
-  // Hint DASH so ExoPlayer uses DashMediaSource immediately (faster, more reliable).
-  if (isMpdUrl(url)) src.type = 'dash';
+  // Native uses type as file extension for Util.inferContentType(); must be 'mpd' for DASH (not 'dash') to avoid PARSING_CONTAINER_UNSUPPORTED.
+  if (isMpdUrl(url)) src.type = 'mpd';
   return src;
 }
 
@@ -198,6 +198,7 @@ export default function VideoPlayer({
   drmProtected,
   drmClearKey,
   drmLicenseUrl,
+  fetchChannelClearKey, // optional: (channelId) => Promise<{ drmClearKey }> – used when channel needs ClearKey but none was passed (e.g. from admin)
 }) {
   const videoRef = useRef(null);
   const [paused, setPaused] = useState(false);
@@ -212,10 +213,14 @@ export default function VideoPlayer({
   const [isPortrait, setIsPortrait] = useState(true);
   const [rotateHintDismissed, setRotateHintDismissed] = useState(false);
   const rotateAnim = useRef(new Animated.Value(0)).current;
+  // Default 360p; user can change via OKOA BANDO (quality) button
   const [selectedVideoTrack, setSelectedVideoTrack] = useState({
     type: 'resolution',
-    value: 240,
+    value: 360,
   });
+  const [qualityModalVisible, setQualityModalVisible] = useState(false);
+  const [fetchedDrmClearKey, setFetchedDrmClearKey] = useState(null); // ClearKey loaded from API when channel requires it but none was passed
+  const [drmKeyRetryTrigger, setDrmKeyRetryTrigger] = useState(0); // increment to retry fetching DRM key
   const recordedWatchRef = useRef(null);
   const dashLoadFallbackRef = useRef(null);
   const nativeLoadTimeoutRef = useRef(null);
@@ -223,10 +228,17 @@ export default function VideoPlayer({
 
   const url = videoUrl || '';
   const isWebPage = isWebPageUrl(url);
-  // Never fall back to WebView for DRM streams – WebView can't decrypt ClearKey DASH
-  const isDrm = !!(drmProtected && (drmClearKey || drmLicenseUrl));
+  // Use passed ClearKey or the one we fetched from API (admin-configured for this channel)
+  const effectiveDrmClearKey = drmClearKey || fetchedDrmClearKey;
+  // Treat as DRM when we have a key, a license URL, or will fetch the key (so we don't fall back to WebView)
+  const isDrm = !!(drmProtected && (effectiveDrmClearKey || drmLicenseUrl || (channelId && fetchChannelClearKey)));
+  // For DRM with fetchChannelClearKey: don't start playback until we have the key (avoids buffering then broken WebView fallback)
+  const drmWaitingForKey = !!(drmProtected && channelId && fetchChannelClearKey && !effectiveDrmClearKey);
   const startWithWebView = !!(url && WebView && isWebPage && !isDrm);
   const isMpd = isMpdUrl(url);
+
+  const isDrmRef = useRef(isDrm);
+  isDrmRef.current = isDrm;
 
   const mergedHeaders = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -235,8 +247,10 @@ export default function VideoPlayer({
   const source = buildSource(url, mergedHeaders);
 
   if (isDrm && source) {
-    // For maximum reliability, always use backend ClearKey license endpoint when available.
-    // This reuses the same proven JSON JWK response used by the Web player.
+    // Force DASH container: native uses source.type as extension for inferContentType(); 'mpd' yields CONTENT_TYPE_DASH and DashMediaSource (fixes PARSING_CONTAINER_UNSUPPORTED).
+    if (isMpdUrl(url)) source.type = 'mpd';
+
+    // License server: ExoPlayer fetches key from our API (admin-configured). Use both licenseServer and headers (library expects these).
     if (drmLicenseUrl) {
       source.drm = {
         type: 'clearkey',
@@ -244,8 +258,7 @@ export default function VideoPlayer({
         headers: mergedHeaders,
       };
     } else {
-      // Fallback: inline clearKeys when no license URL is configured for this channel.
-      const clearKeysMap = parseClearKeys(drmClearKey);
+      const clearKeysMap = parseClearKeys(effectiveDrmClearKey);
       if (clearKeysMap) {
         source.drm = {
           type: 'clearkey',
@@ -254,6 +267,32 @@ export default function VideoPlayer({
       }
     }
   }
+
+  const QUALITY_OPTIONS = [
+    { label: 'Auto', value: 0 },
+    { label: '240p', value: 240 },
+    { label: '360p (inapendekezwa)', value: 360 },
+    { label: '480p', value: 480 },
+    { label: '720p', value: 720 },
+    { label: '1080p', value: 1080 },
+  ];
+
+  // When player opens for a DRM channel but no ClearKey was passed, fetch it from API (admin-configured for this channel)
+  useEffect(() => {
+    if (!visible || !channelId || !drmProtected || drmClearKey || !fetchChannelClearKey) {
+      if (!visible) setFetchedDrmClearKey(null);
+      return;
+    }
+    let cancelled = false;
+    fetchChannelClearKey(String(channelId))
+      .then((data) => {
+        if (cancelled) return;
+        const key = data?.drmClearKey ?? data?.drm_clear_key ?? null;
+        if (key) setFetchedDrmClearKey(key);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [visible, channelId, drmProtected, drmClearKey, fetchChannelClearKey, drmKeyRetryTrigger]);
 
   useEffect(() => {
     setPlayerVisible(visible);
@@ -267,10 +306,10 @@ export default function VideoPlayer({
       setSourceKey((k) => k + 1);
       setLayoutSize({ width: 0, height: 0 });
       setUseWebView(startWithWebView);
-      setSelectedVideoTrack({
-        type: 'resolution',
-        value: 240,
-      });
+      setSelectedVideoTrack({ type: 'resolution', value: 360 });
+      setQualityModalVisible(false);
+      setFetchedDrmClearKey(null);
+      setDrmKeyRetryTrigger(0);
       setRotateHintDismissed(false);
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
@@ -301,21 +340,19 @@ export default function VideoPlayer({
     };
   }, [visible, url, useWebView, loading, isDrm]);
 
-  // When the DRM clearKey prop changes (arrives from backend after the player was already open),
-  // restart the Video source so ExoPlayer initialises with the correct key.
+  // When the DRM clearKey (or fetched key) changes, restart the Video source so ExoPlayer uses the correct key.
   useEffect(() => {
     if (!visible || !url) return;
-    const keyChanged = drmClearKey !== prevDrmKeyRef.current;
-    prevDrmKeyRef.current = drmClearKey;
-    // Only trigger a restart if the key just arrived (was null, now has a value)
-    if (keyChanged && drmClearKey) {
+    const keyChanged = effectiveDrmClearKey !== prevDrmKeyRef.current;
+    prevDrmKeyRef.current = effectiveDrmClearKey;
+    if (keyChanged && effectiveDrmClearKey) {
       setLoading(true);
       setLoadingMsg('Decrypting DRM stream…');
       setError(null);
       setUseWebView(false);
       setSourceKey((k) => k + 1);
     }
-  }, [drmClearKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, url, effectiveDrmClearKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Record channel watch for admin "Most Watched" analytics (once per open)
   useEffect(() => {
@@ -417,7 +454,8 @@ export default function VideoPlayer({
       lower.includes('cannot be loaded') ||
       lower.includes('unable to connect');
 
-    if (WebView && !useWebView && (isContainerError || isRetryableError)) {
+    // Never switch to WebView for DRM – browser cannot decrypt ClearKey DASH
+    if (!isDrmRef.current && WebView && !useWebView && (isContainerError || isRetryableError)) {
       setUseWebView(true);
       setError(null);
       setLoading(true);
@@ -499,7 +537,7 @@ export default function VideoPlayer({
             }}
             onError={() => setError('Page could not be loaded.')}
           />
-        ) : source && w > 0 && h > 0 ? (
+        ) : source && w > 0 && h > 0 && !drmWaitingForKey ? (
           <Video
             key={sourceKey}
             ref={videoRef}
@@ -527,6 +565,60 @@ export default function VideoPlayer({
           <Icon name="close" size={28} color="#fff" />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={styles.qualityBtn}
+          onPress={() => setQualityModalVisible(true)}
+          activeOpacity={0.8}>
+          <Icon name="quality-high" size={22} color="#fff" />
+          <Text style={styles.qualityBtnText}>OKOA BANDO</Text>
+        </TouchableOpacity>
+
+        <Modal
+          visible={qualityModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setQualityModalVisible(false)}>
+          <TouchableOpacity
+            style={styles.qualityModalOverlay}
+            activeOpacity={1}
+            onPress={() => setQualityModalVisible(false)}>
+            <TouchableOpacity
+              style={styles.qualityModalCard}
+              activeOpacity={1}
+              onPress={() => {}}
+              onStartShouldSetResponder={() => true}>
+              <Text style={styles.qualityModalTitle}>Chagua ubora wa video</Text>
+              <Text style={styles.qualityModalSubtitle}>Chini = okoa bando (360p inapendekezwa), juu = ubora bora zaidi</Text>
+              {QUALITY_OPTIONS.map((opt) => {
+                const isSelected = selectedVideoTrack.type === 'resolution' && selectedVideoTrack.value === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={[styles.qualityOption, isSelected && styles.qualityOptionSelected]}
+                    onPress={() => {
+                      setSelectedVideoTrack({ type: 'resolution', value: opt.value });
+                      setSourceKey((k) => k + 1);
+                      setLoading(true);
+                      setLoadingMsg('Inabadilisha ubora…');
+                      setQualityModalVisible(false);
+                    }}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.qualityOptionText, isSelected && styles.qualityOptionTextSelected]}>
+                      {opt.label}
+                    </Text>
+                    {isSelected && <Icon name="check-circle" size={20} color="#22c55e" />}
+                  </TouchableOpacity>
+                );
+              })}
+              <TouchableOpacity
+                style={styles.qualityModalClose}
+                onPress={() => setQualityModalVisible(false)}>
+                <Text style={styles.qualityModalCloseText}>Funga</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
+
         {showRotateHint && (
           <View style={styles.rotateOverlay} pointerEvents="box-none">
             <View style={styles.rotateCard}>
@@ -549,10 +641,15 @@ export default function VideoPlayer({
           </View>
         )}
 
-        {loading && !error && (
-          <View style={styles.loadingOverlay} pointerEvents="none">
+        {(loading || drmWaitingForKey) && !error && (
+          <View style={[styles.loadingOverlay, drmWaitingForKey && styles.loadingOverlayInteractive]} pointerEvents={drmWaitingForKey ? 'auto' : 'none'}>
             <ActivityIndicator size="large" color="#fff" />
-            <Text style={styles.loadingMsg}>{loadingMsg}</Text>
+            <Text style={styles.loadingMsg}>{drmWaitingForKey ? 'Fetching keys…' : loadingMsg}</Text>
+            {drmWaitingForKey && (
+              <TouchableOpacity style={styles.retryKeyBtn} onPress={() => setDrmKeyRetryTrigger((t) => t + 1)}>
+                <Text style={styles.retryKeyBtnText}>Retry</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -566,7 +663,7 @@ export default function VideoPlayer({
                 <Icon name="refresh" size={18} color="#000" />
                 <Text style={styles.retryText}>Retry</Text>
               </TouchableOpacity>
-              {WebView && !useWebView && (
+              {WebView && !useWebView && !isDrm && (
                 <TouchableOpacity style={styles.webviewBtn} onPress={switchToWebView}>
                   <Text style={styles.webviewBtnText}>Use browser player</Text>
                 </TouchableOpacity>
@@ -606,6 +703,87 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 99999,
   },
+  qualityBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 50 : 20,
+    right: 72,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    zIndex: 99999,
+  },
+  qualityBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  qualityModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  qualityModalCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#1f2937',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  qualityModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  qualityModalSubtitle: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  qualityOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    marginBottom: 6,
+    backgroundColor: 'rgba(55, 65, 81, 0.5)',
+  },
+  qualityOptionSelected: {
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.5)',
+  },
+  qualityOptionText: {
+    fontSize: 15,
+    color: '#e5e7eb',
+    fontWeight: '500',
+  },
+  qualityOptionTextSelected: {
+    color: '#22c55e',
+    fontWeight: '600',
+  },
+  qualityModalClose: {
+    marginTop: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  qualityModalCloseText: {
+    color: '#9ca3af',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   noSource: {
     flex: 1,
     justifyContent: 'center',
@@ -626,6 +804,19 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.9)',
     fontSize: 15,
     fontWeight: '500',
+  },
+  loadingOverlayInteractive: {},
+  retryKeyBtn: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 8,
+  },
+  retryKeyBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,

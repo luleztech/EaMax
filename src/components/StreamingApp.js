@@ -175,15 +175,32 @@ const StreamingApp = () => {
     await markNotificationPermissionAsked();
   };
 
-  // Re-register FCM token when app comes to foreground so backend always has valid token
+  // When app comes to foreground: refresh FCM token and channels premium-only setting
+  // so admin toggle takes effect without user reopening the app
   useEffect(() => {
+    const refreshSettings = () => {
+      settingsAPI.getChannelsPremiumOnly()
+        .then((data) => setChannelsPremiumOnly(!!data.channelsPremiumOnly))
+        .catch(() => {});
+    };
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') return;
       getOrCreateUserId().then((userId) => {
         if (userId) refreshAndRegisterFCMToken(userId).catch(() => {});
       });
+      refreshSettings();
     });
     return () => subscription?.remove();
+  }, []);
+
+  // Poll channels premium-only every 60s so when admin flips the button the app updates automatically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      settingsAPI.getChannelsPremiumOnly()
+        .then((data) => setChannelsPremiumOnly(!!data.channelsPremiumOnly))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
