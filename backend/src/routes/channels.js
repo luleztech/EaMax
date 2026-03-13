@@ -25,11 +25,22 @@ router.get('/', async (req, res, next) => {
     const result = await query(sql, params);
     const rows = (result.rows || []).map((row) => {
       const pts = row.points_required != null ? Number(row.points_required) : 0;
-      return {
+      const drmType = (row.drm_type || 'NONE').toUpperCase();
+      const isClearKey = drmType === 'CLEARKEY';
+      const out = {
         ...row,
         points_required: pts,
         pointsRequired: Number.isNaN(pts) ? 0 : pts,
+        drm_type: drmType,
+        drmType,
       };
+      if (!isClearKey) {
+        out.drm_clear_key = null;
+        out.drmClearKey = null;
+      } else if (row.drm_clear_key != null) {
+        out.drmClearKey = String(row.drm_clear_key).trim();
+      }
+      return out;
     });
     return res.json(rows);
   } catch (err) {
@@ -45,13 +56,15 @@ router.get('/:id', async (req, res, next) => {
     if (!parsed.success) return res.status(400).json({ error: 'Invalid channel id' });
     const id = parsed.data.id;
     const result = await query(
-      'SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji, color, points_required, drm_protected, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
+      'SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji, color, points_required, drm_protected, COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
       [id]
     );
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Channel not found' });
     const row = result.rows[0];
     const pts = row.points_required != null ? Number(row.points_required) : 0;
-    const clearKey = row.drm_protected && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
+    const drmType = (row.drm_type || 'NONE').toUpperCase();
+    const isClearKey = drmType === 'CLEARKEY';
+    const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
     return res.json({
       id: row.id,
       name: row.name,
@@ -65,6 +78,8 @@ router.get('/:id', async (req, res, next) => {
       pointsRequired: pts,
       drm_protected: !!row.drm_protected,
       drmProtected: !!row.drm_protected,
+      drm_type: drmType,
+      drmType,
       drm_clear_key: clearKey,
       drmClearKey: clearKey,
     });
@@ -86,15 +101,16 @@ function hexToBase64Url(hexString) {
   }
 }
 
-// Helper: build ClearKey license JSON from channel row
+// Helper: build ClearKey license JSON from channel row (only for drm_type = CLEARKEY)
 async function getDrmLicenseResponse(id) {
   const result = await query(
-    'SELECT drm_protected, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
+    'SELECT COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
     [id]
   );
   if (!result.rows || result.rows.length === 0) return { status: 404 };
   const row = result.rows[0];
-  if (!row.drm_protected || !row.drm_clear_key) return { status: 400 };
+  const drmType = (row.drm_type || 'NONE').toUpperCase();
+  if (drmType !== 'CLEARKEY' || !row.drm_clear_key) return { status: 400 };
 
   const raw = String(row.drm_clear_key).trim();
 

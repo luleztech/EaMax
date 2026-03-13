@@ -188,7 +188,8 @@ const FootballApp = ({
             id: channelId,
             name: slide.title || data.name || 'Video',
             streamUrl: url,
-            drmProtected: !!data.drmProtected || !!data.drm_protected,
+            drmType: data.drmType ?? data.drm_type ?? 'NONE',
+            drmProtected: (data.drmType ?? data.drm_type ?? 'NONE') !== 'NONE',
             drmClearKey: data.drmClearKey ?? data.drm_clear_key ?? null,
             drm_clear_key: data.drm_clear_key ?? data.drmClearKey ?? null,
           });
@@ -225,6 +226,8 @@ const FootballApp = ({
         ...channel,
         ...data,
         streamUrl: finalUrl,
+        drmType: data.drmType ?? data.drm_type ?? channel.drmType ?? channel.drm_type ?? 'NONE',
+        drmProtected: (data.drmType ?? data.drm_type ?? 'NONE') !== 'NONE',
         drmClearKey: data.drmClearKey ?? data.drm_clear_key ?? channel.drmClearKey ?? channel.drm_clear_key ?? null,
         drm_clear_key: data.drm_clear_key ?? data.drmClearKey ?? channel.drm_clear_key ?? channel.drmClearKey ?? null,
       });
@@ -989,9 +992,10 @@ const FootballApp = ({
         onUnlockChannel={handleUnlockChannel}
         channelId={playingChannel?.id}
         userId={userId}
-        drmProtected={!!playingChannel?.drmProtected}
+        drmProtected={(playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE') !== 'NONE'}
         drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
-        drmLicenseUrl={playingChannel?.drmProtected && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
+        drmType={playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE'}
+        drmLicenseUrl={(playingChannel?.drmType === 'CLEARKEY' || playingChannel?.drm_type === 'CLEARKEY') && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
         fetchChannelClearKey={async (id) => {
           const d = await channelsAPI.getChannel(id);
           return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };

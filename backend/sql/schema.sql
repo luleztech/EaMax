@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS channels (
   points_required INTEGER NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   drm_protected BOOLEAN NOT NULL DEFAULT FALSE,
-  drm_clear_key TEXT,
+  drm_type VARCHAR(32) DEFAULT 'NONE',  -- NONE | CLEARKEY | WIDEVINE | PLAYREADY; CLEARKEY uses drm_clear_key (kid:key)
+  drm_clear_key TEXT,                   -- kid:key (hex) when drm_type = CLEARKEY
   owner_user_id INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

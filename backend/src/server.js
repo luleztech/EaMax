@@ -35,6 +35,19 @@ query(
   }
 });
 
+// Ensure drm_type column exists: NONE | CLEARKEY | WIDEVINE | PLAYREADY
+query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS drm_type VARCHAR(32) DEFAULT 'NONE'`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration drm_type (non-fatal):', err.message);
+  }
+});
+query(
+  `UPDATE channels SET drm_type = 'CLEARKEY' WHERE drm_protected = true AND (drm_type IS NULL OR drm_type = 'NONE')`
+).catch(() => {});
+
 // Simple health check (no DB required)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'EaMax backend is running' });

@@ -231,6 +231,7 @@ router.get('/channels', async (req, res, next) => {
       result = await query(`
         SELECT c.id, c.name, c.category, c.stream_url, c.thumbnail_url, c.thumbnail_emoji,
                c.color, c.points_required, c.is_active, c.drm_protected, c.drm_clear_key,
+               COALESCE(c.drm_type, 'NONE') AS drm_type,
                c.owner_user_id, c.created_at,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
@@ -247,6 +248,7 @@ router.get('/channels', async (req, res, next) => {
         result = await query(`
           SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji,
                  color, points_required, is_active, drm_protected, drm_clear_key,
+                 COALESCE(drm_type, 'NONE') AS drm_type,
                  owner_user_id, created_at,
                  0 AS view_count
           FROM channels
@@ -260,8 +262,11 @@ router.get('/channels', async (req, res, next) => {
     return res.json(
       result.rows.map((row) => {
         const clearKey = row.drm_clear_key != null ? String(row.drm_clear_key) : (row.drmClearKey != null ? String(row.drmClearKey) : '');
+        const drmType = (row.drm_type || 'NONE').toUpperCase();
         return {
           ...row,
+          drm_type: drmType,
+          drmType,
           drm_clear_key: row.drm_clear_key,
           drmClearKey: clearKey,
         };
@@ -282,24 +287,23 @@ router.post('/channels', async (req, res, next) => {
       thumbnailEmoji: z.string().max(8).optional(),
       color: z.string().max(16).optional(),
       isActive: z.boolean().optional().default(true),
-      drmProtected: z.boolean().optional().default(false),
+      drmType: z.enum(['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY']).optional().default('NONE'),
       drmClearKey: z.string().max(2048).optional().nullable(),
       ownerUserId: z.number().int().optional(),
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
     });
 
     const data = bodySchema.parse(req.body);
-
-    const drmKeyValue = Object.prototype.hasOwnProperty.call(req.body, 'drmClearKey')
-      ? (req.body.drmClearKey != null && String(req.body.drmClearKey).trim() !== ''
-        ? String(req.body.drmClearKey).trim()
-        : null)
+    const drmType = (data.drmType || 'NONE').toUpperCase();
+    const needsDrm = drmType !== 'NONE';
+    const drmKeyValue = drmType === 'CLEARKEY' && req.body.drmClearKey != null && String(req.body.drmClearKey).trim() !== ''
+      ? String(req.body.drmClearKey).trim()
       : null;
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_clear_key, owner_user_id, points_required)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         data.name,
@@ -309,16 +313,20 @@ router.post('/channels', async (req, res, next) => {
         data.thumbnailEmoji || null,
         data.color || null,
         data.isActive,
-        data.drmProtected,
+        needsDrm,
+        drmType,
         drmKeyValue,
         data.ownerUserId || null,
         data.pointsRequired ?? 0,
       ],
     );
 
+    const row = result.rows[0];
     return res.status(201).json({
-      ...result.rows[0],
-      drmClearKey: result.rows[0].drm_clear_key ?? result.rows[0].drmClearKey,
+      ...row,
+      drm_type: drmType,
+      drmType,
+      drmClearKey: row.drm_clear_key ?? row.drmClearKey,
     });
   } catch (err) {
     return next(err);
@@ -338,7 +346,7 @@ router.put('/channels/:id', async (req, res, next) => {
       thumbnailEmoji: z.string().max(8).optional().nullable(),
       color: z.string().max(16).optional(),
       isActive: z.boolean().optional(),
-      drmProtected: z.boolean().optional(),
+      drmType: z.enum(['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY']).optional(),
       drmClearKey: z.string().max(2048).optional().nullable(),
       pointsRequired: z.coerce.number().int().min(0).optional(),
     });
@@ -351,6 +359,12 @@ router.put('/channels/:id', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
+    const drmType = data.drmType != null ? String(data.drmType).toUpperCase() : undefined;
+    const needsDrm = drmType !== undefined ? drmType !== 'NONE' : undefined;
+    const drmClearKeyValue = data.drmClearKey !== undefined
+      ? (data.drmClearKey != null && String(data.drmClearKey).trim() !== '' ? String(data.drmClearKey).trim() : null)
+      : undefined;
+
     const updates = {
       name: data.name,
       category: data.category,
@@ -359,11 +373,12 @@ router.put('/channels/:id', async (req, res, next) => {
       thumbnail_emoji: data.thumbnailEmoji,
       color: data.color,
       is_active: data.isActive,
-      drm_protected: data.drmProtected,
+      ...(drmType !== undefined && { drm_type: drmType }),
+      ...(needsDrm !== undefined && { drm_protected: needsDrm }),
       points_required: data.pointsRequired,
-      drm_clear_key: data.drmClearKey !== undefined
-        ? (data.drmClearKey != null && String(data.drmClearKey).trim() !== '' ? String(data.drmClearKey).trim() : null)
-        : undefined,
+      ...(drmType !== undefined && {
+        drm_clear_key: drmType === 'CLEARKEY' ? (drmClearKeyValue ?? null) : null,
+      }),
     };
 
     Object.entries(updates).forEach(([key, value]) => {

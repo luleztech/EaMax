@@ -34,7 +34,7 @@ const ContentSection = () => {
   const [videoUrl, setVideoUrl] = useState('');
   const [selectedColor, setSelectedColor] = useState('#7c3aed');
   const [isActive, setIsActive] = useState(true);
-  const [drmProtector, setDrmProtector] = useState(false);
+  const [drmType, setDrmType] = useState('NONE'); // NONE | CLEARKEY | WIDEVINE | PLAYREADY
   const [clearKey, setClearKey] = useState('');
   const [userId, setUserId] = useState('');
   const [useEmoji, setUseEmoji] = useState(false);
@@ -95,7 +95,7 @@ const ContentSection = () => {
     setVideoUrl('');
     setSelectedColor('#7c3aed');
     setIsActive(true);
-    setDrmProtector(false);
+    setDrmType('NONE');
     setClearKey('');
     setUserId('');
     setUseEmoji(false);
@@ -123,19 +123,22 @@ const ContentSection = () => {
       showStatusModal('Missing emoji', 'Please enter thumbnail emoji.');
       return;
     }
+    if (drmType === 'CLEARKEY' && !String(clearKey || '').trim()) {
+      showStatusModal('ClearKey required', 'Enter kid:key (e.g. hexKid:hexKey) when DRM type is CLEARKEY.');
+      return;
+    }
 
-    // Build payload – drmClearKey must always be present so backend can persist it
     const pointsNum = parseInt(String(pointsRequired).trim() || '0', 10);
-    const clearKeyTrimmed = clearKey;
+    const clearKeyTrimmed = drmType === 'CLEARKEY' ? String(clearKey || '').trim() || null : null;
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
       streamUrl: videoUrl.trim(),
       color: selectedColor,
       isActive,
-      drmProtected: !!drmProtector,
+      drmType,
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
-      drmClearKey: drmProtector ? (clearKeyTrimmed || null) : null,
+      drmClearKey: clearKeyTrimmed,
     };
 
     if (!useEmoji && thumbnailUrl.trim()) {
@@ -156,7 +159,7 @@ const ContentSection = () => {
         setChannels((prev) =>
           prev.map((ch) =>
             ch.id === updated.id
-              ? { ...ch, ...updated, drm_clear_key: updated.drm_clear_key ?? updated.drmClearKey, drmClearKey: updated.drmClearKey }
+              ? { ...ch, ...updated, drm_type: updated.drm_type ?? updated.drmType, drmType: updated.drmType ?? updated.drm_type, drm_clear_key: updated.drm_clear_key ?? updated.drmClearKey, drmClearKey: updated.drmClearKey ?? updated.drm_clear_key }
               : ch
           )
         );
@@ -164,7 +167,7 @@ const ContentSection = () => {
         const created = await adminChannelsAPI.createChannel(payload);
         showStatusModal('Channel added', 'Channel added successfully.');
         setChannels((prev) => [
-          { ...created, drm_clear_key: created.drm_clear_key ?? created.drmClearKey, drmClearKey: created.drmClearKey },
+          { ...created, drm_type: created.drm_type ?? created.drmType, drmType: created.drmType ?? created.drm_type, drm_clear_key: created.drm_clear_key ?? created.drmClearKey, drmClearKey: created.drmClearKey ?? created.drm_clear_key },
           ...prev,
         ]);
       }
@@ -355,11 +358,8 @@ const ContentSection = () => {
                           ? channel.is_active
                           : true,
                       );
-                      setDrmProtector(
-                        typeof channel.drm_protected === 'boolean'
-                          ? channel.drm_protected
-                          : false,
-                      );
+                      const savedDrmType = (channel.drm_type ?? channel.drmType ?? (channel.drm_protected ? 'CLEARKEY' : 'NONE')).toUpperCase();
+                      setDrmType(savedDrmType === 'CLEARKEY' || savedDrmType === 'WIDEVINE' || savedDrmType === 'PLAYREADY' ? savedDrmType : 'NONE');
                       const savedClearKey = channel.drm_clear_key ?? channel.drmClearKey;
                       setClearKey(savedClearKey != null ? String(savedClearKey) : '');
                       setUserId(
@@ -421,7 +421,7 @@ const ContentSection = () => {
                   setVideoUrl('');
                   setSelectedColor('#7c3aed');
                   setIsActive(true);
-                  setDrmProtector(false);
+                  setDrmType('NONE');
                   setUserId('');
                   setUseEmoji(false);
                 }}
@@ -587,33 +587,41 @@ const ContentSection = () => {
                     thumbColor="#fff"
                   />
                 </View>
-                <View style={styles.toggleSection}>
-                  <View style={styles.toggleInfo}>
-                    <Text style={styles.toggleLabel}>DRM protection</Text>
-                    <Text style={styles.toggleDescription}>Enable for protected streams</Text>
-                  </View>
-                  <Switch
-                    value={drmProtector}
-                    onValueChange={setDrmProtector}
-                    trackColor={{ false: '#374151', true: '#10b981' }}
-                    thumbColor="#fff"
-                  />
-                </View>
                 <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>DRM ClearKey</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder={drmProtector ? "Enter DRM ClearKey (base64 or URL)" : "Enable DRM Protector to enter ClearKey"}
-                    placeholderTextColor="#6b7280"
-                    value={clearKey}
-                    onChangeText={setClearKey}
-                    autoCapitalize="none"
-                    multiline={true}
-                    numberOfLines={2}
-                    maxLength={2048}
-                    autoFocus={true}
-                  />
+                  <Text style={styles.inputLabel}>DRM type</Text>
+                  <Text style={styles.inputHint}>NONE = no DRM. CLEARKEY = kid:key. WIDEVINE/PLAYREADY = license server (future).</Text>
+                  <View style={styles.drmTypeRow}>
+                    {['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY'].map((opt) => {
+                      const active = drmType === opt;
+                      return (
+                        <TouchableOpacity
+                          key={opt}
+                          style={[styles.categoryChip, active && styles.categoryChipActive]}
+                          onPress={() => setDrmType(opt)}>
+                          <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>
+                            {opt}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
+                {drmType === 'CLEARKEY' && (
+                  <View style={styles.inputSection}>
+                    <Text style={styles.inputLabel}>ClearKey (kid:key) *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. f59650be475e4c34a844d4e2062f71f3:119639e849ddee96c4cec2f2b6b09b40"
+                      placeholderTextColor="#6b7280"
+                      value={clearKey}
+                      onChangeText={setClearKey}
+                      autoCapitalize="none"
+                      multiline={false}
+                      maxLength={2048}
+                    />
+                    <Text style={styles.inputHint}>Hex kid and hex key separated by colon. Used by app and web player.</Text>
+                  </View>
+                )}
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Owner user ID (optional)</Text>
                   <TextInput
@@ -1103,6 +1111,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
+  },
+  drmTypeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 6,
   },
   categoryChip: {
     paddingHorizontal: 16,

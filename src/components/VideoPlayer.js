@@ -108,6 +108,14 @@ function parseClearKeys(raw) {
   return { [kidB64]: keyB64 };
 }
 
+// Build W3C ClearKey license JSON (same format as Flutter LocalMediaDrmCallback). Used when passing inline keys to native.
+function buildClearKeyJwkJson(clearKeysMap) {
+  if (!clearKeysMap || typeof clearKeysMap !== 'object') return null;
+  const keys = Object.entries(clearKeysMap).map(([kid, k]) => ({ kty: 'oct', kid, k }));
+  if (keys.length === 0) return null;
+  return JSON.stringify({ keys, type: 'temporary' });
+}
+
 // When the native player fails and we fall back to WebView,
 // opening an .mpd URL directly will usually just download the file.
 // Instead, render a minimal HTML page that uses dash.js to play the manifest.
@@ -198,8 +206,10 @@ export default function VideoPlayer({
   drmProtected,
   drmClearKey,
   drmLicenseUrl,
+  drmType: drmTypeProp, // NONE | CLEARKEY | WIDEVINE | PLAYREADY – when CLEARKEY, kid:key is used (app + web)
   fetchChannelClearKey, // optional: (channelId) => Promise<{ drmClearKey }> – used when channel needs ClearKey but none was passed (e.g. from admin)
 }) {
+  const drmType = (drmTypeProp ?? (drmProtected ? 'CLEARKEY' : 'NONE')).toUpperCase();
   const videoRef = useRef(null);
   const [paused, setPaused] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -228,14 +238,14 @@ export default function VideoPlayer({
 
   const url = videoUrl || '';
   const isWebPage = isWebPageUrl(url);
-  // Use passed ClearKey or the one we fetched from API (admin-configured for this channel)
   const effectiveDrmClearKey = drmClearKey || fetchedDrmClearKey;
-  // Treat as DRM when we have a key, a license URL, or will fetch the key (so we don't fall back to WebView)
-  const isDrm = !!(drmProtected && (effectiveDrmClearKey || drmLicenseUrl || (channelId && fetchChannelClearKey)));
-  // For DRM that depends on fetchChannelClearKey (no license server): don't start playback until we have the key.
-  // When we have drmLicenseUrl, ExoPlayer handles key fetching natively – no need to wait in JS.
+  // Only CLEARKEY uses kid:key (inline or license server). NONE = no DRM. WIDEVINE/PLAYREADY = future license URL.
+  const isClearKeyChannel = drmType === 'CLEARKEY';
+  const isDrm = isClearKeyChannel
+    ? !!(effectiveDrmClearKey || drmLicenseUrl || (channelId && fetchChannelClearKey))
+    : (drmType === 'WIDEVINE' || drmType === 'PLAYREADY');
   const drmWaitingForKey = !!(
-    drmProtected &&
+    isClearKeyChannel &&
     !drmLicenseUrl &&
     channelId &&
     fetchChannelClearKey &&
@@ -253,25 +263,19 @@ export default function VideoPlayer({
   };
   const source = buildSource(url, mergedHeaders);
 
-  if (isDrm && source) {
-    // Force DASH container: native uses source.type as extension for inferContentType(); 'mpd' yields CONTENT_TYPE_DASH and DashMediaSource (fixes PARSING_CONTAINER_UNSUPPORTED).
+  // Only configure ClearKey when channel DRM type is CLEARKEY (kid:key from admin). WIDEVINE/PLAYREADY could use license URL later.
+  if (isClearKeyChannel && source) {
     if (isMpdUrl(url)) source.type = 'mpd';
-
-    // License server: ExoPlayer fetches key from our API (admin-configured). Use both licenseServer and headers (library expects these).
-    if (drmLicenseUrl) {
+    const clearKeysMap = parseClearKeys(effectiveDrmClearKey);
+    const licenseResponseJson = buildClearKeyJwkJson(clearKeysMap);
+    if (licenseResponseJson) {
+      source.drm = { type: 'clearkey', licenseResponse: licenseResponseJson };
+    } else if (drmLicenseUrl) {
       source.drm = {
         type: 'clearkey',
         licenseServer: drmLicenseUrl,
         headers: mergedHeaders,
       };
-    } else {
-      const clearKeysMap = parseClearKeys(effectiveDrmClearKey);
-      if (clearKeysMap) {
-        source.drm = {
-          type: 'clearkey',
-          clearKeys: clearKeysMap,
-        };
-      }
     }
   }
 
@@ -287,7 +291,7 @@ export default function VideoPlayer({
   // When player opens for a DRM channel but no ClearKey was passed and we don't have a license server,
   // fetch ClearKey from API (admin-configured for this channel). For drmLicenseUrl we let ExoPlayer fetch natively.
   useEffect(() => {
-    if (!visible || !channelId || !drmProtected || drmClearKey || drmLicenseUrl || !fetchChannelClearKey) {
+    if (!visible || !channelId || drmType !== 'CLEARKEY' || drmClearKey || drmLicenseUrl || !fetchChannelClearKey) {
       if (!visible) setFetchedDrmClearKey(null);
       return;
     }
@@ -300,7 +304,7 @@ export default function VideoPlayer({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [visible, channelId, drmProtected, drmClearKey, fetchChannelClearKey, drmKeyRetryTrigger]);
+  }, [visible, channelId, drmType, drmClearKey, fetchChannelClearKey, drmKeyRetryTrigger]);
 
   useEffect(() => {
     setPlayerVisible(visible);
