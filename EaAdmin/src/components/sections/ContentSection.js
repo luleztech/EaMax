@@ -39,6 +39,7 @@ const ContentSection = () => {
   const [userId, setUserId] = useState('');
   const [useEmoji, setUseEmoji] = useState(false);
   const [pointsRequired, setPointsRequired] = useState('0');
+  const [unlockToFree, setUnlockToFree] = useState(false);
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
   const [deletingChannel, setDeletingChannel] = useState(false);
@@ -101,6 +102,7 @@ const ContentSection = () => {
     setUseEmoji(false);
     setEditingChannel(null);
     setPointsRequired('0');
+    setUnlockToFree(false);
   };
 
   const handleSaveChannel = async () => {
@@ -139,6 +141,7 @@ const ContentSection = () => {
       drmType,
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
       drmClearKey: clearKeyTrimmed,
+      unlockToFree: !!unlockToFree,
     };
 
     if (!useEmoji && thumbnailUrl.trim()) {
@@ -368,6 +371,7 @@ const ContentSection = () => {
                       setPointsRequired(
                         String(channel.points_required ?? channel.pointsRequired ?? 0),
                       );
+                      setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
                       setAddChannelModalVisible(true);
                     }}>
                     <Text style={styles.editButtonText}>Edit</Text>
@@ -424,6 +428,7 @@ const ContentSection = () => {
                   setDrmType('NONE');
                   setUserId('');
                   setUseEmoji(false);
+                  setUnlockToFree(false);
                 }}
                 style={styles.closeButton}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -547,6 +552,20 @@ const ContentSection = () => {
                   <Text style={styles.inputHint}>
                     Set 0 for free channels; otherwise users spend points to unlock.
                   </Text>
+                </View>
+                <View style={styles.toggleSection}>
+                  <View style={styles.toggleInfo}>
+                    <Text style={styles.toggleLabel}>Unlock to free (no ads)</Text>
+                    <Text style={styles.toggleDescription}>
+                      When "All channels premium only" is ON in Settings, this channel can still be free for everyone (no ads). OFF = channel follows the main setting.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={unlockToFree}
+                    onValueChange={setUnlockToFree}
+                    trackColor={{ false: '#374151', true: '#7c3aed' }}
+                    thumbColor="#fff"
+                  />
                 </View>
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Channel color</Text>

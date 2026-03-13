@@ -123,6 +123,7 @@ const FootballApp = ({
       const mapped = (data || []).map((ch) => {
         const raw = ch.pointsRequired ?? ch.points_required ?? 0;
         const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;
+        const unlockToFree = !!(ch.unlockToFree === true || ch.unlock_to_free === true);
         return {
           id: ch.id,
           name: ch.name,
@@ -137,6 +138,7 @@ const FootballApp = ({
           isLive: ch.is_active,
           category: ch.category || 'Football',
           pointsRequired,
+          unlockToFree,
           streamUrl: ch.stream_url,
           thumbnailUrl: ch.thumbnail_url,
           thumbnailEmoji: ch.thumbnail_emoji,
@@ -165,10 +167,11 @@ const FootballApp = ({
     return currentUserPoints;
   };
 
-  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
-  const getChannelBadgeText = (pointsRequired, withPts = false) => {
+  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points); toggle ON = "Premium" unless channel unlocked to free
+  const getChannelBadgeText = (pointsRequired, withPts = false, unlockToFree = false) => {
     if (isPremium) return 'Unlocked';
-    if (channelsPremiumOnly) return 'Premium';
+    if (channelsPremiumOnly && !unlockToFree) return 'Premium';
+    if (channelsPremiumOnly && unlockToFree) return 'Bure';
     const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
     if (pts <= 0) return 'Bure';
     return withPts ? `${pts} pts` : `${pts}`;
@@ -244,8 +247,9 @@ const FootballApp = ({
   // Handle channel click: fetch stream URL from backend first, then open player and play
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
-    // When admin sets "premium only", only premium users can play; otherwise use points or free (0)
-    const canPlay = isPremium || (channelsPremiumOnly ? false : pointsRequired === 0);
+    const unlockToFree = !!(channel.unlockToFree === true || channel.unlock_to_free === true);
+    // Premium can always play. When "premium only" is ON: also allow if channel is unlocked to free (free, no ads). Otherwise: free if pointsRequired === 0.
+    const canPlay = isPremium || (channelsPremiumOnly ? unlockToFree : pointsRequired === 0);
     if (canPlay) {
       setLoadingChannelId(channel.id);
       try {
@@ -471,7 +475,7 @@ const FootballApp = ({
                             <View style={styles.channelPointsBadgeTop}>
                               <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                               <Text style={styles.channelPointsTextTop}>
-                                {getChannelBadgeText(channel.pointsRequired)}
+                                {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                               </Text>
                             </View>
                           </View>
@@ -532,7 +536,7 @@ const FootballApp = ({
                           <View style={styles.channelPointsBadge}>
                             <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                             <Text style={styles.channelPointsText}>
-                              {getChannelBadgeText(channel.pointsRequired, true)}
+                              {getChannelBadgeText(channel.pointsRequired, true, channel.unlockToFree)}
                             </Text>
                           </View>
                         </View>
@@ -698,7 +702,7 @@ const FootballApp = ({
                                 <View style={styles.channelPointsBadgeTop}>
                                   <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                   <Text style={styles.channelPointsTextTop}>
-                                    {getChannelBadgeText(channel.pointsRequired)}
+                                    {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                   </Text>
                                 </View>
                               </View>
@@ -737,7 +741,7 @@ const FootballApp = ({
                               <View style={styles.channelPointsBadgeTop}>
                                 <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                 <Text style={styles.channelPointsTextTop}>
-                                  {getChannelBadgeText(channel.pointsRequired)}
+                                  {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                 </Text>
                               </View>
                             </View>
@@ -746,7 +750,7 @@ const FootballApp = ({
                               <View style={styles.channelPointsBadge}>
                                 <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                 <Text style={styles.channelPointsText}>
-                                  {getChannelBadgeText(channel.pointsRequired, true)}
+                                  {getChannelBadgeText(channel.pointsRequired, true, channel.unlockToFree)}
                                 </Text>
                               </View>
                             </View>

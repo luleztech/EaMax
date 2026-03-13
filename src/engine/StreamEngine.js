@@ -473,7 +473,7 @@ async function prepareStream(streamData) {
 
   const headers = buildHeaders({ ...streamData, url });
   if (analysis.format === 'DASH') {
-    headers['Accept'] = 'application/dash+xml, application/xml, text/xml, */*';
+    headers['Accept'] = 'application/dash+xml,application/xml,text/xml;q=0.9,*/*;q=0.8';
     headers['User-Agent'] = headers['User-Agent'] || DEFAULT_USER_AGENT;
   }
 
@@ -487,7 +487,8 @@ async function prepareStream(streamData) {
     }
   }
 
-  const type = analysis.format === 'DASH' ? 'mpd' : analysis.format === 'HLS' ? 'm3u8' : undefined;
+  // ExoPlayer expects type "dash" for DASH (not "mpd") so the renderer pipeline starts correctly
+  const type = analysis.format === 'DASH' ? 'dash' : analysis.format === 'HLS' ? 'm3u8' : undefined;
   const speed = await detectNetworkSpeed();
   const initialBitrateHint = getInitialBitrateHint(speed);
 

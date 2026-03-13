@@ -27,12 +27,15 @@ router.get('/', async (req, res, next) => {
       const pts = row.points_required != null ? Number(row.points_required) : 0;
       const drmType = (row.drm_type || 'NONE').toUpperCase();
       const isClearKey = drmType === 'CLEARKEY';
+      const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
       const out = {
         ...row,
         points_required: pts,
         pointsRequired: Number.isNaN(pts) ? 0 : pts,
         drm_type: drmType,
         drmType,
+        unlock_to_free: unlockToFree,
+        unlockToFree,
       };
       if (!isClearKey) {
         out.drm_clear_key = null;
@@ -56,7 +59,7 @@ router.get('/:id', async (req, res, next) => {
     if (!parsed.success) return res.status(400).json({ error: 'Invalid channel id' });
     const id = parsed.data.id;
     const result = await query(
-      'SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji, color, points_required, drm_protected, COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
+      'SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji, color, points_required, drm_protected, COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key, COALESCE(unlock_to_free, false) AS unlock_to_free FROM channels WHERE id = $1 AND is_active = TRUE',
       [id]
     );
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Channel not found' });
@@ -65,6 +68,7 @@ router.get('/:id', async (req, res, next) => {
     const drmType = (row.drm_type || 'NONE').toUpperCase();
     const isClearKey = drmType === 'CLEARKEY';
     const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
+    const unlockToFree = !!(row.unlock_to_free === true);
     return res.json({
       id: row.id,
       name: row.name,
@@ -82,6 +86,8 @@ router.get('/:id', async (req, res, next) => {
       drmType,
       drm_clear_key: clearKey,
       drmClearKey: clearKey,
+      unlock_to_free: unlockToFree,
+      unlockToFree,
     });
   } catch (err) {
     return next(err);

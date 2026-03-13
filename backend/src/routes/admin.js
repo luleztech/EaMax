@@ -233,6 +233,7 @@ router.get('/channels', async (req, res, next) => {
                c.color, c.points_required, c.is_active, c.drm_protected, c.drm_clear_key,
                COALESCE(c.drm_type, 'NONE') AS drm_type,
                c.owner_user_id, c.created_at,
+               COALESCE(c.unlock_to_free, false) AS unlock_to_free,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
         LEFT JOIN (
@@ -250,6 +251,7 @@ router.get('/channels', async (req, res, next) => {
                  color, points_required, is_active, drm_protected, drm_clear_key,
                  COALESCE(drm_type, 'NONE') AS drm_type,
                  owner_user_id, created_at,
+                 COALESCE(unlock_to_free, false) AS unlock_to_free,
                  0 AS view_count
           FROM channels
           ORDER BY created_at DESC
@@ -263,12 +265,15 @@ router.get('/channels', async (req, res, next) => {
       result.rows.map((row) => {
         const clearKey = row.drm_clear_key != null ? String(row.drm_clear_key) : (row.drmClearKey != null ? String(row.drmClearKey) : '');
         const drmType = (row.drm_type || 'NONE').toUpperCase();
+        const unlockToFree = !!(row.unlock_to_free === true);
         return {
           ...row,
           drm_type: drmType,
           drmType,
           drm_clear_key: row.drm_clear_key,
           drmClearKey: clearKey,
+          unlock_to_free: unlockToFree,
+          unlockToFree,
         };
       })
     );
@@ -291,6 +296,7 @@ router.post('/channels', async (req, res, next) => {
       drmClearKey: z.string().max(2048).optional().nullable(),
       ownerUserId: z.number().int().optional(),
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
+      unlockToFree: z.boolean().optional().default(false),
     });
 
     const data = bodySchema.parse(req.body);
@@ -302,8 +308,8 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required, unlock_to_free)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         data.name,
@@ -318,6 +324,7 @@ router.post('/channels', async (req, res, next) => {
         drmKeyValue,
         data.ownerUserId || null,
         data.pointsRequired ?? 0,
+        !!data.unlockToFree,
       ],
     );
 
@@ -349,6 +356,7 @@ router.put('/channels/:id', async (req, res, next) => {
       drmType: z.enum(['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY']).optional(),
       drmClearKey: z.string().max(2048).optional().nullable(),
       pointsRequired: z.coerce.number().int().min(0).optional(),
+      unlockToFree: z.boolean().optional(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -379,6 +387,7 @@ router.put('/channels/:id', async (req, res, next) => {
       ...(drmType !== undefined && {
         drm_clear_key: drmType === 'CLEARKEY' ? (drmClearKeyValue ?? null) : null,
       }),
+      ...(data.unlockToFree !== undefined && { unlock_to_free: !!data.unlockToFree }),
     };
 
     Object.entries(updates).forEach(([key, value]) => {

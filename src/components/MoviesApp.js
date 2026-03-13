@@ -123,6 +123,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
         if (categories.includes(category) && ch.is_active) {
           const raw = ch.pointsRequired ?? ch.points_required ?? 0;
           const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;
+          const unlockToFree = !!(ch.unlockToFree === true || ch.unlock_to_free === true);
           categorized[category].push({
             id: ch.id,
             name: ch.name,
@@ -132,6 +133,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
             color: ch.color || '#7c3aed',
             category: ch.category,
             pointsRequired,
+            unlockToFree,
           });
         }
       });
@@ -166,10 +168,11 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
     return currentUserPoints;
   };
 
-  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points from admin); toggle ON = "Premium"
-  const getChannelBadgeText = (pointsRequired, withPts = false) => {
+  // Badge: Unlocked (subscribed); toggle OFF = points mode (show "Bure" if 0, else points); toggle ON = "Premium" unless channel unlocked to free
+  const getChannelBadgeText = (pointsRequired, withPts = false, unlockToFree = false) => {
     if (isPremium) return 'Unlocked';
-    if (channelsPremiumOnly) return 'Premium';
+    if (channelsPremiumOnly && !unlockToFree) return 'Premium';
+    if (channelsPremiumOnly && unlockToFree) return 'Bure';
     const pts = typeof pointsRequired === 'number' ? pointsRequired : parseInt(pointsRequired, 10) || 0;
     if (pts <= 0) return 'Bure';
     return withPts ? `${pts} pts` : `${pts}`;
@@ -218,7 +221,9 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
   // Handle channel click: fetch stream URL + DRM keys, then open player (guarantees DRM config is ready)
   const handleChannelClick = async (channel) => {
     const pointsRequired = channel.pointsRequired ?? 0;
-    const canPlay = isPremium || (channelsPremiumOnly ? false : pointsRequired === 0);
+    const unlockToFree = !!(channel.unlockToFree === true || channel.unlock_to_free === true);
+    // Premium can always play. When "premium only" is ON: also allow if channel is unlocked to free (free, no ads). Otherwise: free if pointsRequired === 0.
+    const canPlay = isPremium || (channelsPremiumOnly ? unlockToFree : pointsRequired === 0);
     if (canPlay) {
       setLoadingChannelId(channel.id);
       try {
@@ -453,7 +458,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                     <View style={styles.searchChannelPointsBadgeTop}>
                                       <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                       <Text style={styles.searchChannelPointsTextTop}>
-                                        {getChannelBadgeText(channel.pointsRequired)}
+                                        {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                       </Text>
                                     </View>
                                   </View>
@@ -492,7 +497,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                   <View style={styles.searchChannelPointsBadgeTop}>
                                     <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.searchChannelPointsTextTop}>
-                                      {getChannelBadgeText(channel.pointsRequired)}
+                                      {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                     </Text>
                                   </View>
                                 </View>
@@ -501,7 +506,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                   <View style={styles.searchChannelPointsBadge}>
                                     <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.searchChannelPointsText}>
-                                      {getChannelBadgeText(channel.pointsRequired, true)}
+                                      {getChannelBadgeText(channel.pointsRequired, true, channel.unlockToFree)}
                                     </Text>
                                   </View>
                                 </View>
@@ -619,7 +624,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                     <View style={styles.channelPointsBadgeTop}>
                                       <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                       <Text style={styles.channelPointsTextTop}>
-                                        {getChannelBadgeText(channel.pointsRequired)}
+                                        {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                       </Text>
                                     </View>
                                   </View>
@@ -658,7 +663,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                   <View style={styles.channelPointsBadgeTop}>
                                     <AntDesign name="star" size={14} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.channelPointsTextTop}>
-                                      {getChannelBadgeText(channel.pointsRequired)}
+                                      {getChannelBadgeText(channel.pointsRequired, false, channel.unlockToFree)}
                                     </Text>
                                   </View>
                                 </View>
@@ -667,7 +672,7 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
                                   <View style={styles.channelPointsBadge}>
                                     <AntDesign name="star" size={12} color={isPremium ? '#22c55e' : '#fbbf24'} />
                                     <Text style={styles.channelPointsText}>
-                                      {getChannelBadgeText(channel.pointsRequired, true)}
+                                      {getChannelBadgeText(channel.pointsRequired, true, channel.unlockToFree)}
                                     </Text>
                                   </View>
                                 </View>

@@ -119,6 +119,21 @@ function detectStreamFormat(url) {
 }
 
 /**
+ * Map target height to a bitrate cap (bits per second) – used by OKOA BANDO.
+ * This limits data usage without forcing a specific resolution representation.
+ */
+function getBitrateCap(height) {
+  switch (height) {
+    case 240: return 400_000;
+    case 360: return 800_000;
+    case 480: return 1_400_000;
+    case 720: return 2_500_000;
+    case 1080: return 4_000_000;
+    default: return 0; // Auto/uncapped
+  }
+}
+
+/**
  * Builds complete headers with priority system (matches Kotlin buildHeaders)
  */
 function buildHeaders(streamSession) {
@@ -437,7 +452,9 @@ export default function VideoPlayer({
   // ─── Derived Values ─────────────────────────────────────────────────────
   const url = videoUrl || '';
   const format = detectStreamFormat(url);
-  const isMpd = format === 'DASH' || (url && (url.toLowerCase().includes('.mpd') || /\/manifest\.mpd|\.mpd\?/i.test(url)));
+  const isMpd =
+    format === 'DASH' ||
+    (url && /\.(mpd)(\?|$)/i.test(url));
   const isHls = format === 'HLS';
   const isProgressive = format === 'PROGRESSIVE';
   
@@ -449,21 +466,12 @@ export default function VideoPlayer({
   const isPlayReadyChannel = drmType === 'PLAYREADY';
   const isDrm = isClearKeyChannel || isWidevineChannel || isPlayReadyChannel;
   
-  // Check if this is a web page that needs WebView
+  // Check if this is a web page that needs WebView (non-video HTML/JS pages)
   const isWebPage = url.includes('.php') || url.includes('.html') || 
     (url.startsWith('http') && !isMpd && !isHls && !isProgressive);
   
-  // Use WebView (Shaka) for:
-  // - Non-DRM web pages / special URLs
-  // - ClearKey DASH streams (.mpd) where Shaka can handle ClearKey reliably
-  const startWithWebView = !!(
-    url &&
-    WebView &&
-    (
-      (isWebPage && !isDrm) ||
-      (isClearKeyChannel && isMpd)
-    )
-  );
+  // Use WebView for true web pages (e.g. .php, .html). DRM is still allowed here because Shaka supports DRM.
+  const startWithWebView = !!(url && WebView && isWebPage);
 
   // When ClearKey channel has no key yet and we can fetch it, wait so we don't start playback without DRM
   const drmWaitingForKey = !!(
@@ -495,15 +503,16 @@ export default function VideoPlayer({
 
     // .mpd: Accept must request DASH XML so server returns manifest (not HTML) → avoids PARSING_MANIFEST_MALFORMED
     const headers = { ...mergedHeaders };
+    // DASH MPD requests must always use correct Accept header (CDN compatibility)
     if (isMpd) {
-      headers.Accept = 'application/dash+xml, application/xml, text/xml, */*';
+      headers.Accept = 'application/dash+xml,application/xml,text/xml;q=0.9,*/*;q=0.8';
       headers['User-Agent'] = headers['User-Agent'] || NATIVE_USER_AGENT;
     }
 
     const source = { uri: url, headers };
 
     // Required for ExoPlayer: type forces DASH so manifest is parsed correctly (no PARSING_MANIFEST_MALFORMED)
-    if (isMpd) source.type = 'mpd';
+    if (isMpd) source.type = 'dash';
     else if (isHls) source.type = 'm3u8';
 
     // ClearKey from admin: prefer inline key (licenseResponse) so native uses LocalMediaDrmCallback like Flutter
@@ -532,9 +541,8 @@ export default function VideoPlayer({
 
   const legacySource = buildVideoSource();
 
-  // StreamEngine: single entry point — prepare stream (analyze, validate, headers, DRM, cache)
-  // NOTE: For DRM streams we always use the legacy native path to avoid native crashes on some .mpd DRM URLs.
-  const source = !isDrm && preparedSource
+  // StreamEngine: use prepared source when available, else legacy (single path, no double init)
+  const source = (preparedSource != null)
     ? {
         uri: preparedSource.uri,
         type: preparedSource.type,
@@ -559,9 +567,8 @@ export default function VideoPlayer({
 
   // StreamEngine.prepareStream: analyze → validate → headers → token refresh → manifest repair → cache
   // Note: customHeaders omitted from deps to avoid "Maximum update depth" — object ref often changes every render.
-  // For DRM streams we skip StreamEngine and use the legacy source directly to keep ExoPlayer path simple and stable.
   useEffect(() => {
-    if (!visible || !url || isDrm) {
+    if (!visible || !url) {
       if (!visible) {
         setPreparedSource(null);
         setPrepareError(null);
@@ -606,7 +613,7 @@ export default function VideoPlayer({
         setForceTokenRefresh(false);
       });
     return () => { cancelled = true; };
-  }, [visible, url, channelId, drmType, effectiveDrmClearKey, drmLicenseUrl, token, sourceKey, forceTokenRefresh, isDrm]);
+  }, [visible, url, channelId, drmType, effectiveDrmClearKey, drmLicenseUrl, token, sourceKey, forceTokenRefresh]);
 
   // Configure native ExoPlayer with DRM session
   useEffect(() => {
@@ -735,9 +742,9 @@ export default function VideoPlayer({
     };
   }, [visible, url, startWithWebView]);
 
-  // Native player timeout fallback (10 seconds)
+  // WebView fallback only when native fails to load (timeout) or manifest/playback error (onError → switch_player)
   useEffect(() => {
-    if (!visible || !url || useWebView || !WebView || !loading || isDrm) return;
+    if (!visible || !url || useWebView || !WebView || !loading) return;
     
     nativeLoadTimeoutRef.current = setTimeout(() => {
       if (!useWebView && loading) {
@@ -748,7 +755,7 @@ export default function VideoPlayer({
         setLoadingMsg('Trying browser player…');
         setSourceKey(prev => prev + 1);
       }
-    }, 10000);
+    }, 25000); // 25s: DRM handshake + CDN manifest + slow networks before WebView fallback
     
     return () => {
       if (nativeLoadTimeoutRef.current) {
@@ -756,7 +763,7 @@ export default function VideoPlayer({
         nativeLoadTimeoutRef.current = null;
       }
     };
-  }, [visible, url, useWebView, loading, isDrm]);
+  }, [visible, url, useWebView, loading]);
 
   // Record channel watch for analytics
   useEffect(() => {
@@ -859,8 +866,11 @@ export default function VideoPlayer({
   // ─── Event Handlers ─────────────────────────────────────────────────────
 
   const onLoad = useCallback((data) => {
+    manifestMalformedRetryRef.current = 0;
     playbackRetryCountRef.current = 0;
-    if (__DEV__) console.log('[VideoPlayer] native loaded', isMpd ? '(manifest loaded)' : '', data?.duration);
+    if (__DEV__) {
+      console.log('[VideoPlayer] onLoad', { isMpd, duration: data?.duration, naturalSize: data?.naturalSize });
+    }
     setLoading(false);
     setError(null);
     setDuration(data?.duration || 0);
@@ -868,10 +878,11 @@ export default function VideoPlayer({
       clearTimeout(nativeLoadTimeoutRef.current);
       nativeLoadTimeoutRef.current = null;
     }
+    // No pause/play or seek hacks — ExoPlayer starts playback naturally via paused={false}
   }, [isMpd]);
 
   const onReadyForDisplay = useCallback(() => {
-    console.log('✅ Video ready for display');
+    if (__DEV__) console.log('[VideoPlayer] onReadyForDisplay');
     setLoading(false);
   }, []);
 
@@ -881,8 +892,10 @@ export default function VideoPlayer({
   }, []);
 
   const onBuffer = useCallback((ev) => {
-    setLoading(!!ev?.isBuffering);
-    if (ev?.isBuffering) {
+    const isBuffering = !!ev?.isBuffering;
+    if (__DEV__) console.log('[VideoPlayer] onBuffer', { isBuffering });
+    setLoading(isBuffering);
+    if (isBuffering) {
       setLoadingMsg('Buffering…');
     }
   }, []);
@@ -890,9 +903,10 @@ export default function VideoPlayer({
   const onError = useCallback((ev) => {
     const errorCode = ev?.error?.errorCode;
     const errorString = ev?.error?.errorString || ev?.message || 'Unknown error';
+    if (__DEV__) console.log('[VideoPlayer] onError', { errorCode, errorString });
 
-    // Retry once on PARSING_MANIFEST_MALFORMED (e.g. CDN first response was non-XML)
-    if (errorCode === 'ERROR_CODE_PARSING_MANIFEST_MALFORMED' && manifestMalformedRetryRef.current < 1) {
+    // Retry up to 4x on PARSING_MANIFEST_MALFORMED (e.g. CDN first responses were non-XML)
+    if (errorCode === 'ERROR_CODE_PARSING_MANIFEST_MALFORMED' && manifestMalformedRetryRef.current < 4) {
       manifestMalformedRetryRef.current += 1;
       setError(null);
       setLoading(true);
@@ -922,11 +936,11 @@ export default function VideoPlayer({
         setSourceKey(prev => prev + 1);
         return;
       }
-      if (step === 'switch_player' && !isDrm && WebView && !useWebView) {
+      if (step === 'switch_player' && !useWebView && WebView) {
         setUseWebView(true);
         setError(null);
         setLoading(true);
-        setLoadingMsg('Switching to browser player…');
+        setLoadingMsg('Trying browser player…');
         setSourceKey(prev => prev + 1);
         return;
       }
@@ -937,8 +951,16 @@ export default function VideoPlayer({
   }, [isDrm, useWebView]);
 
   const onEnd = useCallback(() => {
-    console.log('🏁 Playback ended');
+    if (__DEV__) console.log('[VideoPlayer] onEnd');
     setPaused(true);
+  }, []);
+
+  const onPlaybackRateChange = useCallback((ev) => {
+    if (__DEV__) console.log('[VideoPlayer] onPlaybackRateChange', { rate: ev?.playbackRate });
+  }, []);
+
+  const onAudioTrackChanged = useCallback((ev) => {
+    if (__DEV__) console.log('[VideoPlayer] onAudioTrackChanged', { index: ev?.index, tracks: ev?.tracks });
   }, []);
 
   const handleRetry = useCallback(() => {
@@ -946,12 +968,9 @@ export default function VideoPlayer({
     setLoading(true);
     setLoadingMsg('Reconnecting…');
     setPaused(false);
-    // For ClearKey channels we stay on Shaka/WebView to avoid native crashes; others retry native first.
-    if (!isClearKeyChannel) {
-      setUseWebView(false);
-    }
+    // Retry with the last-used player; native vs WebView is controlled by useWebView and smart retry.
     setSourceKey(prev => prev + 1);
-  }, [isClearKeyChannel]);
+  }, []);
 
   const switchToWebView = useCallback(() => {
     setUseWebView(true);
@@ -962,18 +981,23 @@ export default function VideoPlayer({
   }, []);
 
   const handleQualityChange = useCallback((quality) => {
+    const position = lastPlaybackPositionRef.current;
+
     setSelectedQuality(quality);
-    setSourceKey(prev => prev + 1);
     setLoading(true);
     setLoadingMsg('Changing quality…');
-    setQualityModalVisible(false);
-    
-    // Seek to current position after quality change
+
+    setSourceKey(prev => prev + 1);
+
     setTimeout(() => {
-      if (videoRef.current && lastPlaybackPositionRef.current > 0) {
-        videoRef.current.seek(lastPlaybackPositionRef.current);
+      if (videoRef.current && position > 0) {
+        try {
+          videoRef.current.seek(position);
+        } catch (_) {}
       }
-    }, 100);
+    }, 500);
+
+    setQualityModalVisible(false);
   }, []);
 
   const handleClose = useCallback(() => {
@@ -996,29 +1020,13 @@ export default function VideoPlayer({
   }, []);
 
   const window = Dimensions.get('window');
-  const width = layoutSize.width > 0 ? layoutSize.width : window.width;
-  const height = layoutSize.height > 0 ? layoutSize.height : window.height;
+  const hasLayout = layoutSize.width > 0 && layoutSize.height > 0;
+  const width = hasLayout ? layoutSize.width : window.width;
+  const height = hasLayout ? layoutSize.height : window.height;
   const videoStyle = [styles.video, { width, height }];
 
-  // Map selected quality to react-native-video props
-  const selectedVideoTrackProp =
-    selectedQuality.height > 0
-      ? { type: 'resolution', value: selectedQuality.height }
-      : { type: 'auto' };
-
-  // Approximate maxBitRate caps per quality (in bits per second)
-  const maxBitRate =
-    selectedQuality.height === 240
-      ? 400_000
-      : selectedQuality.height === 360
-      ? 800_000
-      : selectedQuality.height === 480
-      ? 1_400_000
-      : selectedQuality.height === 720
-      ? 2_500_000
-      : selectedQuality.height === 1080
-      ? 4_000_000
-      : 0; // Auto/uncapped
+  // Netflix-style adaptive: auto ABR + maxBitRate controls bandwidth (no index selection for DASH)
+  const maxBitRate = getBitrateCap(selectedQuality.height);
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
@@ -1073,7 +1081,12 @@ export default function VideoPlayer({
             <ActivityIndicator size="large" color="#fff" />
             <Text style={styles.loadingMsg}>Fetching keys…</Text>
           </View>
-        ) : source && width > 0 && height > 0 ? (
+        ) : source && !hasLayout ? (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#fff" />
+            <Text style={styles.loadingMsg}>Preparing…</Text>
+          </View>
+        ) : source && hasLayout ? (
           <Video
             key={`video-${sourceKey}`}
             ref={videoRef}
@@ -1082,18 +1095,36 @@ export default function VideoPlayer({
             resizeMode="contain"
             paused={paused}
             controls={true}
-            selectedVideoTrack={selectedVideoTrackProp}
+            selectedVideoTrack={{ type: 'auto' }}
+            selectedAudioTrack={{ type: 'index', value: 0 }}
+            bufferConfig={{
+              minBufferMs: 5000,
+              maxBufferMs: 20000,
+              bufferForPlaybackMs: 1000,
+              bufferForPlaybackAfterRebufferMs: 2000,
+            }}
             onLoad={onLoad}
             onReadyForDisplay={onReadyForDisplay}
             onProgress={onProgress}
             onBuffer={onBuffer}
             onError={onError}
             onEnd={onEnd}
-            // Buffer / quality configuration
+            onPlaybackRateChange={onPlaybackRateChange}
+            onAudioTrackChanged={onAudioTrackChanged}
             minLoadRetryCount={3}
             maxBitRate={maxBitRate}
-            // DRM configuration
-            drm={source?.drm}
+            reportBandwidth={true}
+            disableFocus={false}
+            ignoreSilentSwitch="ignore"
+            playInBackground={false}
+            automaticallyWaitsToMinimizeStalling={true}
+            useTextureView={true}
+            renderToHardwareTextureAndroid={true}
+            androidHardwareAccelerationDisabled={false}
+            progressUpdateInterval={500}
+            preferredForwardBufferDuration={30}
+            rate={1.0}
+            disableDisconnectError={true}
           />
         ) : (
           <View style={styles.noSource}>
@@ -1113,7 +1144,7 @@ export default function VideoPlayer({
           activeOpacity={0.8}>
           <Icon name="speedometer" size={22} color="#fff" />
           <Text style={styles.qualityBtnText}>
-            OKOA BANDO
+            Bando: {selectedQuality.label}
           </Text>
         </TouchableOpacity>
 
