@@ -296,27 +296,62 @@ function parseClearKey(raw) {
   return { [hexToBase64Url(kid)]: hexToBase64Url(key) };
 }
 
-function buildClearKeyJwk(clearKeysMap) {
-  if (!clearKeysMap || typeof clearKeysMap !== 'object') return null;
-  const keys = Object.entries(clearKeysMap).map(([kid, k]) => ({ kty: 'oct', kid, k }));
-  if (keys.length === 0) return null;
+/** Normalize to JWK keys array: Format A (drmClearKey string) or Format B (drmData.keys). */
+function getClearKeyJwkKeys(streamData) {
+  const drmData = streamData.drmData;
+  if (drmData?.keys && Array.isArray(drmData.keys) && drmData.keys.length > 0) {
+    return drmData.keys.map((item) => ({
+      kty: item.kty || 'oct',
+      kid: item.kid != null ? String(item.kid) : '',
+      k: item.k != null ? String(item.k) : '',
+    })).filter((item) => item.kid && item.k);
+  }
+  const clearKey = streamData.drmClearKey || streamData.clearKey;
+  if (!clearKey || typeof clearKey !== 'string') return null;
+  const map = parseClearKey(clearKey);
+  if (!map) return null;
+  return Object.entries(map).map(([kid, k]) => ({ kty: 'oct', kid, k }));
+}
+
+function buildClearKeyJwk(clearKeysMapOrKeysArray) {
+  let keys;
+  if (Array.isArray(clearKeysMapOrKeysArray)) {
+    keys = clearKeysMapOrKeysArray.filter((k) => k && k.kid != null && k.k != null);
+  } else if (clearKeysMapOrKeysArray && typeof clearKeysMapOrKeysArray === 'object') {
+    keys = Object.entries(clearKeysMapOrKeysArray).map(([kid, k]) => ({ kty: 'oct', kid, k }));
+  } else {
+    return null;
+  }
+  if (!keys || keys.length === 0) return null;
   return JSON.stringify({ keys, type: 'temporary' });
+}
+
+function base64EncodeUtf8(str) {
+  if (typeof str !== 'string') return '';
+  try {
+    if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(str)));
+    return Buffer.from(str, 'utf8').toString('base64');
+  } catch (_) {
+    return '';
+  }
 }
 
 function configureDRM(streamData) {
   const drmType = String(streamData.drmType || 'NONE').toUpperCase();
-  const clearKey = streamData.drmClearKey || streamData.clearKey;
   const licenseUrl = streamData.drmLicenseUrl || streamData.licenseUrl;
   const headers = streamData.headers || {};
 
   if (drmType === 'NONE') return null;
 
-  if (drmType === 'CLEARKEY' && clearKey) {
-    const map = parseClearKey(clearKey);
-    const jwk = map ? buildClearKeyJwk(map) : null;
-    if (jwk) {
-      log(LOG_DRM, 'ClearKey configured (inline)');
-      return { type: 'clearkey', licenseResponse: jwk };
+  if (drmType === 'CLEARKEY') {
+    const jwkKeys = getClearKeyJwkKeys(streamData);
+    if (jwkKeys && jwkKeys.length > 0) {
+      const jwkJson = buildClearKeyJwk(jwkKeys);
+      const base64Jwk = jwkJson ? base64EncodeUtf8(jwkJson) : '';
+      if (base64Jwk) {
+        log(LOG_DRM, 'ClearKey configured (inline base64 JWK)', { keyCount: jwkKeys.length });
+        return { type: 'clearkey', licenseServer: `data:application/json;base64,${base64Jwk}` };
+      }
     }
     if (licenseUrl) {
       log(LOG_DRM, 'ClearKey license server');
@@ -487,14 +522,16 @@ async function prepareStream(streamData) {
     }
   }
 
-  // ExoPlayer expects type "dash" for DASH (not "mpd") so the renderer pipeline starts correctly
+  // ExoPlayer expects type + contentType so it uses the correct extractor (avoids ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED)
   const type = analysis.format === 'DASH' ? 'dash' : analysis.format === 'HLS' ? 'm3u8' : undefined;
+  const contentType = analysis.format === 'DASH' ? 'application/dash+xml' : analysis.format === 'HLS' ? 'application/vnd.apple.mpegurl' : undefined;
   const speed = await detectNetworkSpeed();
   const initialBitrateHint = getInitialBitrateHint(speed);
 
   const payload = {
     uri: url,
     type,
+    contentType,
     headers,
     drm: drm || undefined,
     repairedManifestContent: repairedManifestContent || undefined,

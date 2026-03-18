@@ -229,7 +229,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.', false);
       return;
     }
-    const validPrefixes = ['061', '062', '065', '068', '069', '071', '074', '075', '076', '078', '079'];
+    const validPrefixes = ['061', '062', '063', '065', '068', '069', '071', '074', '075', '076', '078', '079'];
     const cleanPhone = phoneNumber.replace(/\s+/g, '');
     const isValidFormat = /^0[0-9]{8,9}$/.test(cleanPhone);
     const hasValidPrefix = validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
@@ -237,7 +237,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     if (!phoneNumber || !isValidFormat || !hasValidPrefix) {
       showStatusModal(
         'Nambari ya simu',
-        'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0712345678, 0742345678, 0782345678).',
+        'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0632345678, 0712345678, 0742345678, 0782345678).',
         false,
       );
       return;
@@ -335,7 +335,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
               <Icon name="credit-card-outline" size={36} color={accentColor} />
             </LinearGradient>
           </View>
-          <Text style={styles.heroTitle}>Malipo Premium</Text>
+          <Text style={styles.heroTitle}>Fanya Malipo</Text>
           <Text style={styles.heroSubtitle}>
             Chagua muda, ingiza nambari ya simu. Utapokea ombi kwenye simu yako.
           </Text>
@@ -407,6 +407,11 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           <Text style={styles.inputHint}>
             Weka namba yako ukianza na 0, bila kuandika +255. Mfano: 0712345678
           </Text>
+          {(phoneNumber.startsWith('061') || phoneNumber.startsWith('062') || phoneNumber.startsWith('063')) && (
+            <Text style={[styles.inputHint, styles.halotelHint]}>
+              Halotel: Hakikisha Halopesa iko active. Piga 150*88# kukagua.
+            </Text>
+          )}
         </View>
 
         {/* CTA */}
@@ -686,6 +691,10 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginTop: 8,
     marginLeft: 4,
+  },
+  halotelHint: {
+    marginTop: 12,
+    color: '#fbbf24',
   },
   ctaWrap: {
     marginTop: 8,

@@ -557,7 +557,7 @@ const ContentSection = () => {
                   <View style={styles.toggleInfo}>
                     <Text style={styles.toggleLabel}>Unlock to free (no ads)</Text>
                     <Text style={styles.toggleDescription}>
-                      When "All channels premium only" is ON in Settings, this channel can still be free for everyone (no ads). OFF = channel follows the main setting.
+                      You can unlock any channel you want here to free with no ads on it
                     </Text>
                   </View>
                   <Switch

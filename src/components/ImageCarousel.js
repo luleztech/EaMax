@@ -6,276 +6,282 @@ import {
   Dimensions,
   TouchableOpacity,
   Animated,
-  ScrollView,
+  Easing,
+  Image,
   ImageBackground,
-  Modal,
+  PanResponder,
 } from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 
 const { width } = Dimensions.get('window');
-const CAROUSEL_WIDTH = width - 32; // Full width minus padding
-const AUTO_SLIDE_INTERVAL = 4000; // 4 seconds
-const POINTS_PER_AD = 20;
-
-const ImageCarousel = ({ items, onWatchAd, onGoPremium, isPremium, channelsPremiumOnly, onPlaySlide }) => {
+const CAROUSEL_WIDTH = width - 32;
+const CAROUSEL_HEIGHT = 320;
+const AUTO_SLIDE_INTERVAL = 5000;
+const TRANSITION_DURATION = 680;
+const SWIPE_THRESHOLD = 55;
+const ImageCarousel = ({ items }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [lockedModalVisible, setLockedModalVisible] = useState(false);
-  const scrollViewRef = useRef(null);
-  const fadeAnim = useRef(new Animated.Value(1)).current;
+
+  const slideOffset = useRef(new Animated.Value(0)).current;
+  const isAnimatingRef = useRef(false);
+  const currentIndexRef = useRef(0);
+  const autoTimerRef = useRef(null);
+  const queuedSlideRef = useRef(null);
 
   useEffect(() => {
-    if (!items || items.length === 0) {
-      return undefined;
-    }
+    currentIndexRef.current = currentIndex;
+  }, [currentIndex]);
 
-    const interval = setInterval(() => {
-      const nextIndex = (currentIndex + 1) % items.length;
-      setCurrentIndex(nextIndex);
-
-      Animated.sequence([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-      ]).start();
-
-      scrollViewRef.current?.scrollTo({
-        x: nextIndex * CAROUSEL_WIDTH,
-        animated: true,
-      });
-    }, AUTO_SLIDE_INTERVAL);
-
-    return () => clearInterval(interval);
-  }, [currentIndex, items]);
-
-  const handleScroll = (event) => {
+  useEffect(() => {
     if (!items || items.length === 0) return;
-    const scrollPosition = event.nativeEvent.contentOffset.x;
-    const index = Math.round(scrollPosition / CAROUSEL_WIDTH);
-    if (index !== currentIndex) {
-      setCurrentIndex(index);
+    items.forEach((item) => {
+      const url = item?.imageUrl;
+      if (url && typeof url === 'string') {
+        Image.prefetch(url).catch(() => {});
+      }
+    });
+  }, [items]);
+
+  const triggerSlide = (targetIndex) => {
+    if (!items || items.length <= 1) return;
+    if (targetIndex === currentIndexRef.current) return;
+
+    if (isAnimatingRef.current) {
+      queuedSlideRef.current = targetIndex;
+      return;
     }
+
+    isAnimatingRef.current = true;
+    const targetX = -targetIndex * CAROUSEL_WIDTH;
+
+    Animated.timing(slideOffset, {
+      toValue: targetX,
+      duration: TRANSITION_DURATION,
+      easing: Easing.bezier(0.25, 0.46, 0.45, 0.94),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setCurrentIndex(targetIndex);
+        isAnimatingRef.current = false;
+
+        const queued = queuedSlideRef.current;
+        if (queued !== null) {
+          queuedSlideRef.current = null;
+          triggerSlide(queued);
+        }
+      }
+    });
   };
 
-  if (!items || items.length === 0) {
-    return null;
-  }
+  const goTo = (dir) => {
+    if (isAnimatingRef.current || !items || items.length <= 1) return;
+    const next = ((currentIndexRef.current + dir) + items.length) % items.length;
+    triggerSlide(next);
+  };
 
+  // ── Auto-advance ─────────────────────────────────────────────────────────────
+  const resetTimer = () => {
+    if (autoTimerRef.current) clearInterval(autoTimerRef.current);
+    if (!items || items.length <= 1) return;
+    autoTimerRef.current = setInterval(() => goTo(1), AUTO_SLIDE_INTERVAL);
+  };
+
+  useEffect(() => {
+    resetTimer();
+    return () => { if (autoTimerRef.current) clearInterval(autoTimerRef.current); };
+  }, [items]);
+
+  // ── Swipe gesture ────────────────────────────────────────────────────────────
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) =>
+        Math.abs(g.dx) > 8 && Math.abs(g.dy) < 50,
+      onPanResponderRelease: (_, g) => {
+        if (isAnimatingRef.current) return;
+        if (g.dx < -SWIPE_THRESHOLD) {
+          goTo(1);
+        } else if (g.dx > SWIPE_THRESHOLD) {
+          goTo(-1);
+        }
+      },
+    })
+  ).current;
+
+  if (!items || items.length === 0) return null;
+
+  // ── Slide content ────────────────────────────────────────────────────────────
+  const renderSlide = (item) => (
+    <ImageBackground
+      source={item.imageUrl ? { uri: item.imageUrl } : null}
+      style={[styles.slideGradient, { backgroundColor: '#0c0f1a' }]}
+      imageStyle={styles.slideImage}>
+      {/* Dark vignette for text readability */}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.18)', 'rgba(0,0,0,0.72)']}
+        style={StyleSheet.absoluteFill}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      />
+
+      {/* Badge top-left */}
+      {item.badge && (
+        <View style={styles.badge}>
+          <View style={styles.badgeDot} />
+          <Text style={styles.badgeText}>{item.badge}</Text>
+        </View>
+      )}
+
+      {/* Centred content */}
+      <View style={styles.slideContent}>
+        {item.title ? (
+          <Text style={styles.slideTitle} numberOfLines={2}>{item.title}</Text>
+        ) : null}
+        {item.subtitle ? (
+          <Text style={styles.slideSubtitle} numberOfLines={2}>{item.subtitle}</Text>
+        ) : null}
+        {item.info && item.info.length > 0 && (
+          <View style={styles.slideInfo}>
+            {item.info.map((inf, i) => (
+              <View key={i} style={styles.infoItem}>
+                {inf.icon ? <AntDesign name={inf.icon} size={13} color="#fbbf24" /> : null}
+                <Text style={styles.infoText}>{inf.text}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+    </ImageBackground>
+  );
+
+  // ── Render: single horizontal strip, pure translateX sliding ──────────────────
   return (
     <View style={styles.carouselContainer}>
-      <ScrollView
-        ref={scrollViewRef}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
-        style={styles.scrollView}>
-        {items.map((item, index) => (
-          <Animated.View
-            key={index}
-            style={[
-              styles.slide,
-              {
-                opacity: fadeAnim,
-              },
-            ]}>
-            <ImageBackground
-              source={item.imageUrl ? { uri: item.imageUrl } : null}
-              style={styles.slideGradient}
-              imageStyle={styles.slideImage}>
-              <View style={styles.slideContentWrapper}>
-                {item.badge && (
-                  <View style={styles.badge}>
-                    <View style={styles.badgeDot} />
-                    <Text style={styles.badgeText}>{item.badge}</Text>
-                  </View>
-                )}
-                <View style={styles.slideContent}>
-                  {item.title ? (
-                    <Text style={styles.slideTitle}>{item.title}</Text>
-                  ) : null}
-                  {item.subtitle && (
-                    <Text style={styles.slideSubtitle}>{item.subtitle}</Text>
-                  )}
-                  {item.info && (
-                    <View style={styles.slideInfo}>
-                      {item.info.map((infoItem, i) => (
-                        <View key={i} style={styles.infoItem}>
-                          {infoItem.icon && (
-                            <AntDesign name={infoItem.icon} size={14} color="#fbbf24" />
-                          )}
-                          <Text style={styles.infoText}>{infoItem.text}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    style={styles.watchButton}
-                    onPress={() => {
-                      if (isPremium) {
-                        if (item.videoUrl && onPlaySlide) {
-                          onPlaySlide(item);
-                        }
-                      } else if (channelsPremiumOnly) {
-                        if (onGoPremium) onGoPremium();
-                      } else {
-                        setLockedModalVisible(true);
-                      }
-                    }}>
-                    <Icon name="play" size={20} color="#fff" />
-                    <Text style={styles.watchButtonText}>Play Now</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </ImageBackground>
-          </Animated.View>
-        ))}
-      </ScrollView>
-      {/* Locked content modal: Go Premium or Earn points (1 ad = 20 pts) */}
-      <Modal
-        visible={lockedModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setLockedModalVisible(false)}>
-        <View style={styles.lockedModalOverlay}>
-          <View style={styles.lockedModalContent}>
-            <Icon name="lock" size={40} color="#fbbf24" style={styles.lockedModalIcon} />
-            <Text style={styles.lockedModalTitle}>Hauna Kifurushi</Text>
-            <Text style={styles.lockedModalMessage}>
-              lipia kifurushi cha premium au angalia matangazo kupata points (tangazo 1 = {POINTS_PER_AD} pts) uangalie bure. Points zinaongezwa kwenye profile yako.
-            </Text>
-            <TouchableOpacity
-              style={styles.lockedModalPrimaryBtn}
-              onPress={() => {
-                setLockedModalVisible(false);
-                if (onGoPremium) onGoPremium();
-              }}>
-              <Text style={styles.lockedModalPrimaryBtnText}>Nenda Premium</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.lockedModalSecondaryBtn}
-              onPress={() => {
-                setLockedModalVisible(false);
-                if (onWatchAd) onWatchAd();
-              }}>
-              <Text style={styles.lockedModalSecondaryBtnText}>Pata Points (1 tangazo = {POINTS_PER_AD} pts)</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.lockedModalCancelBtn} onPress={() => setLockedModalVisible(false)}>
-              <Text style={styles.lockedModalCancelBtnText}>Funga</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <View style={styles.slideStack} {...panResponder.panHandlers}>
+        <Animated.View
+          style={[
+            styles.slideStrip,
+            { width: CAROUSEL_WIDTH * items.length, transform: [{ translateX: slideOffset }] },
+          ]}>
+          {items.map((item, i) => (
+            <View key={i} style={styles.slide}>
+              {renderSlide(item)}
+            </View>
+          ))}
+        </Animated.View>
 
-      {/* Pagination Dots */}
-      <View style={styles.pagination}>
-        {items.map((_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.dot,
-              index === currentIndex && styles.dotActive,
-            ]}
-          />
-        ))}
+        {/* Left / Right tap zones */}
+        {items.length > 1 && (
+          <>
+            <TouchableOpacity
+              style={styles.navZoneLeft}
+              activeOpacity={0.4}
+              onPress={() => { goTo(-1); resetTimer(); }}>
+              <View style={styles.navArrow}>
+                <Icon name="chevron-left" size={20} color="rgba(255,255,255,0.85)" />
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.navZoneRight}
+              activeOpacity={0.4}
+              onPress={() => { goTo(1); resetTimer(); }}>
+              <View style={styles.navArrow}>
+                <Icon name="chevron-right" size={20} color="rgba(255,255,255,0.85)" />
+              </View>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
+
+      {/* Pagination dots */}
+      {items.length > 1 && (
+        <View style={styles.pagination}>
+          {items.map((_, i) => {
+            const isActive = i === currentIndex;
+            return (
+              <TouchableOpacity
+                key={i}
+                onPress={() => { triggerSlide(i); resetTimer(); }}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}>
+                <View style={[styles.dot, isActive && styles.dotActive]} />
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   carouselContainer: {
-    marginBottom: 16,
+    marginBottom: 8,
     paddingHorizontal: 16,
   },
-  scrollView: {
-    borderRadius: 16,
+
+  // ── Slide stack ──
+  slideStack: {
+    width: CAROUSEL_WIDTH,
+    height: CAROUSEL_HEIGHT,
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: '#0c0f1a',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    elevation: 14,
+  },
+  slideStrip: {
+    flexDirection: 'row',
+    height: CAROUSEL_HEIGHT,
   },
   slide: {
     width: CAROUSEL_WIDTH,
-    height: 240,
-    borderRadius: 16,
-    overflow: 'hidden',
-    marginHorizontal: 0,
+    height: CAROUSEL_HEIGHT,
+    flexShrink: 0,
   },
   slideGradient: {
     flex: 1,
-    borderRadius: 16,
+    justifyContent: 'flex-end',
   },
   slideImage: {
-    borderRadius: 16,
+    resizeMode: 'cover',
   },
-  slideContentWrapper: {
-    flex: 1,
-    // Subtle dark overlay to improve text legibility on bright images
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
-  badge: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#dc2626',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 20,
-    zIndex: 1,
-  },
-  badgeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#fff',
-  },
-  badgeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: 'bold',
-    textShadowColor: 'rgba(0,0,0,0.9)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
+
+  // ── Slide content ──
   slideContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 18,
+    paddingBottom: 18,
+    paddingTop: 12,
   },
   slideTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontSize: 22,
+    fontWeight: '800',
     color: '#fff',
-    marginBottom: 8,
-    textAlign: 'center',
-    // Stronger shadow so title pops on any background
-    textShadowColor: 'rgba(0,0,0,1)',
+    marginBottom: 4,
+    letterSpacing: 0.3,
+    textShadowColor: 'rgba(0,0,0,0.9)',
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
   },
   slideSubtitle: {
-    fontSize: 16,
-    color: '#d1d5db',
-    marginBottom: 16,
-    textAlign: 'center',
-    textShadowColor: 'rgba(0,0,0,1)',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 5,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.82)',
+    marginBottom: 10,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   slideInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 20,
+    gap: 10,
+    marginBottom: 12,
   },
   infoItem: {
     flexDirection: 'row',
@@ -283,114 +289,64 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   infoText: {
-    fontSize: 14,
-    color: '#fff',
-    textShadowColor: 'rgba(0,0,0,0.9)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    fontSize: 12,
+    color: '#fbbf24',
+    fontWeight: '600',
   },
-  watchButton: {
+
+  // ── Badge ──
+  badge: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#22c55e',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+    gap: 5,
+    backgroundColor: '#dc2626',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 20,
+    zIndex: 2,
   },
-  watchButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 14,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+  badgeDot: {
+    width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#fff',
   },
+  badgeText: {
+    color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.4,
+  },
+
+  // ── Nav arrow zones ──
+  navZoneLeft: {
+    position: 'absolute', left: 0, top: 0, bottom: 0, width: 48,
+    justifyContent: 'center', alignItems: 'flex-start', paddingLeft: 8,
+  },
+  navZoneRight: {
+    position: 'absolute', right: 0, top: 0, bottom: 0, width: 48,
+    justifyContent: 'center', alignItems: 'flex-end', paddingRight: 8,
+  },
+  navArrow: {
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+
+  // ── Pagination dots ──
   pagination: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
+    gap: 6,
+    marginTop: 10,
   },
   dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    width: 7, height: 7, borderRadius: 3.5,
+    backgroundColor: 'rgba(255,255,255,0.28)',
   },
   dotActive: {
-    width: 24,
+    width: 22, height: 7, borderRadius: 3.5,
     backgroundColor: '#22c55e',
   },
-  lockedModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  lockedModalContent: {
-    backgroundColor: '#111827',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 360,
-    borderWidth: 1,
-    borderColor: '#374151',
-    alignItems: 'center',
-  },
-  lockedModalIcon: {
-    marginBottom: 12,
-  },
-  lockedModalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  lockedModalMessage: {
-    fontSize: 14,
-    color: '#d1d5db',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  lockedModalPrimaryBtn: {
-    width: '100%',
-    backgroundColor: '#eab308',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  lockedModalPrimaryBtnText: {
-    color: '#000',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
-  lockedModalSecondaryBtn: {
-    width: '100%',
-    backgroundColor: '#22c55e',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  lockedModalSecondaryBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 16,
-  },
-  lockedModalCancelBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  lockedModalCancelBtnText: {
-    color: '#9ca3af',
-    fontSize: 14,
-  },
+
 });
 
 export default ImageCarousel;

@@ -199,6 +199,22 @@ This shows:
 
 ## Troubleshooting
 
+### Many Users Don't Receive Notifications (Only Frequent Openers Get Them)
+
+**Problem**: Only users who open the app often receive notifications. Users who haven't opened in a week or more don't get them.
+
+**Root causes**:
+1. **FCM token expiration** – On Android, tokens can become invalid after ~270 days of inactivity. When the app isn't opened, the token is never refreshed.
+2. **User not in database** – Token registration can fail with 404 if the user wasn't created on the backend before we tried to register the token.
+3. **Token not refreshed on app open** – If we don't refresh the token every time the user opens the app, we may be sending to an old token.
+
+**Fixes applied** (in codebase):
+- User is now created on the backend **before** any token registration (avoids 404).
+- Token is refreshed on **every app open** and when the app comes to **foreground**.
+- This ensures users who open the app occasionally get a fresh token and will receive future notifications.
+
+**Important**: A user **must open the app at least once** (and grant notification permission) to receive push notifications. There is no way to send push to a device that has never opened the app. Encourage users to open the app periodically so their token stays fresh.
+
 ### Low Delivery Rate
 
 **Problem**: sent_count is 1000 but delivered_count is only 200

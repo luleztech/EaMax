@@ -1,11 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Animated,
-  Dimensions,
   Modal,
   AppState,
   InteractionManager,
@@ -15,8 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import LinearGradient from 'react-native-linear-gradient';
-import FootballApp from './FootballApp';
-import MoviesApp from './MoviesApp';
+import CombinedApp from './CombinedApp';
 import AdModal from './AdModal';
 import NotificationPermissionModal from './NotificationPermissionModal';
 import { userAPI, paymentsAPI, settingsAPI } from '../config/api';
@@ -30,21 +27,15 @@ import {
   refreshAndRegisterFCMToken,
 } from '../services/notifications';
 
-const { width } = Dimensions.get('window');
-
 const StreamingApp = () => {
-  const [currentApp, setCurrentApp] = useState('football');
-  const [isPremium, setIsPremium] = useState(false); // from API – real subscription
-  const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false); // from admin: ON = pay only, OFF = points/ads or free
+  const [isPremium, setIsPremium] = useState(false);
+  const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
   const [userPoints, setUserPoints] = useState(0);
   const [adModalVisible, setAdModalVisible] = useState(false);
   const [isPaymentsActive, setIsPaymentsActive] = useState(false);
   const [congratsModalVisible, setCongratsModalVisible] = useState(false);
   const [hasShownCongrats, setHasShownCongrats] = useState(false);
   const [notifPermissionVisible, setNotifPermissionVisible] = useState(false);
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-  const indicatorAnim = useRef(new Animated.Value(0)).current;
 
   const CONGRATS_STORAGE_KEY = 'premiumCongratsShown';
 
@@ -75,7 +66,9 @@ const StreamingApp = () => {
     return userPoints;
   };
 
-  // Ensure user ID exists, load settings, and refresh FCM token so all online users receive notifications
+  // Ensure user ID exists, load settings, and refresh FCM token on every app open
+  // Token refresh is critical: FCM tokens can expire after ~270 days of inactivity (Android).
+  // Users who don't open the app often need a fresh token when they do open it.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -88,7 +81,8 @@ const StreamingApp = () => {
         if (cancelled) return;
         if (userId) {
           await refreshUserPoints();
-          // Refresh FCM token on every app open so backend has latest token (even if user hasn't opened app for a long time)
+          // Refresh FCM token on every app open so backend has latest token
+          // (users who haven't opened in weeks get their token updated when they do)
           refreshAndRegisterFCMToken(userId).catch(() => {});
           // Pending payment check
           const pendingOrderId = await AsyncStorage.getItem('pendingPaymentOrderId');
@@ -203,46 +197,6 @@ const StreamingApp = () => {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    Animated.spring(indicatorAnim, {
-      toValue: currentApp === 'movies' ? 1 : 0,
-      useNativeDriver: true,
-      tension: 100,
-      friction: 8,
-    }).start();
-  }, [currentApp]);
-
-  const switchApp = (app) => {
-    if (app === currentApp) return;
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: app === 'movies' ? -50 : 50,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setCurrentApp(app);
-      slideAnim.setValue(app === 'movies' ? 50 : -50);
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
-  };
-
   const handleWatchAd = () => {
     if (isPremium) return;
     setAdModalVisible(true);
@@ -258,92 +212,15 @@ const StreamingApp = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {!isPaymentsActive && (
-        <View style={styles.appSwitcher}>
-          <View style={styles.switchContainer}>
-            <Animated.View
-              style={[
-                styles.switchIndicator,
-                {
-                  transform: [
-                    {
-                      translateX: indicatorAnim.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [0, (width - 64) / 2],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            />
-            <TouchableOpacity
-              style={[styles.switchButton, styles.switchButtonLeft]}
-              onPress={() => switchApp('football')}
-              activeOpacity={0.7}>
-              <Icon
-                name="football"
-                size={22}
-                color={currentApp === 'football' ? '#fff' : '#9ca3af'}
-              />
-              <Text
-                style={[
-                  styles.switchButtonText,
-                  currentApp === 'football' && styles.switchButtonTextActive,
-                ]}>
-                Kabumbu
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.switchButton, styles.switchButtonRight]}
-              onPress={() => switchApp('movies')}
-              activeOpacity={0.7}>
-              <Icon
-                name="filmstrip"
-                size={22}
-                color={currentApp === 'movies' ? '#fff' : '#9ca3af'}
-              />
-              <Text
-                style={[
-                  styles.switchButtonText,
-                  currentApp === 'movies' && styles.switchButtonTextActive,
-                ]}>
-                Tamthilia zote
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
       <View style={styles.appContainer}>
-        <Animated.View
-          style={[
-            styles.appWrapper,
-            {
-              opacity: fadeAnim,
-              transform: [{ translateX: slideAnim }],
-            },
-          ]}>
-          {currentApp === 'football' ? (
-            <FootballApp
-              isPremium={isPremium}
-              channelsPremiumOnly={channelsPremiumOnly}
-              userPoints={userPoints}
-              onWatchAd={handleWatchAd}
-              onPaymentsActiveChange={setIsPaymentsActive}
-              onPointsRefresh={refreshUserPoints}
-              onSwitchToMovies={() => switchApp('movies')}
-            />
-          ) : (
-            <MoviesApp
-              isPremium={isPremium}
-              channelsPremiumOnly={channelsPremiumOnly}
-              userPoints={userPoints}
-              onWatchAd={handleWatchAd}
-              onPaymentsActiveChange={setIsPaymentsActive}
-              onPointsRefresh={refreshUserPoints}
-            />
-          )}
-        </Animated.View>
+        <CombinedApp
+          isPremium={isPremium}
+          channelsPremiumOnly={channelsPremiumOnly}
+          userPoints={userPoints}
+          onWatchAd={handleWatchAd}
+          onPaymentsActiveChange={setIsPaymentsActive}
+          onPointsRefresh={refreshUserPoints}
+        />
       </View>
 
       <AdModal
@@ -397,62 +274,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#030712',
   },
-  appSwitcher: {
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    backgroundColor: '#111827',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-    justifyContent: 'center',
-    alignItems: 'center',
-    minHeight: 60,
-  },
-  switchContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
-    padding: 4,
-    position: 'relative',
-    overflow: 'hidden',
-    width: '100%',
-    maxWidth: width - 32,
-    alignSelf: 'center',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 52,
-  },
-  switchIndicator: {
-    position: 'absolute',
-    top: 4,
-    left: 4,
-    width: (width - 64) / 2 - 4,
-    height: 44,
-    backgroundColor: '#22c55e',
-    borderRadius: 12,
-    zIndex: 0,
-  },
-  switchButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    zIndex: 1,
-    minHeight: 44,
-  },
-  switchButtonLeft: { marginRight: 2 },
-  switchButtonRight: { marginLeft: 2 },
-  switchButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#9ca3af',
-    letterSpacing: 0.5,
-  },
-  switchButtonTextActive: { color: '#fff' },
-  appWrapper: { flex: 1 },
   appContainer: { flex: 1 },
   congratsOverlay: {
     flex: 1,

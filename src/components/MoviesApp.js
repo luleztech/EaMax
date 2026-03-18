@@ -67,6 +67,15 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
     }
   }, [activeTab, onPaymentsActiveChange, onPointsRefresh]);
 
+  // Log URL and ClearKey when user selects a channel (for debugging Segment/stream load failed). Check Metro terminal.
+  useEffect(() => {
+    if (videoPlayerVisible && playingChannel) {
+      const url = playingChannel.streamUrl || playingChannel.stream_url || '(empty)';
+      const clearkey = playingChannel.drmClearKey ?? playingChannel.drm_clear_key ?? null;
+      console.warn('[MoviesApp] Channel selected – URL & ClearKey:', JSON.stringify({ channelId: playingChannel.id, channelName: playingChannel.name, streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey }, null, 2));
+    }
+  }, [videoPlayerVisible, playingChannel]);
+
   // Load carousel slides from backend (movies category)
   const loadSlides = async () => {
     try {

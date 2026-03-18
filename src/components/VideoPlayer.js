@@ -1,7 +1,7 @@
 /**
  * VideoPlayer - React Native
  * COMPLETE REWRITE v2.0 - Matches Flutter/Kotlin ExoPlayerEngine functionality
- * 
+ *
  * Features:
  * - Full DRM support (Widevine L1/L3, PlayReady, ClearKey)
  * - Proper MIME type handling for all formats
@@ -11,6 +11,9 @@
  * - Session refresh and token management
  * - Trial timer support
  * - Quality selection with ABR
+ *
+ * FIXED: ClearKey DRM now properly decrypts .mpd streams (base64url no padding, JWK format).
+ * .mpd (DASH) streams use WebView with Shaka Player by default for better compatibility.
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -33,6 +36,8 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { lockToPortrait, unlockAllOrientations, setPlayerVisible } from '../utils/orientation';
 import { userAPI } from '../config/api';
 import StreamEngine from '../engine/StreamEngine';
+import { getClearKeysForBrowser } from '../utils/shakaDash';
+import MPDPlayer from './MPDPlayer';
 
 // Optional native module for Widevine/PlayReady DRM config (not needed for ClearKey)
 let ExoPlayerConfig = null;
@@ -75,11 +80,11 @@ const STREAM_PATTERNS = {
   PROGRESSIVE: ['.mp4', '.m4v', '.m4a', '.webm', '.mkv', '.avi', '.mov', '.flv', '.ts'],
 };
 
-// Quality options (matches Kotlin StreamQuality enum)
+// Quality options for Okoa Bando (default 360p to save data)
 const QUALITY_OPTIONS = [
   { label: 'Auto (ABR)', value: 0, height: 0 },
   { label: '240p', value: 240, height: 240 },
-  { label: '360p (inapendekezwa)', value: 360, height: 360 },
+  { label: '360p (imependekezwa)', value: 360, height: 360 },
   { label: '480p', value: 480, height: 480 },
   { label: '720p', value: 720, height: 720 },
   { label: '1080p', value: 1080, height: 1080 },
@@ -182,12 +187,16 @@ function buildHeaders(streamSession) {
   return headerObj;
 }
 
-/** Hex → base64url (for ExoPlayer/native ClearKey JWK). */
+/**
+ * FIXED: Hex → base64url (for ExoPlayer/native ClearKey JWK).
+ * ExoPlayer's ClearKey implementation requires base64url (RFC 4648) WITHOUT padding.
+ * Normalizes input by stripping non-hex characters so keys with spaces/dashes work.
+ */
 function hexToBase64Url(hexString) {
   try {
     if (!hexString || typeof hexString !== 'string') return hexString;
-    const normalized = hexString.trim();
-    if (!/^[0-9a-fA-F]+$/.test(normalized) || normalized.length % 2 !== 0) return hexString;
+    const normalized = hexString.trim().replace(/[^0-9a-fA-F]/g, '');
+    if (!normalized.length || normalized.length % 2 !== 0) return hexString;
     const bytes = [];
     for (let i = 0; i < normalized.length; i += 2) {
       bytes.push(parseInt(normalized.substr(i, 2), 16));
@@ -195,7 +204,8 @@ function hexToBase64Url(hexString) {
     const bin = String.fromCharCode(...bytes);
     const b64 = typeof btoa === 'function' ? btoa(bin) : Buffer.from(bin, 'binary').toString('base64');
     return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-  } catch {
+  } catch (e) {
+    if (__DEV__) console.error('[hexToBase64Url] conversion error:', e);
     return hexString;
   }
 }
@@ -204,8 +214,8 @@ function hexToBase64Url(hexString) {
 function hexToBase64(hexString) {
   try {
     if (!hexString || typeof hexString !== 'string') return hexString;
-    const normalized = hexString.trim();
-    if (!/^[0-9a-fA-F]+$/.test(normalized) || normalized.length % 2 !== 0) return hexString;
+    const normalized = hexString.trim().replace(/[^0-9a-fA-F]/g, '');
+    if (!normalized.length || normalized.length % 2 !== 0) return hexString;
     const bytes = [];
     for (let i = 0; i < normalized.length; i += 2) {
       bytes.push(parseInt(normalized.substr(i, 2), 16));
@@ -217,31 +227,9 @@ function hexToBase64(hexString) {
   }
 }
 
-/** ClearKey string (kid:key hex) → map for Shaka: { "KID_BASE64": "KEY_BASE64" } (standard base64, with padding). */
-function getClearKeysForBrowser(raw) {
-  if (!raw || typeof raw !== 'string') return null;
-  const str = raw.trim();
-  if (!str) return null;
-  let kid = '';
-  let key = '';
-  if (str.includes(':')) {
-    const parts = str.split(':').map(s => s.trim());
-    kid = parts[0];
-    key = parts[1] || parts[0];
-  } else if (str.includes(',')) {
-    const parts = str.split(',').map(s => s.trim());
-    kid = parts[0];
-    key = parts[1] || parts[0];
-  } else {
-    kid = str;
-    key = str;
-  }
-  if (!kid || !key) return null;
-  return { [hexToBase64(kid)]: hexToBase64(key) };
-}
-
 /**
- * Parse ClearKey string into key map (matches Kotlin buildClearKeyJson)
+ * FIXED: Parse ClearKey string into key map (matches Kotlin buildClearKeyJson).
+ * Properly handles hex conversion to base64url without padding.
  */
 function parseClearKeys(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -266,127 +254,97 @@ function parseClearKeys(raw) {
 
   const kidB64 = hexToBase64Url(kid);
   const keyB64 = hexToBase64Url(key);
+
+  if (__DEV__) {
+    console.log('[parseClearKeys] Converted keys:', {
+      kidHex: kid.substring(0, 16) + (kid.length > 16 ? '...' : ''),
+      keyHex: key.substring(0, 16) + (key.length > 16 ? '...' : ''),
+      kidB64: kidB64.substring(0, 16) + (kidB64.length > 16 ? '...' : ''),
+      keyB64: keyB64.substring(0, 16) + (keyB64.length > 16 ? '...' : ''),
+    });
+  }
+
   return { [kidB64]: keyB64 };
 }
 
 /**
- * Build ClearKey JWK JSON (matches Kotlin buildClearKeyJson)
+ * FIXED: Normalize ClearKey input from either Format A (drmClearKey string "kid:key") or
+ * Format B (drmData.keys array of { kty, kid, k }). Returns JWK key objects array or null.
+ * Ensures proper base64url encoding without padding for ExoPlayer.
  */
-function buildClearKeyJwkJson(clearKeysMap) {
-  if (!clearKeysMap || typeof clearKeysMap !== 'object') return null;
-  const keys = Object.entries(clearKeysMap).map(([kid, k]) => ({ 
-    kty: 'oct', 
-    kid, 
-    k 
-  }));
-  if (keys.length === 0) return null;
-  return JSON.stringify({ keys, type: 'temporary' });
+function normalizeClearKeyKeys(drmClearKey, drmData) {
+  // Format B: backend returns drmData.keys (Kotlin-style)
+  if (drmData?.keys && Array.isArray(drmData.keys) && drmData.keys.length > 0) {
+    return drmData.keys.map((item) => {
+      const kty = item.kty || 'oct';
+      let kid = item.kid != null ? String(item.kid) : '';
+      let k = item.k != null ? String(item.k) : '';
+
+      // If they look like hex (32+ chars, only hex digits), convert to base64url
+      if (kid.length >= 32 && /^[0-9a-fA-F]+$/.test(kid)) {
+        kid = hexToBase64Url(kid);
+      }
+      if (k.length >= 32 && /^[0-9a-fA-F]+$/.test(k)) {
+        k = hexToBase64Url(k);
+      }
+
+      // CRITICAL: Remove any padding that might be present
+      kid = kid.replace(/=+$/, '');
+      k = k.replace(/=+$/, '');
+
+      return { kty, kid, k };
+    }).filter((item) => item.kid && item.k);
+  }
+  // Format A: drmClearKey string "kid:key" (hex)
+  if (drmClearKey && typeof drmClearKey === 'string') {
+    const map = parseClearKeys(drmClearKey);
+    if (!map) return null;
+    return Object.entries(map).map(([kid, k]) => ({ kty: 'oct', kid, k }));
+  }
+  return null;
 }
 
 /**
- * Build DASH HTML for WebView fallback using Shaka Player (DASH + DRM: ClearKey, Widevine, license server, headers).
- * clearKeys: { "KID_BASE64": "KEY_BASE64" } (standard base64 with padding).
- * licenseServer + requestHeaders: for Widevine/PlayReady.
+ * FIXED: Build ClearKey JWK JSON (matches Kotlin buildClearKeyJson).
+ * ExoPlayer requires exact format: {"keys":[{"kty":"oct","kid":"...","k":"..."}],"type":"temporary"}
+ * Ensures no padding in kid/k values.
  */
-function buildShakaDashHtml(url, headers = {}, drmConfig = {}) {
-  if (!url) return '<html><body style="background:#000;color:#fff;">Missing MPD URL</body></html>';
-  const encodedUrl = encodeURIComponent(url);
-  const headerStr = JSON.stringify(headers || {});
-  const clearKeysStr = JSON.stringify(drmConfig.clearKeys || {});
-  const licenseUrl = drmConfig.licenseUrl || '';
-  const licenseHeadersStr = JSON.stringify(drmConfig.licenseHeaders || {});
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>DASH Player</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.6/shaka-player.compiled.js"></script>
-  <style>html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}#videoPlayer{width:100%;height:100%;background:#000}</style>
-</head>
-<body>
-  <video id="videoPlayer" controls autoplay playsinline></video>
-  <script>
-    (function() {
-      function post(type, data) {
-        try {
-          if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage)
-            window.ReactNativeWebView.postMessage(JSON.stringify({ type: type, ...(data || {}) }));
-        } catch (e) {}
-      }
-      function mapError(code, msg) {
-        if (code === 2 || (msg && msg.toLowerCase().includes('network'))) return 'Internet connection failed';
-        if (code === 3 || (msg && msg.toLowerCase().includes('manifest'))) return 'Stream manifest corrupted';
-        if (code === 4 || (msg && msg.toLowerCase().includes('drm') || msg && msg.toLowerCase().includes('license'))) return 'Stream authorization failed';
-        if (code === 5 || (msg && msg.toLowerCase().includes('decode'))) return 'Device cannot decode video';
-        return msg || 'Playback failed in browser';
-      }
-      var mpdUrl = decodeURIComponent('${encodedUrl}');
-      var requestHeaders = ${headerStr};
-      var clearKeys = ${clearKeysStr};
-      var licenseUrl = ${JSON.stringify(licenseUrl)};
-      var licenseHeaders = ${licenseHeadersStr};
-      var video = document.getElementById('videoPlayer');
-      if (!video || !window.shaka) {
-        post('error', { message: 'Shaka Player not loaded' });
-        return;
-      }
-      shaka.polyfill.installAll();
-      var player = new shaka.Player(video);
-      var networkingEngine = player.getNetworkingEngine();
-      networkingEngine.registerRequestFilter(function(type, request) {
-        request.allowCrossSiteCredentials = true;
-        if (type === shaka.net.NetworkingEngine.RequestType.MANIFEST) {
-          request.headers['Accept'] = request.headers['Accept'] || 'application/dash+xml, application/xml, text/xml, */*';
-          request.headers['User-Agent'] = request.headers['User-Agent'] || 'ExoPlayerLib/2.18 (Linux; Android 11)';
-        }
-        var h = requestHeaders || {};
-        Object.keys(h).forEach(function(k) {
-          if (h[k] != null) request.headers[k] = String(h[k]);
-        });
-        if (licenseUrl && licenseHeaders && type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-          Object.keys(licenseHeaders).forEach(function(k) {
-            if (licenseHeaders[k] != null) request.headers[k] = String(licenseHeaders[k]);
-          });
-        }
-      });
-      if (clearKeys && Object.keys(clearKeys).length > 0) {
-        console.log('[Shaka] Using ClearKey DRM with keys:', clearKeys);
-      }
-      var config = {
-        streaming: {
-          bufferingGoal: 50,
-          rebufferingGoal: 5,
-          bufferBehind: 50,
-        },
-        drm: {}
-      };
-      if (clearKeys && Object.keys(clearKeys).length > 0) {
-        config.drm.clearKeys = clearKeys;
-      }
-      if (licenseUrl) {
-        config.drm.servers = { 'com.widevine.alpha': licenseUrl, 'com.microsoft.playready': licenseUrl };
-      }
-      player.configure(config);
-      player.load(mpdUrl).then(function() {
-        post('ready');
-      }).catch(function(e) {
-        var msg = mapError(e.code, e.message || e.data);
-        // Shaka 1002 = manifest parse error. Ask React Native side to fallback to native player instead of staying broken.
-        if (e.code === 1002) {
-          post('fallback', { message: msg, code: e.code });
-        } else {
-          post('error', { message: msg, code: e.code });
-        }
-      });
-      video.addEventListener('playing', function() { post('playing'); });
-      video.addEventListener('ended', function() { post('ended'); });
-      video.addEventListener('error', function() { post('error', { message: 'Video element error' }); });
-    })();
-  </script>
-</body>
-</html>`;
+function buildClearKeyJwkJson(clearKeysMapOrKeysArray) {
+  let keys;
+  if (Array.isArray(clearKeysMapOrKeysArray)) {
+    keys = clearKeysMapOrKeysArray.filter((k) => k && k.kid != null && k.k != null);
+  } else if (clearKeysMapOrKeysArray && typeof clearKeysMapOrKeysArray === 'object') {
+    keys = Object.entries(clearKeysMapOrKeysArray).map(([kid, k]) => ({ kty: 'oct', kid, k }));
+  } else {
+    return null;
+  }
+  if (!keys || keys.length === 0) return null;
+
+  // Ensure no padding in the final output
+  const cleanKeys = keys.map((k) => ({
+    kty: k.kty || 'oct',
+    kid: String(k.kid).replace(/=+$/, ''),
+    k: String(k.k).replace(/=+$/, ''),
+  }));
+
+  const jwk = { keys: cleanKeys, type: 'temporary' };
+
+  if (__DEV__) {
+    console.log('[buildClearKeyJwkJson] Generated JWK:', JSON.stringify(jwk, null, 2));
+  }
+
+  return JSON.stringify(jwk);
+}
+
+/** Base64 encode string for data URI (React Native safe). */
+function base64EncodeUtf8(str) {
+  if (typeof str !== 'string') return '';
+  try {
+    if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(str)));
+    return Buffer.from(str, 'utf8').toString('base64');
+  } catch {
+    return '';
+  }
 }
 
 // ─── Main Component ─────────────────────────────────────────────────────────
@@ -403,6 +361,7 @@ export default function VideoPlayer({
   userId,
   drmProtected,
   drmClearKey,
+  drmData: drmDataProp,
   drmLicenseUrl,
   drmType: drmTypeProp,
   fetchChannelClearKey,
@@ -461,6 +420,7 @@ export default function VideoPlayer({
   // DRM handling
   const drmType = (drmTypeProp ?? (drmProtected ? 'CLEARKEY' : 'NONE')).toUpperCase();
   const effectiveDrmClearKey = drmClearKey || fetchedDrmClearKey;
+  const effectiveDrmData = drmDataProp || null;
   const isClearKeyChannel = drmType === 'CLEARKEY';
   const isWidevineChannel = drmType === 'WIDEVINE' || drmType === 'WIDEVINE_L1' || drmType === 'WIDEVINE_L3';
   const isPlayReadyChannel = drmType === 'PLAYREADY';
@@ -470,8 +430,8 @@ export default function VideoPlayer({
   const isWebPage = url.includes('.php') || url.includes('.html') || 
     (url.startsWith('http') && !isMpd && !isHls && !isProgressive);
   
-  // Use WebView for true web pages (e.g. .php, .html). DRM is still allowed here because Shaka supports DRM.
-  const startWithWebView = !!(url && WebView && isWebPage);
+  // Use WebView for .mpd (DASH) and web pages (.php, .html). Shaka in WebView handles DASH + ClearKey.
+  const startWithWebView = !!(url && WebView && (isWebPage || isMpd));
 
   // When ClearKey channel has no key yet and we can fetch it, wait so we don't start playback without DRM
   const drmWaitingForKey = !!(
@@ -511,18 +471,41 @@ export default function VideoPlayer({
 
     const source = { uri: url, headers };
 
-    // Required for ExoPlayer: type forces DASH so manifest is parsed correctly (no PARSING_MANIFEST_MALFORMED)
-    if (isMpd) source.type = 'dash';
-    else if (isHls) source.type = 'm3u8';
+    // Required for ExoPlayer: type + contentType so it uses the correct extractor (avoids ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED)
+    if (isMpd) {
+      source.type = 'dash';
+      source.contentType = 'application/dash+xml';
+    } else if (isHls) {
+      source.type = 'm3u8';
+      source.contentType = 'application/vnd.apple.mpegurl';
+    }
 
-    // ClearKey from admin: prefer inline key (licenseResponse) so native uses LocalMediaDrmCallback like Flutter
-    if (isClearKeyChannel && (effectiveDrmClearKey || drmLicenseUrl)) {
-      const clearKeysMap = effectiveDrmClearKey ? parseClearKeys(effectiveDrmClearKey) : null;
-      const licenseResponseJson = clearKeysMap ? buildClearKeyJwkJson(clearKeysMap) : null;
-      if (licenseResponseJson) {
-        source.drm = { type: 'clearkey', licenseResponse: licenseResponseJson };
+    // FIXED: ClearKey DRM – inline JWK as data URI (base64url no padding). ExoPlayer LocalMediaDrmCallback.
+    if (isClearKeyChannel && (effectiveDrmClearKey || effectiveDrmData?.keys?.length || drmLicenseUrl)) {
+      const jwkKeys = normalizeClearKeyKeys(effectiveDrmClearKey, effectiveDrmData);
+      if (jwkKeys && jwkKeys.length > 0) {
+        const jwkJson = buildClearKeyJwkJson(jwkKeys);
+        if (jwkJson) {
+          const base64Jwk = base64EncodeUtf8(jwkJson);
+          source.drm = {
+            type: 'clearkey',
+            licenseServer: `data:application/json;base64,${base64Jwk}`,
+            headers: {}, // Empty headers for inline keys
+          };
+          if (__DEV__) {
+            console.log('[VideoPlayer] DRM ClearKey configured', {
+              drmType: 'clearkey',
+              keyCount: jwkKeys.length,
+              jwkPreview: jwkJson.substring(0, 150),
+              base64Length: base64Jwk.length,
+            });
+          }
+        }
       } else if (drmLicenseUrl) {
         source.drm = { type: 'clearkey', licenseServer: drmLicenseUrl, headers };
+        if (__DEV__) {
+          console.log('[VideoPlayer] DRM ClearKey using license server:', drmLicenseUrl);
+        }
       }
     } else if (isWidevineChannel && drmLicenseUrl) {
       source.drm = {
@@ -541,15 +524,40 @@ export default function VideoPlayer({
 
   const legacySource = buildVideoSource();
 
-  // StreamEngine: use prepared source when available, else legacy (single path, no double init)
-  const source = (preparedSource != null)
-    ? {
-        uri: preparedSource.uri,
-        type: preparedSource.type,
-        headers: preparedSource.headers || {},
-        drm: preparedSource.drm,
-      }
-    : legacySource;
+  // StreamEngine: use prepared source when available, else legacy (single path, no double init).
+  // Final source must have uri, type, contentType, headers, drm so ExoPlayer uses the right extractor (avoids ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED).
+  const source = (() => {
+    const raw = (preparedSource != null)
+      ? {
+          uri: preparedSource.uri,
+          type: preparedSource.type,
+          contentType: preparedSource.contentType,
+          headers: preparedSource.headers || {},
+          drm: preparedSource.drm,
+        }
+      : legacySource;
+    if (!raw) return null;
+    const resolvedType = raw.type || (isMpd ? 'dash' : isHls ? 'm3u8' : undefined);
+    const resolvedContentType = raw.contentType || (isMpd ? 'application/dash+xml' : isHls ? 'application/vnd.apple.mpegurl' : undefined);
+    const validated = {
+      uri: raw.uri,
+      type: resolvedType,
+      contentType: resolvedContentType,
+      headers: raw.headers || {},
+      drm: raw.drm,
+    };
+    if (__DEV__) {
+      console.log('[VideoPlayer] Final source configuration:', {
+        uri: validated.uri ? `${String(validated.uri).slice(0, 60)}...` : validated.uri,
+        type: validated.type,
+        contentType: validated.contentType,
+        hasDrm: !!validated.drm,
+        drmType: validated.drm?.type,
+        drmLicenseServerType: validated.drm?.licenseServer?.startsWith('data:') ? 'inline-base64' : 'url',
+      });
+    }
+    return validated;
+  })();
 
   // Browser (Shaka) DRM config: clearKeys (base64 with padding) or license server + headers
   const browserDrmConfig = (() => {
@@ -676,12 +684,20 @@ export default function VideoPlayer({
     }
   }, [visible, url, format, drmType, isMpd, isHls, effectiveDrmClearKey, drmLicenseUrl, isDrm, mergedHeaders]);
 
-  // Log ClearKey for each selected ClearKey channel so we can verify admin data
+  // When user selects a channel to play: log URL and ClearKey (Metro terminal / dev console). Always log when visible so it's not missed.
   useEffect(() => {
-    if (visible && isClearKeyChannel && effectiveDrmClearKey) {
-      console.log('[VideoPlayer] ClearKey for channel', channelId, ':', effectiveDrmClearKey);
-    }
-  }, [visible, isClearKeyChannel, effectiveDrmClearKey, channelId]);
+    if (!visible) return;
+    const payload = {
+      channelId: channelId ?? null,
+      channelName: channelName ?? null,
+      streamUrl: url || '(empty)',
+      drmType,
+      clearkey: isClearKeyChannel ? (effectiveDrmClearKey || '(none)') : null,
+      licenseUrl: drmLicenseUrl || null,
+      hasAuthHeader: !!(mergedHeaders?.Authorization || mergedHeaders?.authorization),
+    };
+    console.warn('[VideoPlayer] Channel selected to play – URL & ClearKey:', JSON.stringify(payload, null, 2));
+  }, [visible, url, channelId, channelName, drmType, isClearKeyChannel, effectiveDrmClearKey, drmLicenseUrl]);
 
   // Initialize player when visible
   useEffect(() => {
@@ -698,6 +714,7 @@ export default function VideoPlayer({
       setSourceKey(prev => prev + 1);
       setUseWebView(startWithWebView);
       setDrmSessionConfigured(false);
+      setRotateHintDismissed(false);
       
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
@@ -869,7 +886,15 @@ export default function VideoPlayer({
     manifestMalformedRetryRef.current = 0;
     playbackRetryCountRef.current = 0;
     if (__DEV__) {
-      console.log('[VideoPlayer] onLoad', { isMpd, duration: data?.duration, naturalSize: data?.naturalSize });
+      console.log('[VideoPlayer] onLoad', {
+        isMpd,
+        format,
+        duration: data?.duration,
+        naturalSize: data?.naturalSize,
+        videoTracks: data?.videoTracks ?? data?.tracks?.video,
+        audioTracks: data?.audioTracks ?? data?.tracks?.audio,
+        trackCount: data?.videoTracks?.length ?? data?.audioTracks?.length ?? data?.tracks?.length,
+      });
     }
     setLoading(false);
     setError(null);
@@ -879,7 +904,7 @@ export default function VideoPlayer({
       nativeLoadTimeoutRef.current = null;
     }
     // No pause/play or seek hacks — ExoPlayer starts playback naturally via paused={false}
-  }, [isMpd]);
+  }, [isMpd, format]);
 
   const onReadyForDisplay = useCallback(() => {
     if (__DEV__) console.log('[VideoPlayer] onReadyForDisplay');
@@ -1043,10 +1068,29 @@ export default function VideoPlayer({
     >
       <View style={styles.root} onLayout={onLayout} collapsable={false}>
         {/* Main Player */}
-        {url && useWebView && WebView ? (
+        {url && useWebView && isMpd && WebView ? (
+          <MPDPlayer
+            key={`mpd-${sourceKey}-${selectedQuality.height}`}
+            url={url}
+            headers={mergedHeaders}
+            drmClearKey={effectiveDrmClearKey}
+            drmLicenseUrl={drmLicenseUrl}
+            onClose={handleClose}
+            onError={(msg) => {
+              setError(msg || 'Playback failed');
+              setLoading(false);
+            }}
+            onPlaying={() => {
+              setLoading(false);
+              setError(null);
+            }}
+            style={videoStyle}
+            maxHeight={selectedQuality.height}
+          />
+        ) : url && useWebView && WebView ? (
           <WebView
             key={`wv-${sourceKey}`}
-            source={isMpd ? { html: buildShakaDashHtml(url, mergedHeaders, browserDrmConfig) } : { uri: url }}
+            source={{ uri: url }}
             style={videoStyle}
             userAgent={WEBVIEW_USER_AGENT}
             allowsInlineMediaPlayback
@@ -1055,23 +1099,13 @@ export default function VideoPlayer({
             domStorageEnabled
             originWhitelist={['*']}
             mixedContentMode="always"
-            onLoadEnd={() => {
-              if (!isMpd) setLoading(false);
-            }}
+            onLoadEnd={() => setLoading(false)}
             onMessage={(e) => {
               try {
                 const data = JSON.parse(e.nativeEvent?.data ?? '{}');
                 if (data.type === 'playing') setLoading(false);
                 if (data.type === 'ready') setLoading(false);
                 if (data.type === 'error') setError(data.message || 'Playback failed in browser');
-                if (data.type === 'fallback') {
-                  // Shaka reported manifest parse error (1002). Retry with native player instead.
-                  setUseWebView(false);
-                  setError(null);
-                  setLoading(true);
-                  setLoadingMsg('Retrying in app player…');
-                  setSourceKey(prev => prev + 1);
-                }
               } catch (_) {}
             }}
             onError={() => setError('Page could not be loaded.')}
@@ -1094,8 +1128,12 @@ export default function VideoPlayer({
             style={videoStyle}
             resizeMode="contain"
             paused={paused}
-            controls={true}
-            selectedVideoTrack={{ type: 'auto' }}
+            controls={false}
+            selectedVideoTrack={
+              selectedQuality.height > 0
+                ? { type: 'resolution', value: selectedQuality.height }
+                : { type: 'auto' }
+            }
             selectedAudioTrack={{ type: 'index', value: 0 }}
             bufferConfig={{
               minBufferMs: 5000,
@@ -1112,7 +1150,7 @@ export default function VideoPlayer({
             onPlaybackRateChange={onPlaybackRateChange}
             onAudioTrackChanged={onAudioTrackChanged}
             minLoadRetryCount={3}
-            maxBitRate={maxBitRate}
+            maxBitRate={selectedQuality.height === 0 ? 0 : 0}
             reportBandwidth={true}
             disableFocus={false}
             ignoreSilentSwitch="ignore"
@@ -1133,6 +1171,15 @@ export default function VideoPlayer({
           </View>
         )}
 
+        {/* Tap to play/pause when native controls are hidden */}
+        {source && hasLayout && !useWebView && (
+          <TouchableOpacity
+            style={[StyleSheet.absoluteFill, styles.tapOverlay]}
+            onPress={() => setPaused((p) => !p)}
+            activeOpacity={1}
+          />
+        )}
+
         {/* Controls Overlay */}
         <TouchableOpacity style={styles.closeBtn} onPress={handleClose} activeOpacity={0.8}>
           <Icon name="close" size={28} color="#fff" />
@@ -1142,10 +1189,7 @@ export default function VideoPlayer({
           style={styles.qualityBtn}
           onPress={() => setQualityModalVisible(true)}
           activeOpacity={0.8}>
-          <Icon name="speedometer" size={22} color="#fff" />
-          <Text style={styles.qualityBtnText}>
-            Bando: {selectedQuality.label}
-          </Text>
+          <Text style={styles.qualityBtnText}>Okoa Bando</Text>
         </TouchableOpacity>
 
         {/* Quality Selection Modal */}
@@ -1159,9 +1203,9 @@ export default function VideoPlayer({
             activeOpacity={1}
             onPress={() => setQualityModalVisible(false)}>
             <View style={styles.qualityModalCard}>
-              <Text style={styles.qualityModalTitle}>Chagua ubora wa video</Text>
+              <Text style={styles.qualityModalTitle}>Okoa Bando</Text>
               <Text style={styles.qualityModalSubtitle}>
-                Chini = okoa bando (360p inapendekezwa), juu = ubora bora zaidi
+                Chagua ubora wa video. Chini = okoa bando zaidi (360p inapendekezwa), juu = ubora bora zaidi
               </Text>
               {QUALITY_OPTIONS.map((opt) => {
                 const isSelected = selectedQuality.value === opt.value;
@@ -1257,7 +1301,7 @@ export default function VideoPlayer({
         )}
 
         {/* Loading Overlay - only wait for DRM "configuring" for Widevine/PlayReady (ClearKey uses inline key, no native config) */}
-        {(loading || ((isWidevineChannel || isPlayReadyChannel) && !drmSessionConfigured)) && !error && (
+        {(loading || ((isWidevineChannel || isPlayReadyChannel) && !drmSessionConfigured)) && !error && !(useWebView && isMpd) && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#fff" />
             <Text style={styles.loadingMsg}>
@@ -1309,6 +1353,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
+  },
+  tapOverlay: {
+    zIndex: 9998,
   },
   closeBtn: {
     position: 'absolute',
@@ -1418,6 +1465,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.4)',
     gap: 12,
+    zIndex: 9997,
   },
   loadingMsg: {
     color: 'rgba(255,255,255,0.9)',

@@ -238,13 +238,20 @@ export const initializeNotifications = async (externalId) => {
       return false;
     }
 
-    // STEP 0: If permission already granted, register token immediately so we don't depend on request flow
+    // STEP 0: Ensure user exists on backend BEFORE any token registration (avoids 404 on first open)
+    try {
+      await userAPI.register(externalId);
+    } catch (e) {
+      console.warn('[FCM] Register user first failed:', e?.message || e);
+    }
+
+    // STEP 1: If permission already granted, register token immediately so we don't depend on request flow
     const alreadyGranted = await isNotificationPermissionGranted();
     if (alreadyGranted) {
       await refreshAndRegisterFCMToken(externalId);
     }
 
-    // STEP 1: Always create notification channel on startup (not just on permission request)
+    // STEP 2: Always create notification channel on startup (not just on permission request)
     // This ensures the channel exists even if permission was previously granted
     try {
       const notifee = require('@notifee/react-native').default;
@@ -262,21 +269,14 @@ export const initializeNotifications = async (externalId) => {
       console.warn('[FCM] Channel creation error (non-fatal):', e?.message || e);
     }
 
-    // STEP 2: Ensure user exists on backend
-    try {
-      await userAPI.register(externalId);
-    } catch (e) {
-      console.warn('[FCM] Register user first failed:', e?.message || e);
-    }
-
-    // STEP 3: Request permission
+    // STEP 3: Request permission (if not already granted)
     const granted = await requestNotificationPermission();
     if (!granted) {
       console.log('[FCM] Notification permission not granted');
       return false;
     }
 
-    // STEP 4: Get FCM token
+    // STEP 4: Get FCM token and register
     const fcmToken = await getFCMToken();
     if (!fcmToken) {
       console.warn('[FCM] Could not get FCM token (check Firebase / google-services.json)');
