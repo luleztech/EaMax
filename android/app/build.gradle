@@ -152,6 +152,9 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // Domain stream session + API DTO (shared with native player / future bridge)
+    implementation("com.google.code.gson:gson:2.11.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

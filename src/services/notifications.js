@@ -170,9 +170,9 @@ export const registerFCMToken = async (externalId, fcmToken) => {
     return true;
   } catch (error) {
     const msg = error?.message || String(error);
-    console.error('[FCM] Register token failed:', msg);
+    if (__DEV__) console.log('[FCM] Register token failed:', msg);
     if (msg.includes('404') || msg.includes('not found')) {
-      console.warn('[FCM] User not found on backend – ensure app called register first');
+      if (__DEV__) console.log('[FCM] User not found on backend – ensure app called register first');
     }
     return false;
   }
@@ -242,7 +242,7 @@ export const initializeNotifications = async (externalId) => {
     try {
       await userAPI.register(externalId);
     } catch (e) {
-      console.warn('[FCM] Register user first failed:', e?.message || e);
+      if (__DEV__) console.log('[FCM] Register user first failed:', e?.message || e);
     }
 
     // STEP 1: If permission already granted, register token immediately so we don't depend on request flow

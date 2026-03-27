@@ -38,7 +38,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
     { id: 'month', name: 'Mwezi', price: '5,000', duration: '30 siku', value: 5000, popular: true },
-    { id: 'year', name: 'Mwaka', price: '12,000', duration: '365 siku', value: 12000, popular: false },
+    { id: 'year', name: 'Miezi 3', price: '12,000', duration: 'miezi 3', value: 12000, popular: false },
   ];
 
   useEffect(() => {
@@ -229,7 +229,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.', false);
       return;
     }
-    const validPrefixes = ['061', '062', '063', '065', '068', '069', '071', '074', '075', '076', '078', '079'];
+    const validPrefixes = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
     const cleanPhone = phoneNumber.replace(/\s+/g, '');
     const isValidFormat = /^0[0-9]{8,9}$/.test(cleanPhone);
     const hasValidPrefix = validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
@@ -410,6 +410,11 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           {(phoneNumber.startsWith('061') || phoneNumber.startsWith('062') || phoneNumber.startsWith('063')) && (
             <Text style={[styles.inputHint, styles.halotelHint]}>
               Halotel: Hakikisha Halopesa iko active. Piga 150*88# kukagua.
+            </Text>
+          )}
+          {(phoneNumber.startsWith('067') || phoneNumber.startsWith('077')) && (
+            <Text style={[styles.inputHint, styles.halotelHint]}>
+              Tigo: Hakikisha akaunti ya Tigo Pesa iko tayari kupokea ombi la malipo.
             </Text>
           )}
         </View>

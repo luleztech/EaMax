@@ -72,7 +72,7 @@ router.get('/dashboard', async (req, res, next) => {
       query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
       payments_exists
         ? query(
-          "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('month', created_at) = date_trunc('month', now())",
+          "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('day', COALESCE(completed_at, created_at)) = date_trunc('day', now())",
         )
         : Promise.resolve({ rows: [{ total: 0 }] }),
     ]);
@@ -307,11 +307,32 @@ router.post('/channels', async (req, res, next) => {
     });
 
     const data = bodySchema.parse(req.body);
+    const aliasTrimmed = data.streamAlias != null ? String(data.streamAlias).trim() : '';
+    const urlTrimmed = data.streamUrl != null ? String(data.streamUrl).trim() : '';
     const drmType = (data.drmType || 'NONE').toUpperCase();
     const needsDrm = drmType !== 'NONE';
     const drmKeyValue = drmType === 'CLEARKEY' && req.body.drmClearKey != null && String(req.body.drmClearKey).trim() !== ''
       ? String(req.body.drmClearKey).trim()
       : null;
+
+    // If channel is alias-only, ensure alias resolves to a real URL so playback won't break.
+    if (!urlTrimmed && aliasTrimmed) {
+      const aliasTarget = await query(
+        `SELECT c.stream_url
+         FROM stream_aliases a
+         JOIN channels c ON c.id = a.channel_id
+         WHERE a.alias = $1 AND a.is_active = TRUE
+         LIMIT 1`,
+        [aliasTrimmed],
+      );
+      const targetUrl = aliasTarget.rows?.[0]?.stream_url;
+      if (!targetUrl) {
+        return res.status(400).json({
+          error: 'Alias is not configured',
+          details: 'This channel has no stream URL. Configure the alias in Settings so it resolves to a channel with a valid stream URL.',
+        });
+      }
+    }
 
     const result = await query(
       `INSERT INTO channels
@@ -338,7 +359,8 @@ router.post('/channels', async (req, res, next) => {
 
     const row = result.rows[0];
     const aliasValue = row.stream_alias != null ? String(row.stream_alias).trim() : '';
-    if (aliasValue) {
+    // Only auto-sync alias->channel mapping when the channel has a real stream_url.
+    if (aliasValue && row.stream_url) {
       await query(
         `INSERT INTO stream_aliases (alias, channel_id, is_active, updated_at)
          VALUES ($1, $2, TRUE, NOW())
@@ -391,6 +413,32 @@ router.put('/channels/:id', async (req, res, next) => {
       ? (data.drmClearKey != null && String(data.drmClearKey).trim() !== '' ? String(data.drmClearKey).trim() : null)
       : undefined;
 
+    const aliasTrimmed = data.streamAlias != null ? String(data.streamAlias).trim() : '';
+    const urlTrimmed = data.streamUrl != null ? String(data.streamUrl).trim() : undefined;
+    // If update makes channel alias-only, ensure alias resolves to a real URL so playback won't break.
+    if (data.streamAlias !== undefined) {
+      const current = await query('SELECT stream_url FROM channels WHERE id = $1 LIMIT 1', [channelId]);
+      const currentUrl = current.rows?.[0]?.stream_url ? String(current.rows[0].stream_url).trim() : '';
+      const nextUrl = urlTrimmed !== undefined ? urlTrimmed : currentUrl;
+      if (!nextUrl && aliasTrimmed) {
+        const aliasTarget = await query(
+          `SELECT c.stream_url
+           FROM stream_aliases a
+           JOIN channels c ON c.id = a.channel_id
+           WHERE a.alias = $1 AND a.is_active = TRUE
+           LIMIT 1`,
+          [aliasTrimmed],
+        );
+        const targetUrl = aliasTarget.rows?.[0]?.stream_url;
+        if (!targetUrl) {
+          return res.status(400).json({
+            error: 'Alias is not configured',
+            details: 'This channel has no stream URL. Configure the alias in Settings so it resolves to a channel with a valid stream URL.',
+          });
+        }
+      }
+    }
+
     const updates = {
       name: data.name,
       category: data.category,
@@ -440,7 +488,8 @@ router.put('/channels/:id', async (req, res, next) => {
         'DELETE FROM stream_aliases WHERE channel_id = $1 AND ($2 = \'\' OR alias <> $2)',
         [channelId, newAliasValue],
       ).catch(() => {});
-      if (newAliasValue) {
+      // Only auto-sync alias->channel mapping when the channel has a real stream_url.
+      if (newAliasValue && row.stream_url) {
         await query(
           `INSERT INTO stream_aliases (alias, channel_id, is_active, updated_at)
            VALUES ($1, $2, TRUE, NOW())

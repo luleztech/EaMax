@@ -80,27 +80,27 @@ router.get('/stats', async (req, res, next) => {
       ? (((premiumUsers - lastMonthPremium) / lastMonthPremium) * 100).toFixed(1)
       : premiumUsers > 0 ? '100' : '0';
 
-    // Get this month's revenue (amount_cents / 100 = TSh)
+    // Get today's revenue by completion time (amount_cents / 100 = TSh)
     const revenueResult = await query(
       `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
        WHERE status = 'completed'
-       AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)`
+       AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE`
     );
     const revenue = parseFloat(revenueResult.rows[0].revenue) || 0;
 
-    // Get last month's revenue for comparison
-    const lastMonthRevenueResult = await query(
+    // Get yesterday's revenue for comparison
+    const yesterdayRevenueResult = await query(
       `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 as revenue
        FROM subscription_payments
        WHERE status = 'completed'
-       AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')`
+       AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE - INTERVAL '1 day'`
     );
-    const lastMonthRevenue = parseFloat(lastMonthRevenueResult.rows[0].revenue) || 0;
+    const yesterdayRevenue = parseFloat(yesterdayRevenueResult.rows[0].revenue) || 0;
 
-    // Calculate revenue change
-    const revenueChange = lastMonthRevenue > 0
-      ? (((revenue - lastMonthRevenue) / lastMonthRevenue) * 100).toFixed(1)
+    // Calculate daily revenue change (today vs yesterday)
+    const revenueChange = yesterdayRevenue > 0
+      ? (((revenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(1)
       : revenue > 0 ? '100' : '0';
 
     // Get ads watched this month

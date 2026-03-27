@@ -48,6 +48,22 @@ query(
   `UPDATE channels SET drm_type = 'CLEARKEY' WHERE drm_protected = true AND (drm_type IS NULL OR drm_type = 'NONE')`
 ).catch(() => {});
 
+// Payments: completed_at timestamp for accurate revenue stats
+query(
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration completed_at (non-fatal):', err.message);
+  }
+});
+// Backfill completed_at for existing completed payments (best-effort)
+query(
+  `UPDATE subscription_payments
+     SET completed_at = COALESCE(completed_at, created_at)
+   WHERE status = 'completed' AND completed_at IS NULL`
+).catch(() => {});
+
 // Alias support:
 // - channels.stream_alias: optional alias key instead of stream_url
 // - stream_aliases table stores alias -> real stream url

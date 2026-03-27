@@ -17,7 +17,8 @@ const ensureZenoConfigured = () => {
 const PLAN_CONFIG = {
   week: { amount: 2000, interval: '7 days' },
   month: { amount: 5000, interval: '30 days' },
-  year: { amount: 12000, interval: '365 days' },
+  // id stays "year" for existing API/clients; duration is 3 months (miezi 3)
+  year: { amount: 12000, interval: '90 days' },
 };
 
 // Start a ZenoPay Mobile Money payment
@@ -38,11 +39,12 @@ router.post('/zeno/start', async (req, res, next) => {
 
     // Normalize phone number to ZenoPay format
     // Accept: 0712345678, 0621234567, 255712345678, +255712345678
-    // Tanzanian mobile prefixes:
+    // Tanzanian mobile prefixes (0 + national significant number):
     // - Halotel: 061, 062, 063
     // - Vodacom: 074, 075, 076, 079
-    // - Mixx by Yas: 071, 065
-    // - Airtel: 078, 068, 069
+    // - Mixx by Yas: 065, 071
+    // - Airtel: 068, 069, 078
+    // - Tigo: 067, 077 (0671…, 0679…, etc.)
     let normalizedPhone = data.phone.replace(/\s+/g, ''); // Remove spaces
     
     // Convert international format to local format
@@ -57,6 +59,7 @@ router.post('/zeno/start', async (req, res, next) => {
     const validPrefixes = [
       '061', '062', '063', // Halotel
       '065', '071', // Mixx by Yas
+      '067', '077', // Tigo
       '068', '069', '078', // Airtel
       '074', '075', '076', '079', // Vodacom
     ];
@@ -66,7 +69,8 @@ router.post('/zeno/start', async (req, res, next) => {
     
     if (!isValidFormat || !hasValidPrefix) {
       return res.status(400).json({
-        error: 'Invalid Tanzanian phone number. Use format: 061XXXXXXXX, 062XXXXXXXX, 063XXXXXXXX, 065XXXXXXXX, 068XXXXXXXX, 069XXXXXXXX, 071XXXXXXXX, 074XXXXXXXX, 075XXXXXXXX, 076XXXXXXXX, 078XXXXXXXX, or 079XXXXXXXX',
+        error:
+          'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/071 (Yas), 067/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
       });
     }
 
@@ -100,12 +104,9 @@ router.post('/zeno/start', async (req, res, next) => {
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
-    // ZenoPay: Halotel/Halopesa often requires international format (255...) for the payment
-    // prompt to reach the user. Other networks work with local format (0...).
     const isHalotel = normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063');
-    const phoneForZeno = isHalotel
-      ? '255' + normalizedPhone.slice(1)  // 0612345678 -> 255612345678
-      : normalizedPhone;                   // Local format for Vodacom, Airtel, Tigo
+    // ZenoPay Tanzania: single local format (0XXXXXXXXX) for every network — Halotel same as Vodacom/Airtel/Tigo/Yas.
+    const phoneForZeno = normalizedPhone;
 
     const payload = {
       order_id: orderId,
@@ -115,7 +116,6 @@ router.post('/zeno/start', async (req, res, next) => {
       amount: amountToSend,
       webhook_url: webhookUrl,
     };
-    // Some ZenoPay integrations support explicit provider for Halopesa routing
     if (isHalotel) {
       payload.provider = 'HALOPESA';
     }
@@ -124,16 +124,18 @@ router.post('/zeno/start', async (req, res, next) => {
     console.log('[ZenoPay] Sending payment request (exact amount):', {
       orderId,
       phone: phoneForZeno,
-      phonePrefix: phoneForZeno.substring(0, 3),
+      phonePrefix: normalizedPhone.slice(0, 3),
       amount: amountToSend,
       bundle: data.bundle,
-      network: (phoneForZeno.startsWith('061') || phoneForZeno.startsWith('062') || phoneForZeno.startsWith('063'))
+      network: (normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063'))
         ? 'Halotel'
-        : phoneForZeno.startsWith('065') || phoneForZeno.startsWith('071')
+        : normalizedPhone.startsWith('065') || normalizedPhone.startsWith('071')
         ? 'Mixx by Yas'
-        : phoneForZeno.startsWith('068') || phoneForZeno.startsWith('069') || phoneForZeno.startsWith('078')
+        : normalizedPhone.startsWith('067') || normalizedPhone.startsWith('077')
+        ? 'Tigo'
+        : normalizedPhone.startsWith('068') || normalizedPhone.startsWith('069') || normalizedPhone.startsWith('078')
         ? 'Airtel'
-        : phoneForZeno.startsWith('074') || phoneForZeno.startsWith('075') || phoneForZeno.startsWith('076') || phoneForZeno.startsWith('079')
+        : normalizedPhone.startsWith('074') || normalizedPhone.startsWith('075') || normalizedPhone.startsWith('076') || normalizedPhone.startsWith('079')
         ? 'Vodacom'
         : 'Unknown',
     });
@@ -233,7 +235,11 @@ const applyCompletedPayment = async (orderId, meta) => {
 
     // 1) Mark payment completed → revenue in admin (SUM(amount_cents) WHERE status='completed')
     const payUpdate = await client.query(
-      `UPDATE subscription_payments SET status = 'completed' WHERE id = $1 RETURNING id, status`,
+      `UPDATE subscription_payments
+          SET status = 'completed',
+              completed_at = COALESCE(completed_at, NOW())
+        WHERE id = $1
+        RETURNING id, status, completed_at`,
       [paymentId],
     );
     if (payUpdate.rowCount !== 1) {

@@ -14,18 +14,24 @@ import { dashboardAPI, adminChannelsAPI } from '../../config/api';
 const { width } = Dimensions.get('window');
 
 // Shared helpers
-const formatNumber = (num) => {
-  const n = Number(num) || 0;
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+const compact = (value) => {
+  const n = Number(value) || 0;
+  if (n >= 1000000) {
+    const m = (n / 1000000).toFixed(1).replace(/\.0$/, '');
+    return `${m}m`;
+  }
+  if (n >= 1000) {
+    const k = (n / 1000).toFixed(1).replace(/\.0$/, '');
+    return `${k}k`;
+  }
   return String(n);
 };
 
+const formatNumber = (num) => compact(num);
+
 const formatTsh = (n) => {
-  const v = Number(n) || 0;
-  if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M TSh`;
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}K TSh`;
-  return `${v} TSh`;
+  const v = Math.round(Number(n) || 0);
+  return `TSh ${v.toLocaleString('en-US')}`;
 };
 
 const buildPlatforms = (channels) => {
@@ -49,7 +55,7 @@ const buildStats = (data) => [
     title: 'Premium Payments',
     value: formatTsh(data.revenue ?? 0),
     change: data.revenueChange || '+0%',
-    subtitle: 'this month',
+    subtitle: 'today',
     gradient: ['#7c3aed', '#6d28d9'],
     icon: 'currency-usd',
   },

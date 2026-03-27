@@ -38,11 +38,11 @@ export async function getOrCreateUserId() {
     userId = generateUserId();
     await AsyncStorage.setItem(STORAGE_KEY, userId);
     await userAPI.register(userId).catch((err) => {
-      console.warn('[userId] Register failed:', err?.message || err);
+      if (__DEV__) console.log('[userId] Register failed:', err?.message || err);
     });
     return userId;
   } catch (e) {
-    console.warn('[userId] getOrCreateUserId error:', e?.message || e);
+    if (__DEV__) console.log('[userId] getOrCreateUserId error:', e?.message || e);
     return null;
   }
 }

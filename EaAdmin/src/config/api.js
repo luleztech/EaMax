@@ -26,50 +26,68 @@ const apiRequest = async (endpoint, options = {}) => {
     config.body = options.body;
   }
 
-  try {
-    const response = await fetch(url, config);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isTransientNetworkError = (err) => {
+    const msg = String(err?.message || err || '').toLowerCase();
+    return msg.includes('network request failed') ||
+      msg.includes('failed to fetch') ||
+      msg.includes('networkerror') ||
+      msg.includes('timeout');
+  };
 
-    // Success with no body (204 No Content) – return immediately, do not read body
-    if (response.status === 204) {
-      if (!response.ok) return {};
-      return {};
-    }
+  const maxAttempts = 3; // 1 initial + 2 retries
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, config);
 
-    // Success with optional JSON body (e.g. 200)
-    if (response.ok && response.status === 200) {
-      const contentType = response.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
+      // Success with no body (204 No Content) – return immediately, do not read body
+      if (response.status === 204) {
+        if (!response.ok) return {};
         return {};
       }
-    }
 
-    // Get response text for error or JSON body
-    const text = await response.text();
-
-    if (!text || text.trim() === '') {
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      // Success with optional JSON body (e.g. 200)
+      if (response.ok && response.status === 200) {
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          return {};
+        }
       }
-      return {};
-    }
 
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (parseError) {
-      throw new Error(`Invalid JSON response: ${text.substring(0, 100)}`);
-    }
+      // Get response text for error or JSON body
+      const text = await response.text();
 
-    if (!response.ok) {
-      const msg = data.error || `HTTP error! status: ${response.status}`;
-      const details = data.details ? ` ${data.details}` : '';
-      throw new Error(msg + details);
-    }
+      if (!text || text.trim() === '') {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return {};
+      }
 
-    return data;
-  } catch (error) {
-    throw error;
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (parseError) {
+        throw new Error(`Invalid JSON response: ${text.substring(0, 100)}`);
+      }
+
+      if (!response.ok) {
+        const msg = data.error || `HTTP error! status: ${response.status}`;
+        const details = data.details ? ` ${data.details}` : '';
+        throw new Error(msg + details);
+      }
+
+      return data;
+    } catch (error) {
+      lastErr = error;
+      const canRetry = attempt < maxAttempts && isTransientNetworkError(error);
+      if (!canRetry) break;
+      // Railway can cold-start; small backoff helps (400ms, 900ms)
+      await sleep(250 + attempt * attempt * 200);
+    }
   }
+  throw lastErr;
 };
 
 /**

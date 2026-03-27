@@ -63,7 +63,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       title: 'Revenue',
       value: 'TSh 0',
       change: '+0%',
-      subtitle: 'This month',
+          subtitle: 'Today',
       gradient: ['#7c3aed', '#6d28d9'],
       icon: 'currency-usd',
     },
@@ -143,17 +143,23 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     try {
       const data = await dashboardAPI.getStats();
       
-      // Helper function to format large numbers with K/M
-      const formatNumber = (num) => {
-        if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-        if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-        return num.toString();
+      const compact = (value) => {
+        const n = Number(value) || 0;
+        if (n >= 1000000) {
+          const m = (n / 1000000).toFixed(1).replace(/\.0$/, '');
+          return `${m}m`;
+        }
+        if (n >= 1000) {
+          const k = (n / 1000).toFixed(1).replace(/\.0$/, '');
+          return `${k}k`;
+        }
+        return String(n);
       };
 
+      const formatNumber = (num) => compact(num);
       const formatTsh = (n) => {
-        if (n >= 1000000) return `TSh ${(n / 1000000).toFixed(1)}M`;
-        if (n >= 1000) return `TSh ${(n / 1000).toFixed(1)}K`;
-        return `TSh ${n}`;
+        const v = Math.round(Number(n) || 0);
+        return `TSh ${v.toLocaleString('en-US')}`;
       };
 
       setStats([
@@ -193,7 +199,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           title: 'Revenue',
           value: formatTsh(data.revenue || 0),
           change: data.revenueChange || '+0%',
-          subtitle: 'This month',
+          subtitle: 'Today',
           gradient: ['#7c3aed', '#6d28d9'],
           icon: 'currency-usd',
         },
@@ -968,7 +974,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                 <Text style={styles.inputLabel}>Image URL *</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="https://example.com/slide.jpg"
+                  placeholder="https://example.com/slide.jpg au .gif"
                   placeholderTextColor="#6b7280"
                   value={slideImageUrl}
                   onChangeText={setSlideImageUrl}

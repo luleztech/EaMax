@@ -394,23 +394,29 @@ const SettingsSection = () => {
             <View style={{ width: '100%', gap: 10, marginTop: 10 }}>
               <Text style={styles.singleLabel}>Alias key</Text>
               <TextInput
-                style={styles.contactNumberInput}
+                style={[styles.contactNumberInput, styles.aliasModalInput]}
                 value={aliasKey}
                 onChangeText={setAliasKey}
                 placeholder="e.g. ss1"
-                placeholderTextColor="#6b7280"
+                placeholderTextColor="#94a3b8"
+                selectionColor="#a855f7"
+                cursorColor="#a855f7"
+                color="#ffffff"
                 autoCapitalize="none"
               />
               <Text style={[styles.singleLabel, { marginTop: 8 }]}>Channel Name</Text>
               <TextInput
-                style={styles.contactNumberInput}
+                style={[styles.contactNumberInput, styles.aliasModalInput]}
                 value={aliasChannelName}
                 onChangeText={(v) => {
                   setAliasChannelName(v);
                   setAliasChannelId(null);
                 }}
                 placeholder="Type channel name..."
-                placeholderTextColor="#6b7280"
+                placeholderTextColor="#94a3b8"
+                selectionColor="#a855f7"
+                cursorColor="#a855f7"
+                color="#ffffff"
               />
               <Text style={styles.channelsToggleHint}>
                 Alias points to an existing channel name.
@@ -638,6 +644,15 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     color: '#fff',
+  },
+  aliasModalInput: {
+    backgroundColor: '#0b1220',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#ffffff',
   },
   saveButton: {
     flexDirection: 'row',

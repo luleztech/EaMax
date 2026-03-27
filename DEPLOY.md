@@ -22,7 +22,9 @@
 
 3. Put your release keystore in `android/app/` and set `MYAPP_RELEASE_STORE_*` in `android/gradle.properties` (or sign in CI). Then upload the AAB to Google Play Console.
 
-4. **Optional:** Ensure `android/app/google-services.json` is present (Firebase). Replace AdMob test IDs in `src/config/ads.js` with production IDs before release.
+4. **Deobfuscation file (mapping.txt):** After building the bundle, upload the mapping file to Play Console so crash reports are readable. Path: `android/app/build/outputs/mapping/release/mapping.txt`. In Play Console → Your app → Release → App bundle explorer → select the version → Deobfuscation file → Upload.
+
+5. **Optional:** Ensure `android/app/google-services.json` is present (Firebase). Replace AdMob test IDs in `src/config/ads.js` with production IDs before release.
 
 ## EaAdmin app
 

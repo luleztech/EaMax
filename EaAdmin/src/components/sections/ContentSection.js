@@ -110,16 +110,15 @@ const ContentSection = () => {
   };
 
   const handleSaveChannel = async () => {
+    const urlValue = String(videoUrl || '').trim();
+    const aliasValue = String(streamAlias || '').trim();
+
     if (!channelName.trim()) {
       showStatusModal('Missing name', 'Please enter channel name.');
       return;
     }
-    if (streamSource === 'url' && !videoUrl.trim()) {
-      showStatusModal('Missing video URL', 'Please enter video URL.');
-      return;
-    }
-    if (streamSource === 'alias' && !streamAlias.trim()) {
-      showStatusModal('Missing alias', 'Please enter stream alias.');
+    if (!urlValue && !aliasValue) {
+      showStatusModal('Missing stream source', 'Please enter stream URL or stream alias.');
       return;
     }
     if (!useEmoji && !thumbnailUrl.trim()) {
@@ -143,8 +142,8 @@ const ContentSection = () => {
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
-      ...(streamSource === 'url' ? { streamUrl: videoUrl.trim() } : {}),
-      ...(streamSource === 'alias' ? { streamAlias: streamAlias.trim() } : {}),
+      ...(urlValue ? { streamUrl: urlValue } : {}),
+      ...(aliasValue ? { streamAlias: aliasValue } : {}),
       color: selectedColor,
       isActive,
       drmType,
@@ -431,6 +430,12 @@ const ContentSection = () => {
                   <Text style={styles.modalSubtitle}>
                     {editingChannel ? 'Update channel details' : 'Create a new channel for the app'}
                   </Text>
+                  {editingChannel?.id != null ? (
+                    <View style={styles.channelIdRow}>
+                      <Text style={styles.channelIdLabel}>Channel ID</Text>
+                      <Text style={styles.channelIdValue}>#{String(editingChannel.id)}</Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
               <TouchableOpacity
@@ -1065,6 +1070,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9ca3af',
     marginTop: 2,
+  },
+  channelIdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+  },
+  channelIdLabel: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: '600',
+  },
+  channelIdValue: {
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: '800',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(124, 58, 237, 0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
   },
   closeButton: {
     padding: 8,

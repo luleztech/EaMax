@@ -10,6 +10,7 @@ import {
   Image,
   ImageBackground,
   PanResponder,
+  Platform,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -21,6 +22,18 @@ const CAROUSEL_HEIGHT = 320;
 const AUTO_SLIDE_INTERVAL = 5000;
 const TRANSITION_DURATION = 680;
 const SWIPE_THRESHOLD = 55;
+
+/** Detect GIF URLs so we can tune loading/animation (animated GIFs in animated views need care on Android). */
+function isLikelyAnimatedGifUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
+  const path = lower.split('#')[0].split('?')[0];
+  if (path.endsWith('.gif')) return true;
+  if (/(^|[?&])fmt=gif\b|format=gif\b|type=gif\b|\.gif(&|$)/i.test(lower)) return true;
+  return false;
+}
+
 const ImageCarousel = ({ items }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -38,9 +51,9 @@ const ImageCarousel = ({ items }) => {
     if (!items || items.length === 0) return;
     items.forEach((item) => {
       const url = item?.imageUrl;
-      if (url && typeof url === 'string') {
-        Image.prefetch(url).catch(() => {});
-      }
+      if (!url || typeof url !== 'string') return;
+      if (isLikelyAnimatedGifUrl(url)) return;
+      Image.prefetch(url).catch(() => {});
     });
   }, [items]);
 
@@ -113,11 +126,16 @@ const ImageCarousel = ({ items }) => {
   if (!items || items.length === 0) return null;
 
   // ── Slide content ────────────────────────────────────────────────────────────
-  const renderSlide = (item) => (
+  const renderSlide = (item) => {
+    const uri = item.imageUrl;
+    const isGif = isLikelyAnimatedGifUrl(uri);
+    return (
     <ImageBackground
-      source={item.imageUrl ? { uri: item.imageUrl } : null}
+      source={uri ? { uri } : undefined}
       style={[styles.slideGradient, { backgroundColor: '#0c0f1a' }]}
-      imageStyle={styles.slideImage}>
+      imageStyle={styles.slideImage}
+      {...(Platform.OS === 'android' && isGif ? { renderToHardwareTextureAndroid: false } : {})}
+    >
       {/* Dark vignette for text readability */}
       <LinearGradient
         colors={['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.18)', 'rgba(0,0,0,0.72)']}
@@ -154,7 +172,8 @@ const ImageCarousel = ({ items }) => {
         )}
       </View>
     </ImageBackground>
-  );
+    );
+  };
 
   // ── Render: single horizontal strip, pure translateX sliding ──────────────────
   return (

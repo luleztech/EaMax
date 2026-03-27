@@ -1,12 +1,28 @@
 // API Configuration for EaMax App
 const API_BASE_URL = 'https://eamax-production.up.railway.app';
 
-/**
- * Make API request
- */
-const apiRequest = async (endpoint, options = {}) => {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Transient failures common on mobile (cold start, handoff, DNS) — safe to retry idempotent-ish POSTs like register. */
+function isTransientNetworkError(error) {
+  const msg = String((error && error.message) || error || '').toLowerCase();
+  return (
+    msg.includes('network request failed') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('load failed') ||
+    msg.includes('aborted') ||
+    msg.includes('timeout') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('connection') ||
+    msg.includes('could not connect')
+  );
+}
+
+async function apiRequestOnce(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
-  
+
   const defaultOptions = {
     headers: {
       'Content-Type': 'application/json',
@@ -22,22 +38,40 @@ const apiRequest = async (endpoint, options = {}) => {
     },
   };
 
+  const response = await fetch(url, config);
+  let data = {};
   try {
-    const response = await fetch(url, config);
-    let data = {};
-    try {
-      const text = await response.text();
-      if (text && text.trim()) data = JSON.parse(text);
-    } catch (_) {
-      // non-JSON or empty response
-    }
-    if (!response.ok) {
-      throw new Error(data.error || `HTTP error! status: ${response.status}`);
-    }
-    return data;
-  } catch (error) {
-    throw error;
+    const text = await response.text();
+    if (text && text.trim()) data = JSON.parse(text);
+  } catch (_) {
+    // non-JSON or empty response
   }
+  if (!response.ok) {
+    throw new Error(data.error || `HTTP error! status: ${response.status}`);
+  }
+  return data;
+}
+
+/**
+ * API request with retries for flaky mobile networks / slow TLS (e.g. Railway wake-up).
+ */
+const apiRequest = async (endpoint, options = {}) => {
+  const maxAttempts = 4;
+  const baseDelayMs = 400;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await apiRequestOnce(endpoint, options);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts && isTransientNetworkError(err)) {
+        await sleep(baseDelayMs * attempt);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 };
 
 /**
