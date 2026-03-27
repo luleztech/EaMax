@@ -229,7 +229,7 @@ router.get('/channels', async (req, res, next) => {
     let result;
     try {
       result = await query(`
-        SELECT c.id, c.name, c.category, c.stream_url, c.thumbnail_url, c.thumbnail_emoji,
+        SELECT c.id, c.name, c.category, c.stream_url, c.stream_alias, c.thumbnail_url, c.thumbnail_emoji,
                c.color, c.points_required, c.is_active, c.drm_protected, c.drm_clear_key,
                COALESCE(c.drm_type, 'NONE') AS drm_type,
                c.owner_user_id, c.created_at,
@@ -247,7 +247,7 @@ router.get('/channels', async (req, res, next) => {
     } catch (e) {
       if (e.message && e.message.includes('channel_watch_events')) {
         result = await query(`
-          SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji,
+          SELECT id, name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji,
                  color, points_required, is_active, drm_protected, drm_clear_key,
                  COALESCE(drm_type, 'NONE') AS drm_type,
                  owner_user_id, created_at,
@@ -287,7 +287,8 @@ router.post('/channels', async (req, res, next) => {
     const bodySchema = z.object({
       name: z.string().min(1),
       category: z.enum(['football', 'movies', 'habari']),
-      streamUrl: z.string().url(),
+      streamUrl: z.string().url().optional(),
+      streamAlias: z.string().min(1).max(128).optional(),
       thumbnailUrl: z.string().url().optional(),
       thumbnailEmoji: z.string().max(8).optional(),
       color: z.string().max(16).optional(),
@@ -297,6 +298,12 @@ router.post('/channels', async (req, res, next) => {
       ownerUserId: z.number().int().optional(),
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
       unlockToFree: z.boolean().optional().default(false),
+    }).superRefine((data, ctx) => {
+      const hasUrl = !!(data.streamUrl && String(data.streamUrl).trim());
+      const hasAlias = !!(data.streamAlias && String(data.streamAlias).trim());
+      if (!hasUrl && !hasAlias) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'streamUrl or streamAlias is required' });
+      }
     });
 
     const data = bodySchema.parse(req.body);
@@ -308,13 +315,14 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required, unlock_to_free)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required, unlock_to_free)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         data.name,
         data.category,
-        data.streamUrl,
+        data.streamUrl || null,
+        data.streamAlias ? String(data.streamAlias).trim() : null,
         data.thumbnailUrl || null,
         data.thumbnailEmoji || null,
         data.color || null,
@@ -329,6 +337,15 @@ router.post('/channels', async (req, res, next) => {
     );
 
     const row = result.rows[0];
+    const aliasValue = row.stream_alias != null ? String(row.stream_alias).trim() : '';
+    if (aliasValue) {
+      await query(
+        `INSERT INTO stream_aliases (alias, channel_id, is_active, updated_at)
+         VALUES ($1, $2, TRUE, NOW())
+         ON CONFLICT (alias) DO UPDATE SET channel_id = EXCLUDED.channel_id, updated_at = NOW()`,
+        [aliasValue, row.id],
+      ).catch(() => {});
+    }
     return res.status(201).json({
       ...row,
       drm_type: drmType,
@@ -349,6 +366,7 @@ router.put('/channels/:id', async (req, res, next) => {
       name: z.string().min(1).optional(),
       category: z.enum(['football', 'movies', 'habari']).optional(),
       streamUrl: z.string().url().optional(),
+      streamAlias: z.string().min(1).max(128).optional().nullable(),
       thumbnailUrl: z.string().url().optional().nullable(),
       thumbnailEmoji: z.string().max(8).optional().nullable(),
       color: z.string().max(16).optional(),
@@ -377,6 +395,7 @@ router.put('/channels/:id', async (req, res, next) => {
       name: data.name,
       category: data.category,
       stream_url: data.streamUrl,
+      ...(data.streamAlias !== undefined && { stream_alias: data.streamAlias != null ? String(data.streamAlias).trim() : null }),
       thumbnail_url: data.thumbnailUrl,
       thumbnail_emoji: data.thumbnailEmoji,
       color: data.color,
@@ -414,10 +433,109 @@ router.put('/channels/:id', async (req, res, next) => {
     }
 
     const row = updated.rows[0];
+    const newAliasValue = row.stream_alias != null ? String(row.stream_alias).trim() : '';
+    if (data.streamAlias !== undefined) {
+      // Keep alias mapping in sync when channel alias is edited.
+      await query(
+        'DELETE FROM stream_aliases WHERE channel_id = $1 AND ($2 = \'\' OR alias <> $2)',
+        [channelId, newAliasValue],
+      ).catch(() => {});
+      if (newAliasValue) {
+        await query(
+          `INSERT INTO stream_aliases (alias, channel_id, is_active, updated_at)
+           VALUES ($1, $2, TRUE, NOW())
+           ON CONFLICT (alias) DO UPDATE SET channel_id = EXCLUDED.channel_id, updated_at = NOW()`,
+          [newAliasValue, channelId],
+        ).catch(() => {});
+      }
+    }
     return res.json({
       ...row,
       drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
     });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: list stream aliases
+router.get('/stream-aliases', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT
+         a.alias, a.channel_id, a.is_active, a.created_at, a.updated_at,
+         COALESCE(c.name, NULL) AS channel_name
+       FROM stream_aliases a
+       LEFT JOIN channels c ON c.id = a.channel_id
+       ORDER BY a.updated_at DESC`,
+    );
+    return res.json(result.rows || []);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: upsert stream alias
+router.post('/stream-aliases', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      alias: z.string().min(1).max(128),
+      channelId: z.coerce.number().int().positive(),
+      isActive: z.boolean().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+    const alias = String(data.alias).trim();
+    const channelId = Number(data.channelId);
+    const isActive = data.isActive !== undefined ? !!data.isActive : true;
+    const channelExists = await query('SELECT id FROM channels WHERE id = $1 LIMIT 1', [channelId]);
+    if (!channelExists.rows || channelExists.rows.length === 0) {
+      return res.status(400).json({ error: 'Channel not found for alias mapping' });
+    }
+    const result = await query(
+      `INSERT INTO stream_aliases (alias, channel_id, is_active, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (alias) DO UPDATE SET
+         channel_id = EXCLUDED.channel_id,
+         is_active = EXCLUDED.is_active,
+         updated_at = NOW()
+       RETURNING alias, channel_id, is_active, created_at, updated_at`,
+      [alias, channelId, isActive],
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: toggle stream alias active state
+router.patch('/stream-aliases/:alias/active', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({ alias: z.string().min(1) });
+    const bodySchema = z.object({ isActive: z.boolean() });
+    const { alias } = paramsSchema.parse(req.params);
+    const { isActive } = bodySchema.parse(req.body);
+    const result = await query(
+      `UPDATE stream_aliases
+       SET is_active = $2, updated_at = NOW()
+       WHERE alias = $1
+       RETURNING alias, channel_id, is_active, created_at, updated_at`,
+      [String(alias).trim(), !!isActive],
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Alias not found' });
+    return res.json(result.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: delete stream alias
+router.delete('/stream-aliases/:alias', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({ alias: z.string().min(1) });
+    const { alias } = paramsSchema.parse(req.params);
+    const result = await query('DELETE FROM stream_aliases WHERE alias = $1', [String(alias).trim()]);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Alias not found' });
+    return res.status(204).send();
   } catch (err) {
     return next(err);
   }
@@ -438,6 +556,7 @@ router.delete('/channels/:id', async (req, res, next) => {
 
       let result;
       try {
+        await client.query('DELETE FROM stream_aliases WHERE channel_id = $1', [channelId]).catch(() => { });
         result = await client.query(
           `WITH
             _u AS (DELETE FROM user_unlocked_channels WHERE channel_id = $1),

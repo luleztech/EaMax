@@ -48,6 +48,45 @@ query(
   `UPDATE channels SET drm_type = 'CLEARKEY' WHERE drm_protected = true AND (drm_type IS NULL OR drm_type = 'NONE')`
 ).catch(() => {});
 
+// Alias support:
+// - channels.stream_alias: optional alias key instead of stream_url
+// - stream_aliases table stores alias -> real stream url
+query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS stream_alias TEXT`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration stream_alias (non-fatal):', err.message);
+  }
+});
+query(
+  `ALTER TABLE channels ALTER COLUMN stream_url DROP NOT NULL`
+).catch(() => {});
+query(
+  `CREATE TABLE IF NOT EXISTS stream_aliases (
+     alias TEXT PRIMARY KEY,
+     stream_url TEXT NOT NULL,
+     channel_id INTEGER REFERENCES channels(id),
+     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+     created_at TIMESTAMP DEFAULT NOW(),
+     updated_at TIMESTAMP DEFAULT NOW()
+   )`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration stream_aliases (non-fatal):', err.message);
+  }
+});
+query(
+  `ALTER TABLE stream_aliases ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+).catch(() => {});
+query(
+  `ALTER TABLE stream_aliases ADD COLUMN IF NOT EXISTS channel_id INTEGER REFERENCES channels(id)`
+).catch(() => {});
+query(
+  `ALTER TABLE stream_aliases ALTER COLUMN stream_url DROP NOT NULL`
+).catch(() => {});
+
 // Simple health check (no DB required)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'EaMax backend is running' });

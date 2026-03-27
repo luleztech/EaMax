@@ -32,6 +32,8 @@ const ContentSection = () => {
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [thumbnailEmoji, setThumbnailEmoji] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [streamAlias, setStreamAlias] = useState('');
+  const [streamSource, setStreamSource] = useState('url'); // url | alias
   const [selectedColor, setSelectedColor] = useState('#7c3aed');
   const [isActive, setIsActive] = useState(true);
   const [drmType, setDrmType] = useState('NONE'); // NONE | CLEARKEY | WIDEVINE | PLAYREADY
@@ -94,6 +96,8 @@ const ContentSection = () => {
     setThumbnailUrl('');
     setThumbnailEmoji('');
     setVideoUrl('');
+    setStreamAlias('');
+    setStreamSource('url');
     setSelectedColor('#7c3aed');
     setIsActive(true);
     setDrmType('NONE');
@@ -110,8 +114,12 @@ const ContentSection = () => {
       showStatusModal('Missing name', 'Please enter channel name.');
       return;
     }
-    if (!videoUrl.trim()) {
+    if (streamSource === 'url' && !videoUrl.trim()) {
       showStatusModal('Missing video URL', 'Please enter video URL.');
+      return;
+    }
+    if (streamSource === 'alias' && !streamAlias.trim()) {
+      showStatusModal('Missing alias', 'Please enter stream alias.');
       return;
     }
     if (!useEmoji && !thumbnailUrl.trim()) {
@@ -135,7 +143,8 @@ const ContentSection = () => {
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
-      streamUrl: videoUrl.trim(),
+      ...(streamSource === 'url' ? { streamUrl: videoUrl.trim() } : {}),
+      ...(streamSource === 'alias' ? { streamAlias: streamAlias.trim() } : {}),
       color: selectedColor,
       isActive,
       drmType,
@@ -354,7 +363,15 @@ const ContentSection = () => {
                       setThumbnailUrl(channel.thumbnail_url || '');
                       setThumbnailEmoji(channel.thumbnail_emoji || '');
                       setUseEmoji(!!channel.thumbnail_emoji);
-                      setVideoUrl(channel.stream_url || '');
+                      const existingAlias = channel.stream_alias ?? channel.streamAlias ?? '';
+                      setStreamAlias(existingAlias ? String(existingAlias) : '');
+                      if (existingAlias) {
+                        setStreamSource('alias');
+                        setVideoUrl('');
+                      } else {
+                        setStreamSource('url');
+                        setVideoUrl(channel.stream_url || '');
+                      }
                       setSelectedColor(channel.color || '#7c3aed');
                       setIsActive(
                         typeof channel.is_active === 'boolean'
@@ -423,6 +440,8 @@ const ContentSection = () => {
                   setThumbnailUrl('');
                   setThumbnailEmoji('');
                   setVideoUrl('');
+                  setStreamAlias('');
+                  setStreamSource('url');
                   setSelectedColor('#7c3aed');
                   setIsActive(true);
                   setDrmType('NONE');
@@ -477,6 +496,55 @@ const ContentSection = () => {
               {/* Media card */}
               <View style={styles.formCard}>
                 <Text style={styles.formCardTitle}>Media</Text>
+                <View style={styles.inputSection}>
+                  <Text style={styles.inputLabel}>Stream source *</Text>
+                  <View style={styles.categoryRow}>
+                    {[
+                      { id: 'url', label: 'URL' },
+                      { id: 'alias', label: 'Alias' },
+                    ].map((opt) => {
+                      const active = streamSource === opt.id;
+                      return (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={[styles.categoryChip, active && styles.categoryChipActive]}
+                          onPress={() => setStreamSource(opt.id)}>
+                          <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+                {streamSource === 'url' ? (
+                  <View style={styles.inputSection}>
+                    <Text style={styles.inputLabel}>Video URL *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="https://..."
+                      placeholderTextColor="#6b7280"
+                      value={videoUrl}
+                      onChangeText={setVideoUrl}
+                      autoCapitalize="none"
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.inputSection}>
+                    <Text style={styles.inputLabel}>Alias key *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. ss1"
+                      placeholderTextColor="#6b7280"
+                      value={streamAlias}
+                      onChangeText={setStreamAlias}
+                      autoCapitalize="none"
+                    />
+                    <Text style={styles.inputHint}>
+                      Alias must exist in Settings → Stream aliases.
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Thumbnail</Text>
                   <View style={styles.thumbnailTypeToggle}>

@@ -224,6 +224,33 @@ export const adminSettingsAPI = {
 };
 
 /**
+ * Admin Stream Aliases API
+ * alias -> real stream URL
+ */
+export const adminStreamAliasesAPI = {
+  list: async () => {
+    return apiRequest('/api/admin/stream-aliases');
+  },
+  upsert: async ({ alias, channelId, isActive = true }) => {
+    return apiRequest('/api/admin/stream-aliases', {
+      method: 'POST',
+      body: JSON.stringify({ alias, channelId, isActive }),
+    });
+  },
+  setActive: async (alias, isActive) => {
+    return apiRequest(`/api/admin/stream-aliases/${encodeURIComponent(alias)}/active`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive: !!isActive }),
+    });
+  },
+  remove: async (alias) => {
+    return apiRequest(`/api/admin/stream-aliases/${encodeURIComponent(alias)}`, {
+      method: 'DELETE',
+    });
+  },
+};
+
+/**
  * Admin Matches API
  */
 export const adminMatchesAPI = {

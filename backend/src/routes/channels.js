@@ -12,15 +12,23 @@ router.get('/', async (req, res, next) => {
     });
     const parsed = schema.safeParse(req.query);
 
-    let sql = 'SELECT * FROM channels WHERE is_active = TRUE';
+    let sql = `
+      SELECT
+        c.*,
+        COALESCE(c.stream_url, t.stream_url) AS resolved_stream_url
+      FROM channels c
+      LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
+      LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
+      WHERE c.is_active = TRUE
+    `;
     const params = [];
 
     if (parsed.success && parsed.data.category) {
-      sql += ' AND category = $1';
+      sql += ' AND c.category = $1';
       params.push(parsed.data.category);
     }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY c.created_at DESC';
 
     const result = await query(sql, params);
     const rows = (result.rows || []).map((row) => {
@@ -30,6 +38,10 @@ router.get('/', async (req, res, next) => {
       const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
       const out = {
         ...row,
+        stream_url: row.resolved_stream_url ?? row.stream_url,
+        streamUrl: row.resolved_stream_url ?? row.stream_url,
+        stream_alias: row.stream_alias ?? null,
+        streamAlias: row.stream_alias ?? null,
         points_required: pts,
         pointsRequired: Number.isNaN(pts) ? 0 : pts,
         drm_type: drmType,
@@ -59,7 +71,18 @@ router.get('/:id', async (req, res, next) => {
     if (!parsed.success) return res.status(400).json({ error: 'Invalid channel id' });
     const id = parsed.data.id;
     const result = await query(
-      'SELECT id, name, category, stream_url, thumbnail_url, thumbnail_emoji, color, points_required, drm_protected, COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key, COALESCE(unlock_to_free, false) AS unlock_to_free FROM channels WHERE id = $1 AND is_active = TRUE',
+      `SELECT
+         c.id, c.name, c.category,
+         COALESCE(c.stream_url, t.stream_url) AS stream_url,
+         c.stream_alias,
+         c.thumbnail_url, c.thumbnail_emoji, c.color, c.points_required, c.drm_protected,
+         COALESCE(c.drm_type, 'NONE') AS drm_type,
+         c.drm_clear_key,
+         COALESCE(c.unlock_to_free, false) AS unlock_to_free
+       FROM channels c
+       LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
+       LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
+       WHERE c.id = $1 AND c.is_active = TRUE`,
       [id]
     );
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Channel not found' });
@@ -75,6 +98,8 @@ router.get('/:id', async (req, res, next) => {
       category: row.category,
       stream_url: row.stream_url,
       streamUrl: row.stream_url,
+      stream_alias: row.stream_alias ?? null,
+      streamAlias: row.stream_alias ?? null,
       thumbnail_url: row.thumbnail_url,
       thumbnail_emoji: row.thumbnail_emoji,
       color: row.color,

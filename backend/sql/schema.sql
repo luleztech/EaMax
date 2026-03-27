@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS channels (
   id SERIAL PRIMARY KEY,
   name VARCHAR(128) NOT NULL,
   category VARCHAR(32) NOT NULL, -- football | movies | habari | tamthilia | wanyama | katuni | sayansi
-  stream_url TEXT NOT NULL,
+  stream_url TEXT,
+  stream_alias TEXT,
   thumbnail_url TEXT,
   thumbnail_emoji VARCHAR(8),
   color VARCHAR(16),
@@ -29,6 +30,15 @@ CREATE TABLE IF NOT EXISTS channels (
   drm_clear_key TEXT,                   -- kid:key (hex) when drm_type = CLEARKEY
   owner_user_id INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS stream_aliases (
+  alias TEXT PRIMARY KEY,
+  stream_url TEXT,
+  channel_id INTEGER REFERENCES channels(id),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS user_unlocked_channels (
