@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -60,8 +60,16 @@ const UsersSection = ({ isActive }) => {
   const [totalUsers, setTotalUsers] = useState(0);
   const wasActiveRef = useRef(false);
 
+  // Show status modal
+  const showStatusModal = useCallback((type, title, message) => {
+    setStatusModalType(type);
+    setStatusModalTitle(title);
+    setStatusModalMessage(message);
+    setStatusModalVisible(true);
+  }, [setStatusModalType, setStatusModalTitle, setStatusModalMessage, setStatusModalVisible]);
+
   // Fetch users from backend with filters
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const { users: data, total } = await dashboardAPI.getUsers(200, 0, filter, searchQuery);
       
@@ -105,11 +113,11 @@ const UsersSection = ({ isActive }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [filter, searchQuery, showStatusModal]);
 
   useEffect(() => {
     fetchUsers();
-  }, [filter, searchQuery]);
+  }, [filter, searchQuery, fetchUsers]);
 
   // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
   useEffect(() => {
@@ -117,26 +125,18 @@ const UsersSection = ({ isActive }) => {
       fetchUsers();
     }
     wasActiveRef.current = !!isActive;
-  }, [isActive]);
+  }, [isActive, fetchUsers]);
 
   // Auto-refresh every 15s while Users tab is active so premium status updates when payment succeeds
   useEffect(() => {
     if (!isActive) return;
     const id = setInterval(() => fetchUsers(), 15000);
     return () => clearInterval(id);
-  }, [isActive, filter, searchQuery]);
+  }, [isActive, filter, searchQuery, fetchUsers]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchUsers();
-  };
-
-  // Show status modal
-  const showStatusModal = (type, title, message) => {
-    setStatusModalType(type);
-    setStatusModalTitle(title);
-    setStatusModalMessage(message);
-    setStatusModalVisible(true);
   };
 
   // Handle block user

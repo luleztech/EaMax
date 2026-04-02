@@ -49,7 +49,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
 
   const loadAd = useCallback(() => {
     try {
-      const unitId = getRewardedUnitId();
+      const unitId = REWARDED_AD_UNIT_ID;
       
       if (!unitId) {
         console.error('[AdModal] No ad unit ID available');

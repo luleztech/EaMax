@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -39,7 +39,7 @@ const StreamingApp = () => {
 
   const CONGRATS_STORAGE_KEY = 'premiumCongratsShown';
 
-  const refreshUserPoints = async () => {
+  const refreshUserPoints = useCallback(async () => {
     try {
       const userId = await AsyncStorage.getItem('userId');
       if (userId) {
@@ -64,7 +64,7 @@ const StreamingApp = () => {
       console.error('Failed to refresh user points:', error);
     }
     return userPoints;
-  };
+  }, [userPoints]);
 
   // Ensure user ID exists, load settings, and refresh FCM token on every app open
   // Token refresh is critical: FCM tokens can expire after ~270 days of inactivity (Android).
@@ -102,7 +102,7 @@ const StreamingApp = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshUserPoints]);
 
   // Show notification permission modal for every user who has not granted yet (like YouTube/WhatsApp).
   // So even if they skipped before or didn't open the app for a long time, they see the modal on next open.

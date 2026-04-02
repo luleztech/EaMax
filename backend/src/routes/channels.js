@@ -2,6 +2,8 @@ const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
 
+/* global Buffer */
+
 const router = express.Router();
 
 // Public: list active channels, optionally filter by category

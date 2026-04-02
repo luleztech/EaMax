@@ -46,12 +46,35 @@ router.post('/zeno/start', async (req, res, next) => {
     // - Airtel: 068, 069, 078
     // - Tigo: 067, 077 (0671…, 0679…, etc.)
     let normalizedPhone = data.phone.replace(/\s+/g, ''); // Remove spaces
-    
-    // Convert international format to local format
+
+    // Payments only go to Tanzania mobile money — reject any other international dialing form
+    if (normalizedPhone.startsWith('+') && !normalizedPhone.startsWith('+255')) {
+      return res.status(400).json({
+        error:
+          'Malipo yanatumwa kwa nambari za simu za Tanzania pekee (M-Pesa, Airtel, Tigo, Halopesa, Yas). Tumia 07…/06… au +255….',
+      });
+    }
+    if (normalizedPhone.startsWith('00') && !normalizedPhone.startsWith('00255')) {
+      return res.status(400).json({
+        error:
+          'Malipo yanatumwa kwa nambari za simu za Tanzania pekee. Tumia 07…/06… au +255….',
+      });
+    }
+
+    // Convert Tanzania country code → local 0… (only format sent to ZenoPay)
     if (normalizedPhone.startsWith('+255')) {
       normalizedPhone = '0' + normalizedPhone.slice(4);
+    } else if (normalizedPhone.startsWith('00255')) {
+      normalizedPhone = '0' + normalizedPhone.slice(5);
     } else if (normalizedPhone.startsWith('255') && normalizedPhone.length >= 12) {
       normalizedPhone = '0' + normalizedPhone.slice(3);
+    }
+
+    if (!/^\d+$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        error:
+          'Nambari ya simu lazima iwe nambari ya Tanzania tu: tarakimu pekee baada ya kuweka muundo sahihi (mfano 0712345678 au +255712345678).',
+      });
     }
     
     // Validate Tanzanian mobile number format
@@ -105,7 +128,7 @@ router.post('/zeno/start', async (req, res, next) => {
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
     const isHalotel = normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063');
-    // ZenoPay Tanzania: single local format (0XXXXXXXXX) for every network — Halotel same as Vodacom/Airtel/Tigo/Yas.
+    // ZenoPay mobile_money_tanzania: must receive local format 0XXXXXXXXX only (never foreign country codes)
     const phoneForZeno = normalizedPhone;
 
     const payload = {

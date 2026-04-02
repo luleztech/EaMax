@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -50,14 +50,14 @@ const ContentSection = () => {
   const [statusModalMessage, setStatusModalMessage] = useState('');
   const [channelSearchQuery, setChannelSearchQuery] = useState('');
 
-  const showStatusModal = (title, message) => {
+  const showStatusModal = useCallback((title, message) => {
     setStatusModalTitle(title);
     setStatusModalMessage(message);
     setStatusModalVisible(true);
-  };
+  }, [setStatusModalTitle, setStatusModalMessage, setStatusModalVisible]);
 
   // Load channels from backend
-  const fetchChannels = async () => {
+  const fetchChannels = useCallback(async () => {
     try {
       const data = await adminChannelsAPI.getChannels();
       setChannels(data);
@@ -68,11 +68,11 @@ const ContentSection = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [showStatusModal]);
 
   useEffect(() => {
     fetchChannels();
-  }, []);
+  }, [fetchChannels]);
 
   const onRefresh = () => {
     setRefreshing(true);

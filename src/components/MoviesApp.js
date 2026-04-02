@@ -24,7 +24,7 @@ import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
 import ChannelUnlockModal from './ChannelUnlockModal';
-import VideoPlayer from './VideoPlayer';
+import VideoPlayer from '../player/VideoPlayer';
 import { settingsAPI, channelsAPI, userAPI, API_BASE_URL } from '../config/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -72,7 +72,9 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
     if (videoPlayerVisible && playingChannel) {
       const url = playingChannel.streamUrl || playingChannel.stream_url || '(empty)';
       const clearkey = playingChannel.drmClearKey ?? playingChannel.drm_clear_key ?? null;
-      console.warn('[MoviesApp] Channel selected – URL & ClearKey:', JSON.stringify({ channelId: playingChannel.id, channelName: playingChannel.name, streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey }, null, 2));
+      if (__DEV__) {
+        console.log('[MoviesApp] Channel selected – URL & ClearKey:', JSON.stringify({ channelId: playingChannel.id, channelName: playingChannel.name, streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey }, null, 2));
+      }
     }
   }, [videoPlayerVisible, playingChannel]);
 

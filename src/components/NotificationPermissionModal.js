@@ -83,7 +83,7 @@ const NotificationPermissionModal = ({ visible, onAllow, onSkip }) => {
       dot2Anim.setValue(0);
       dot3Anim.setValue(0);
     }
-  }, [visible]);
+  }, [visible, bellBounce, glowAnim, dot1Anim, dot2Anim, dot3Anim, opacityAnim, scaleAnim]);
 
   const glowOpacity = glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0.9] });
 

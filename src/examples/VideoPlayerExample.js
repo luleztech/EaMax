@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { View, StyleSheet, ScrollView, Text, TouchableOpacity } from 'react-native';
-import VideoPlayer from '../components/VideoPlayer';
+import VideoPlayer from '../player/VideoPlayer';
 
 const HLS_URL = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 const MP4_URL = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -25,7 +25,7 @@ import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
 import ChannelUnlockModal from './ChannelUnlockModal';
-import VideoPlayer from './VideoPlayer';
+import VideoPlayer from '../player/VideoPlayer';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -132,10 +132,12 @@ const CombinedApp = ({
     if (videoPlayerVisible && playingChannel) {
       const url = playingChannel.streamUrl || playingChannel.stream_url || '(empty)';
       const clearkey = playingChannel.drmClearKey ?? playingChannel.drm_clear_key ?? null;
-      console.warn('[CombinedApp] Playing:', JSON.stringify({
-        channelId: playingChannel.id, channelName: playingChannel.name,
-        streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey,
-      }, null, 2));
+      if (__DEV__) {
+        console.log('[CombinedApp] Playing:', JSON.stringify({
+          channelId: playingChannel.id, channelName: playingChannel.name,
+          streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey,
+        }, null, 2));
+      }
     }
   }, [videoPlayerVisible, playingChannel]);
 
@@ -159,7 +161,7 @@ const CombinedApp = ({
     }));
   };
 
-  const loadSlides = async () => {
+  const loadSlides = useCallback(async () => {
     try {
       const [footballData, moviesData] = await Promise.all([
         settingsAPI.getCarouselSlides('football'),
@@ -173,9 +175,9 @@ const CombinedApp = ({
     } catch (error) {
       console.error('Failed to load carousel slides:', error);
     }
-  };
+  }, []);
 
-  const loadChannels = async () => {
+  const loadChannels = useCallback(async () => {
     try {
       const allChannels = await channelsAPI.getChannels();
       const football = [];
@@ -213,16 +215,16 @@ const CombinedApp = ({
     } catch (error) {
       console.error('Failed to load channels:', error);
     }
-  };
+  }, []);
 
-  const loadMatches = async () => {
+  const loadMatches = useCallback(async () => {
     try {
       const data = await matchesAPI.getUpcomingMatches();
       setUpcomingMatches(Array.isArray(data) ? data : []);
     } catch (error) {
       setUpcomingMatches([]);
     }
-  };
+  }, []);
 
   const refreshUserPoints = async () => {
     try {
@@ -251,7 +253,7 @@ const CombinedApp = ({
     })();
     AsyncStorage.getItem('userId').then((id) => { if (id) setUserId(id); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadSlides, loadChannels, loadMatches]);
 
   useEffect(() => { setCurrentUserPoints(userPoints); }, [userPoints]);
 

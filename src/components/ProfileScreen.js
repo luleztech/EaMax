@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -44,7 +44,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
   const [subscriptionEndDate, setSubscriptionEndDate] = useState(null);
 
   // Load user data: use shared getOrCreateUserId (ID already created on app load), then fetch latest from backend
-  const loadUserData = async (showLoading = false) => {
+  const loadUserData = useCallback(async (showLoading = false) => {
     try {
       if (showLoading) {
         setLoading(true);
@@ -79,12 +79,12 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
         setLoading(false);
       }
     }
-  };
+  }, [parentPoints]);
 
   // Load or generate user ID and register with backend
   useEffect(() => {
     loadUserData(true);
-  }, []);
+  }, [loadUserData]);
 
   // Initialize push notifications when user ID is available (permission + FCM)
   useEffect(() => {

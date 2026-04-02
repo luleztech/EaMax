@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -57,7 +57,7 @@ const ImageCarousel = ({ items }) => {
     });
   }, [items]);
 
-  const triggerSlide = (targetIndex) => {
+  const triggerSlide = useCallback((targetIndex) => {
     if (!items || items.length <= 1) return;
     if (targetIndex === currentIndexRef.current) return;
 
@@ -86,25 +86,25 @@ const ImageCarousel = ({ items }) => {
         }
       }
     });
-  };
+  }, [items, setCurrentIndex, slideOffset]);
 
-  const goTo = (dir) => {
+  const goTo = useCallback((dir) => {
     if (isAnimatingRef.current || !items || items.length <= 1) return;
     const next = ((currentIndexRef.current + dir) + items.length) % items.length;
     triggerSlide(next);
-  };
+  }, [items, triggerSlide]);
 
   // ── Auto-advance ─────────────────────────────────────────────────────────────
-  const resetTimer = () => {
+  const resetTimer = useCallback(() => {
     if (autoTimerRef.current) clearInterval(autoTimerRef.current);
     if (!items || items.length <= 1) return;
     autoTimerRef.current = setInterval(() => goTo(1), AUTO_SLIDE_INTERVAL);
-  };
+  }, [items, goTo]);
 
   useEffect(() => {
     resetTimer();
     return () => { if (autoTimerRef.current) clearInterval(autoTimerRef.current); };
-  }, [items]);
+  }, [items, resetTimer]);
 
   // ── Swipe gesture ────────────────────────────────────────────────────────────
   const panResponder = useRef(

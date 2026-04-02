@@ -1,0 +1,217 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+const String apiBaseUrl = 'https://eamax-production.up.railway.app';
+
+Future<void> _sleep(int ms) => Future<void>.delayed(Duration(milliseconds: ms));
+
+bool _isTransientNetworkError(Object error) {
+  final msg = error.toString().toLowerCase();
+  return msg.contains('socketexception') ||
+      msg.contains('connection') ||
+      msg.contains('timeout') ||
+      msg.contains('failed host') ||
+      msg.contains('network') ||
+      msg.contains('handshake');
+}
+
+Future<dynamic> _apiRequestOnce(
+  String endpoint, {
+  String method = 'GET',
+  Map<String, dynamic>? body,
+}) async {
+  final url = Uri.parse('$apiBaseUrl$endpoint');
+  final headers = <String, String>{'Content-Type': 'application/json'};
+  final http.Response response;
+  switch (method.toUpperCase()) {
+    case 'POST':
+      response = await http
+          .post(url, headers: headers, body: body != null ? jsonEncode(body) : null)
+          .timeout(const Duration(seconds: 45));
+    case 'GET':
+    default:
+      response = await http.get(url, headers: headers).timeout(const Duration(seconds: 45));
+  }
+
+  dynamic decoded;
+  final text = response.body;
+  if (text.trim().isNotEmpty) {
+    try {
+      decoded = jsonDecode(text);
+    } catch (_) {
+      decoded = null;
+    }
+  }
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    final err = decoded is Map ? decoded['error'] : null;
+    throw Exception(err ?? 'HTTP ${response.statusCode}');
+  }
+  return decoded ?? <String, dynamic>{};
+}
+
+Future<dynamic> apiRequest(
+  String endpoint, {
+  String method = 'GET',
+  Map<String, dynamic>? body,
+}) async {
+  const maxAttempts = 4;
+  Object? lastErr;
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await _apiRequestOnce(endpoint, method: method, body: body);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxAttempts && _isTransientNetworkError(e)) {
+        await _sleep(400 * attempt);
+        continue;
+      }
+      rethrow;
+    }
+  }
+  throw lastErr ?? Exception('Request failed');
+}
+
+class UserApi {
+  Future<Map<String, dynamic>> register(String externalId) async {
+    final r = await apiRequest(
+      '/api/users/register',
+      method: 'POST',
+      body: {'externalId': externalId},
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<Map<String, dynamic>> getUser(String externalId) async {
+    final r = await apiRequest('/api/users/$externalId');
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<Map<String, dynamic>> recordAdWatched(String externalId, {int points = 20}) async {
+    final r = await apiRequest(
+      '/api/users/$externalId/ads/watched',
+      method: 'POST',
+      body: {'points': points},
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<Map<String, dynamic>> unlockChannel(String externalId, int channelId) async {
+    final r = await apiRequest(
+      '/api/users/$externalId/channels/$channelId/unlock',
+      method: 'POST',
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<void> registerFcmToken(String externalId, String fcmToken) async {
+    await apiRequest(
+      '/api/users/$externalId/fcm-token',
+      method: 'POST',
+      body: {'fcmToken': fcmToken},
+    );
+  }
+}
+
+class ChannelsApi {
+  Future<List<dynamic>> getChannels({String? category}) async {
+    final q = category != null ? '?category=$category' : '';
+    final data = await apiRequest('/api/channels$q');
+    if (data is List) return data;
+    return [];
+  }
+
+  Future<Map<String, dynamic>> getChannel(int channelId) async {
+    final r = await apiRequest('/api/channels/$channelId');
+    return Map<String, dynamic>.from(r as Map);
+  }
+}
+
+class SettingsApi {
+  Future<Map<String, dynamic>> getWhatsAppNumber() async {
+    final r = await apiRequest('/api/settings/whatsapp');
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<bool> getChannelsPremiumOnly() async {
+    try {
+      final data = await apiRequest('/api/settings/channels-premium-only');
+      if (data is Map) return data['channelsPremiumOnly'] == true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<dynamic>> getCarouselSlides(String category) async {
+    final data = await apiRequest('/api/carousel?category=$category');
+    if (data is List) return data;
+    return [];
+  }
+}
+
+class MatchesApi {
+  Future<List<dynamic>> getUpcomingMatches() async {
+    try {
+      final data = await apiRequest('/api/matches');
+      if (data is List) return data;
+      return [];
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('404') || msg.contains('not found')) return [];
+      rethrow;
+    }
+  }
+}
+
+class PaymentsApi {
+  Future<Map<String, dynamic>> startZenoPayment({
+    required String externalId,
+    required String bundle,
+    required int amount,
+    required String phone,
+    required String email,
+    required String name,
+  }) async {
+    final r = await apiRequest(
+      '/api/payments/zeno/start',
+      method: 'POST',
+      body: {
+        'externalId': externalId,
+        'bundle': bundle,
+        'amount': amount,
+        'phone': phone,
+        'email': email,
+        'name': name,
+      },
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+
+  Future<Map<String, dynamic>> checkZenoStatus(String orderId) async {
+    try {
+      final r = await apiRequest('/api/payments/zeno/status?orderId=${Uri.encodeComponent(orderId)}');
+      return Map<String, dynamic>.from(r as Map);
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('no order found') || msg.contains('order not found')) {
+        return {'status': 'PENDING', 'raw': {}};
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> completePaymentForTesting(String orderId) async {
+    final r = await apiRequest(
+      '/api/payments/zeno/complete/${Uri.encodeComponent(orderId)}',
+      method: 'POST',
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+}
+
+final userApi = UserApi();
+final channelsApi = ChannelsApi();
+final settingsApi = SettingsApi();
+final matchesApi = MatchesApi();
+final paymentsApi = PaymentsApi();

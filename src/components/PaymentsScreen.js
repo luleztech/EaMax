@@ -20,6 +20,25 @@ import { settingsAPI, paymentsAPI } from '../config/api';
 const ACCENT = '#22c55e';
 const ACCENT_DARK = '#16a34a';
 
+/** Tanzanian GSM prefixes — must match backend `payments.js` */
+const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
+
+/** Normalize user input to local TZ format (0…). Returns { local } or { error: 'international' | 'invalid' } */
+function normalizeTzPhoneToLocal(raw) {
+  let s = String(raw || '').replace(/\s+/g, '');
+  if (!s) return { error: 'invalid', local: null };
+  if (s.startsWith('+')) {
+    if (!s.startsWith('+255')) return { error: 'international', local: null };
+    s = `0${s.slice(4)}`;
+  } else if (s.startsWith('00255')) {
+    s = `0${s.slice(5)}`;
+  } else if (s.startsWith('255') && s.length >= 12) {
+    s = `0${s.slice(3)}`;
+  }
+  if (!/^\d+$/.test(s)) return { error: 'invalid', local: null };
+  return { error: null, local: s };
+}
+
 const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSuccess }) => {
   const [selectedBundle, setSelectedBundle] = useState(null);
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -92,7 +111,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         clearInterval(pollingIntervalId);
       }
     };
-  }, [pollingIntervalId]);
+  }, [pollingIntervalId, onPaymentSuccess]);
 
   // Poll for payment status if we have an order ID
   useEffect(() => {
@@ -200,7 +219,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       }
       setConsecutiveOrderNotFound(0);
     };
-  }, [pollingOrderId]);
+  }, [pollingOrderId, onPaymentSuccess, pollingIntervalId]);
 
   const showStatusModal = (title, message, isSuccess = true) => {
     setStatusModalTitle(title);
@@ -269,7 +288,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       showStatusModal(
         'Ombi limetumwa',
         result.message ||
-          `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${phoneNumber}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
+          `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${cleanPhone}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
         true,
       );
       setSelectedBundle(null);
@@ -401,11 +420,11 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
               value={phoneNumber}
               onChangeText={setPhoneNumber}
               keyboardType="phone-pad"
-              maxLength={12}
+              maxLength={15}
             />
           </View>
           <Text style={styles.inputHint}>
-            Weka namba yako ukianza na 0, bila kuandika +255. Mfano: 0712345678
+            Nambari ya Tanzania pekee: anza kwa 0 (mfano 0712345678) au bandika +255712345678 — ombi litatumwa kwa muundo wa ndani (0…).
           </Text>
           {(phoneNumber.startsWith('061') || phoneNumber.startsWith('062') || phoneNumber.startsWith('063')) && (
             <Text style={[styles.inputHint, styles.halotelHint]}>

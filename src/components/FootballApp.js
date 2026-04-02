@@ -24,7 +24,7 @@ import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
 import ChannelUnlockModal from './ChannelUnlockModal';
-import VideoPlayer from './VideoPlayer';
+import VideoPlayer from '../player/VideoPlayer';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
@@ -72,7 +72,9 @@ const FootballApp = ({
     if (videoPlayerVisible && playingChannel) {
       const url = playingChannel.streamUrl || playingChannel.stream_url || '(empty)';
       const clearkey = playingChannel.drmClearKey ?? playingChannel.drm_clear_key ?? null;
-      console.warn('[FootballApp] Channel selected – URL & ClearKey:', JSON.stringify({ channelId: playingChannel.id, channelName: playingChannel.name, streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey }, null, 2));
+      if (__DEV__) {
+        console.log('[FootballApp] Channel selected – URL & ClearKey:', JSON.stringify({ channelId: playingChannel.id, channelName: playingChannel.name, streamUrl: url, drmType: playingChannel.drmType ?? playingChannel.drm_type, clearkey }, null, 2));
+      }
     }
   }, [videoPlayerVisible, playingChannel]);
 
@@ -435,18 +437,24 @@ const FootballApp = ({
             </View>
 
             {(initialLoading || refreshing) ? (
-              <View style={styles.channelsShimmerGrid}>
-                {[1, 2, 3, 4].map((i) => (
-                  <View key={i} style={styles.shimmerChannelCardWrapChannels}>
-                    <ShimmerPlaceholder
-                      width={(width - 48) / 2}
-                      height={120}
-                      borderRadius={14}
-                      baseColor="#1e1b4b"
-                      highlightColor="rgba(74, 222, 128, 0.15)"
-                    />
-                  </View>
-                ))}
+              <View style={styles.moviesShimmerCategory}>
+                <View style={styles.sectionHeader}>
+                  <ShimmerPlaceholder width={120} height={20} borderRadius={6} />
+                  <ShimmerPlaceholder width={72} height={16} borderRadius={6} />
+                </View>
+                <View style={styles.moviesShimmerGrid}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <View key={i} style={styles.shimmerChannelCardWrap}>
+                      <ShimmerPlaceholder
+                        width={(width - 48) / 2}
+                        height={120}
+                        borderRadius={14}
+                        baseColor="#1e1b4b"
+                        highlightColor="rgba(168, 85, 247, 0.15)"
+                      />
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : footballChannels.length === 0 ? (
               <View style={{ paddingVertical: 24, alignItems: 'center' }}>
@@ -582,79 +590,32 @@ const FootballApp = ({
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }>
           {(initialLoading || refreshing) ? (
-            <View style={styles.shimmerContainer}>
-              {/* Hero carousel shimmer */}
-              <View style={styles.shimmerCarouselWrap}>
+            <View style={styles.moviesShimmerContainer}>
+              <View style={styles.moviesShimmerCarousel}>
                 <ShimmerPlaceholder
                   width={width - 32}
-                  height={190}
-                  borderRadius={20}
-                  baseColor="#020617"
-                  highlightColor="rgba(74, 222, 128, 0.16)"
+                  height={180}
+                  borderRadius={16}
+                  baseColor="#1e1b4b"
+                  highlightColor="rgba(168, 85, 247, 0.18)"
                 />
               </View>
-
-              {/* Trending channels shimmer */}
-              <View style={styles.homeChannelsSection}>
+              <View style={styles.moviesShimmerCategory}>
                 <View style={styles.sectionHeader}>
-                  <ShimmerPlaceholder
-                    width={130}
-                    height={20}
-                    borderRadius={10}
-                    baseColor="#020617"
-                    highlightColor="rgba(74, 222, 128, 0.18)"
-                  />
-                  <ShimmerPlaceholder
-                    width={70}
-                    height={16}
-                    borderRadius={10}
-                    baseColor="#020617"
-                    highlightColor="rgba(74, 222, 128, 0.18)"
-                  />
+                  <ShimmerPlaceholder width={120} height={20} borderRadius={6} />
+                  <ShimmerPlaceholder width={72} height={16} borderRadius={6} />
                 </View>
-                <View style={styles.homeChannelsGrid}>
+                <View style={styles.moviesShimmerGrid}>
                   {[1, 2, 3, 4].map((i) => (
                     <View key={i} style={styles.shimmerChannelCardWrap}>
                       <ShimmerPlaceholder
                         width={(width - 48) / 2}
                         height={120}
-                        borderRadius={18}
-                        baseColor="#020617"
-                        highlightColor="rgba(74, 222, 128, 0.2)"
+                        borderRadius={14}
+                        baseColor="#1e1b4b"
+                        highlightColor="rgba(168, 85, 247, 0.15)"
                       />
                     </View>
-                  ))}
-                </View>
-              </View>
-
-              {/* Matches section shimmer */}
-              <View style={[styles.homeChannelsSection, { marginTop: 10 }]}>
-                <View style={styles.sectionHeader}>
-                  <ShimmerPlaceholder
-                    width={150}
-                    height={20}
-                    borderRadius={10}
-                    baseColor="#020617"
-                    highlightColor="rgba(74, 222, 128, 0.18)"
-                  />
-                  <ShimmerPlaceholder
-                    width={70}
-                    height={16}
-                    borderRadius={10}
-                    baseColor="#020617"
-                    highlightColor="rgba(74, 222, 128, 0.18)"
-                  />
-                </View>
-                <View style={styles.matchesShimmerRow}>
-                  {[1, 2].map((i) => (
-                    <ShimmerPlaceholder
-                      key={i}
-                      width={width - 32}
-                      height={76}
-                      borderRadius={16}
-                      baseColor="#020617"
-                      highlightColor="rgba(74, 222, 128, 0.2)"
-                    />
                   ))}
                 </View>
               </View>
@@ -1090,30 +1051,26 @@ const styles = StyleSheet.create({
   scrollContentContainer: {
     paddingBottom: 100,
   },
-  shimmerContainer: {
+  moviesShimmerContainer: {
     padding: 16,
     paddingBottom: 100,
   },
-  shimmerCarouselWrap: {
+  moviesShimmerCarousel: {
     marginBottom: 24,
     alignSelf: 'center',
   },
-  matchesShimmerRow: {
+  moviesShimmerCategory: {
+    marginBottom: 24,
+  },
+  moviesShimmerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
     gap: 12,
+    marginTop: 12,
   },
   shimmerChannelCardWrap: {
     width: (width - 48) / 2,
-    borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: 'transparent',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  shimmerChannelCardWrapChannels: {
-    width: (width - 44) / 2,
     borderRadius: 14,
     overflow: 'hidden',
     backgroundColor: 'transparent',
@@ -1427,13 +1384,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 16,
   },
-  channelsShimmerGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    gap: 16,
-    width: '100%',
-  },
   channelCard: {
     width: (width - 48) / 2,
     borderRadius: 16,
@@ -1586,7 +1536,6 @@ const styles = StyleSheet.create({
   channelWatchText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
     fontWeight: '600',
   },
 });

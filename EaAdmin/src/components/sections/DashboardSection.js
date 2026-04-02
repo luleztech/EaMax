@@ -1874,11 +1874,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#9ca3af',
   },
-  carouselTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
   categorySelector: {
     flexDirection: 'row',
     gap: 10,
