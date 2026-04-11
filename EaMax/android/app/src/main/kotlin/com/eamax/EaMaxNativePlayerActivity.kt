@@ -15,6 +15,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.C
 import androidx.core.view.WindowCompat
@@ -29,6 +30,10 @@ import com.eamax.player.StreamSessionBuilder
 
 /** Full-screen playback using the native PlayerManager stack (see repo `player/` sources). */
 class EaMaxNativePlayerActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "EaMaxNativePlayer"
+    }
 
     private lateinit var playerManager: PlayerManager
     private var exoBoundToView = false
@@ -46,7 +51,9 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        // FULL_USER honors system rotation lock (often traps player in portrait). FULL_SENSOR + manifest
+        // fullSensor tracks physical rotation for proper landscape fullscreen playback.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
         applyImmersiveFullscreen()
 
         setContentView(R.layout.activity_native_player)
@@ -174,17 +181,34 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        applyImmersiveFullscreen()
-        val playerView = findViewById<PlayerView>(R.id.player_view)
-        playerView.applyResizeModeForOrientation()
-        syncExoVideoScalingForOrientation()
+        try {
+            super.onConfigurationChanged(newConfig)
+            applyImmersiveFullscreen()
+            val playerView = findViewById<PlayerView>(R.id.player_view)
+            val webContainer = findViewById<FrameLayout>(R.id.webview_container)
+            playerView.applyResizeModeForOrientation()
+            syncExoVideoScalingForOrientation()
 
-        if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            hasBeenLandscapeThisSession = true
-            hideRotateHintOverlay()
-        } else if (playbackReady) {
-            maybeShowRotateHint()
+            if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                hasBeenLandscapeThisSession = true
+                hideRotateHintOverlay()
+            } else if (playbackReady) {
+                maybeShowRotateHint()
+            }
+
+            // Re-measure after rotation so PlayerView / WebView fill the new window (avoids “stuck” portrait layout).
+            window.decorView.post {
+                try {
+                    playerView.requestLayout()
+                    playerView.invalidate()
+                    webContainer.requestLayout()
+                    webContainer.invalidate()
+                } catch (e: Exception) {
+                    Log.w(TAG, "layout after rotation: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "onConfigurationChanged", e)
         }
     }
 

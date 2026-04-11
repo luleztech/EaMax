@@ -34,6 +34,33 @@ router.post('/register', async (req, res, next) => {
   }
 });
 
+/**
+ * Find existing user by FCM device token (after app update / storage loss) so we do not
+ * assign a new external_id when this device is already known in the database.
+ */
+router.post('/resolve-by-fcm', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      fcmToken: z.string().min(1),
+    });
+    const { fcmToken } = bodySchema.parse(req.body);
+    const token = fcmToken.trim();
+    const result = await query(
+      `SELECT external_id FROM users
+       WHERE fcm_token = $1 AND blocked = FALSE
+       ORDER BY fcm_token_updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [token],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No matching user' });
+    }
+    return res.json({ externalId: result.rows[0].external_id });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Get user summary by externalId (returns camelCase for app; isPremium reflects current status including expiry)
 router.get('/:externalId', async (req, res, next) => {
   try {

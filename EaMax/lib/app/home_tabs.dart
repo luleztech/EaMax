@@ -95,51 +95,183 @@ class HomeHeader extends StatelessWidget {
   }
 }
 
+/// Vertical space for tab content padding below the main area (bar + gap above safe inset; add `MediaQuery.padding.bottom` for full reserve).
+const kHomeBottomNavScrollPaddingBody = 66.0;
+
 class HomeBottomNav extends StatelessWidget {
   const HomeBottomNav({super.key, required this.index, required this.onTap, required this.bottomInset});
   final int index;
   final ValueChanged<int> onTap;
   final double bottomInset;
 
+  static const double _sideMargin = 12;
+  static const double _bottomMargin = 6;
+  /// Same value for the bar clip and the active tab — keeps corner curve consistent.
+  static const double _navRadius = 18;
+
   @override
   Widget build(BuildContext context) {
     final items = [
-      (Icons.home, 'Nyumbani'),
-      (Icons.tv, 'Vituo'),
-      (Icons.account_balance_wallet, 'Malipo'),
-      (Icons.person, 'Salio'),
+      (Icons.home_rounded, 'Nyumbani'),
+      (Icons.grid_view_rounded, 'Channel zote'),
+      (Icons.person_outline_rounded, 'Mtumiaji'),
     ];
-    return Container(
-      padding: EdgeInsets.only(bottom: bottomInset < 8 ? 8 : bottomInset, top: 10, left: 4, right: 4),
-      decoration: const BoxDecoration(
-        color: Color(0xF0000000),
-        border: Border(top: BorderSide(color: Color(0xFF1F2937))),
+    final safeBottom = bottomInset < 8 ? 8.0 : bottomInset;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(_sideMargin, 0, _sideMargin, _bottomMargin + safeBottom),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(_navRadius),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.32),
+              blurRadius: 14,
+              offset: const Offset(0, 8),
+              spreadRadius: -3,
+            ),
+            BoxShadow(
+              color: AppColors.accentBlue.withValues(alpha: 0.08),
+              blurRadius: 12,
+              spreadRadius: -5,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(_navRadius),
+          child: Material(
+            color: const Color(0xF81E293B),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(_navRadius),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+              child: Row(
+                children: List.generate(3, (i) {
+                  final active = index == i;
+                  return Expanded(
+                    child: _HomeNavItem(
+                      icon: items[i].$1,
+                      label: items[i].$2,
+                      active: active,
+                      cornerRadius: _navRadius,
+                      onTap: () => onTap(i),
+                    ),
+                  );
+                }),
+              ),
+            ),
+          ),
+        ),
       ),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: List.generate(4, (i) {
-            final active = index == i;
-            return Expanded(
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => onTap(i),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(items[i].$1, size: 24, color: active ? AppColors.accentBlue : AppColors.muted),
-                      const SizedBox(height: 4),
-                      Text(
-                        items[i].$2,
-                        style: TextStyle(fontSize: 12, color: active ? AppColors.accentBlue : AppColors.muted),
+    );
+  }
+}
+
+class _HomeNavItem extends StatelessWidget {
+  const _HomeNavItem({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.cornerRadius,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool active;
+  final double cornerRadius;
+  final VoidCallback onTap;
+
+  static const Color _activeOnGradient = Color(0xFFF0F9FF);
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = AppColors.accentBlue;
+    final r = BorderRadius.circular(cornerRadius);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 1),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: r,
+          splashColor: accent.withValues(alpha: 0.14),
+          highlightColor: accent.withValues(alpha: 0.06),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+            padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+            decoration: BoxDecoration(
+              borderRadius: r,
+              border: active
+                  ? Border.all(color: Colors.white.withValues(alpha: 0.28), width: 1)
+                  : null,
+              gradient: active
+                  ? LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        const Color(0xFF2563EB),
+                        accent,
+                        const Color(0xFF7DD3FC),
+                      ],
+                      stops: const [0.0, 0.55, 1.0],
+                    )
+                  : null,
+              color: active ? null : Colors.transparent,
+              boxShadow: active
+                  ? [
+                      BoxShadow(
+                        color: accent.withValues(alpha: 0.45),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                        spreadRadius: -3,
                       ),
-                    ],
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.22),
+                        blurRadius: 6,
+                        offset: const Offset(0, 3),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 18,
+                  color: active ? _activeOnGradient : AppColors.muted,
+                ),
+                const SizedBox(height: 1),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                      color: active ? _activeOnGradient : AppColors.muted,
+                      letterSpacing: 0.15,
+                      decoration: TextDecoration.none,
+                      shadows: active
+                          ? [
+                              Shadow(
+                                color: Colors.black.withValues(alpha: 0.35),
+                                blurRadius: 6,
+                                offset: const Offset(0, 1),
+                              ),
+                            ]
+                          : null,
+                    ),
                   ),
                 ),
-              ),
-            );
-          }),
+              ],
+            ),
+          ),
         ),
       ),
     );

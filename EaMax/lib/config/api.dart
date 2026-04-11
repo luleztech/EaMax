@@ -82,6 +82,23 @@ class UserApi {
     return Map<String, dynamic>.from(r as Map);
   }
 
+  /// When local storage is empty but this device already registered [fcm_token] in DB.
+  Future<String?> resolveExternalIdByFcmToken(String fcmToken) async {
+    try {
+      final r = await apiRequest(
+        '/api/users/resolve-by-fcm',
+        method: 'POST',
+        body: {'fcmToken': fcmToken},
+      );
+      if (r is! Map) return null;
+      final id = r['externalId']?.toString().trim();
+      if (id == null || id.isEmpty) return null;
+      return id;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Map<String, dynamic>> getUser(String externalId) async {
     final r = await apiRequest('/api/users/$externalId');
     return Map<String, dynamic>.from(r as Map);
@@ -133,14 +150,12 @@ class SettingsApi {
     return Map<String, dynamic>.from(r as Map);
   }
 
+  /// Throws on network/HTTP errors — callers should not treat failures as `false`
+  /// (false means “points/ads allowed”, true means “payment only”).
   Future<bool> getChannelsPremiumOnly() async {
-    try {
-      final data = await apiRequest('/api/settings/channels-premium-only');
-      if (data is Map) return data['channelsPremiumOnly'] == true;
-      return false;
-    } catch (_) {
-      return false;
-    }
+    final data = await apiRequest('/api/settings/channels-premium-only');
+    if (data is Map) return data['channelsPremiumOnly'] == true;
+    return false;
   }
 
   Future<List<dynamic>> getCarouselSlides(String category) async {

@@ -4,9 +4,8 @@ import android.util.Log
 import com.eamax.domain.model.StreamSession
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.min
+import okhttp3.Request
 
 /**
  * Resolves arbitrary stream entry URLs (e.g. https://bailatv.live/sp1.php) to a concrete
@@ -16,7 +15,6 @@ import kotlin.math.min
 object StreamProbe {
 
     private const val TAG = "StreamProbe"
-    private const val TIMEOUT_MS = 12000
     private const val RANGE_BYTES = 65535
 
     enum class ResolvedKind {
@@ -100,26 +98,35 @@ object StreamProbe {
             "application/dash+xml,application/vnd.apple.mpegurl,application/x-mpegURL,application/xml,text/xml,*/*;q=0.8"
         }
         val reqHeaders = HashMap(headers).apply { putIfAbsent("Accept", accept) }
+        val client = EamaxHttpDataSource.probeClient()
 
-        var conn = open(url, reqHeaders, withRange = true)
-        var finalUrl = conn.url?.toString() ?: url
-        var status = conn.responseCode
+        fun buildRequest(withRange: Boolean): Request {
+            val b = Request.Builder().url(url)
+            reqHeaders.forEach { (k, v) -> b.header(k, v) }
+            if (withRange) b.header("Range", "bytes=0-$RANGE_BYTES")
+            return b.get().build()
+        }
+
+        var response = client.newCall(buildRequest(true)).execute()
+        var finalUrl = response.request.url.toString()
+        var status = response.code
         if (status == 416) {
-            conn.disconnect()
-            conn = open(url, reqHeaders, withRange = false)
-            finalUrl = conn.url?.toString() ?: url
-            status = conn.responseCode
+            response.close()
+            response = client.newCall(buildRequest(false)).execute()
+            finalUrl = response.request.url.toString()
+            status = response.code
         }
-        val ct = conn.contentType?.lowercase()?.split(";")?.firstOrNull()?.trim().orEmpty()
-        val stream = try {
-            if (status in 200..299 || status == 206) conn.inputStream else conn.errorStream
-        } catch (_: Exception) {
-            conn.disconnect()
-            throw IllegalStateException("HTTP $status")
+
+        val (ct, body) = response.use { r ->
+            val ctv = r.header("Content-Type")?.lowercase()?.split(";")?.firstOrNull()?.trim().orEmpty()
+            val stream = try {
+                r.body?.byteStream()
+            } catch (_: Exception) {
+                throw IllegalStateException("HTTP $status")
+            }
+            val bodyText = readLimited(stream, 720896)
+            ctv to bodyText
         }
-        val body = readLimited(stream, 720896)
-        stream.close()
-        conn.disconnect()
 
         val headSample = if (body.length <= 32768) body else body.substring(0, 32768)
         val headTrim = headSample.trim()
@@ -168,18 +175,6 @@ object StreamProbe {
         }
 
         return Result(ResolvedKind.EXO_SNIFF, finalUrl, finalUrl, refererOverlay(url, headers))
-    }
-
-    private fun open(url: String, headers: Map<String, String>, withRange: Boolean): HttpURLConnection {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = TIMEOUT_MS
-        c.readTimeout = TIMEOUT_MS
-        c.instanceFollowRedirects = true
-        c.requestMethod = "GET"
-        if (withRange) c.setRequestProperty("Range", "bytes=0-$RANGE_BYTES")
-        headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
-        c.connect()
-        return c
     }
 
     private fun readLimited(stream: InputStream?, maxBytes: Int): String {

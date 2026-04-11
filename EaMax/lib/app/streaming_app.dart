@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -6,9 +9,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/ads.dart';
 import '../config/api.dart';
+import '../config/payment_helpers.dart';
 import '../services/fcm_notifications.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ad_reward_modal.dart';
+import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 
 class StreamingApp extends StatefulWidget {
@@ -19,13 +25,53 @@ class StreamingApp extends StatefulWidget {
 }
 
 class _StreamingAppState extends State<StreamingApp> {
+  final GlobalKey<CombinedHomeState> _homeKey = GlobalKey<CombinedHomeState>();
+
   bool _premium = false;
   bool _channelsPremiumOnly = false;
   int _points = 0;
-  bool _adOpen = false;
   bool _congratsOpen = false;
 
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  bool _offlineModalVisible = false;
+  bool _retryingConnection = false;
+
+  /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
+  bool _adOverlayVisible = false;
+  AdRewardPhase _adPhase = AdRewardPhase.prompt;
+  int _lastPointsEarned = pointsPerReward;
+  /// Set synchronously in [RewardedAd] reward callback so [onAdDismissedFullScreenContent] is safe.
+  bool _rewardEarnedThisSession = false;
+
   static const _congratsKey = 'premiumCongratsShown';
+  static const _channelsPremiumOnlyCacheKey = 'channels_premium_only_cached_v1';
+  static const _maxAdLoadAttempts = 3;
+
+  Future<void> _hydrateChannelsPremiumOnlyFromCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getBool(_channelsPremiumOnlyCacheKey);
+    if (cached != null && mounted) {
+      setState(() => _channelsPremiumOnly = cached);
+    }
+  }
+
+  /// Persists on success; on failure restores last known value so offline / failed bootstrap
+  /// does not default to “points mode” when the real mode is premium-only.
+  Future<void> refreshChannelsPremiumOnlySetting() async {
+    try {
+      final s = await settingsApi.getChannelsPremiumOnly();
+      if (!mounted) return;
+      setState(() => _channelsPremiumOnly = s);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_channelsPremiumOnlyCacheKey, s);
+    } catch (_) {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getBool(_channelsPremiumOnlyCacheKey);
+      if (cached != null && mounted) {
+        setState(() => _channelsPremiumOnly = cached);
+      }
+    }
+  }
 
   Future<void> _refreshUser() async {
     try {
@@ -53,15 +99,76 @@ class _StreamingAppState extends State<StreamingApp> {
   @override
   void initState() {
     super.initState();
+    unawaited(_hydrateChannelsPremiumOnlyFromCache());
     _bootstrap();
+    unawaited(_initConnectivity());
+  }
+
+  @override
+  void dispose() {
+    _connectivitySub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initConnectivity() async {
+    if (kIsWeb) return;
+    final connectivity = Connectivity();
+    final initial = await connectivity.checkConnectivity();
+    _applyConnectivity(initial);
+    _connectivitySub = connectivity.onConnectivityChanged.listen(_applyConnectivity);
+  }
+
+  bool _hasNetwork(List<ConnectivityResult> results) {
+    if (results.isEmpty) return false;
+    return results.any((r) => r != ConnectivityResult.none);
+  }
+
+  void _applyConnectivity(List<ConnectivityResult> results) {
+    if (!mounted || kIsWeb) return;
+    final online = _hasNetwork(results);
+    if (online) {
+      if (_offlineModalVisible) {
+        setState(() => _offlineModalVisible = false);
+        unawaited(_onConnectivityRestored());
+      }
+    } else {
+      setState(() => _offlineModalVisible = true);
+    }
+  }
+
+  /// After Wi‑Fi/mobile data is available: reload admin settings, channels, and user so badges match the server.
+  Future<void> _onConnectivityRestored() async {
+    await _homeKey.currentState?.reloadRemoteData();
+    await _refreshUser();
+    await _syncFcm();
+    await _checkPendingPayment();
+  }
+
+  Future<void> _retryConnectionTap() async {
+    if (_retryingConnection) return;
+    setState(() => _retryingConnection = true);
+    try {
+      final r = await Connectivity().checkConnectivity();
+      if (!mounted) return;
+      if (_hasNetwork(r)) {
+        setState(() => _offlineModalVisible = false);
+        await _onConnectivityRestored();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Bado hakuna muunganisho. Washa data ya simu au Wi‑Fi.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _retryingConnection = false);
+    }
   }
 
   Future<void> _bootstrap() async {
     await getOrCreateUserId();
-    try {
-      final s = await settingsApi.getChannelsPremiumOnly();
-      if (mounted) setState(() => _channelsPremiumOnly = s);
-    } catch (_) {}
+    await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
     await setupFcmLocalNotifications();
     await _syncFcm();
@@ -87,55 +194,113 @@ class _StreamingAppState extends State<StreamingApp> {
     try {
       final res = await paymentsApi.checkZenoStatus(pending);
       final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
-      if (st.toString().toUpperCase() == 'COMPLETED') {
+      if (isPaymentCompleted(st)) {
         await prefs.remove('pendingPaymentOrderId');
         await _refreshUser();
+      } else if (isPaymentTerminalFailure(st)) {
+        await prefs.remove('pendingPaymentOrderId');
       }
     } catch (_) {}
   }
 
   void _openAd() {
     if (_premium) return;
-    setState(() => _adOpen = true);
+    setState(() {
+      _adOverlayVisible = true;
+      _adPhase = AdRewardPhase.prompt;
+      _lastPointsEarned = pointsPerReward;
+    });
   }
 
-  Future<void> _showRewardedAndCredit() async {
-    setState(() => _adOpen = false);
+  void _closeAdOverlay() {
+    setState(() {
+      _adOverlayVisible = false;
+      _adPhase = AdRewardPhase.prompt;
+    });
+  }
+
+  Future<void> _onWatchPressed() async {
     if (kIsWeb) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Matangazo hayapatikani kwenye web. Tumia app ya simu.')),
         );
       }
+      _closeAdOverlay();
       return;
     }
-    await RewardedAd.load(
+    setState(() => _adPhase = AdRewardPhase.loading);
+    _tryLoadRewarded(attempt: 0);
+  }
+
+  void _tryLoadRewarded({required int attempt}) {
+    RewardedAd.load(
       adUnitId: rewardedAdUnitIdAndroid,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
+          _rewardEarnedThisSession = false;
           ad.fullScreenContentCallback = FullScreenContentCallback(
-            onAdDismissedFullScreenContent: (ad) => ad.dispose(),
+            onAdDismissedFullScreenContent: (a) {
+              a.dispose();
+              if (!mounted) return;
+              final gotReward = _rewardEarnedThisSession;
+              _rewardEarnedThisSession = false;
+              setState(() {
+                if (gotReward) {
+                  _adOverlayVisible = true;
+                  _adPhase = AdRewardPhase.success;
+                } else {
+                  _adOverlayVisible = false;
+                  _adPhase = AdRewardPhase.prompt;
+                }
+              });
+              _refreshUser();
+            },
           );
+          if (!mounted) return;
+          setState(() => _adOverlayVisible = false);
           ad.show(
-            onUserEarnedReward: (ad, reward) async {
+            onUserEarnedReward: (a, r) async {
+              _rewardEarnedThisSession = true;
+              var earned = pointsPerReward;
               final uid = await getOrCreateUserId();
               if (uid != null) {
                 try {
-                  await userApi.recordAdWatched(uid, points: pointsPerReward);
+                  final res = await userApi.recordAdWatched(uid, points: pointsPerReward);
+                  earned = (res['pointsAdded'] as num?)?.toInt() ?? pointsPerReward;
                 } catch (_) {}
               }
               await _refreshUser();
+              if (mounted) {
+                setState(() => _lastPointsEarned = earned);
+              }
             },
           );
         },
         onAdFailedToLoad: (e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ad failed: ${e.message}')));
+          if (attempt + 1 < _maxAdLoadAttempts) {
+            _tryLoadRewarded(attempt: attempt + 1);
+          } else if (mounted) {
+            setState(() => _adPhase = AdRewardPhase.error);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Imeshindwa kupakia tangazo: ${e.message}',
+                  style: const TextStyle(fontSize: 14),
+                ),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
           }
         },
       ),
     );
+  }
+
+  Future<void> _onWatchAgain() async {
+    setState(() => _adPhase = AdRewardPhase.loading);
+    _tryLoadRewarded(attempt: 0);
   }
 
   @override
@@ -144,32 +309,28 @@ class _StreamingAppState extends State<StreamingApp> {
       fit: StackFit.expand,
       children: [
         CombinedHome(
+          key: _homeKey,
           isPremium: _premium,
           channelsPremiumOnly: _channelsPremiumOnly,
           userPoints: _points,
           onWatchAd: _openAd,
           onPointsRefresh: _refreshUser,
           onPaymentsActiveChange: (_) {},
+          syncPremiumSetting: refreshChannelsPremiumOnlySetting,
         ),
-        if (_adOpen)
+        if (_adOverlayVisible)
           Positioned.fill(
-            child: Material(
-              color: Colors.black87,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text('Tazama tangazo la points', style: TextStyle(color: Colors.white, fontSize: 18)),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: _showRewardedAndCredit,
-                    child: const Text('Anza'),
-                  ),
-                  TextButton(
-                    onPressed: () => setState(() => _adOpen = false),
-                    child: const Text('Funga'),
-                  ),
-                ],
-              ),
+            child: AdRewardModal(
+              phase: _adPhase,
+              pointsEarned: _lastPointsEarned,
+              isWeb: kIsWeb,
+              onWatch: _onWatchPressed,
+              onClose: _closeAdOverlay,
+              onRetry: () {
+                setState(() => _adPhase = AdRewardPhase.loading);
+                _tryLoadRewarded(attempt: 0);
+              },
+              onWatchAgain: _onWatchAgain,
             ),
           ),
         if (_congratsOpen)
@@ -213,6 +374,13 @@ class _StreamingAppState extends State<StreamingApp> {
                   ),
                 ),
               ),
+            ),
+          ),
+        if (!kIsWeb && _offlineModalVisible)
+          Positioned.fill(
+            child: OfflineRequiredModal(
+              isRetrying: _retryingConnection,
+              onRetry: _retryConnectionTap,
             ),
           ),
       ],

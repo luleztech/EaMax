@@ -48,7 +48,7 @@ Future<void> ensureAndroidNotificationChannel() async {
   const init = InitializationSettings(
     android: AndroidInitializationSettings('@mipmap/ic_launcher'),
   );
-  await _local.initialize(init);
+  await _local.initialize(settings: init);
   final android = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
   await android?.createNotificationChannel(
     const AndroidNotificationChannel(
@@ -68,10 +68,10 @@ Future<void> _showLocal(int id, String title, String body) async {
   await ensureAndroidNotificationChannel();
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
   await _local.show(
-    id,
-    title,
-    body,
-    const NotificationDetails(
+    id: id,
+    title: title,
+    body: body,
+    notificationDetails: const NotificationDetails(
       android: AndroidNotificationDetails(
         kFcmAndroidChannelId,
         kFcmAndroidChannelName,

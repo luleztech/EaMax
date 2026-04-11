@@ -11,8 +11,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -97,15 +97,15 @@ class ExoPlayerEngine(
     companion object {
         private const val TAG = "ExoPlayerEngine"
         
-        // Buffer configuration (optimized for mobile streaming)
-        private const val MIN_BUFFER_MS = 15000  // 15 seconds
-        private const val MAX_BUFFER_MS = 50000  // 50 seconds
-        private const val BUFFER_FOR_PLAYBACK_MS = 2500  // Start playback after 2.5s
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5000  // 5s after rebuffer
-        
-        // Timeout configuration
-        private const val CONNECT_TIMEOUT_MS = 30000  // 30 seconds
-        private const val READ_TIMEOUT_MS = 30000     // 30 seconds
+        // Buffer configuration — slightly more tolerant on flaky Wi‑Fi / high latency
+        private const val MIN_BUFFER_MS = 20000
+        private const val MAX_BUFFER_MS = 60000
+        private const val BUFFER_FOR_PLAYBACK_MS = 3500
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 8000
+
+        // Passed through to [EamaxHttpDataSource] (shared client uses 60s internally).
+        private const val CONNECT_TIMEOUT_MS = 30000
+        private const val READ_TIMEOUT_MS = 30000
     }
 
     /**
@@ -153,7 +153,16 @@ class ExoPlayerEngine(
             // Step 6: Build and configure player
             val renderersFactory = DefaultRenderersFactory(context)
                 .setEnableDecoderFallback(true)
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    MIN_BUFFER_MS,
+                    MAX_BUFFER_MS,
+                    BUFFER_FOR_PLAYBACK_MS,
+                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                )
+                .build()
             exoPlayer = ExoPlayer.Builder(context, renderersFactory)
+                .setLoadControl(loadControl)
                 .setTrackSelector(trackSelector)
                 .build()
                 .apply {
@@ -301,15 +310,8 @@ class ExoPlayerEngine(
      * Creates a data source factory with custom headers and timeouts
      */
     private fun createDataSourceFactory(headers: Map<String, String>): HttpDataSource.Factory {
-        return DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(headers)
-            .setAllowCrossProtocolRedirects(true)  // Important for CDN redirects
-            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-            .setReadTimeoutMs(READ_TIMEOUT_MS)
-            .setKeepPostFor302Redirects(true)  // Keep POST method on redirects
-            .apply {
-                Log.d(TAG, "🌐 Data source: connect=${CONNECT_TIMEOUT_MS}ms, read=${READ_TIMEOUT_MS}ms, cross-protocol=true")
-            }
+        Log.d(TAG, "🌐 Data source: OkHttp + IPv4-first DNS, connect=${CONNECT_TIMEOUT_MS}ms, read=${READ_TIMEOUT_MS}ms")
+        return EamaxHttpDataSource.factory(headers, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS)
     }
 
     /**
@@ -531,10 +533,7 @@ class ExoPlayerEngine(
                 
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    DefaultHttpDataSource.Factory()
-                        .setDefaultRequestProperties(headers)
-                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-                        .setReadTimeoutMs(READ_TIMEOUT_MS)
+                    EamaxHttpDataSource.factory(headers, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
                 )
                 
                 DefaultDrmSessionManager.Builder()
@@ -551,10 +550,7 @@ class ExoPlayerEngine(
                 
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    DefaultHttpDataSource.Factory()
-                        .setDefaultRequestProperties(headers)
-                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-                        .setReadTimeoutMs(READ_TIMEOUT_MS)
+                    EamaxHttpDataSource.factory(headers, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
                 )
                 
                 DefaultDrmSessionManager.Builder()

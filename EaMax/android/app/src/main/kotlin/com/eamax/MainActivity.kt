@@ -17,6 +17,21 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
+            "com.eamax/app_data",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "readLegacyRnUserId" -> {
+                    try {
+                        result.success(RnAsyncStorageUserId.readUserId(this))
+                    } catch (_: Exception) {
+                        result.success(null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
             "com.eamax/native_player",
         ).setMethodCallHandler { call, result ->
             when (call.method) {

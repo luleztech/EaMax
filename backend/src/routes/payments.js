@@ -203,8 +203,9 @@ router.post('/zeno/start', async (req, res, next) => {
       [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId],
     );
 
+    // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.
     return res.json({
-      status: 'success',
+      status: 'pending',
       orderId,
       message:
         zenoData.message ||

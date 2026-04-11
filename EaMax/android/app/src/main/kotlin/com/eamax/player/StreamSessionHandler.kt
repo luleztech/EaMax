@@ -3,7 +3,6 @@ package com.eamax.player
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -251,14 +250,12 @@ class StreamSessionHandler(
 
         val headers = buildDrmHeaders(streamSession)
 
-        val drmDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(headers)
-            .setConnectTimeoutMs(connectTimeoutMs)
-            .setReadTimeoutMs(readTimeoutMs)
+        val drmDataSourceFactory =
+            EamaxHttpDataSource.factory(headers, connectTimeoutMs, readTimeoutMs)
 
         val drmCallback = HttpMediaDrmCallback(
             streamSession.licenseUrl,
-            drmDataSourceFactory
+            drmDataSourceFactory,
         )
 
         return when (streamSession.drmType) {

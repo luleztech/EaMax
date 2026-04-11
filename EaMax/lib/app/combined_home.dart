@@ -18,7 +18,31 @@ import '../widgets/eamax_carousel.dart';
 
 import 'home_tabs.dart';
 
-const _bottomNavH = 56.0;
+
+class _MalipoScaffold extends StatelessWidget {
+  const _MalipoScaffold({required this.bottomPadding, required this.onPaymentSuccess});
+
+  final double bottomPadding;
+  final Future<void> Function() onPaymentSuccess;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.scaffold,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: const Color(0xEE030712),
+        elevation: 0,
+        foregroundColor: Colors.white,
+        title: const Text('Malipo', style: TextStyle(fontWeight: FontWeight.w700)),
+      ),
+      body: PaymentsScreen(
+        bottomPadding: bottomPadding,
+        onPaymentSuccess: onPaymentSuccess,
+      ),
+    );
+  }
+}
 
 class _Genre {
   const _Genre(this.name, this.key, this.iconStr, this.color);
@@ -58,6 +82,7 @@ class CombinedHome extends StatefulWidget {
     required this.onWatchAd,
     required this.onPointsRefresh,
     required this.onPaymentsActiveChange,
+    required this.syncPremiumSetting,
   });
 
   final bool isPremium;
@@ -66,12 +91,14 @@ class CombinedHome extends StatefulWidget {
   final VoidCallback onWatchAd;
   final Future<void> Function() onPointsRefresh;
   final void Function(bool active) onPaymentsActiveChange;
+  /// Refetch channels-premium-only mode (must run when connectivity returns; cached in parent).
+  final Future<void> Function() syncPremiumSetting;
 
   @override
-  State<CombinedHome> createState() => _CombinedHomeState();
+  State<CombinedHome> createState() => CombinedHomeState();
 }
 
-class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderStateMixin {
+class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderStateMixin {
   late final AnimationController _glowCtrl;
 
   int _tab = 0;
@@ -116,8 +143,26 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
     }
   }
 
+  Future<void> _openMalipo() async {
+    if (!mounted) return;
+    final inset = MediaQuery.paddingOf(context).bottom;
+    final bottomPad = kHomeBottomNavScrollPaddingBody + inset;
+    widget.onPaymentsActiveChange(true);
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => _MalipoScaffold(
+          bottomPadding: bottomPad,
+          onPaymentSuccess: widget.onPointsRefresh,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    widget.onPaymentsActiveChange(_tab == 2);
+  }
+
   Future<void> _loadAll() async {
     try {
+      await widget.syncPremiumSetting();
       await Future.wait([_loadSlides(), _loadChannels(), _loadMatches()]);
     } finally {
       if (mounted) setState(() => _initialLoading = false);
@@ -206,14 +251,18 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
     setState(() => _matches = m);
   }
 
-  Future<void> _onRefresh() async {
+  /// Syncs admin channel mode + carousel + channels + matches (same as pull-to-refresh).
+  Future<void> reloadRemoteData() async {
     setState(() => _refreshing = true);
     try {
+      await widget.syncPremiumSetting();
       await Future.wait([_loadSlides(), _loadChannels(), _loadMatches()]);
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
   }
+
+  Future<void> _onRefresh() => reloadRemoteData();
 
   Future<void> _refreshPoints() async {
     final uid = await getStoredUserId();
@@ -395,7 +444,7 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
       return;
     }
     if (widget.channelsPremiumOnly) {
-      setState(() => _tab = 2);
+      await _openMalipo();
       return;
     }
     setState(() {
@@ -442,14 +491,13 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final inset = MediaQuery.paddingOf(context).bottom;
-    final bottomPad = _bottomNavH + inset;
+    final bottomPad = kHomeBottomNavScrollPaddingBody + inset;
     final w = MediaQuery.sizeOf(context).width;
     final cardW = (w - 44) / 2;
     const cardH = 240.0;
 
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      final pay = _tab == 2 || _tab == 3;
-      widget.onPaymentsActiveChange(pay);
+      widget.onPaymentsActiveChange(_tab == 2);
     });
 
     return Stack(
@@ -471,11 +519,11 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
           bottom: false,
           child: Column(
             children: [
-              if (_tab != 2 && _tab != 3)
+              if (_tab != 2)
                 HomeHeader(
                   points: widget.userPoints,
                   isPremium: widget.isPremium,
-                  onPremium: () => setState(() => _tab = 2),
+                  onPremium: _openMalipo,
                 ),
               Expanded(
                 child: IndexedStack(
@@ -519,15 +567,12 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
                       iconFor: _icon,
                       isPremium: widget.isPremium,
                     ),
-                    PaymentsScreen(
-                      bottomPadding: bottomPad,
-                      onPaymentSuccess: widget.onPointsRefresh,
-                    ),
                     ProfileScreen(
                       bottomPadding: bottomPad,
                       userPoints: widget.userPoints,
                       onWatchAd: widget.onWatchAd,
                       onPointsRefresh: widget.onPointsRefresh,
+                      onOpenPayments: _openMalipo,
                     ),
                   ],
                 ),
@@ -563,10 +608,8 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
               widget.onWatchAd();
             },
             onPremium: () {
-              setState(() {
-                _unlockOpen = false;
-                _tab = 2;
-              });
+              setState(() => _unlockOpen = false);
+              _openMalipo();
             },
           ),
         if (_insufficientOpen && _selectedChannel != null)
@@ -581,10 +624,8 @@ class _CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSt
             }),
             onWatchAd: widget.onWatchAd,
             onPremium: () {
-              setState(() {
-                _insufficientOpen = false;
-                _tab = 2;
-              });
+              setState(() => _insufficientOpen = false);
+              _openMalipo();
             },
             onPointsUpdated: () async {
               await _refreshPoints();

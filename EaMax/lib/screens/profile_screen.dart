@@ -15,6 +15,7 @@ class ProfileScreen extends StatefulWidget {
     this.userPoints = 0,
     this.onWatchAd,
     this.onPointsRefresh,
+    this.onOpenPayments,
   });
 
   final Color accentColor;
@@ -22,6 +23,7 @@ class ProfileScreen extends StatefulWidget {
   final int userPoints;
   final VoidCallback? onWatchAd;
   final Future<void> Function()? onPointsRefresh;
+  final VoidCallback? onOpenPayments;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -30,16 +32,17 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   String? _userId;
   bool _premium = false;
-  int _points = 0;
   bool _loading = true;
   DateTime? _subEnd;
   Duration _remain = Duration.zero;
   Timer? _countdownTimer;
 
+  bool get _subscriptionTimeActive =>
+      _premium && _subEnd != null && _subEnd!.isAfter(DateTime.now());
+
   @override
   void initState() {
     super.initState();
-    _points = widget.userPoints;
     _load(true);
   }
 
@@ -47,14 +50,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void dispose() {
     _countdownTimer?.cancel();
     super.dispose();
-  }
-
-  @override
-  void didUpdateWidget(covariant ProfileScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.userPoints != oldWidget.userPoints) {
-      _points = widget.userPoints;
-    }
   }
 
   Future<void> _load(bool showLoading) async {
@@ -68,29 +63,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
       setState(() => _userId = id);
       final userData = await userApi.getUser(id);
       if (!mounted) return;
+      final end = userData['subscriptionEndDate']?.toString();
       setState(() {
         _premium = userData['isPremium'] == true;
-        _points = (userData['points'] as num?)?.toInt() ?? 0;
-        final end = userData['subscriptionEndDate']?.toString();
-        if (_premium && end != null) {
-          _subEnd = DateTime.tryParse(end);
-        } else {
-          _subEnd = null;
-        }
+        _subEnd = (end != null && end.isNotEmpty) ? DateTime.tryParse(end) : null;
       });
       _countdownTimer?.cancel();
-      if (_premium && _subEnd != null) {
+      if (_subscriptionTimeActive) {
         _tick();
         _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+      } else {
+        if (mounted) setState(() => _remain = Duration.zero);
       }
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
   }
 
   void _tick() {
-    if (!_premium || _subEnd == null) return;
+    if (_subEnd == null || !_premium) return;
     final diff = _subEnd!.difference(DateTime.now());
-    if (mounted) setState(() => _remain = diff.isNegative ? Duration.zero : diff);
+    if (diff.isNegative || diff.inSeconds <= 0) {
+      _countdownTimer?.cancel();
+      _countdownTimer = null;
+      if (mounted) setState(() => _remain = Duration.zero);
+      _load(false);
+      return;
+    }
+    if (mounted) setState(() => _remain = diff);
+  }
+
+  void _onKusanyaPoint() {
+    widget.onWatchAd?.call();
+    Future.delayed(const Duration(milliseconds: 7500), () => _load(false));
+    Future.delayed(const Duration(milliseconds: 10000), () => _load(false));
+    Future.delayed(const Duration(milliseconds: 12000), () => _load(false));
   }
 
   @override
@@ -127,7 +133,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     final ac = widget.accentColor;
-    final bottom = 100.0 + widget.bottomPadding;
+    final bottom = 32.0 + widget.bottomPadding;
 
     return Container(
       color: AppColors.scaffold,
@@ -157,120 +163,109 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: EdgeInsets.only(bottom: bottom),
                 children: [
-                    const SizedBox(height: 16),
-                    Center(
-                      child: Container(
-                        width: 100,
-                        height: 100,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: ac.withValues(alpha: 0.12),
-                          border: Border.all(color: const Color(0x4D22C55E), width: 3),
-                        ),
-                        child: Icon(Icons.person, size: 48, color: ac),
+                  const SizedBox(height: 20),
+                  Center(
+                    child: Container(
+                      width: 100,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: ac.withValues(alpha: 0.12),
+                        border: Border.all(color: const Color(0x4D22C55E), width: 3),
+                        boxShadow: [
+                          BoxShadow(
+                            color: ac.withValues(alpha: 0.2),
+                            blurRadius: 24,
+                            spreadRadius: 0,
+                          ),
+                        ],
                       ),
+                      child: Icon(Icons.person_rounded, size: 48, color: ac),
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _userId ?? '...',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _userId ?? '...',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 0.8,
+                      decoration: TextDecoration.none,
                     ),
-                    const SizedBox(height: 12),
-                    Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: _premium ? const Color(0x33FBBF24) : const Color(0x339CA3AF),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: _premium ? const Color(0x66FBBF24) : const Color(0x669CA3AF)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(_premium ? Icons.workspace_premium : Icons.account_circle, size: 16, color: _premium ? AppColors.gold : AppColors.muted),
-                            const SizedBox(width: 8),
-                            Text(
-                              _premium ? 'Premium User' : 'Free User',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: _premium ? AppColors.gold : AppColors.muted,
-                              ),
-                            ),
-                          ],
-                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _premium ? const Color(0x33FBBF24) : const Color(0x339CA3AF),
+                        borderRadius: BorderRadius.circular(100),
+                        border: Border.all(color: _premium ? const Color(0x66FBBF24) : const Color(0x669CA3AF)),
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: const Color(0x801F2937),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: const Color(0x80374151)),
-                        ),
-                        child: _premium
-                            ? _PremiumCountdown(
-                                accent: ac,
-                                remain: _remain,
-                                subEnd: _subEnd,
-                              )
-                            : _PointsSection(
-                                points: _points,
-                                onWatchAd: widget.onWatchAd == null
-                                    ? null
-                                    : () {
-                                        widget.onWatchAd?.call();
-                                        Future.delayed(const Duration(milliseconds: 7500), () => _load(false));
-                                        Future.delayed(const Duration(milliseconds: 10000), () => _load(false));
-                                        Future.delayed(const Duration(milliseconds: 12000), () => _load(false));
-                                      },
-                              ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(child: _StatCard(icon: Icons.history, accent: ac, label: 'Historia ya Kutazama', value: '0')),
-                          const SizedBox(width: 12),
-                          Expanded(child: _StatCard(icon: Icons.download, accent: ac, label: 'Vilivyopakuliwa', value: '0')),
+                          Icon(
+                            _premium ? Icons.workspace_premium_rounded : Icons.person_outline_rounded,
+                            size: 18,
+                            color: _premium ? AppColors.gold : AppColors.muted,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _premium ? 'Premium User' : 'Free User',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: _premium ? AppColors.gold : AppColors.muted,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 16),
+                  ),
+                  const SizedBox(height: 28),
+                  if (_subscriptionTimeActive)
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: const Color(0x801F2937),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: const Color(0x80374151)),
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _SubscriptionRemainCard(
+                        accent: ac,
+                        remain: _remain,
+                        subEnd: _subEnd,
+                      ),
+                    )
+                  else ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _ProfileActionTile(
+                        leading: Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: ac.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Icon(Icons.lock_open_rounded, color: ac, size: 26),
                         ),
-                        child: Column(
-                          children: [
-                            _DetailRow(
-                              icon: Icons.calendar_today,
-                              label: 'Tarehe ya Kujiunga:',
-                              value: DateFormat.yMMMMd().format(DateTime.now()),
-                            ),
-                            const SizedBox(height: 16),
-                            _DetailRow(
-                              icon: Icons.verified_user,
-                              label: 'Hali ya Akaunti:',
-                              value: _premium ? 'Premium' : 'Bure',
-                              valueColor: _premium ? AppColors.gold : Colors.white,
-                            ),
-                          ],
-                        ),
+                        title: 'Fungua Channel zote',
+                        subtitle: 'Chagua michango na huduma za Premium',
+                        onTap: widget.onOpenPayments,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: _ProfileActionTile(
+                        leading: const _GreenPlusBadge(),
+                        title: 'Kusanya Point',
+                        subtitle: 'Tazama tangazo ufunge Point',
+                        onTap: widget.onWatchAd != null ? _onKusanyaPoint : null,
                       ),
                     ),
                   ],
+                ],
               ),
             ),
           ),
@@ -280,8 +275,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-class _PremiumCountdown extends StatelessWidget {
-  const _PremiumCountdown({
+class _SubscriptionRemainCard extends StatelessWidget {
+  const _SubscriptionRemainCard({
     required this.accent,
     required this.remain,
     required this.subEnd,
@@ -299,59 +294,106 @@ class _PremiumCountdown extends StatelessWidget {
     final s = remain.inSeconds % 60;
     final fmt = subEnd != null ? DateFormat.yMMMMd().format(subEnd!) : '';
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.schedule, size: 20, color: accent),
-            const SizedBox(width: 8),
-            const Text('Muda uliobaki ni', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1E293B),
+            const Color(0xFF0F172A).withValues(alpha: 0.95),
           ],
         ),
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _Cd(accent: accent, v: '$d', l: 'Siku'),
-            Text(':', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: accent, height: 0.8)),
-            _Cd(accent: accent, v: h.toString().padLeft(2, '0'), l: 'Masaa'),
-            Text(':', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: accent, height: 0.8)),
-            _Cd(accent: accent, v: m.toString().padLeft(2, '0'), l: 'Dakika'),
-            Text(':', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: accent, height: 0.8)),
-            _Cd(accent: accent, v: s.toString().padLeft(2, '0'), l: 'Sekunde'),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0x1A22C55E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0x3322C55E)),
-          ),
-          child: Column(
+        border: Border.all(color: AppColors.gold.withValues(alpha: 0.35)),
+        boxShadow: [
+          BoxShadow(color: AppColors.gold.withValues(alpha: 0.08), blurRadius: 24, spreadRadius: 0),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 20, offset: const Offset(0, 12)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              const Text(
-                'Muda wa matumizi ulio salia kwa mteja wa malipo',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: Color(0xFFD1D5DB), height: 1.4),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.gold.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(Icons.schedule_rounded, size: 22, color: accent),
               ),
-              if (fmt.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text('Inaisha tarehe: $fmt', textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, color: AppColors.muted)),
-              ],
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Muda uliobaki',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 20),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _CdUnit(accent: accent, v: '$d', l: 'Siku'),
+                _Sep(accent: accent),
+                _CdUnit(accent: accent, v: h.toString().padLeft(2, '0'), l: 'Masaa'),
+                _Sep(accent: accent),
+                _CdUnit(accent: accent, v: m.toString().padLeft(2, '0'), l: 'Dakika'),
+                _Sep(accent: accent),
+                _CdUnit(accent: accent, v: s.toString().padLeft(2, '0'), l: 'Sekunde'),
+              ],
+            ),
+          ),
+          if (fmt.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              child: Text(
+                'Inaisha tarehe: $fmt',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 14, color: AppColors.muted, decoration: TextDecoration.none),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
 
-class _Cd extends StatelessWidget {
-  const _Cd({required this.accent, required this.v, required this.l});
+class _Sep extends StatelessWidget {
+  const _Sep({required this.accent});
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Text(':', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: accent, height: 1)),
+    );
+  }
+}
+
+class _CdUnit extends StatelessWidget {
+  const _CdUnit({required this.accent, required this.v, required this.l});
   final Color accent;
   final String v;
   final String l;
@@ -362,131 +404,116 @@ class _Cd extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: Column(
         children: [
-          Text(v, style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: accent)),
-          Text(l, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+          Text(v, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: accent, decoration: TextDecoration.none)),
+          const SizedBox(height: 4),
+          Text(l, style: const TextStyle(fontSize: 11, color: AppColors.muted, decoration: TextDecoration.none)),
         ],
       ),
     );
   }
 }
 
-class _PointsSection extends StatelessWidget {
-  const _PointsSection({required this.points, this.onWatchAd});
-  final int points;
-  final VoidCallback? onWatchAd;
+class _ProfileActionTile extends StatelessWidget {
+  const _ProfileActionTile({
+    required this.leading,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+
+  final Widget leading;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.star, size: 20, color: AppColors.gold),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('Jumla ya Points', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white))),
-            if (onWatchAd != null)
-              Material(
-                borderRadius: BorderRadius.circular(20),
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: onWatchAd,
-                  borderRadius: BorderRadius.circular(20),
-                  child: Ink(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      gradient: const LinearGradient(colors: [Color(0xFF22C55E), Color(0xFF16A34A)]),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.add, color: Colors.white, size: 16),
-                        SizedBox(width: 6),
-                        Text('Vuna Points', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700)),
-                      ],
-                    ),
-                  ),
-                ),
+    final enabled = onTap != null;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(26),
+        child: Ink(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(26),
+            color: const Color(0x801F2937),
+            border: Border.all(color: const Color(0x80374151)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.2),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
               ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Center(
-          child: Column(
-            children: [
-              Container(
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0x1AFBBF24),
-                  border: Border.all(color: const Color(0x4DFBBF24), width: 3),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.star, color: AppColors.gold, size: 32),
-                    const SizedBox(height: 8),
-                    Text('$points', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppColors.gold)),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text('Points Zilizokusanywa', style: TextStyle(fontSize: 14, color: AppColors.muted)),
             ],
           ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            child: Row(
+              children: [
+                leading,
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: enabled ? Colors.white : Colors.white54,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.muted,
+                          height: 1.25,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: enabled ? AppColors.muted : Colors.white.withValues(alpha: 0.2),
+                  size: 26,
+                ),
+              ],
+            ),
+          ),
         ),
-      ],
+      ),
     );
   }
 }
 
-class _StatCard extends StatelessWidget {
-  const _StatCard({required this.icon, required this.accent, required this.label, required this.value});
-  final IconData icon;
-  final Color accent;
-  final String label;
-  final String value;
+class _GreenPlusBadge extends StatelessWidget {
+  const _GreenPlusBadge();
+
+  static const _green = Color(0xFF22C55E);
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      width: 52,
+      height: 52,
       decoration: BoxDecoration(
-        color: const Color(0x801F2937),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0x80374151)),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, size: 24, color: accent),
-          const SizedBox(height: 8),
-          Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
-          const SizedBox(height: 4),
-          Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+        shape: BoxShape.circle,
+        color: const Color(0x1A22C55E),
+        border: Border.all(color: _green, width: 3),
+        boxShadow: [
+          BoxShadow(color: _green.withValues(alpha: 0.35), blurRadius: 12, spreadRadius: 0),
         ],
       ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({required this.icon, required this.label, required this.value, this.valueColor});
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color? valueColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: AppColors.muted),
-        const SizedBox(width: 12),
-        Expanded(child: Text(label, style: const TextStyle(fontSize: 14, color: AppColors.muted))),
-        Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: valueColor ?? Colors.white)),
-      ],
+      child: const Center(
+        child: Icon(Icons.add_rounded, color: _green, size: 28),
+      ),
     );
   }
 }

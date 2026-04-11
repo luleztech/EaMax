@@ -59,11 +59,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     WidgetsBinding.instance.addObserver(this);
     _webView = _useWebViewForUrl(widget.videoUrl);
     _applyImmersive();
-    SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    // All orientations so rotation to landscape is responsive (matches native fullSensor behavior).
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     WakelockPlus.enable();
     _loadRotateHintPref();
     _init();
