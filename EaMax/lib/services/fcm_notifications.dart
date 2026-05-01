@@ -28,7 +28,7 @@ Future<void> _confirmDeliveredFromMessage(RemoteMessage message) async {
   final notificationId = _notificationIdFromMessage(message);
   if (notificationId == null) return;
   try {
-    final externalId = await getStoredUserId();
+    final externalId = await getOrCreateUserId();
     if (externalId == null || externalId.isEmpty) return;
     await notificationsApi.confirmDelivery(notificationId, externalId);
   } catch (_) {}
@@ -38,7 +38,7 @@ Future<void> _recordClickFromMessage(RemoteMessage message) async {
   final notificationId = _notificationIdFromMessage(message);
   if (notificationId == null) return;
   try {
-    final externalId = await getStoredUserId();
+    final externalId = await getOrCreateUserId();
     if (externalId == null || externalId.isEmpty) return;
     await notificationsApi.recordClick(notificationId, externalId);
   } catch (_) {}
@@ -79,7 +79,20 @@ Future<void> ensureAndroidNotificationChannel() async {
   const init = InitializationSettings(
     android: AndroidInitializationSettings('@mipmap/ic_launcher'),
   );
-  await _local.initialize(settings: init);
+  await _local.initialize(
+    settings: init,
+    onDidReceiveNotificationResponse: (details) async {
+      final payload = details.payload;
+      if (payload == null || payload.isEmpty) return;
+      final notificationId = payload.trim();
+      if (notificationId.isEmpty) return;
+      try {
+        final externalId = await getOrCreateUserId();
+        if (externalId == null || externalId.isEmpty) return;
+        await notificationsApi.recordClick(notificationId, externalId);
+      } catch (_) {}
+    },
+  );
   final android = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
   await android?.createNotificationChannel(
     const AndroidNotificationChannel(
@@ -95,7 +108,12 @@ Future<void> ensureAndroidNotificationChannel() async {
   _channelReady = true;
 }
 
-Future<void> _showLocal(int id, String title, String body) async {
+Future<void> _showLocal(
+  int id,
+  String title,
+  String body, {
+  String? notificationId,
+}) async {
   await ensureAndroidNotificationChannel();
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
   await _local.show(
@@ -114,6 +132,7 @@ Future<void> _showLocal(int id, String title, String body) async {
         icon: '@mipmap/ic_launcher',
       ),
     ),
+    payload: notificationId,
   );
 }
 
@@ -161,7 +180,12 @@ Future<void> setupFcmLocalNotifications() async {
     final title = message.data['title'] ?? 'EaMax';
     final body = message.data['body'] ?? message.data['message'] ?? '';
     if (body.isEmpty) return;
-    await _showLocal(_notifId(message), title, body);
+    await _showLocal(
+      _notifId(message),
+      title,
+      body,
+      notificationId: _notificationIdFromMessage(message),
+    );
   });
 
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {

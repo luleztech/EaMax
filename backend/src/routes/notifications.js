@@ -124,7 +124,18 @@ router.post('/:id/delivered', async (req, res, next) => {
     }
 
     if (!userId) {
-      return res.status(400).json({ error: 'userId or externalId required' });
+      // Fallback for clients that cannot resolve user yet: still count delivery.
+      const updatedFallback = await query(
+        `UPDATE notifications
+            SET delivered_count = COALESCE(delivered_count, 0) + 1
+          WHERE id = $1
+          RETURNING id, delivered_count`,
+        [notificationId]
+      );
+      if (updatedFallback.rows.length === 0) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
+      return res.json(updatedFallback.rows[0]);
     }
 
     // Upsert delivery row so topic-based sends are tracked too.
