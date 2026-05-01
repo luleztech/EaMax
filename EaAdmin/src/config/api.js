@@ -207,6 +207,10 @@ export const adminNotificationsAPI = {
     // Scheduled (pinned) + sent notifications for recent list
     return apiRequest(`/api/notifications?limit=${limit}`);
   },
+  // Get aggregate notification analytics for dashboard
+  getMetrics: async (days = 30) => {
+    return apiRequest(`/api/admin/notifications/metrics?days=${days}`);
+  },
 };
 
 /**

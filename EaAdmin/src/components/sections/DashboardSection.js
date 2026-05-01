@@ -141,7 +141,10 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   // Fetch dashboard stats from backend
   const fetchDashboardStats = async () => {
     try {
-      const data = await dashboardAPI.getStats();
+      const [data, notifMetrics] = await Promise.all([
+        dashboardAPI.getStats(),
+        adminNotificationsAPI.getMetrics(30).catch(() => null),
+      ]);
       
       const compact = (value) => {
         const n = Number(value) || 0;
@@ -161,6 +164,14 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         const v = Math.round(Number(n) || 0);
         return `TSh ${v.toLocaleString('en-US')}`;
       };
+
+      const notifDelivered = notifMetrics?.totals?.delivered ?? data.notifications?.delivered ?? 0;
+      const notifClicks = notifMetrics?.totals?.clicks ?? data.notifications?.clicks ?? 0;
+      const notifCtr = notifMetrics?.rates?.ctrFromDelivered;
+      const notifDeliveryRate = notifMetrics?.rates?.deliveryRate;
+      const notifSubtitle = notifMetrics
+        ? `${compact(notifClicks)} clicks • ${notifMetrics.audience?.activeTokens30d || 0} active devices`
+        : 'Delivery rate';
 
       setStats([
         {
@@ -213,9 +224,9 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         },
         {
           title: 'Notifications',
-          value: formatNumber(data.notifications?.delivered || 0),
-          change: data.notifications?.deliveryRate || '0%',
-          subtitle: 'Delivery rate',
+          value: formatNumber(notifDelivered),
+          change: `${notifDeliveryRate != null ? notifDeliveryRate : 0}% delivered`,
+          subtitle: notifCtr != null ? `CTR ${notifCtr}% • ${notifSubtitle}` : notifSubtitle,
           gradient: ['#ec4899', '#db2777'],
           icon: 'bell',
         },

@@ -1106,6 +1106,84 @@ router.post('/notifications/history/clear', async (req, res, next) => {
   }
 });
 
+// Admin: notification analytics (real sent/delivered/click metrics)
+router.get('/notifications/metrics', async (req, res, next) => {
+  try {
+    const daysRaw = parseInt(String(req.query.days || '30'), 10);
+    const days = Number.isFinite(daysRaw) ? Math.min(Math.max(daysRaw, 1), 90) : 30;
+
+    const aggregateResult = await query(
+      `SELECT
+         COUNT(*)::int AS total_notifications,
+         COALESCE(SUM(sent_count), 0)::bigint AS total_sent,
+         COALESCE(SUM(delivered_count), 0)::bigint AS total_delivered,
+         COALESCE(SUM(clicks), 0)::bigint AS total_clicks
+       FROM notifications
+       WHERE sent_at IS NOT NULL
+         AND sent_at >= NOW() - ($1::text || ' days')::interval`,
+      [String(days)],
+    );
+
+    const tokensResult = await query(
+      `SELECT
+         COUNT(*)::int AS installed_users,
+         COUNT(*) FILTER (
+           WHERE fcm_token IS NOT NULL
+             AND TRIM(fcm_token) <> ''
+             AND blocked = FALSE
+             AND uninstalled_at IS NULL
+         )::int AS users_with_token,
+         COUNT(*) FILTER (
+           WHERE fcm_token IS NOT NULL
+             AND TRIM(fcm_token) <> ''
+             AND blocked = FALSE
+             AND uninstalled_at IS NULL
+             AND fcm_token_updated_at >= NOW() - INTERVAL '7 days'
+         )::int AS active_tokens_7d,
+         COUNT(*) FILTER (
+           WHERE fcm_token IS NOT NULL
+             AND TRIM(fcm_token) <> ''
+             AND blocked = FALSE
+             AND uninstalled_at IS NULL
+             AND fcm_token_updated_at >= NOW() - INTERVAL '30 days'
+         )::int AS active_tokens_30d
+       FROM users`,
+    );
+
+    const row = aggregateResult.rows?.[0] || {};
+    const tok = tokensResult.rows?.[0] || {};
+    const totalSent = Number(row.total_sent || 0);
+    const totalDelivered = Number(row.total_delivered || 0);
+    const totalClicks = Number(row.total_clicks || 0);
+    const ctrFromDelivered = totalDelivered > 0 ? (totalClicks / totalDelivered) * 100 : 0;
+    const ctrFromSent = totalSent > 0 ? (totalClicks / totalSent) * 100 : 0;
+    const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent) * 100 : 0;
+
+    return res.json({
+      windowDays: days,
+      totals: {
+        notifications: Number(row.total_notifications || 0),
+        sent: totalSent,
+        delivered: totalDelivered,
+        clicks: totalClicks,
+      },
+      rates: {
+        deliveryRate: Number(deliveryRate.toFixed(1)),
+        ctrFromDelivered: Number(ctrFromDelivered.toFixed(1)),
+        ctrFromSent: Number(ctrFromSent.toFixed(1)),
+      },
+      audience: {
+        installedUsers: Number(tok.installed_users || 0),
+        usersWithToken: Number(tok.users_with_token || 0),
+        activeTokens7d: Number(tok.active_tokens_7d || 0),
+        activeTokens30d: Number(tok.active_tokens_30d || 0),
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: Ads statistics – real data from ad_events and users tables
 router.get('/ads/stats', async (req, res, next) => {
   try {
