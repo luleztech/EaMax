@@ -1087,48 +1087,9 @@ router.post('/notifications', async (req, res, next) => {
 
         console.log(`[FCM] Notification ${notification.id}: ${totalSuccess} sent, ${totalFailed} failed`);
 
-        // Clean up invalid/expired FCM tokens so future notifications skip them
-        if (invalidTokens.length > 0) {
-          console.log(`[FCM] Clearing ${invalidTokens.length} invalid/expired tokens`);
-          for (const token of invalidTokens) {
-            await query(
-              `UPDATE users SET fcm_token = NULL WHERE fcm_token = $1`,
-              [token]
-            ).catch(() => {});
-          }
-        }
+        const invalidSet = new Set(invalidTokens);
 
-        // Track delivery attempts in database
-        const deliveryRecords = [];
-        for (const [userId, token] of userTokenMap.entries()) {
-          if (!invalidTokens.includes(token)) {
-            deliveryRecords.push([notification.id, userId, token]);
-          }
-        }
-
-        if (deliveryRecords.length > 0) {
-          // Batch insert delivery records (max 100 at a time to avoid param limit)
-          const DB_BATCH = 100;
-          for (let i = 0; i < deliveryRecords.length; i += DB_BATCH) {
-            const chunk = deliveryRecords.slice(i, i + DB_BATCH);
-            const deliveryValues = chunk
-              .map((_, idx) => {
-                const base = idx * 3;
-                return `($${base + 1}, $${base + 2}, $${base + 3})`;
-              })
-              .join(',');
-            await query(
-              `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token)
-               VALUES ${deliveryValues}
-               ON CONFLICT (notification_id, user_id) DO NOTHING`,
-              chunk.flat()
-            ).catch((err) => {
-              console.warn('[FCM] Failed to insert delivery records:', err.message);
-            });
-          }
-        }
-
-        // Update sent_count on notification
+        // Persist broadcast stats immediately (single UPDATE — keeps admin UI accurate)
         await query(
           `UPDATE notifications SET sent_count = $1 WHERE id = $2`,
           [totalSuccess, notification.id]
@@ -1136,12 +1097,59 @@ router.post('/notifications', async (req, res, next) => {
           console.warn('[FCM] Failed to update sent_count:', err.message);
         });
 
-        return res.status(201).json({
+        // Respond now — token cleanup + delivery rows can be very slow for large user bases
+        res.status(201).json({
           ...notification,
           sent_count: totalSuccess,
           failed_count: totalFailed,
           total_devices: fcmTokens.length,
         });
+
+        setImmediate(async () => {
+          try {
+            if (invalidTokens.length > 0) {
+              console.log(`[FCM] Clearing ${invalidTokens.length} invalid/expired tokens (batched)`);
+              await query(
+                `UPDATE users SET fcm_token = NULL WHERE fcm_token = ANY($1::text[])`,
+                [invalidTokens],
+              ).catch((err) => {
+                console.warn('[FCM] Batched token cleanup failed:', err.message);
+              });
+            }
+
+            const deliveryRecords = [];
+            for (const [userId, token] of userTokenMap.entries()) {
+              if (!invalidSet.has(token)) {
+                deliveryRecords.push([notification.id, userId, token]);
+              }
+            }
+
+            if (deliveryRecords.length > 0) {
+              const DB_BATCH = 100;
+              for (let i = 0; i < deliveryRecords.length; i += DB_BATCH) {
+                const chunk = deliveryRecords.slice(i, i + DB_BATCH);
+                const deliveryValues = chunk
+                  .map((_, idx) => {
+                    const base = idx * 3;
+                    return `($${base + 1}, $${base + 2}, $${base + 3})`;
+                  })
+                  .join(',');
+                await query(
+                  `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token)
+                   VALUES ${deliveryValues}
+                   ON CONFLICT (notification_id, user_id) DO NOTHING`,
+                  chunk.flat()
+                ).catch((err) => {
+                  console.warn('[FCM] Failed to insert delivery records:', err.message);
+                });
+              }
+            }
+          } catch (bgErr) {
+            console.warn('[FCM] Post-send bookkeeping error:', bgErr?.message || bgErr);
+          }
+        });
+
+        return;
 
       } catch (pushErr) {
         console.error('[FCM] Push send error:', pushErr.message || pushErr);
@@ -1164,6 +1172,44 @@ router.post('/notifications', async (req, res, next) => {
       error: 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined,
     });
+  }
+});
+
+// Admin: clear notification history
+// Deletes notification deliveries first, then notification history records.
+router.post('/notifications/history/clear', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    let deliveriesDeleted = 0;
+    let notificationsDeleted = 0;
+
+    // delivery table may not exist on older schemas; keep endpoint resilient
+    try {
+      const deliveryResult = await client.query('DELETE FROM notification_deliveries');
+      deliveriesDeleted = deliveryResult.rowCount || 0;
+    } catch (err) {
+      const msg = String(err?.message || '');
+      const isMissingTable = err?.code === '42P01' || msg.includes('does not exist');
+      if (!isMissingTable) throw err;
+    }
+
+    const notificationsResult = await client.query('DELETE FROM notifications');
+    notificationsDeleted = notificationsResult.rowCount || 0;
+
+    await client.query('COMMIT');
+    return res.json({
+      ok: true,
+      notificationsDeleted,
+      deliveriesDeleted,
+      message: 'Notification history cleared',
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    return next(err);
+  } finally {
+    client.release();
   }
 });
 
