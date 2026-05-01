@@ -167,10 +167,12 @@ export const notificationsAPI = {
     return apiRequest(`/api/notifications?limit=${limit}`);
   },
 
-  // Record notification click
-  recordClick: async (notificationId) => {
+  // Record notification click (optionally with user identity for unique click analytics)
+  recordClick: async (notificationId, externalId = null) => {
     return apiRequest(`/api/notifications/${notificationId}/click`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(externalId ? { externalId } : {}),
     });
   },
 

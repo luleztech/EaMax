@@ -25,7 +25,9 @@ function recordNotificationClick(messageOrData) {
   const data = messageOrData?.data || messageOrData;
   const id = data?.notificationId || data?.notification_id;
   if (id) {
-    notificationsAPI.recordClick(String(id)).catch(() => {});
+    notificationsAPI
+      .recordClick(String(id), _cachedExternalId || null)
+      .catch(() => {});
   }
 }
 
@@ -101,8 +103,8 @@ export const requestNotificationPermission = async () => {
 
     if (Platform.OS === 'android') {
       await notifee.createChannel({
-        id: 'default',
-        name: 'Default Channel',
+        id: 'eamax_high_priority',
+        name: 'EaMax Arifa',
         importance: AndroidImportance.HIGH,
         sound: 'default',
       });
@@ -206,7 +208,7 @@ export const displayNotification = async (title, body, data = {}, externalId = n
         title: title || 'EaMax',
         body: body || '',
         android: {
-          channelId: 'default',
+          channelId: 'eamax_high_priority',
           importance: AndroidImportance.HIGH,
           pressAction: { id: 'default' },
           sound: 'default',
@@ -257,7 +259,7 @@ export const initializeNotifications = async (externalId) => {
       const notifee = require('@notifee/react-native').default;
       const { AndroidImportance } = require('@notifee/react-native');
       await notifee.createChannel({
-        id: 'default',
+        id: 'eamax_high_priority',
         name: 'EaMax Notifications',
         importance: AndroidImportance.HIGH,
         sound: 'default',
@@ -285,6 +287,13 @@ export const initializeNotifications = async (externalId) => {
 
     // STEP 5: Register token with backend
     await registerFCMToken(externalId, fcmToken);
+    // STEP 5b: Subscribe device to broadcast topic so one backend send reaches all installs.
+    try {
+      await messaging.subscribeToTopic('all_users');
+      console.log('[FCM] Subscribed to topic all_users');
+    } catch (e) {
+      console.warn('[FCM] Topic subscribe failed (non-fatal):', e?.message || e);
+    }
     console.log('[FCM] Initialization complete for user:', externalId);
 
     // STEP 6: Listen for token refresh
@@ -293,6 +302,9 @@ export const initializeNotifications = async (externalId) => {
       console.log('[FCM] Token refreshed, re-registering...');
       if (externalId) {
         await registerFCMToken(externalId, token);
+        try {
+          await messaging.subscribeToTopic('all_users');
+        } catch (_) {}
       }
     });
 

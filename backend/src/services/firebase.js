@@ -160,6 +160,53 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
   }
 };
 
+// Send one notification to all devices subscribed to a topic (e.g. all_users)
+const sendPushNotificationToTopic = async (topic, title, body, data = {}) => {
+  if (!firebaseInitialized) {
+    throw new Error('Firebase Admin not initialized');
+  }
+  if (!topic || String(topic).trim() === '') {
+    throw new Error('Topic is required');
+  }
+
+  const message = {
+    topic: String(topic).trim(),
+    notification: {
+      title,
+      body,
+    },
+    data: stringifyData({
+      ...data,
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    }),
+    android: {
+      priority: 'high',
+      ttl: FCM_TTL_MS,
+      notification: {
+        channelId: FCM_ANDROID_CHANNEL_ID,
+        sound: 'default',
+        priority: 'high',
+      },
+    },
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+          badge: 1,
+          'content-available': 1,
+        },
+      },
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+      },
+    },
+  };
+
+  const messageId = await admin.messaging().send(message);
+  return { success: true, messageId };
+};
+
 // Initialize on module load
 initializeFirebase();
 
@@ -167,5 +214,6 @@ module.exports = {
   initializeFirebase,
   sendPushNotification,
   sendPushNotificationToMultiple,
+  sendPushNotificationToTopic,
   isInitialized: () => firebaseInitialized,
 };

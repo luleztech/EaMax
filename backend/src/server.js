@@ -103,6 +103,21 @@ query(
   `ALTER TABLE stream_aliases ALTER COLUMN stream_url DROP NOT NULL`
 ).catch(() => {});
 
+// Notification click tracking (unique by user + notification for real click analytics)
+query(
+  `CREATE TABLE IF NOT EXISTS notification_clicks (
+     id SERIAL PRIMARY KEY,
+     notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     UNIQUE (notification_id, user_id)
+   )`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration notification_clicks (non-fatal):', err.message);
+  }
+});
+
 // Simple health check (no DB required)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'EaMax backend is running' });

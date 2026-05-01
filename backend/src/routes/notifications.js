@@ -33,14 +33,56 @@ router.post('/:id/click', async (req, res, next) => {
     const paramsSchema = z.object({
       id: z.string().regex(/^\d+$/),
     });
+    const bodySchema = z.object({
+      userId: z.number().int().positive().optional(),
+      externalId: z.string().optional(),
+    });
     const { id } = paramsSchema.parse(req.params);
+    const body = bodySchema.parse(req.body || {});
+    const notificationId = Number(id);
 
+    let userId = body.userId;
+    if (!userId && body.externalId) {
+      const userResult = await query(
+        `SELECT id FROM users WHERE external_id = $1 LIMIT 1`,
+        [body.externalId],
+      );
+      if (userResult.rows.length > 0) {
+        userId = userResult.rows[0].id;
+      }
+    }
+
+    if (userId) {
+      // Count one click per user per notification (real unique-click analytics).
+      await query(
+        `INSERT INTO notification_clicks (notification_id, user_id)
+         VALUES ($1, $2)
+         ON CONFLICT (notification_id, user_id) DO NOTHING`,
+        [notificationId, userId],
+      ).catch(() => {});
+
+      const updated = await query(
+        `UPDATE notifications
+            SET clicks = (
+              SELECT COUNT(*) FROM notification_clicks WHERE notification_id = $1
+            )
+          WHERE id = $1
+          RETURNING id, clicks`,
+        [notificationId],
+      );
+      if (updated.rows.length === 0) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
+      return res.json(updated.rows[0]);
+    }
+
+    // Fallback for legacy clients that don't send user identity yet.
     const updated = await query(
       `UPDATE notifications
           SET clicks = clicks + 1
         WHERE id = $1
         RETURNING id, clicks`,
-      [Number(id)],
+      [notificationId],
     );
 
     if (updated.rows.length === 0) {
@@ -85,13 +127,22 @@ router.post('/:id/delivered', async (req, res, next) => {
       return res.status(400).json({ error: 'userId or externalId required' });
     }
 
-    // Mark as delivered in notification_deliveries table
+    // Upsert delivery row so topic-based sends are tracked too.
     await query(
-      `UPDATE notification_deliveries
-          SET delivered_at = now()
-        WHERE notification_id = $1 AND user_id = $2 AND delivered_at IS NULL`,
+      `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token, delivered_at)
+       VALUES ($1, $2, NULL, now())
+       ON CONFLICT (notification_id, user_id)
+       DO UPDATE SET delivered_at = COALESCE(notification_deliveries.delivered_at, now())`,
       [notificationId, userId]
-    );
+    ).catch(async () => {
+      // Fallback for older schema where delivered_at may be missing
+      await query(
+        `UPDATE notification_deliveries
+            SET delivered_at = now()
+          WHERE notification_id = $1 AND user_id = $2 AND delivered_at IS NULL`,
+        [notificationId, userId]
+      ).catch(() => {});
+    });
 
     // Increment delivered_count on notifications table
     const updated = await query(

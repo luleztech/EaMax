@@ -998,10 +998,9 @@ router.post('/notifications', async (req, res, next) => {
     // Send push notifications
     if (data.type === 'normal') {
       const firebase = require('../services/firebase');
-      const sendPush = firebase.sendPushNotificationToMultiple;
+      const sendTopicPush = firebase.sendPushNotificationToTopic;
       const isInit = firebase.isInitialized;
 
-      // Check Firebase is initialized - return error to admin if not
       if (typeof isInit !== 'function' || !isInit()) {
         console.error('[FCM] Firebase not initialized - FIREBASE_SERVICE_ACCOUNT_KEY missing or invalid');
         return res.status(201).json({
@@ -1012,145 +1011,39 @@ router.post('/notifications', async (req, res, next) => {
       }
 
       try {
-        // Get all active users with valid FCM tokens
-        const tokensResult = await query(
-          `SELECT u.id as user_id, u.fcm_token 
-           FROM users u
-           WHERE u.fcm_token IS NOT NULL 
-           AND u.blocked = FALSE 
-           AND TRIM(u.fcm_token) != ''
-           AND u.uninstalled_at IS NULL`
+        // Topic broadcast reaches all installs that subscribed to all_users.
+        await sendTopicPush(
+          'all_users',
+          data.title,
+          data.message,
+          {
+            notificationId: String(notification.id),
+            category: data.category,
+            type: 'notification',
+          }
         );
 
-        const userTokenMap = new Map();
-        (tokensResult.rows || []).forEach((row) => {
-          const token = row?.fcm_token;
-          if (token && String(token).trim() !== '') {
-            userTokenMap.set(row.user_id, token);
-          }
-        });
+        // Approximate audience size from active users for dashboard "sent" metric.
+        const audienceResult = await query(
+          `SELECT COUNT(*)::int AS count
+           FROM users
+           WHERE blocked = FALSE
+             AND uninstalled_at IS NULL`
+        ).catch(() => ({ rows: [{ count: 0 }] }));
+        const audienceCount = Number(audienceResult.rows?.[0]?.count || 0);
 
-        // Deduplicate tokens so each device receives exactly one notification
-        const fcmTokens = [...new Set(userTokenMap.values())];
-
-        console.log(`[FCM] Sending notification ${notification.id} to ${fcmTokens.length} devices...`);
-
-        if (fcmTokens.length === 0) {
-          console.warn('[FCM] No valid FCM tokens found - no users have registered their devices yet');
-          return res.status(201).json({
-            ...notification,
-            pushError: 'No users have registered for notifications yet.',
-            sent_count: 0,
-          });
-        }
-
-        // Send via Firebase in batches of 500 (FCM multicast limit)
-        const BATCH_SIZE = 500;
-        let totalSuccess = 0;
-        let totalFailed = 0;
-        const invalidTokens = [];
-
-        for (let i = 0; i < fcmTokens.length; i += BATCH_SIZE) {
-          const batch = fcmTokens.slice(i, i + BATCH_SIZE);
-          const batchResult = await sendPush(
-            batch,
-            data.title,
-            data.message,
-            {
-              notificationId: String(notification.id),
-              category: data.category,
-              type: 'notification',
-            }
-          );
-
-          totalSuccess += batchResult?.sent || 0;
-          totalFailed += batchResult?.failed || 0;
-
-          // Collect invalid tokens to clean up (so we don't keep sending to dead devices)
-          if (batchResult?.responses) {
-            batchResult.responses.forEach((resp, idx) => {
-              if (!resp.success && resp.error) {
-                const errCode = String(resp.error.code || resp.error.message || '').toLowerCase();
-                const isInvalid =
-                  errCode.includes('registration-token-not-registered') ||
-                  errCode.includes('invalid-registration-token') ||
-                  errCode.includes('invalid-argument') ||
-                  errCode.includes('unregistered') ||
-                  errCode.includes('invalid_argument');
-                if (isInvalid && batch[idx]) {
-                  invalidTokens.push(batch[idx]);
-                }
-              }
-            });
-          }
-        }
-
-        console.log(`[FCM] Notification ${notification.id}: ${totalSuccess} sent, ${totalFailed} failed`);
-
-        const invalidSet = new Set(invalidTokens);
-
-        // Persist broadcast stats immediately (single UPDATE — keeps admin UI accurate)
         await query(
           `UPDATE notifications SET sent_count = $1 WHERE id = $2`,
-          [totalSuccess, notification.id]
-        ).catch((err) => {
-          console.warn('[FCM] Failed to update sent_count:', err.message);
-        });
+          [audienceCount, notification.id],
+        ).catch(() => {});
 
-        // Respond now — token cleanup + delivery rows can be very slow for large user bases
-        res.status(201).json({
+        return res.status(201).json({
           ...notification,
-          sent_count: totalSuccess,
-          failed_count: totalFailed,
-          total_devices: fcmTokens.length,
+          sent_count: audienceCount,
+          failed_count: 0,
+          sent_via_topic: true,
+          topic: 'all_users',
         });
-
-        setImmediate(async () => {
-          try {
-            if (invalidTokens.length > 0) {
-              console.log(`[FCM] Clearing ${invalidTokens.length} invalid/expired tokens (batched)`);
-              await query(
-                `UPDATE users SET fcm_token = NULL WHERE fcm_token = ANY($1::text[])`,
-                [invalidTokens],
-              ).catch((err) => {
-                console.warn('[FCM] Batched token cleanup failed:', err.message);
-              });
-            }
-
-            const deliveryRecords = [];
-            for (const [userId, token] of userTokenMap.entries()) {
-              if (!invalidSet.has(token)) {
-                deliveryRecords.push([notification.id, userId, token]);
-              }
-            }
-
-            if (deliveryRecords.length > 0) {
-              const DB_BATCH = 100;
-              for (let i = 0; i < deliveryRecords.length; i += DB_BATCH) {
-                const chunk = deliveryRecords.slice(i, i + DB_BATCH);
-                const deliveryValues = chunk
-                  .map((_, idx) => {
-                    const base = idx * 3;
-                    return `($${base + 1}, $${base + 2}, $${base + 3})`;
-                  })
-                  .join(',');
-                await query(
-                  `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token)
-                   VALUES ${deliveryValues}
-                   ON CONFLICT (notification_id, user_id) DO NOTHING`,
-                  chunk.flat()
-                ).catch((err) => {
-                  console.warn('[FCM] Failed to insert delivery records:', err.message);
-                });
-              }
-            }
-          } catch (bgErr) {
-            console.warn('[FCM] Post-send bookkeeping error:', bgErr?.message || bgErr);
-          }
-        });
-
-        return;
-
       } catch (pushErr) {
         console.error('[FCM] Push send error:', pushErr.message || pushErr);
         return res.status(201).json({

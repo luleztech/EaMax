@@ -279,15 +279,17 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
           : '';
       const mapped = (notifications || []).map((n) => {
         const isScheduled = n.type === 'scheduled' && n.scheduled_for && !n.sent_at;
+        const sentCount = Number(n.sent_count || 0);
+        const deliveredCount = Number(n.delivered_count || 0);
+        const clicksCount = Number(n.clicks || 0);
+        const ctr = deliveredCount > 0 ? ((clicksCount / deliveredCount) * 100).toFixed(1) : '0.0';
         return {
           title: n.title,
           description: n.message,
           clicks:
             isScheduled
               ? '—'
-              : typeof n.clicks === 'number'
-                ? `${n.clicks} clicks`
-                : 'Clicks data',
+              : `${clicksCount} clicks • ${deliveredCount}/${sentCount} delivered • CTR ${ctr}%`,
           time: isScheduled
             ? `Scheduled ${formatDateTime(n.scheduled_for)}`
             : n.sent_at

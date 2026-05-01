@@ -159,6 +159,8 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       const sentCount = result?.sent_count || result?.total_devices || 0;
       const successText = notificationType === 'scheduled'
         ? 'Notification scheduled successfully!'
+        : result?.sent_via_topic
+          ? `✅ Broadcast sent to all installs (topic: ${result?.topic || 'all_users'})`
         : sentCount > 0
           ? `✅ Sent to ${sentCount.toLocaleString()} devices!`
           : 'Notification sent successfully!';
