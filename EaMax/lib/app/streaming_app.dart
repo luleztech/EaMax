@@ -183,6 +183,9 @@ class _StreamingAppState extends State<StreamingApp> {
       final tok = await FirebaseMessaging.instance.getToken();
       if (tok != null && tok.isNotEmpty) {
         await userApi.registerFcmToken(uid, tok);
+        try {
+          await FirebaseMessaging.instance.subscribeToTopic('all_users');
+        } catch (_) {}
       }
     } catch (_) {}
   }

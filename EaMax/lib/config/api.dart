@@ -179,6 +179,24 @@ class MatchesApi {
   }
 }
 
+class NotificationsApi {
+  Future<void> confirmDelivery(String notificationId, String externalId) async {
+    await apiRequest(
+      '/api/notifications/$notificationId/delivered',
+      method: 'POST',
+      body: {'externalId': externalId},
+    );
+  }
+
+  Future<void> recordClick(String notificationId, String externalId) async {
+    await apiRequest(
+      '/api/notifications/$notificationId/click',
+      method: 'POST',
+      body: {'externalId': externalId},
+    );
+  }
+}
+
 class PaymentsApi {
   Future<Map<String, dynamic>> startZenoPayment({
     required String externalId,
@@ -230,3 +248,4 @@ final channelsApi = ChannelsApi();
 final settingsApi = SettingsApi();
 final matchesApi = MatchesApi();
 final paymentsApi = PaymentsApi();
+final notificationsApi = NotificationsApi();

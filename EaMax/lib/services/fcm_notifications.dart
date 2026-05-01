@@ -3,7 +3,9 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../config/api.dart';
 import '../firebase_options.dart';
+import 'user_id.dart';
 
 /// Must match [AndroidManifest] `com.google.firebase.messaging.default_notification_channel_id`.
 const kFcmAndroidChannelId = 'eamax_high_priority';
@@ -14,11 +16,40 @@ final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin()
 
 bool _channelReady = false;
 
+String? _notificationIdFromMessage(RemoteMessage message) {
+  final data = message.data;
+  final id = data['notificationId'] ?? data['notification_id'];
+  final v = id?.toString().trim();
+  if (v == null || v.isEmpty) return null;
+  return v;
+}
+
+Future<void> _confirmDeliveredFromMessage(RemoteMessage message) async {
+  final notificationId = _notificationIdFromMessage(message);
+  if (notificationId == null) return;
+  try {
+    final externalId = await getStoredUserId();
+    if (externalId == null || externalId.isEmpty) return;
+    await notificationsApi.confirmDelivery(notificationId, externalId);
+  } catch (_) {}
+}
+
+Future<void> _recordClickFromMessage(RemoteMessage message) async {
+  final notificationId = _notificationIdFromMessage(message);
+  if (notificationId == null) return;
+  try {
+    final externalId = await getStoredUserId();
+    if (externalId == null || externalId.isEmpty) return;
+    await notificationsApi.recordClick(notificationId, externalId);
+  } catch (_) {}
+}
+
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (kIsWeb) return;
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await ensureAndroidNotificationChannel();
+  await _confirmDeliveredFromMessage(message);
   // Background + notification payload: Android shows the system notification using
   // default_notification_channel_id (high importance in manifest).
   // Data-only: we must show a local notification.
@@ -105,6 +136,11 @@ Future<void> setupFcmLocalNotifications() async {
   final androidPlugin = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.requestNotificationsPermission();
 
+  // Ensure every active install receives topic broadcasts from backend.
+  try {
+    await FirebaseMessaging.instance.subscribeToTopic('all_users');
+  } catch (_) {}
+
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
     alert: true,
     badge: true,
@@ -112,6 +148,7 @@ Future<void> setupFcmLocalNotifications() async {
   );
 
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+    await _confirmDeliveredFromMessage(message);
     final n = message.notification;
     if (n != null) {
       await _showLocal(
@@ -126,4 +163,15 @@ Future<void> setupFcmLocalNotifications() async {
     if (body.isEmpty) return;
     await _showLocal(_notifId(message), title, body);
   });
+
+  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
+    await _confirmDeliveredFromMessage(message);
+    await _recordClickFromMessage(message);
+  });
+
+  final initial = await FirebaseMessaging.instance.getInitialMessage();
+  if (initial != null) {
+    await _confirmDeliveredFromMessage(initial);
+    await _recordClickFromMessage(initial);
+  }
 }
