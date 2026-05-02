@@ -141,10 +141,22 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   // Fetch dashboard stats from backend
   const fetchDashboardStats = async () => {
     try {
-      const [data, notifMetrics] = await Promise.all([
+      const [statsOutcome, metricsOutcome] = await Promise.allSettled([
         dashboardAPI.getStats(),
-        adminNotificationsAPI.getMetrics(30).catch(() => null),
+        adminNotificationsAPI.getMetrics(30),
       ]);
+      if (statsOutcome.status !== 'fulfilled') {
+        console.error('Dashboard stats request failed:', statsOutcome.reason);
+        showStatusModal(
+          'error',
+          'Overview',
+          'Could not load dashboard numbers. Check API URL, admin key, and network.',
+        );
+        return;
+      }
+      const data = statsOutcome.value;
+      const notifMetrics =
+        metricsOutcome.status === 'fulfilled' ? metricsOutcome.value : null;
       
       const compact = (value) => {
         const n = Number(value) || 0;

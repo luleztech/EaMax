@@ -65,8 +65,8 @@ const apiRequest = async (endpoint, options = {}) => {
 
       // Success with optional JSON body (e.g. 200)
       if (response.ok && response.status === 200) {
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        if (!contentType.includes('application/json')) {
           return {};
         }
       }
@@ -232,6 +232,12 @@ export const adminNotificationsAPI = {
   getNotifications: async (limit = 20) => {
     // Scheduled (pinned) + sent notifications for recent list
     return apiRequest(`/api/notifications?limit=${limit}`);
+  },
+
+  /** Aggregate notification analytics (GET /api/admin/notifications/metrics). */
+  getMetrics: async (days = 30) => {
+    const d = Number.isFinite(Number(days)) ? Math.min(90, Math.max(1, Number(days))) : 30;
+    return apiRequest(`/api/admin/notifications/metrics?days=${d}`);
   },
 
   /** Removes all notification history and scheduled rows from the server (admin only). */
