@@ -41,7 +41,8 @@ android {
 
     defaultConfig {
         applicationId = "com.eamax"
-        minSdk = maxOf(flutter.minSdkVersion, 24)
+        // Match Flutter’s minSdk (usually 21). A hard floor of 24 removed many devices on Play; FCM/ads work on 21+.
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
