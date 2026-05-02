@@ -38,6 +38,10 @@ const initializeFirebase = () => {
 // No collapseKey so every notification is delivered (not replaced by a newer one).
 const FCM_TTL_MS = 28 * 24 * 60 * 60 * 1000; // 28 days in milliseconds
 
+/** Must match Flutter `kFcmAndroidChannelId` / AndroidManifest `default_notification_channel_id`. */
+const FCM_ANDROID_CHANNEL_ID =
+  process.env.FCM_ANDROID_CHANNEL_ID || 'eamax_high_priority';
+
 // Ensure all data payload values are strings (FCM requirement)
 const stringifyData = (data) => {
   const out = {};
@@ -109,7 +113,7 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
   }
 
   try {
-    const message = {
+    const baseMessage = {
       notification: {
         title,
         body,
@@ -142,10 +146,14 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
       },
     };
 
-    const response = await admin.messaging().sendEachForMulticast({
-      ...message,
-      tokens: fcmTokens,
-    });
+    const tokens = fcmTokens.map((t) => String(t || '').trim()).filter(Boolean);
+    const messages = tokens.map((token) => ({
+      ...baseMessage,
+      token,
+    }));
+
+    // Prefer sendEach (firebase-admin v11+) — same payloads as sendEachForMulticast, fewer HTTP/2 edge cases.
+    const response = await admin.messaging().sendEach(messages);
 
     return {
       success: true,

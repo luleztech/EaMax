@@ -41,8 +41,15 @@ async function explainRemindMismatch(userId) {
 }
 
 function fcmFailureHint(pushResult) {
+  if (pushResult?._exception) {
+    return `Send failed: ${pushResult._exception}`;
+  }
   const responses = pushResult?.responses;
+  const failedCount = Number(pushResult?.failed ?? 0);
   if (!Array.isArray(responses) || responses.length === 0) {
+    if (failedCount > 0) {
+      return 'FCM rejected the notification (often invalid/expired token or wrong Firebase project). Ask the user to open the app once, or verify server FIREBASE_SERVICE_ACCOUNT_KEY matches the Android app.';
+    }
     return 'FCM returned no success (check Firebase project and server logs).';
   }
   const withErr = responses.find((x) => x && x.error);
@@ -151,7 +158,13 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
         category: 'habari',
       });
       lastPushResult = pushResult;
-      const okCount = pushResult?.sent ?? 0;
+      const rawSent = pushResult?.sent ?? pushResult?.successCount;
+      let okCount =
+        typeof rawSent === 'number' && !Number.isNaN(rawSent)
+          ? rawSent
+          : Array.isArray(pushResult?.responses)
+            ? pushResult.responses.filter((x) => x && x.success === true).length
+            : 0;
       sentTotal += okCount;
 
       const responses = pushResult?.responses;
@@ -160,14 +173,21 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
         const r = responses?.[idx];
         let success = false;
         if (r) {
-          success = r.success === true;
+          success = r.success === true || (!!r.messageId && !r.error);
         } else if (okCount > 0) {
           success = okCount === tokens.length;
         }
         if (success) remindedIds.push(row.id);
       });
     } catch (e) {
-      console.error('[ExpiredReminder] batch failed:', e.message || e);
+      const msg = e?.message || String(e || '');
+      console.error('[ExpiredReminder] batch failed:', msg);
+      lastPushResult = {
+        sent: 0,
+        failed: tokens.length,
+        responses: [],
+        _exception: msg,
+      };
     }
   }
 
