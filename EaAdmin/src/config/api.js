@@ -1,12 +1,19 @@
 // API Configuration for EaAdmin App
 const API_BASE_URL = 'https://eamax-production.up.railway.app';
-const ADMIN_API_KEY = 'super-secret-admin-key'; // TODO: Move to environment variable or secure storage
+/** Prefer injecting via Metro/babel `ADMIN_API_KEY` or patch before release; never commit production secrets. */
+const ADMIN_API_KEY =
+  (typeof process !== 'undefined' && process.env && process.env.ADMIN_API_KEY) ||
+  'super-secret-admin-key';
 
 /**
  * Make API request with admin authentication
  */
 const apiRequest = async (endpoint, options = {}) => {
   const url = `${API_BASE_URL}${endpoint}`;
+  const timeoutMs =
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? Number(options.timeoutMs)
+      : 20000;
   
   const defaultOptions = {
     headers: {
@@ -32,14 +39,23 @@ const apiRequest = async (endpoint, options = {}) => {
     return msg.includes('network request failed') ||
       msg.includes('failed to fetch') ||
       msg.includes('networkerror') ||
+      msg.includes('aborted') ||
       msg.includes('timeout');
   };
 
   const maxAttempts = 3; // 1 initial + 2 retries
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let controller;
+    let timeoutId;
     try {
-      const response = await fetch(url, config);
+      controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const response = await fetch(url, {
+        ...config,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
       // Success with no body (204 No Content) – return immediately, do not read body
       if (response.status === 204) {
@@ -80,6 +96,7 @@ const apiRequest = async (endpoint, options = {}) => {
 
       return data;
     } catch (error) {
+      if (timeoutId) clearTimeout(timeoutId);
       lastErr = error;
       const canRetry = attempt < maxAttempts && isTransientNetworkError(error);
       if (!canRetry) break;
@@ -113,6 +130,14 @@ export const adminUsersAPI = {
       method: 'POST',
       body: JSON.stringify({ duration, unit }),
     });
+  },
+
+  /**
+   * Payment rows for a user (real server data). Optional: 404 if not implemented — UI falls back to
+   * payments embedded on the user object from /api/dashboard/users when present.
+   */
+  getPaymentsForUser: async (userId) => {
+    return apiRequest(`/api/admin/users/${userId}/payments`);
   },
 };
 
@@ -199,6 +224,7 @@ export const adminNotificationsAPI = {
     return apiRequest('/api/admin/notifications', {
       method: 'POST',
       body: JSON.stringify(notificationData),
+      timeoutMs: 12000,
     });
   },
 
@@ -207,9 +233,57 @@ export const adminNotificationsAPI = {
     // Scheduled (pinned) + sent notifications for recent list
     return apiRequest(`/api/notifications?limit=${limit}`);
   },
-  // Get aggregate notification analytics for dashboard
-  getMetrics: async (days = 30) => {
-    return apiRequest(`/api/admin/notifications/metrics?days=${days}`);
+
+  /** Removes all notification history and scheduled rows from the server (admin only). */
+  deleteAllNotificationHistory: async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const clearViaPrimary = async () =>
+      apiRequest('/api/admin/notifications/history/clear', {
+        method: 'POST',
+      });
+    const clearViaLegacy = async () =>
+      apiRequest('/api/admin/notifications/history', {
+        method: 'DELETE',
+      });
+
+    try {
+      const clearResult = await clearViaPrimary();
+      // Verify server really became empty (eventual consistency/restart race protection).
+      for (let i = 0; i < 3; i += 1) {
+        const rows = await adminNotificationsAPI.getNotifications(5);
+        if (Array.isArray(rows) && rows.length === 0) {
+          return {
+            ...(clearResult || {}),
+            verifiedEmpty: true,
+          };
+        }
+        await sleep(250 + i * 200);
+      }
+      return {
+        ...(clearResult || {}),
+        verifiedEmpty: false,
+      };
+    } catch (err) {
+      const m = String(err?.message || '').toLowerCase();
+      if (m.includes('not found') || m.includes('404') || m.includes('http error! status: 404')) {
+        const clearResult = await clearViaLegacy();
+        for (let i = 0; i < 3; i += 1) {
+          const rows = await adminNotificationsAPI.getNotifications(5);
+          if (Array.isArray(rows) && rows.length === 0) {
+            return {
+              ...(clearResult || {}),
+              verifiedEmpty: true,
+            };
+          }
+          await sleep(250 + i * 200);
+        }
+        return {
+          ...(clearResult || {}),
+          verifiedEmpty: false,
+        };
+      }
+      throw err;
+    }
   },
 };
 
@@ -241,33 +315,6 @@ export const adminSettingsAPI = {
     return apiRequest('/api/admin/settings/channels-premium-only', {
       method: 'PUT',
       body: JSON.stringify({ channelsPremiumOnly: !!channelsPremiumOnly }),
-    });
-  },
-};
-
-/**
- * Admin Stream Aliases API
- * alias -> real stream URL
- */
-export const adminStreamAliasesAPI = {
-  list: async () => {
-    return apiRequest('/api/admin/stream-aliases');
-  },
-  upsert: async ({ alias, channelId, isActive = true }) => {
-    return apiRequest('/api/admin/stream-aliases', {
-      method: 'POST',
-      body: JSON.stringify({ alias, channelId, isActive }),
-    });
-  },
-  setActive: async (alias, isActive) => {
-    return apiRequest(`/api/admin/stream-aliases/${encodeURIComponent(alias)}/active`, {
-      method: 'PATCH',
-      body: JSON.stringify({ isActive: !!isActive }),
-    });
-  },
-  remove: async (alias) => {
-    return apiRequest(`/api/admin/stream-aliases/${encodeURIComponent(alias)}`, {
-      method: 'DELETE',
     });
   },
 };
