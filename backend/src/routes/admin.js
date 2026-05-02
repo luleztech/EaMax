@@ -132,13 +132,34 @@ router.patch('/users/:id/block', async (req, res, next) => {
 
     const { id } = paramsSchema.parse(req.params);
     const { blocked } = bodySchema.parse(req.body);
+    const uid = Number(id);
+
+    if (blocked) {
+      const updated = await query(
+        `UPDATE users
+            SET blocked = TRUE,
+                is_premium = FALSE,
+                premium_expires_at = NULL
+          WHERE id = $1
+          RETURNING id, external_id, blocked, is_premium, premium_expires_at`,
+        [uid],
+      );
+
+      if (updated.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      await query('DELETE FROM user_unlocked_channels WHERE user_id = $1', [uid]).catch(() => {});
+
+      return res.json(updated.rows[0]);
+    }
 
     const updated = await query(
       `UPDATE users
-          SET blocked = $1
-        WHERE id = $2
+          SET blocked = FALSE
+        WHERE id = $1
         RETURNING id, external_id, blocked`,
-      [blocked, Number(id)],
+      [uid],
     );
 
     if (updated.rows.length === 0) {
@@ -146,6 +167,26 @@ router.patch('/users/:id/block', async (req, res, next) => {
     }
 
     return res.json(updated.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: remind expired subscribers via FCM (optional single user; force skips 7-day throttle)
+router.post('/subscriptions/remind-expired', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      userId: z.number().int().positive().optional(),
+      force: z.boolean().optional(),
+    });
+    const body = bodySchema.parse(req.body || {});
+    const { sendExpiredSubscriptionReminders } = require('../services/expiredSubscriptionReminders');
+    const result = await sendExpiredSubscriptionReminders({
+      userId: body.userId,
+      force: body.force === true,
+    });
+    // Always 200 so admin client can read ok/message without fetch throwing on 503
+    return res.status(200).json(result);
   } catch (err) {
     return next(err);
   }
@@ -188,9 +229,10 @@ router.post('/users/:id/special-access', async (req, res, next) => {
     const updated = await query(
       `UPDATE users
           SET is_premium = TRUE,
+              blocked = FALSE,
               premium_expires_at = $1
         WHERE id = $2
-        RETURNING id, external_id, is_premium, premium_expires_at`,
+        RETURNING id, external_id, is_premium, premium_expires_at, blocked`,
       [expiresAt.toISOString(), userId],
     );
 

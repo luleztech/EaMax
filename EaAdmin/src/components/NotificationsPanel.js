@@ -61,9 +61,11 @@ const getCalendarDays = (year, month) => {
   return days;
 };
 
+/** Server requires a category for routing; we default to general (habari). */
+const DEFAULT_NOTIFICATION_CATEGORY = 'habari';
+
 const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
-  const [category, setCategory] = useState(''); // 'kabumbu' or 'movies'
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
   const [scheduledDate, setScheduledDate] = useState('');
@@ -84,11 +86,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   );
 
   const handleSend = async () => {
-    if (!category) {
-      setStatusMessage({ type: 'error', text: 'Please select a category' });
-      setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
-      return;
-    }
     if (!title.trim() || !message.trim()) {
       setStatusMessage({ type: 'error', text: 'Please fill in title and message' });
       setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
@@ -137,7 +134,7 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       const notificationData = {
         title: title.trim(),
         message: message.trim(),
-        category: category === 'kabumbu' ? 'kabumbu' : category === 'movies' ? 'movies' : 'habari',
+        category: DEFAULT_NOTIFICATION_CATEGORY,
         type: notificationType,
         ...(scheduledFor && { scheduledFor }),
       };
@@ -175,7 +172,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         setScheduledDate('');
         setScheduledTime('');
         setShowDatePicker(false);
-        setCategory('');
         setNotificationType('normal');
         setStatusMessage({ type: null, text: '' });
         onClose();
@@ -207,7 +203,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
     setMessage('');
     setScheduledDate('');
     setScheduledTime('');
-    setCategory('');
     setNotificationType('normal');
     onClose();
   };
@@ -279,71 +274,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                   ]}>
                   Schedule
                 </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Category Selection */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Select Category *</Text>
-            <View style={styles.categoryContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.categoryCard,
-                  category === 'kabumbu' && styles.categoryCardActive,
-                ]}
-                onPress={() => setCategory('kabumbu')}>
-                <LinearGradient
-                  colors={
-                    category === 'kabumbu'
-                      ? ['#10b981', '#059669']
-                      : ['rgba(16, 185, 129, 0.1)', 'rgba(5, 150, 105, 0.1)']
-                  }
-                  style={styles.categoryGradient}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <Icon
-                    name="soccer"
-                    size={32}
-                    color={category === 'kabumbu' ? '#fff' : '#10b981'}
-                  />
-                  <Text
-                    style={[
-                      styles.categoryText,
-                      category === 'kabumbu' && styles.categoryTextActive,
-                    ]}>
-                    Kabumbu
-                  </Text>
-                </LinearGradient>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.categoryCard,
-                  category === 'movies' && styles.categoryCardActive,
-                ]}
-                onPress={() => setCategory('movies')}>
-                <LinearGradient
-                  colors={
-                    category === 'movies'
-                      ? ['#7c3aed', '#6d28d9']
-                      : ['rgba(124, 58, 237, 0.1)', 'rgba(109, 40, 217, 0.1)']
-                  }
-                  style={styles.categoryGradient}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <Icon
-                    name="movie"
-                    size={32}
-                    color={category === 'movies' ? '#fff' : '#7c3aed'}
-                  />
-                  <Text
-                    style={[
-                      styles.categoryText,
-                      category === 'movies' && styles.categoryTextActive,
-                    ]}>
-                    Movies
-                  </Text>
-                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>

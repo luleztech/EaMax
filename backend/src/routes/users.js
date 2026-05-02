@@ -79,6 +79,7 @@ router.get('/:externalId', async (req, res, next) => {
       if (!Number.isNaN(d.getTime())) premiumExpiresAt = d;
     }
     const isPremiumCurrently =
+      row.blocked !== true &&
       row.is_premium === true &&
       (!premiumExpiresAt || premiumExpiresAt > new Date());
 
@@ -114,11 +115,17 @@ router.post('/:externalId/ads/watched', async (req, res, next) => {
     const { points } = bodySchema.parse(req.body);
 
     const userResult = await query(
-      'SELECT id FROM users WHERE external_id = $1',
+      'SELECT id, blocked FROM users WHERE external_id = $1',
       [externalId],
     );
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
+    }
+    if (userResult.rows[0].blocked === true) {
+      return res.status(403).json({
+        error: 'Account suspended',
+        code: 'BLOCKED',
+      });
     }
     const userId = userResult.rows[0].id;
 
@@ -203,11 +210,17 @@ router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) =>
     }
 
     const userResult = await query(
-      'SELECT id, points, is_premium, premium_expires_at FROM users WHERE external_id = $1',
+      'SELECT id, points, blocked, is_premium, premium_expires_at FROM users WHERE external_id = $1',
       [externalId],
     );
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
+    }
+    if (userResult.rows[0].blocked === true) {
+      return res.status(403).json({
+        error: 'Account suspended',
+        code: 'BLOCKED',
+      });
     }
     const userId = userResult.rows[0].id;
     const userPoints = userResult.rows[0].points;

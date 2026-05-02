@@ -190,12 +190,13 @@ router.get('/stats', async (req, res, next) => {
 // Get users list with pagination and filtering
 router.get('/users', async (req, res, next) => {
   try {
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 200, 1), 500);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 500, 1), 50000);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const filter = req.query.filter || 'all'; // 'all', 'free', 'premium', 'expired'
     const search = req.query.search || '';
 
-    let whereConditions = ['blocked = FALSE'];
+    // Include blocked users so admins still see / manage them after blocking
+    let whereConditions = [];
     const queryParams = [];
     let paramIndex = 1;
 
@@ -206,11 +207,11 @@ router.get('/users', async (req, res, next) => {
       );
     } else if (filter === 'free') {
       whereConditions.push(
-        `(is_premium = FALSE OR (is_premium = TRUE AND premium_expires_at IS NOT NULL AND premium_expires_at <= NOW()))`
+        `(NOT (is_premium = TRUE AND (premium_expires_at IS NULL OR premium_expires_at > NOW())))`
       );
     } else if (filter === 'expired') {
       whereConditions.push(
-        `(is_premium = TRUE AND premium_expires_at IS NOT NULL AND premium_expires_at <= NOW())`
+        `(premium_expires_at IS NOT NULL AND premium_expires_at <= NOW())`
       );
     }
 
@@ -238,18 +239,32 @@ router.get('/users', async (req, res, next) => {
     
     const usersResult = await query(
       `SELECT 
-         id,
-         external_id,
-         points,
-         is_premium,
-         premium_expires_at,
-         blocked,
-         created_at,
-         fcm_token_updated_at,
-         uninstalled_at
-       FROM users
+         u.id,
+         u.external_id,
+         u.points,
+         u.is_premium,
+         u.premium_expires_at,
+         u.blocked,
+         u.created_at,
+         u.fcm_token_updated_at,
+         u.uninstalled_at,
+         COALESCE(
+           (
+             SELECT string_agg(sub.phone, ', ' ORDER BY sub.phone)
+             FROM (
+               SELECT DISTINCT trim(sp.buyer_phone) AS phone
+               FROM subscription_payments sp
+               WHERE sp.user_id = u.id
+                 AND sp.status = 'completed'
+                 AND sp.buyer_phone IS NOT NULL
+                 AND trim(sp.buyer_phone) <> ''
+             ) sub
+           ),
+           ''
+         ) AS payment_phones
+       FROM users u
        ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY u.created_at DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
       queryParams
     );

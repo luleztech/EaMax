@@ -29,7 +29,7 @@ const AdminApp = () => {
     const map = {
       overview: {
         title: 'Overview',
-        subtitle: 'EaMax Admin Dashboard',
+        subtitle: 'Revenue, installs & engagement',
       },
       users: {
         title: 'Users Management',
@@ -59,10 +59,7 @@ const AdminApp = () => {
     switch (activeTab) {
       case 'overview':
         return (
-          <DashboardSection
-            onNavigate={setActiveTab}
-            refreshTrigger={dashboardRefreshTrigger}
-          />
+          <DashboardSection refreshTrigger={dashboardRefreshTrigger} />
         );
       case 'users':
         return <UsersSection isActive={activeTab === 'users'} />;
@@ -76,10 +73,7 @@ const AdminApp = () => {
         return <SettingsSection />;
       default:
         return (
-          <DashboardSection
-            onNavigate={setActiveTab}
-            refreshTrigger={dashboardRefreshTrigger}
-          />
+          <DashboardSection refreshTrigger={dashboardRefreshTrigger} />
         );
     }
   };

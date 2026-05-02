@@ -198,9 +198,9 @@ router.post('/zeno/start', async (req, res, next) => {
 
     // Record payment as pending, store orderId in provider_ref for lookup
     await query(
-      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId],
+      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, buyer_phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, phoneForZeno],
     );
 
     // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.
@@ -275,9 +275,10 @@ const applyCompletedPayment = async (orderId, meta) => {
     const userUpdate = await client.query(
       `UPDATE users
          SET is_premium = TRUE,
+             blocked = FALSE,
              premium_expires_at = GREATEST(COALESCE(premium_expires_at, now()), now()) + $2::interval
        WHERE id = $1
-       RETURNING id, is_premium, premium_expires_at`,
+       RETURNING id, is_premium, premium_expires_at, blocked`,
       [userId, planInfo.interval],
     );
     if (userUpdate.rowCount !== 1) {

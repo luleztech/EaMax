@@ -10,11 +10,14 @@ import {
   Modal,
   ActivityIndicator,
   RefreshControl,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminUsersAPI, dashboardAPI } from '../../config/api';
+
+const USERS_PAGE_SIZE = 3000;
 
 const { width } = Dimensions.get('window');
 
@@ -58,6 +61,10 @@ const UsersSection = ({ isActive }) => {
   const [grantingAccess, setGrantingAccess] = useState(false);
   const [filter, setFilter] = useState('all'); // 'all', 'free', 'premium', 'expired'
   const [totalUsers, setTotalUsers] = useState(0);
+  const [dashboardStats, setDashboardStats] = useState(null);
+  const [remindingBulk, setRemindingBulk] = useState(false);
+  const [remindingUserId, setRemindingUserId] = useState(null);
+  const [blockingUser, setBlockingUser] = useState(false);
   const wasActiveRef = useRef(false);
 
   // Show status modal
@@ -68,26 +75,45 @@ const UsersSection = ({ isActive }) => {
     setStatusModalVisible(true);
   }, [setStatusModalType, setStatusModalTitle, setStatusModalMessage, setStatusModalVisible]);
 
-  // Fetch users from backend with filters
+  const fetchDashboardStats = useCallback(async () => {
+    try {
+      const s = await dashboardAPI.getStats();
+      setDashboardStats(s);
+    } catch (e) {
+      console.warn('Dashboard stats:', e);
+    }
+  }, []);
+
+  // Fetch users from backend with filters (paginate until all rows are loaded)
   const fetchUsers = useCallback(async () => {
     try {
-      const { users: data, total } = await dashboardAPI.getUsers(200, 0, filter, searchQuery);
-      
+      let offset = 0;
+      let totalCount = 0;
+      const data = [];
+      for (;;) {
+        const res = await dashboardAPI.getUsers(USERS_PAGE_SIZE, offset, filter, searchQuery);
+        const chunk = res.users || [];
+        const reportedTotal = typeof res.total === 'number' ? res.total : null;
+        totalCount = reportedTotal != null ? reportedTotal : totalCount;
+        data.push(...chunk);
+        offset += chunk.length;
+        if (chunk.length === 0) break;
+        if (reportedTotal != null && data.length >= reportedTotal) break;
+        if (chunk.length < USERS_PAGE_SIZE) break;
+      }
+
       // Format users for display
       const formattedUsers = data.map((user, index) => {
-        const isPremium =
+        const now = new Date();
+        const exp = user.premium_expires_at ? new Date(user.premium_expires_at) : null;
+        const expiredByDate = !!(exp && exp <= now);
+        const activePremium =
           user.is_premium === true &&
-          (!user.premium_expires_at || new Date(user.premium_expires_at) > new Date());
-        
-        const isExpired =
-          user.is_premium === true &&
-          user.premium_expires_at &&
-          new Date(user.premium_expires_at) <= new Date();
-        
+          (!user.premium_expires_at || (exp && exp > now));
         let statusText = 'Free';
-        if (isPremium) {
+        if (activePremium) {
           statusText = 'Premium';
-        } else if (isExpired) {
+        } else if (expiredByDate) {
           statusText = 'Expired';
         }
         
@@ -100,12 +126,13 @@ const UsersSection = ({ isActive }) => {
           blocked: user.blocked || false,
           premiumExpiresAt: user.premium_expires_at,
           createdAt: user.created_at,
+          paymentPhones: user.payment_phones || user.paymentPhones || '',
           rawData: user,
         };
       });
       
       setUsers(formattedUsers);
-      setTotalUsers(total);
+      setTotalUsers(totalCount);
     } catch (error) {
       console.error('Failed to fetch users:', error);
       showStatusModal('error', 'Error', 'Failed to load users. Please try again.');
@@ -117,44 +144,112 @@ const UsersSection = ({ isActive }) => {
 
   useEffect(() => {
     fetchUsers();
-  }, [filter, searchQuery, fetchUsers]);
+    fetchDashboardStats();
+  }, [filter, searchQuery, fetchUsers, fetchDashboardStats]);
 
   // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
   useEffect(() => {
     if (isActive && !wasActiveRef.current) {
       fetchUsers();
+      fetchDashboardStats();
     }
     wasActiveRef.current = !!isActive;
-  }, [isActive, fetchUsers]);
+  }, [isActive, fetchUsers, fetchDashboardStats]);
 
   // Auto-refresh every 15s while Users tab is active so premium status updates when payment succeeds
   useEffect(() => {
     if (!isActive) return;
-    const id = setInterval(() => fetchUsers(), 15000);
+    const id = setInterval(() => {
+      fetchUsers();
+      fetchDashboardStats();
+    }, 15000);
     return () => clearInterval(id);
-  }, [isActive, filter, searchQuery, fetchUsers]);
+  }, [isActive, filter, searchQuery, fetchUsers, fetchDashboardStats]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchUsers();
+    fetchDashboardStats();
   };
 
-  // Handle block user
-  const handleBlockUser = async () => {
-    if (!selectedUser?.rawData) return;
-    
+  const handleRemindAllExpired = async () => {
     try {
-      await adminUsersAPI.blockUser(selectedUser.rawData.id, !selectedUser.blocked);
+      setRemindingBulk(true);
+      const res = await adminUsersAPI.remindExpiredSubscriptions({ force: true });
+      if (res && res.ok === false) {
+        showStatusModal(
+          'error',
+          'Push unavailable',
+          res.message ||
+            'Firebase is not configured on the server (FIREBASE_SERVICE_ACCOUNT_KEY).',
+        );
+        return;
+      }
+      const extra = res?.message ? `\n${res.message}` : '';
       showStatusModal(
         'success',
-        'User Updated',
-        `${selectedUser.name} has been ${!selectedUser.blocked ? 'blocked' : 'unblocked'} from accessing content`
+        'Reminders sent',
+        `Delivered ~${res.sent ?? 0} (FCM). Targeted devices: ${res.targeted ?? 0}.${extra}`,
+      );
+    } catch (e) {
+      console.error(e);
+      showStatusModal('error', 'Reminder failed', e?.message || 'Could not send reminders.');
+    } finally {
+      setRemindingBulk(false);
+    }
+  };
+
+  const handleRemindOneExpired = async (userId) => {
+    try {
+      setRemindingUserId(userId);
+      const res = await adminUsersAPI.remindExpiredSubscriptions({ userId, force: true });
+      if (res && res.ok === false) {
+        showStatusModal(
+          'error',
+          'Push unavailable',
+          res.message ||
+            'Firebase is not configured on the server (FIREBASE_SERVICE_ACCOUNT_KEY).',
+        );
+        return;
+      }
+      const detail =
+        res.sent > 0
+          ? 'Push sent to this device (requires valid FCM token).'
+          : `${res.message || 'No message delivered — check subscription end date, token, or block status.'}`;
+      showStatusModal(res.sent > 0 ? 'success' : 'error', res.sent > 0 ? 'Reminder sent' : 'No push', detail);
+    } catch (e) {
+      console.error(e);
+      showStatusModal('error', 'Reminder failed', e?.message || 'Could not send.');
+    } finally {
+      setRemindingUserId(null);
+    }
+  };
+
+  const applyBlocking = async (blocked) => {
+    if (!selectedUser?.rawData) return;
+    try {
+      setBlockingUser(true);
+      await adminUsersAPI.blockUser(selectedUser.rawData.id, blocked);
+      showStatusModal(
+        'success',
+        blocked ? 'User blocked' : 'User unblocked',
+        blocked
+          ? `${selectedUser.name} cannot use the app until they pay again (subscription cleared).`
+          : `${selectedUser.name} can use the app again; premium still requires payment if not active.`,
       );
       setManagementModalVisible(false);
-      fetchUsers(); // Refresh list
+      fetchUsers();
+      fetchDashboardStats();
     } catch (error) {
-      console.error('Failed to block user:', error);
-      showStatusModal('error', 'Update Failed', 'Failed to update user. Please try again.');
+      console.error('Failed to update block status:', error);
+      const msg = error?.message || String(error || '');
+      showStatusModal(
+        'error',
+        'Update failed',
+        msg && msg.length < 200 ? msg : 'Could not update user. Check admin API key and network.',
+      );
+    } finally {
+      setBlockingUser(false);
     }
   };
 
@@ -182,7 +277,8 @@ const UsersSection = ({ isActive }) => {
       setSpecialAccessModalVisible(false);
       setAccessValue('');
       setAccessType('days');
-      fetchUsers(); // Refresh list
+      fetchUsers();
+      fetchDashboardStats();
     } catch (error) {
       console.error('Failed to grant special access:', error);
       showStatusModal('error', 'Grant Failed', 'Failed to grant access. Please try again.');
@@ -200,34 +296,32 @@ const UsersSection = ({ isActive }) => {
     );
   }
 
-  return (
-    <ScrollView 
-      style={styles.container} 
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }>
-      {/* Header Stats */}
+  const statTotal = dashboardStats?.totalUsers ?? totalUsers;
+  const statPremium = dashboardStats?.premiumUsers;
+  const statFree = dashboardStats?.freeUsers;
+  const statExpired = dashboardStats?.expiredSubscriptions;
+
+  const listHeader = (
+    <>
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{totalUsers}</Text>
+          <Text style={styles.statValue}>{statTotal}</Text>
           <Text style={styles.statLabel}>Total</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{users.filter(u => u.status === 'Premium').length}</Text>
+          <Text style={styles.statValue}>{statPremium ?? '—'}</Text>
           <Text style={styles.statLabel}>Premium</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{users.filter(u => u.status === 'Free').length}</Text>
+          <Text style={styles.statValue}>{statFree ?? '—'}</Text>
           <Text style={styles.statLabel}>Free</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{users.filter(u => u.status === 'Expired').length}</Text>
+          <Text style={styles.statValue}>{statExpired ?? '—'}</Text>
           <Text style={styles.statLabel}>Expired</Text>
         </View>
       </View>
 
-      {/* Search */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color="#9ca3af" />
@@ -241,153 +335,205 @@ const UsersSection = ({ isActive }) => {
         </View>
       </View>
 
-      {/* Filter Tabs */}
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false} 
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
         style={styles.filterContainer}
         contentContainerStyle={styles.filterScroll}>
         <TouchableOpacity
           style={[styles.filterTab, filter === 'all' && styles.filterTabActive]}
           onPress={() => setFilter('all')}
           activeOpacity={0.7}>
-          <Icon 
-            name="account-group" 
-            size={16} 
-            color={filter === 'all' ? '#fff' : '#9ca3af'} 
-          />
-          <Text style={[styles.filterTabText, filter === 'all' && styles.filterTabTextActive]}>
-            All
-          </Text>
+          <Icon name="account-group" size={16} color={filter === 'all' ? '#fff' : '#9ca3af'} />
+          <Text style={[styles.filterTabText, filter === 'all' && styles.filterTabTextActive]}>All</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[styles.filterTab, filter === 'premium' && styles.filterTabActive]}
           onPress={() => setFilter('premium')}
           activeOpacity={0.7}>
-          <Icon 
-            name="star" 
-            size={16} 
-            color={filter === 'premium' ? '#fff' : '#9ca3af'} 
-          />
-          <Text style={[styles.filterTabText, filter === 'premium' && styles.filterTabTextActive]}>
-            Premium
-          </Text>
+          <Icon name="star" size={16} color={filter === 'premium' ? '#fff' : '#9ca3af'} />
+          <Text style={[styles.filterTabText, filter === 'premium' && styles.filterTabTextActive]}>Premium</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[styles.filterTab, filter === 'free' && styles.filterTabActive]}
           onPress={() => setFilter('free')}
           activeOpacity={0.7}>
-          <Icon 
-            name="account" 
-            size={16} 
-            color={filter === 'free' ? '#fff' : '#9ca3af'} 
-          />
-          <Text style={[styles.filterTabText, filter === 'free' && styles.filterTabTextActive]}>
-            Free
-          </Text>
+          <Icon name="account" size={16} color={filter === 'free' ? '#fff' : '#9ca3af'} />
+          <Text style={[styles.filterTabText, filter === 'free' && styles.filterTabTextActive]}>Free</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[styles.filterTab, filter === 'expired' && styles.filterTabActive]}
           onPress={() => setFilter('expired')}
           activeOpacity={0.7}>
-          <Icon 
-            name="clock-alert" 
-            size={16} 
-            color={filter === 'expired' ? '#fff' : '#9ca3af'} 
-          />
-          <Text style={[styles.filterTabText, filter === 'expired' && styles.filterTabTextActive]}>
-            Expired
-          </Text>
+          <Icon name="clock-alert" size={16} color={filter === 'expired' ? '#fff' : '#9ca3af'} />
+          <Text style={[styles.filterTabText, filter === 'expired' && styles.filterTabTextActive]}>Expired</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Users Table */}
-      <View style={styles.tableCard}>
+      {filter === 'expired' ? (
+        <View style={styles.remindAllWrap}>
+          <TouchableOpacity
+            style={styles.remindAllButton}
+            onPress={remindingBulk ? undefined : handleRemindAllExpired}
+            disabled={remindingBulk}
+            activeOpacity={0.85}>
+            {remindingBulk ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Icon name="bell-ring-outline" size={18} color="#fff" />
+                <Text style={styles.remindAllButtonText}>Remind all expired (push)</Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <Text style={styles.remindHint}>
+            Sends FCM to devices with a token. Blocked accounts are skipped. Server needs Firebase
+            (FIREBASE_SERVICE_ACCOUNT_KEY).
+          </Text>
+        </View>
+      ) : null}
+
+      <View style={[styles.tableCard, styles.tableCardTop]}>
         <View style={styles.tableHeader}>
           <Text style={styles.tableHeaderText}>
-            {filter === 'all' ? 'All Users' : 
-             filter === 'premium' ? 'Premium Users' : 
-             filter === 'free' ? 'Free Users' : 'Expired'} ({users.length})
+            {filter === 'all'
+              ? 'All Users'
+              : filter === 'premium'
+              ? 'Premium Users'
+              : filter === 'free'
+              ? 'Free Users'
+              : 'Expired'}{' '}
+            ({users.length}
+            {totalUsers > 0 ? ` / ${totalUsers}` : ''})
           </Text>
-          {isActive && (
+          {isActive ? (
             <View style={styles.autoRefreshIndicator}>
               <View style={styles.autoRefreshDot} />
               <Text style={styles.autoRefreshText}>Live</Text>
             </View>
-          )}
+          ) : null}
         </View>
-        {users.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Icon name="account-off" size={48} color="#6b7280" />
-            <Text style={styles.emptyStateText}>
-              {filter === 'all' ? 'No users found' :
-               filter === 'premium' ? 'No premium users' :
-               filter === 'free' ? 'No free users' : 'No expired subscriptions'}
-            </Text>
-          </View>
-        ) : (
-          users.map((user) => (
-          <View key={user.id} style={styles.tableRow}>
-            <View style={styles.userCell}>
-              <LinearGradient
-                colors={user.gradient}
-                style={styles.userAvatar}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}>
-                <Text style={styles.userInitials}>{user.initials}</Text>
-              </LinearGradient>
-              <View style={styles.userInfo}>
-                <Text style={styles.userName}>{user.name}</Text>
-                <View
-                  style={[
-                    styles.statusBadge,
-                    user.status === 'Premium'
-                      ? styles.premiumBadge
-                      : user.status === 'Expired'
-                      ? styles.expiredBadge
-                      : styles.freeBadge,
-                  ]}>
-                  <Text
-                    style={[
-                      styles.statusText,
-                      user.status === 'Premium'
-                        ? styles.premiumText
-                        : user.status === 'Expired'
-                        ? styles.expiredText
-                        : styles.freeText,
-                    ]}>
-                    {user.status}
-                  </Text>
-                </View>
-                {user.premiumExpiresAt && user.status === 'Premium' && (
-                  <Text style={styles.expiryText}>
-                    Expires: {new Date(user.premiumExpiresAt).toLocaleDateString()}
-                  </Text>
-                )}
-                {user.premiumExpiresAt && user.status === 'Expired' && (
-                  <Text style={styles.expiredAtText}>
-                    Expired: {new Date(user.premiumExpiresAt).toLocaleDateString()}
-                  </Text>
-                )}
-              </View>
-            </View>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => {
-                setSelectedUser(user);
-                setManagementModalVisible(true);
-              }}
-              activeOpacity={0.7}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Icon name="dots-vertical" size={20} color="#9ca3af" />
-            </TouchableOpacity>
-          </View>
-          ))
-        )}
       </View>
+    </>
+  );
+
+  const renderUserItem = ({ item: user, index }) => (
+    <View
+      style={[
+        styles.tableRow,
+        styles.tableRowCard,
+        index === 0 && styles.tableRowCardFirst,
+        index === users.length - 1 && styles.tableRowCardLast,
+      ]}>
+      <View style={styles.userCell}>
+        <LinearGradient
+          colors={user.gradient}
+          style={styles.userAvatar}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}>
+          <Text style={styles.userInitials}>{user.initials}</Text>
+        </LinearGradient>
+        <View style={styles.userInfo}>
+          <Text style={styles.userName}>{user.name}</Text>
+          <View style={styles.badgeRow}>
+            <View
+              style={[
+                styles.statusBadge,
+                user.status === 'Premium'
+                  ? styles.premiumBadge
+                  : user.status === 'Expired'
+                  ? styles.expiredBadge
+                  : styles.freeBadge,
+              ]}>
+              <Text
+                style={[
+                  styles.statusText,
+                  user.status === 'Premium'
+                    ? styles.premiumText
+                    : user.status === 'Expired'
+                    ? styles.expiredText
+                    : styles.freeText,
+                ]}>
+                {user.status}
+              </Text>
+            </View>
+            {user.blocked ? (
+              <View style={[styles.statusBadge, styles.blockedBadge]}>
+                <Text style={[styles.statusText, styles.blockedText]}>Blocked</Text>
+              </View>
+            ) : null}
+          </View>
+          {user.paymentPhones ? (
+            <Text style={styles.paymentPhonesText} numberOfLines={2}>
+              Payment: {user.paymentPhones}
+            </Text>
+          ) : null}
+          {user.premiumExpiresAt && user.status === 'Premium' ? (
+            <Text style={styles.expiryText}>Expires: {new Date(user.premiumExpiresAt).toLocaleDateString()}</Text>
+          ) : null}
+          {user.premiumExpiresAt && user.status === 'Expired' ? (
+            <Text style={styles.expiredAtText}>Expired: {new Date(user.premiumExpiresAt).toLocaleDateString()}</Text>
+          ) : null}
+        </View>
+      </View>
+      <View style={styles.rowActions}>
+        {filter === 'expired' && user.status === 'Expired' && !user.blocked ? (
+          <TouchableOpacity
+            style={styles.remindOneButton}
+            onPress={() => handleRemindOneExpired(user.id)}
+            disabled={remindingUserId === user.id}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            {remindingUserId === user.id ? (
+              <ActivityIndicator size="small" color="#a78bfa" />
+            ) : (
+              <Icon name="bell-outline" size={22} color="#a78bfa" />
+            )}
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={styles.actionButton}
+          onPress={() => {
+            setSelectedUser(user);
+            setManagementModalVisible(true);
+          }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Icon name="dots-vertical" size={20} color="#9ca3af" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <FlatList
+        data={users}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderUserItem}
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={
+          <View style={[styles.tableCard, styles.tableCardEmpty]}>
+            <View style={styles.emptyState}>
+              <Icon name="account-off" size={48} color="#6b7280" />
+              <Text style={styles.emptyStateText}>
+                {filter === 'all'
+                  ? 'No users found'
+                  : filter === 'premium'
+                  ? 'No premium users'
+                  : filter === 'free'
+                  ? 'No free users'
+                  : 'No expired subscriptions'}
+              </Text>
+            </View>
+          </View>
+        }
+        contentContainerStyle={styles.flatListContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        showsVerticalScrollIndicator={false}
+      />
 
       {/* User Management Modal */}
       <Modal
@@ -415,20 +561,49 @@ const UsersSection = ({ isActive }) => {
             </View>
 
             <View style={styles.modalBody}>
-              <TouchableOpacity
-                style={styles.managementOption}
-                onPress={handleBlockUser}>
-                <View style={styles.optionIconContainer}>
-                  <Icon name="block" size={24} color="#ef4444" />
-                </View>
-                <View style={styles.optionContent}>
-                  <Text style={styles.optionTitle}>Block User</Text>
-                  <Text style={styles.optionDescription}>
-                    Prevent user from accessing content
-                  </Text>
-                </View>
-                <Icon name="chevron-right" size={20} color="#9ca3af" />
-              </TouchableOpacity>
+              {!selectedUser?.blocked ? (
+                <TouchableOpacity
+                  style={[styles.managementOption, styles.managementOptionDanger]}
+                  onPress={() => applyBlocking(true)}
+                  disabled={blockingUser}
+                  activeOpacity={0.85}>
+                  <View style={[styles.optionIconContainer, styles.optionIconDanger]}>
+                    {blockingUser ? (
+                      <ActivityIndicator size="small" color="#fecaca" />
+                    ) : (
+                      <Icon name="shield-lock-outline" size={24} color="#fecaca" />
+                    )}
+                  </View>
+                  <View style={styles.optionContent}>
+                    <Text style={styles.optionTitle}>Block user</Text>
+                    <Text style={styles.optionDescription}>
+                      Suspends app access and clears subscription until they pay again.
+                    </Text>
+                  </View>
+                  {!blockingUser ? <Icon name="chevron-right" size={20} color="#9ca3af" /> : null}
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.managementOption, styles.managementOptionSuccess]}
+                  onPress={() => applyBlocking(false)}
+                  disabled={blockingUser}
+                  activeOpacity={0.85}>
+                  <View style={[styles.optionIconContainer, styles.optionIconSuccess]}>
+                    {blockingUser ? (
+                      <ActivityIndicator size="small" color="#bbf7d0" />
+                    ) : (
+                      <Icon name="account-check" size={24} color="#bbf7d0" />
+                    )}
+                  </View>
+                  <View style={styles.optionContent}>
+                    <Text style={styles.optionTitle}>Unblock user</Text>
+                    <Text style={styles.optionDescription}>
+                      Restores access; premium still follows payment or admin grant.
+                    </Text>
+                  </View>
+                  {!blockingUser ? <Icon name="chevron-right" size={20} color="#9ca3af" /> : null}
+                </TouchableOpacity>
+              )}
 
               <TouchableOpacity
                 style={styles.managementOption}
@@ -592,15 +767,94 @@ const UsersSection = ({ isActive }) => {
           </View>
         </View>
       </Modal>
-    </ScrollView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
+  flatListContent: {
+    paddingBottom: 100,
+  },
   container: {
     flex: 1,
     padding: 16,
-    paddingBottom: 100,
+    paddingBottom: 0,
+  },
+  tableCardTop: {
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    marginBottom: 0,
+  },
+  tableCardEmpty: {
+    marginTop: 8,
+  },
+  tableRowCard: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: '#1f2937',
+    backgroundColor: 'rgba(17, 24, 39, 0.85)',
+    marginTop: 0,
+  },
+  tableRowCardFirst: {
+    borderTopWidth: 0,
+  },
+  tableRowCardLast: {
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    marginBottom: 8,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+  },
+  blockedBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.22)',
+  },
+  blockedText: {
+    color: '#fca5a5',
+  },
+  paymentPhonesText: {
+    fontSize: 11,
+    color: '#93c5fd',
+    marginTop: 4,
+    lineHeight: 15,
+  },
+  remindAllWrap: {
+    marginBottom: 14,
+  },
+  remindAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#6d28d9',
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  remindHint: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginTop: 8,
+    lineHeight: 15,
+    paddingHorizontal: 4,
+  },
+  remindAllButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  rowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  remindOneButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   searchContainer: {
     marginBottom: 16,
@@ -834,6 +1088,16 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     gap: 16,
   },
+  managementOptionDanger: {
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.35)',
+    backgroundColor: 'rgba(69, 10, 10, 0.35)',
+  },
+  managementOptionSuccess: {
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.35)',
+    backgroundColor: 'rgba(6, 78, 59, 0.28)',
+  },
   optionIconContainer: {
     width: 48,
     height: 48,
@@ -841,6 +1105,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(239, 68, 68, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  optionIconDanger: {
+    backgroundColor: 'rgba(127, 29, 29, 0.55)',
+  },
+  optionIconSuccess: {
+    backgroundColor: 'rgba(20, 83, 45, 0.55)',
   },
   optionContent: {
     flex: 1,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
   TextInput,
   Modal,
   ImageBackground,
+  Animated,
+  Easing,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -23,75 +25,41 @@ import {
   adminMatchesAPI,
 } from '../../config/api';
 
+const KPI_COUNT = 3;
+
 const { width } = Dimensions.get('window');
 
-const DashboardSection = ({ onNavigate, refreshTrigger }) => {
+const DashboardSection = ({ refreshTrigger }) => {
   const [stats, setStats] = useState([
     {
-      title: 'Daily Installs',
+      title: 'Daily installs',
       value: '0',
       change: '+0%',
-      subtitle: 'New users today',
-      gradient: ['#06b6d4', '#0891b2'],
-      icon: 'download',
-    },
-    {
-      title: 'Total Users',
-      value: '0',
-      change: '+0%',
-      subtitle: 'All active users',
-      gradient: ['#2563eb', '#1e40af'],
-      icon: 'account-group',
-    },
-    {
-      title: 'Premium Users',
-      value: '0',
-      change: '+0%',
-      subtitle: 'Active subscriptions',
-      gradient: ['#10b981', '#059669'],
-      icon: 'star',
-    },
-    {
-      title: 'Free Users',
-      value: '0',
-      change: '0%',
-      subtitle: 'Non-premium users',
-      gradient: ['#64748b', '#475569'],
-      icon: 'account',
+      subtitle: 'New accounts today',
+      gradient: ['#06b6d4', '#0284c7'],
+      icon: 'trending-up',
     },
     {
       title: 'Revenue',
       value: 'TSh 0',
       change: '+0%',
-          subtitle: 'Today',
-      gradient: ['#7c3aed', '#6d28d9'],
-      icon: 'currency-usd',
+      subtitle: 'Today (TZS)',
+      gradient: ['#7c3aed', '#5b21b6'],
+      icon: 'cash-multiple',
     },
     {
-      title: 'Ads Watched',
+      title: 'Ads watched',
       value: '0',
       change: '+0%',
       subtitle: 'This month',
-      gradient: ['#f97316', '#ea580c'],
-      icon: 'eye',
-    },
-    {
-      title: 'Notifications',
-      value: '0',
-      change: '0%',
-      subtitle: 'Delivery rate',
-      gradient: ['#ec4899', '#db2777'],
-      icon: 'bell',
-    },
-    {
-      title: 'Expired Subs',
-      value: '0',
-      change: '0%',
-      subtitle: 'Need renewal',
-      gradient: ['#ef4444', '#dc2626'],
-      icon: 'alert-circle',
+      gradient: ['#f97316', '#c2410c'],
+      icon: 'eye-check',
     },
   ]);
+
+  const heroAnim = useRef(new Animated.Value(0)).current;
+  const cardAnims = useRef(Array.from({ length: KPI_COUNT }, () => new Animated.Value(0))).current;
+  const hasPlayedIntro = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [mostWatchedChannels, setMostWatchedChannels] = useState([]);
@@ -119,7 +87,6 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
   const [gradientMid, setGradientMid] = useState('#111827');
   const [gradientEnd, setGradientEnd] = useState('#000000');
   const [slideImageUrl, setSlideImageUrl] = useState('');
-  const [slideVideoUrl, setSlideVideoUrl] = useState('');
   const [slideInfoText, setSlideInfoText] = useState('');
   const [slideInfoIcon, setSlideInfoIcon] = useState('clockcircleo');
   const [slideSortOrder, setSlideSortOrder] = useState('0');
@@ -138,15 +105,14 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     setStatusModalVisible(true);
   };
 
-  // Fetch dashboard stats from backend
+  // Fetch dashboard stats from backend (KPIs only: installs, revenue, ads)
   const fetchDashboardStats = async () => {
     try {
-      const [statsOutcome, metricsOutcome] = await Promise.allSettled([
-        dashboardAPI.getStats(),
-        adminNotificationsAPI.getMetrics(30),
-      ]);
-      if (statsOutcome.status !== 'fulfilled') {
-        console.error('Dashboard stats request failed:', statsOutcome.reason);
+      let data;
+      try {
+        data = await dashboardAPI.getStats();
+      } catch (err) {
+        console.error('Dashboard stats request failed:', err);
         showStatusModal(
           'error',
           'Overview',
@@ -154,10 +120,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         );
         return;
       }
-      const data = statsOutcome.value;
-      const notifMetrics =
-        metricsOutcome.status === 'fulfilled' ? metricsOutcome.value : null;
-      
+
       const compact = (value) => {
         const n = Number(value) || 0;
         if (n >= 1000000) {
@@ -177,78 +140,30 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
         return `TSh ${v.toLocaleString('en-US')}`;
       };
 
-      const notifDelivered = notifMetrics?.totals?.delivered ?? data.notifications?.delivered ?? 0;
-      const notifClicks = notifMetrics?.totals?.clicks ?? data.notifications?.clicks ?? 0;
-      const notifCtr = notifMetrics?.rates?.ctrFromDelivered;
-      const notifDeliveryRate = notifMetrics?.rates?.deliveryRate;
-      const notifSubtitle = notifMetrics
-        ? `${compact(notifClicks)} clicks • ${notifMetrics.audience?.activeTokens30d || 0} active devices`
-        : 'Delivery rate';
-
       setStats([
         {
-          title: 'Daily Installs',
+          title: 'Daily installs',
           value: formatNumber(data.todayInstalls || 0),
           change: data.installChange || '+0%',
-          subtitle: 'New users today',
-          gradient: ['#06b6d4', '#0891b2'],
-          icon: 'download',
-        },
-        {
-          title: 'Total Users',
-          value: formatNumber(data.totalUsers || 0),
-          change: '+0%',
-          subtitle: 'All active users',
-          gradient: ['#2563eb', '#1e40af'],
-          icon: 'account-group',
-        },
-        {
-          title: 'Premium Users',
-          value: formatNumber(data.premiumUsers || 0),
-          change: data.premiumChange || '+0%',
-          subtitle: data.premiumPercentage || '0%',
-          gradient: ['#10b981', '#059669'],
-          icon: 'star',
-        },
-        {
-          title: 'Free Users',
-          value: formatNumber(data.freeUsers || 0),
-          change: '0%',
-          subtitle: 'Non-premium users',
-          gradient: ['#64748b', '#475569'],
-          icon: 'account',
+          subtitle: 'New accounts today',
+          gradient: ['#06b6d4', '#0284c7'],
+          icon: 'trending-up',
         },
         {
           title: 'Revenue',
           value: formatTsh(data.revenue || 0),
           change: data.revenueChange || '+0%',
-          subtitle: 'Today',
-          gradient: ['#7c3aed', '#6d28d9'],
-          icon: 'currency-usd',
+          subtitle: 'Today (TZS)',
+          gradient: ['#7c3aed', '#5b21b6'],
+          icon: 'cash-multiple',
         },
         {
-          title: 'Ads Watched',
+          title: 'Ads watched',
           value: formatNumber(data.adsWatched || 0),
           change: data.adsChange || '+0%',
           subtitle: 'This month',
-          gradient: ['#f97316', '#ea580c'],
-          icon: 'eye',
-        },
-        {
-          title: 'Notifications',
-          value: formatNumber(notifDelivered),
-          change: `${notifDeliveryRate != null ? notifDeliveryRate : 0}% delivered`,
-          subtitle: notifCtr != null ? `CTR ${notifCtr}% • ${notifSubtitle}` : notifSubtitle,
-          gradient: ['#ec4899', '#db2777'],
-          icon: 'bell',
-        },
-        {
-          title: 'Expired Subs',
-          value: formatNumber(data.expiredSubscriptions || 0),
-          change: '0%',
-          subtitle: 'Need renewal',
-          gradient: ['#ef4444', '#dc2626'],
-          icon: 'alert-circle',
+          gradient: ['#f97316', '#c2410c'],
+          icon: 'eye-check',
         },
       ]);
     } catch (error) {
@@ -357,7 +272,6 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     setSlideSubtitle('');
     setSlideBadge('');
     setSlideImageUrl('');
-    setSlideVideoUrl('');
     setGradientStart('#14532d');
     setGradientMid('#111827');
     setGradientEnd('#000000');
@@ -374,7 +288,6 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     setSlideSubtitle(slide.subtitle || '');
     setSlideBadge(slide.badge || '');
     setSlideImageUrl(slide.imageUrl || slide.image_url || '');
-    setSlideVideoUrl(slide.videoUrl || slide.video_url || '');
     setGradientStart(slide.gradient ? slide.gradient[0] : '#14532d');
     setGradientMid(slide.gradient ? slide.gradient[1] : '#111827');
     setGradientEnd(slide.gradient ? slide.gradient[2] : '#000000');
@@ -399,7 +312,7 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       subtitle: slideSubtitle.trim() || undefined,
       badge: slideBadge.trim() || undefined,
       imageUrl: slideImageUrl.trim(),
-      videoUrl: slideVideoUrl.trim() || undefined,
+      videoUrl: '',
       gradientStart: gradientStart.trim() || undefined,
       gradientMid: gradientMid.trim() || undefined,
       gradientEnd: gradientEnd.trim() || undefined,
@@ -521,13 +434,37 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
     };
     init();
 
-    // Auto-refresh dashboard stats every 30 seconds
     const interval = setInterval(() => {
       fetchDashboardStats();
     }, 30000);
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    if (hasPlayedIntro.current) return;
+    hasPlayedIntro.current = true;
+    heroAnim.setValue(0);
+    cardAnims.forEach((a) => a.setValue(0));
+    Animated.timing(heroAnim, {
+      toValue: 1,
+      duration: 520,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+    Animated.stagger(
+      85,
+      cardAnims.map((a) =>
+        Animated.spring(a, {
+          toValue: 1,
+          useNativeDriver: true,
+          tension: 64,
+          friction: 12,
+        }),
+      ),
+    ).start();
+  }, [loading]);
 
   // Refetch recent notifications when a new one is sent (e.g. from NotificationsPanel)
   useEffect(() => {
@@ -559,46 +496,89 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }>
-      {/* Stats Cards */}
-      <View style={styles.statsContainer}>
-        {stats.map((stat, index) => {
-          const isUserCard = stat.title === 'Total Users' || stat.title === 'Premium Users';
-          const CardWrapper = isUserCard && onNavigate ? TouchableOpacity : View;
-          const cardProps = isUserCard && onNavigate 
-            ? { 
-                activeOpacity: 0.8, 
-                onPress: () => onNavigate('users') 
-              } 
-            : {};
-          
-          return (
-            <CardWrapper key={index} {...cardProps}>
-              <LinearGradient
-                colors={stat.gradient}
-                style={styles.statCard}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}>
-                <View style={styles.statHeader}>
-                  <Text style={styles.statTitle} numberOfLines={2}>{stat.title}</Text>
-                  <View style={styles.statIconContainer}>
-                    <Icon name={stat.icon} size={20} color="rgba(255, 255, 255, 0.8)" />
+      <LinearGradient
+        colors={['rgba(124, 58, 237, 0.12)', 'rgba(3, 7, 18, 0)', 'rgba(6, 182, 212, 0.06)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.overviewHeroGradient}>
+        <Animated.View
+          style={{
+            opacity: heroAnim,
+            transform: [
+              {
+                translateY: heroAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [14, 0],
+                }),
+              },
+            ],
+          }}>
+          <View style={styles.overviewHeroTop}>
+            <View style={styles.livePill}>
+              <View style={styles.liveDot} />
+              <Text style={styles.livePillText}>Live</Text>
+            </View>
+            <Text style={styles.overviewHeroTitle}>Overview</Text>
+            <Text style={styles.overviewHeroSubtitle}>
+              Installs, revenue & ads — refreshed every 30s
+            </Text>
+          </View>
+        </Animated.View>
+
+        <View style={styles.statsRowPro}>
+          {stats.map((stat, index) => {
+            const a = cardAnims[index] || cardAnims[0];
+            return (
+              <Animated.View
+                key={stat.title}
+                style={[
+                  styles.statTileWrap,
+                  {
+                    opacity: a,
+                    transform: [
+                      {
+                        translateY: a.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [22, 0],
+                        }),
+                      },
+                      {
+                        scale: a.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.94, 1],
+                        }),
+                      },
+                    ],
+                  },
+                ]}>
+                <LinearGradient
+                  colors={stat.gradient}
+                  style={styles.statTile}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}>
+                  <View style={styles.statTileInner}>
+                    <View style={styles.statTileIconBg}>
+                      <Icon name={stat.icon} size={22} color="#fff" />
+                    </View>
+                    <Text style={styles.statTileLabel} numberOfLines={2}>
+                      {stat.title}
+                    </Text>
+                    <Text style={styles.statTileValue} numberOfLines={1} adjustsFontSizeToFit>
+                      {stat.value}
+                    </Text>
+                    <View style={styles.statTileMeta}>
+                      <Text style={styles.statTileChange}>{stat.change}</Text>
+                      <Text style={styles.statTileSub} numberOfLines={1}>
+                        {stat.subtitle}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-                <Text style={styles.statValue}>{stat.value}</Text>
-                <View style={styles.statFooter}>
-                  <Text style={styles.statChange}>{stat.change}</Text>
-                  <Text style={styles.statSubtitle}>{stat.subtitle}</Text>
-                </View>
-                {isUserCard && onNavigate && (
-                  <View style={styles.clickableIndicator}>
-                    <Icon name="chevron-right" size={16} color="rgba(255, 255, 255, 0.6)" />
-                  </View>
-                )}
-              </LinearGradient>
-            </CardWrapper>
-          );
-        })}
-      </View>
+                </LinearGradient>
+              </Animated.View>
+            );
+          })}
+        </View>
+      </LinearGradient>
 
       {/* Football Carousel */}
       <View style={styles.chartCard}>
@@ -1005,15 +985,6 @@ const DashboardSection = ({ onNavigate, refreshTrigger }) => {
                   onChangeText={setSlideImageUrl}
                   autoCapitalize="none"
                 />
-                <Text style={styles.inputLabel}>Video URL (Watch Now link)</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="https://example.com/video.mp4"
-                  placeholderTextColor="#6b7280"
-                  value={slideVideoUrl}
-                  onChangeText={setSlideVideoUrl}
-                  autoCapitalize="none"
-                />
               </View>
 
               <View style={styles.formCard}>
@@ -1254,67 +1225,120 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 100,
   },
-  statsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 24,
-  },
-  statCard: {
-    width: (width - 44) / 2,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
+  overviewHeroGradient: {
+    borderRadius: 20,
+    paddingBottom: 8,
+    marginBottom: 20,
     overflow: 'hidden',
-    position: 'relative',
+    borderWidth: 1,
+    borderColor: 'rgba(55, 65, 81, 0.45)',
   },
-  statHeader: {
+  overviewHeroTop: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 8,
+  },
+  overviewHeroTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#f8fafc',
+    letterSpacing: -0.5,
+    marginTop: 10,
+  },
+  overviewHeroSubtitle: {
+    fontSize: 13,
+    color: '#94a3b8',
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  livePill: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    alignItems: 'center',
     gap: 8,
-    paddingRight: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
   },
-  statTitle: {
-    flex: 1,
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#34d399',
+  },
+  livePillText: {
     fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.8)',
-    fontWeight: '600',
-    marginRight: 4,
+    fontWeight: '700',
+    color: '#6ee7b7',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
   },
-  statIconContainer: {
-    width: 24,
-    height: 24,
+  statsRowPro: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 14,
+    flexWrap: 'wrap',
+  },
+  statTileWrap: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    minWidth: (width - 64) / 3,
+    maxWidth: '100%',
+  },
+  statTile: {
+    borderRadius: 16,
+    padding: 0,
+    overflow: 'hidden',
+    minHeight: 148,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  statTileInner: {
+    padding: 14,
+    flex: 1,
+  },
+  statTileIconBg: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.18)',
     justifyContent: 'center',
     alignItems: 'center',
-    flexShrink: 0,
+    marginBottom: 10,
   },
-  statValue: {
-    fontSize: 32,
-    fontWeight: 'bold',
+  statTileLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.88)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
+  statTileValue: {
+    fontSize: 22,
+    fontWeight: '800',
     color: '#fff',
-    marginBottom: 8,
+    letterSpacing: -0.3,
+    marginBottom: 10,
   },
-  statFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  statTileMeta: {
+    gap: 4,
   },
-  statChange: {
-    fontSize: 13,
-    color: '#86efac',
-    fontWeight: '600',
+  statTileChange: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.92)',
   },
-  statSubtitle: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.8)',
-  },
-  clickableIndicator: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    opacity: 0.7,
+  statTileSub: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.75)',
   },
   chartsRow: {
     gap: 16,

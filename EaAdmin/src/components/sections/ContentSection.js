@@ -32,8 +32,6 @@ const ContentSection = () => {
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [thumbnailEmoji, setThumbnailEmoji] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
-  const [streamAlias, setStreamAlias] = useState('');
-  const [streamSource, setStreamSource] = useState('url'); // url | alias
   const [selectedColor, setSelectedColor] = useState('#7c3aed');
   const [isActive, setIsActive] = useState(true);
   const [drmType, setDrmType] = useState('NONE'); // NONE | CLEARKEY | WIDEVINE | PLAYREADY
@@ -96,8 +94,6 @@ const ContentSection = () => {
     setThumbnailUrl('');
     setThumbnailEmoji('');
     setVideoUrl('');
-    setStreamAlias('');
-    setStreamSource('url');
     setSelectedColor('#7c3aed');
     setIsActive(true);
     setDrmType('NONE');
@@ -111,14 +107,13 @@ const ContentSection = () => {
 
   const handleSaveChannel = async () => {
     const urlValue = String(videoUrl || '').trim();
-    const aliasValue = String(streamAlias || '').trim();
 
     if (!channelName.trim()) {
       showStatusModal('Missing name', 'Please enter channel name.');
       return;
     }
-    if (!urlValue && !aliasValue) {
-      showStatusModal('Missing stream source', 'Please enter stream URL or stream alias.');
+    if (!urlValue) {
+      showStatusModal('Missing stream URL', 'Please enter the stream URL.');
       return;
     }
     if (!useEmoji && !thumbnailUrl.trim()) {
@@ -142,8 +137,7 @@ const ContentSection = () => {
     const payload = {
       name: channelName.trim(),
       category: channelCategory,
-      ...(urlValue ? { streamUrl: urlValue } : {}),
-      ...(aliasValue ? { streamAlias: aliasValue } : {}),
+      streamUrl: urlValue,
       color: selectedColor,
       isActive,
       drmType,
@@ -151,6 +145,10 @@ const ContentSection = () => {
       drmClearKey: clearKeyTrimmed,
       unlockToFree: !!unlockToFree,
     };
+
+    if (editingChannel) {
+      payload.streamAlias = null;
+    }
 
     if (!useEmoji && thumbnailUrl.trim()) {
       payload.thumbnailUrl = thumbnailUrl.trim();
@@ -362,15 +360,7 @@ const ContentSection = () => {
                       setThumbnailUrl(channel.thumbnail_url || '');
                       setThumbnailEmoji(channel.thumbnail_emoji || '');
                       setUseEmoji(!!channel.thumbnail_emoji);
-                      const existingAlias = channel.stream_alias ?? channel.streamAlias ?? '';
-                      setStreamAlias(existingAlias ? String(existingAlias) : '');
-                      if (existingAlias) {
-                        setStreamSource('alias');
-                        setVideoUrl('');
-                      } else {
-                        setStreamSource('url');
-                        setVideoUrl(channel.stream_url || '');
-                      }
+                      setVideoUrl(channel.stream_url || '');
                       setSelectedColor(channel.color || '#7c3aed');
                       setIsActive(
                         typeof channel.is_active === 'boolean'
@@ -445,8 +435,6 @@ const ContentSection = () => {
                   setThumbnailUrl('');
                   setThumbnailEmoji('');
                   setVideoUrl('');
-                  setStreamAlias('');
-                  setStreamSource('url');
                   setSelectedColor('#7c3aed');
                   setIsActive(true);
                   setDrmType('NONE');
@@ -502,54 +490,17 @@ const ContentSection = () => {
               <View style={styles.formCard}>
                 <Text style={styles.formCardTitle}>Media</Text>
                 <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Stream source *</Text>
-                  <View style={styles.categoryRow}>
-                    {[
-                      { id: 'url', label: 'URL' },
-                      { id: 'alias', label: 'Alias' },
-                    ].map((opt) => {
-                      const active = streamSource === opt.id;
-                      return (
-                        <TouchableOpacity
-                          key={opt.id}
-                          style={[styles.categoryChip, active && styles.categoryChipActive]}
-                          onPress={() => setStreamSource(opt.id)}>
-                          <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  <Text style={styles.inputLabel}>Stream URL *</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="https://..."
+                    placeholderTextColor="#6b7280"
+                    value={videoUrl}
+                    onChangeText={setVideoUrl}
+                    autoCapitalize="none"
+                    keyboardType="url"
+                  />
                 </View>
-                {streamSource === 'url' ? (
-                  <View style={styles.inputSection}>
-                    <Text style={styles.inputLabel}>Video URL *</Text>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="https://..."
-                      placeholderTextColor="#6b7280"
-                      value={videoUrl}
-                      onChangeText={setVideoUrl}
-                      autoCapitalize="none"
-                    />
-                  </View>
-                ) : (
-                  <View style={styles.inputSection}>
-                    <Text style={styles.inputLabel}>Alias key *</Text>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="e.g. ss1"
-                      placeholderTextColor="#6b7280"
-                      value={streamAlias}
-                      onChangeText={setStreamAlias}
-                      autoCapitalize="none"
-                    />
-                    <Text style={styles.inputHint}>
-                      Alias must exist in Settings → Stream aliases.
-                    </Text>
-                  </View>
-                )}
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Thumbnail</Text>
                   <View style={styles.thumbnailTypeToggle}>
@@ -595,18 +546,6 @@ const ContentSection = () => {
                     />
                   </View>
                 )}
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Video / stream URL *</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="https://example.com/video.m3u8"
-                    placeholderTextColor="#6b7280"
-                    value={videoUrl}
-                    onChangeText={setVideoUrl}
-                    keyboardType="url"
-                    autoCapitalize="none"
-                  />
-                </View>
               </View>
 
               {/* Appearance & access card */}
@@ -622,21 +561,31 @@ const ContentSection = () => {
                     onChangeText={setPointsRequired}
                     keyboardType="numeric"
                   />
-                  <Text style={styles.inputHint}>
-                    Set 0 for free channels; otherwise users spend points to unlock.
-                  </Text>
                 </View>
-                <View style={styles.toggleSection}>
-                  <View style={styles.toggleInfo}>
-                    <Text style={styles.toggleLabel}>Unlock to free (no ads)</Text>
-                    <Text style={styles.toggleDescription}>
-                      You can unlock any channel you want here to free with no ads on it
-                    </Text>
+                <View style={styles.accessToggleSection}>
+                  <View style={styles.accessToggleLeft}>
+                    <Text style={styles.toggleLabel}>Access</Text>
+                    <View style={styles.accessPills}>
+                      <Text
+                        style={[
+                          styles.accessPill,
+                          !unlockToFree && styles.accessPillActive,
+                        ]}>
+                        Premium
+                      </Text>
+                      <Text
+                        style={[
+                          styles.accessPill,
+                          unlockToFree && styles.accessPillActive,
+                        ]}>
+                        Free
+                      </Text>
+                    </View>
                   </View>
                   <Switch
                     value={unlockToFree}
                     onValueChange={setUnlockToFree}
-                    trackColor={{ false: '#374151', true: '#7c3aed' }}
+                    trackColor={{ false: '#7c3aed', true: '#22c55e' }}
                     thumbColor="#fff"
                   />
                 </View>
@@ -669,8 +618,7 @@ const ContentSection = () => {
                 <Text style={styles.formCardTitle}>Settings</Text>
                 <View style={styles.toggleSection}>
                   <View style={styles.toggleInfo}>
-                    <Text style={styles.toggleLabel}>Channel status</Text>
-                    <Text style={styles.toggleDescription}>Visible in the app when enabled</Text>
+                    <Text style={styles.toggleLabel}>Active</Text>
                   </View>
                   <Switch
                     value={isActive}
@@ -1207,6 +1155,44 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(55, 65, 81, 0.4)',
   },
+  accessToggleSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(55, 65, 81, 0.4)',
+    gap: 12,
+  },
+  accessToggleLeft: {
+    flex: 1,
+    marginRight: 8,
+  },
+  accessPills: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  accessPill: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: '#6b7280',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#374151',
+    backgroundColor: 'rgba(17, 24, 39, 0.6)',
+    overflow: 'hidden',
+  },
+  accessPillActive: {
+    color: '#e5e7eb',
+    borderColor: 'rgba(124, 58, 237, 0.5)',
+    backgroundColor: 'rgba(124, 58, 237, 0.2)',
+  },
   toggleInfo: {
     flex: 1,
     marginRight: 16,
@@ -1216,10 +1202,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
     marginBottom: 2,
-  },
-  toggleDescription: {
-    fontSize: 13,
-    color: '#9ca3af',
   },
   categoryRow: {
     flexDirection: 'row',

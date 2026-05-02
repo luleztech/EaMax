@@ -48,6 +48,24 @@ query(
   `UPDATE channels SET drm_type = 'CLEARKEY' WHERE drm_protected = true AND (drm_type IS NULL OR drm_type = 'NONE')`
 ).catch(() => {});
 
+// Mobile money number used for each payment (admin user list)
+query(
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS buyer_phone VARCHAR(20)`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration buyer_phone (non-fatal):', err.message);
+  }
+});
+
+// Throttle auto Push reminders for expired subscriptions (7-day repeat)
+query(
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expiry_reminder_sent_at TIMESTAMPTZ`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration subscription_expiry_reminder_sent_at (non-fatal):', err.message);
+  }
+});
+
 // Payments: completed_at timestamp for accurate revenue stats
 query(
   `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`
@@ -184,4 +202,24 @@ app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`EaMax backend listening on ${HOST}:${PORT}`);
 });
+
+// Daily FCM reminders for expired subscriptions (7-day throttle per user unless manual force)
+const DAY_MS = 24 * 60 * 60 * 1000;
+let expiryReminderTimer = null;
+try {
+  const { sendExpiredSubscriptionReminders } = require('./services/expiredSubscriptionReminders');
+  expiryReminderTimer = setInterval(() => {
+    sendExpiredSubscriptionReminders({ force: false }).catch((err) => {
+      console.error('[ExpiredReminder] scheduled run failed:', err.message || err);
+    });
+  }, DAY_MS);
+  // First run 2 minutes after boot (avoid cold-start contention)
+  setTimeout(() => {
+    sendExpiredSubscriptionReminders({ force: false }).catch((err) => {
+      console.error('[ExpiredReminder] initial run failed:', err.message || err);
+    });
+  }, 120000);
+} catch (e) {
+  console.warn('[ExpiredReminder] scheduler not started:', e.message || e);
+}
 
