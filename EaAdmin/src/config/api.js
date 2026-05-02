@@ -437,19 +437,21 @@ export const dashboardAPI = {
     return apiRequest('/api/dashboard/stats');
   },
 
-  // Get users with filters
+  // Get users with filters (can be slow on large DBs — generous timeout)
   getUsers: async (limit = 5000, offset = 0, filter = 'all', search = '') => {
     const params = new URLSearchParams({
       limit: limit.toString(),
       offset: offset.toString(),
       filter,
     });
-    
+
     if (search.trim()) {
       params.append('search', search.trim());
     }
-    
-    return apiRequest(`/api/dashboard/users?${params.toString()}`);
+
+    return apiRequest(`/api/dashboard/users?${params.toString()}`, {
+      timeoutMs: 120000,
+    });
   },
 };
 

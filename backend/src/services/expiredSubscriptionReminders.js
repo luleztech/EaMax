@@ -7,6 +7,62 @@ const REMINDER_BODY =
   'Habari mwanafamilia wa EaMax Swahili tunakutaarifu kuwa kifurushi chako kimeisha muda wake, lipia sasa upate ofa ya siku 2 bure ahsanet';
 
 /**
+ * When a specific user is targeted, explain why the main query returned no row.
+ */
+async function explainRemindMismatch(userId) {
+  const r = await query(
+    `SELECT id, blocked, premium_expires_at, fcm_token, uninstalled_at
+     FROM users WHERE id = $1`,
+    [userId],
+  );
+  if (r.rows.length === 0) {
+    return 'User not found in the database.';
+  }
+  const u = r.rows[0];
+  if (u.blocked === true) {
+    return 'This account is blocked — push reminders are not sent to blocked users.';
+  }
+  if (u.premium_expires_at == null) {
+    return 'No subscription end date (premium_expires_at) — this user is not in the “expired by date” group for push.';
+  }
+  const exp = new Date(u.premium_expires_at);
+  if (Number.isNaN(exp.getTime())) {
+    return 'Invalid subscription end date on file.';
+  }
+  if (exp > new Date()) {
+    return `Subscription is still active (ends ${exp.toISOString()}) — not eligible for expired-subscription push.`;
+  }
+  const tok = String(u.fcm_token || '').trim();
+  if (!tok) {
+    return 'No FCM device token on file. The user must open the app on a phone so a push token can be registered.';
+  }
+  // Expired + token + not blocked: should have matched; keep a fallback for rare DB/driver quirks.
+  return 'Could not queue push for this user — check server logs. If it persists, verify Firebase credentials and FCM setup.';
+}
+
+function fcmFailureHint(pushResult) {
+  const responses = pushResult?.responses;
+  if (!Array.isArray(responses) || responses.length === 0) {
+    return 'FCM returned no success (check Firebase project and server logs).';
+  }
+  const withErr = responses.find((x) => x && x.error);
+  const err = withErr?.error;
+  if (!err) {
+    return 'FCM accepted zero messages — token may be stale.';
+  }
+  const code = String(err.code || '');
+  const msg = String(err.message || code || '');
+  if (
+    code.includes('registration-token-not') ||
+    code.includes('invalid-registration') ||
+    msg.includes('Requested entity was not found')
+  ) {
+    return 'FCM token is invalid or expired. Ask the user to open the app once so a fresh token is saved.';
+  }
+  return msg.length > 0 && msg.length < 220 ? msg : 'FCM rejected the message — see server logs for details.';
+}
+
+/**
  * Send FCM reminders to users whose subscription has expired.
  * @param {{ userId?: number, force?: boolean }} opts
  * - force: skip 7-day throttle (manual admin sends)
@@ -15,6 +71,7 @@ const REMINDER_BODY =
 async function sendExpiredSubscriptionReminders(opts = {}) {
   const userId = opts.userId != null ? Number(opts.userId) : null;
   const force = !!opts.force;
+  const singleTarget = userId != null && Number.isFinite(userId) && !Number.isNaN(userId);
 
   const firebase = require('./firebase');
   if (typeof firebase.isInitialized !== 'function' || !firebase.isInitialized()) {
@@ -29,20 +86,23 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
   }
 
   const params = [];
-  // Expiry date is source of truth (matches admin "Expired" list). Do not require is_premium=TRUE —
-  // some rows may have sub ended while flags differ; blocked users never receive push.
+  // Expiry date matches admin "Expired" tab (past premium_expires_at). Blocked users never receive push.
+  // Bulk/cron: skip users marked uninstalled (reduces noise). Single-user admin bell: still try — token may be valid after reinstall.
   let sql = `
     SELECT u.id, u.fcm_token
     FROM users u
-    WHERE u.blocked = FALSE
-      AND u.uninstalled_at IS NULL
+    WHERE COALESCE(u.blocked, FALSE) = FALSE
       AND u.fcm_token IS NOT NULL
       AND trim(u.fcm_token) <> ''
       AND u.premium_expires_at IS NOT NULL
       AND u.premium_expires_at <= NOW()
   `;
 
-  if (userId != null && !Number.isNaN(userId)) {
+  if (!singleTarget) {
+    sql += ` AND u.uninstalled_at IS NULL`;
+  }
+
+  if (singleTarget) {
     params.push(userId);
     sql += ` AND u.id = $${params.length}`;
   }
@@ -60,15 +120,17 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
   const rows = result.rows || [];
 
   if (rows.length === 0) {
+    let message =
+      'No users matched: need past premium_expires_at, active FCM token, and not blocked.';
+    if (singleTarget) {
+      message = await explainRemindMismatch(userId);
+    }
     return {
       ok: true,
       sent: 0,
       targeted: 0,
       skipped: 0,
-      message:
-        userId != null
-          ? 'No push: user not matched (must have ended subscription date in the past, FCM token, not blocked).'
-          : 'No users matched: need past premium_expires_at, active FCM token, and not blocked.',
+      message,
     };
   }
 
@@ -76,6 +138,7 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
   const BATCH = 500;
   let sentTotal = 0;
   const remindedIds = [];
+  let lastPushResult = null;
 
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);
@@ -87,35 +150,53 @@ async function sendExpiredSubscriptionReminders(opts = {}) {
         type: 'subscription_expired_reminder',
         category: 'habari',
       });
+      lastPushResult = pushResult;
       const okCount = pushResult?.sent ?? 0;
       sentTotal += okCount;
-      if (okCount > 0) {
-        chunk.forEach((row) => {
-          if (row.id != null) remindedIds.push(row.id);
-        });
-      }
+
+      const responses = pushResult?.responses;
+      chunk.forEach((row, idx) => {
+        if (row.id == null) return;
+        const r = responses?.[idx];
+        let success = false;
+        if (r) {
+          success = r.success === true;
+        } else if (okCount > 0) {
+          success = okCount === tokens.length;
+        }
+        if (success) remindedIds.push(row.id);
+      });
     } catch (e) {
       console.error('[ExpiredReminder] batch failed:', e.message || e);
     }
   }
 
   if (remindedIds.length > 0) {
+    const uniqueIds = [...new Set(remindedIds)];
     await query(
       `UPDATE users
          SET subscription_expiry_reminder_sent_at = NOW()
        WHERE id = ANY($1::int[])`,
-      [remindedIds],
+      [uniqueIds],
     ).catch((err) => console.error('[ExpiredReminder] stamp failed:', err.message));
   }
 
-  return {
+  const out = {
     ok: true,
     sent: sentTotal,
     targeted: rows.length,
-    skipped: rows.length - remindedIds.length,
+    skipped: Math.max(0, rows.length - sentTotal),
     title: REMINDER_TITLE,
     body: REMINDER_BODY,
   };
+
+  if (sentTotal === 0 && rows.length > 0) {
+    out.message = fcmFailureHint(lastPushResult);
+  } else if (sentTotal > 0 && sentTotal < rows.length) {
+    out.message = `Sent ${sentTotal} of ${rows.length}; some tokens may be invalid.`;
+  }
+
+  return out;
 }
 
 module.exports = {

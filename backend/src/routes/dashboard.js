@@ -59,6 +59,11 @@ router.get('/stats', async (req, res, next) => {
     );
     const expiredSubscriptions = parseInt(expiredResult.rows[0].expired) || 0;
 
+    const blockedUsersResult = await query(
+      `SELECT COUNT(*)::int AS n FROM users WHERE blocked = TRUE`
+    );
+    const blockedUsers = parseInt(blockedUsersResult.rows[0].n, 10) || 0;
+
     // Calculate premium percentage
     const premiumPercentage = totalUsers > 0
       ? ((premiumUsers / totalUsers) * 100).toFixed(1)
@@ -192,7 +197,7 @@ router.get('/users', async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 500, 1), 50000);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-    const filter = req.query.filter || 'all'; // 'all', 'free', 'premium', 'expired'
+    const filter = req.query.filter || 'all'; // 'all', 'free', 'premium', 'expired', 'blocked'
     const search = req.query.search || '';
 
     // Include blocked users so admins still see / manage them after blocking
@@ -213,6 +218,8 @@ router.get('/users', async (req, res, next) => {
       whereConditions.push(
         `(premium_expires_at IS NOT NULL AND premium_expires_at <= NOW())`
       );
+    } else if (filter === 'blocked') {
+      whereConditions.push('(blocked IS TRUE)');
     }
 
     // Add search condition

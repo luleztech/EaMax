@@ -43,13 +43,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load(true);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _load(false);
+    }
   }
 
   Future<void> _load(bool showLoading) async {
@@ -64,9 +73,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final userData = await userApi.getUser(id);
       if (!mounted) return;
       final end = userData['subscriptionEndDate']?.toString();
+      final blocked = userData['blocked'] == true;
       setState(() {
-        _premium = userData['isPremium'] == true;
-        _subEnd = (end != null && end.isNotEmpty) ? DateTime.tryParse(end) : null;
+        _premium = !blocked && userData['isPremium'] == true;
+        _subEnd =
+            blocked ? null : ((end != null && end.isNotEmpty) ? DateTime.tryParse(end) : null);
       });
       _countdownTimer?.cancel();
       if (_subscriptionTimeActive) {

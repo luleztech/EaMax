@@ -6,20 +6,23 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Dimensions,
   Modal,
   ActivityIndicator,
   RefreshControl,
   FlatList,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminUsersAPI, dashboardAPI } from '../../config/api';
 
-const USERS_PAGE_SIZE = 3000;
-
-const { width } = Dimensions.get('window');
+/** Smaller pages = faster first response; list fills in progressively. */
+const USERS_PAGE_SIZE = 500;
+/** Safety cap so a broken offset/total cannot spin forever. */
+const MAX_USER_FETCH_PAGES = 500;
+/** Wait until typing pauses before hitting the API (stops list jitter). */
+const SEARCH_DEBOUNCE_MS = 420;
 
 // Generate gradient colors based on user ID
 const getGradientColors = (id) => {
@@ -44,10 +47,49 @@ const getInitials = (externalId) => {
   return externalId.substring(0, 2).toUpperCase();
 };
 
+const parseReportedTotal = (raw) => {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+};
+
+const formatUsersForList = (data) => {
+  return data.map((user, index) => {
+    const now = new Date();
+    const exp = user.premium_expires_at ? new Date(user.premium_expires_at) : null;
+    const expiredByDate = !!(exp && exp <= now);
+    const activePremium =
+      user.is_premium === true && (!user.premium_expires_at || (exp && exp > now));
+    let statusText = 'Free';
+    if (user.blocked) {
+      statusText = 'Blocked';
+    } else if (activePremium) {
+      statusText = 'Premium';
+    } else if (expiredByDate) {
+      statusText = 'Expired';
+    }
+
+    const uid = Number(user.id);
+    return {
+      id: user.id,
+      name: user.external_id || `User-${user.id}`,
+      initials: getInitials(user.external_id),
+      status: statusText,
+      gradient: getGradientColors(Number.isFinite(uid) ? uid : index),
+      blocked: !!(user.blocked === true || user.blocked === 't' || user.blocked === 1),
+      premiumExpiresAt: user.premium_expires_at,
+      createdAt: user.created_at,
+      paymentPhones: user.payment_phones || user.paymentPhones || '',
+      rawData: user,
+    };
+  });
+};
+
 const UsersSection = ({ isActive }) => {
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [fetchInProgress, setFetchInProgress] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [managementModalVisible, setManagementModalVisible] = useState(false);
@@ -59,13 +101,24 @@ const UsersSection = ({ isActive }) => {
   const [statusModalMessage, setStatusModalMessage] = useState('');
   const [statusModalType, setStatusModalType] = useState('success'); // 'success' or 'error'
   const [grantingAccess, setGrantingAccess] = useState(false);
-  const [filter, setFilter] = useState('all'); // 'all', 'free', 'premium', 'expired'
+  const [filter, setFilter] = useState('all'); // 'all', 'free', 'premium', 'expired', 'blocked'
   const [totalUsers, setTotalUsers] = useState(0);
   const [dashboardStats, setDashboardStats] = useState(null);
   const [remindingBulk, setRemindingBulk] = useState(false);
   const [remindingUserId, setRemindingUserId] = useState(null);
   const [blockingUser, setBlockingUser] = useState(false);
   const wasActiveRef = useRef(false);
+  const fetchGenRef = useRef(0);
+  const prevFilterKeyRef = useRef(null);
+
+  const searchPending = searchInput.trim() !== debouncedSearch;
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedSearch(searchInput.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   // Show status modal
   const showStatusModal = useCallback((type, title, message) => {
@@ -86,66 +139,79 @@ const UsersSection = ({ isActive }) => {
 
   // Fetch users from backend with filters (paginate until all rows are loaded)
   const fetchUsers = useCallback(async () => {
+    const filterKey = `${filter}|${debouncedSearch}`;
+    const filterOrSearchChanged =
+      prevFilterKeyRef.current !== null && prevFilterKeyRef.current !== filterKey;
+    prevFilterKeyRef.current = filterKey;
+
+    const gen = ++fetchGenRef.current;
+    setFetchInProgress(true);
+    if (filterOrSearchChanged) {
+      setUsers([]);
+      setTotalUsers(0);
+    }
+
     try {
       let offset = 0;
-      let totalCount = 0;
+      let lastReportedTotal = null;
       const data = [];
-      for (;;) {
-        const res = await dashboardAPI.getUsers(USERS_PAGE_SIZE, offset, filter, searchQuery);
-        const chunk = res.users || [];
-        const reportedTotal = typeof res.total === 'number' ? res.total : null;
-        totalCount = reportedTotal != null ? reportedTotal : totalCount;
+      let lastPageIndex = 0;
+
+      for (let page = 0; page < MAX_USER_FETCH_PAGES; page += 1) {
+        const res = await dashboardAPI.getUsers(USERS_PAGE_SIZE, offset, filter, debouncedSearch);
+        if (gen !== fetchGenRef.current) return;
+
+        const chunk = Array.isArray(res.users) ? res.users : [];
+        const reportedTotal = parseReportedTotal(res.total);
+        if (reportedTotal != null) lastReportedTotal = reportedTotal;
+
         data.push(...chunk);
         offset += chunk.length;
+        lastPageIndex = page;
+
+        if (page === 0) {
+          setRefreshing(false);
+          setUsers(formatUsersForList(data));
+          setTotalUsers(reportedTotal != null ? reportedTotal : data.length);
+        }
+
         if (chunk.length === 0) break;
         if (reportedTotal != null && data.length >= reportedTotal) break;
         if (chunk.length < USERS_PAGE_SIZE) break;
       }
 
-      // Format users for display
-      const formattedUsers = data.map((user, index) => {
-        const now = new Date();
-        const exp = user.premium_expires_at ? new Date(user.premium_expires_at) : null;
-        const expiredByDate = !!(exp && exp <= now);
-        const activePremium =
-          user.is_premium === true &&
-          (!user.premium_expires_at || (exp && exp > now));
-        let statusText = 'Free';
-        if (activePremium) {
-          statusText = 'Premium';
-        } else if (expiredByDate) {
-          statusText = 'Expired';
-        }
-        
-        return {
-          id: user.id,
-          name: user.external_id || `User-${user.id}`,
-          initials: getInitials(user.external_id),
-          status: statusText,
-          gradient: getGradientColors(index),
-          blocked: user.blocked || false,
-          premiumExpiresAt: user.premium_expires_at,
-          createdAt: user.created_at,
-          paymentPhones: user.payment_phones || user.paymentPhones || '',
-          rawData: user,
-        };
-      });
-      
-      setUsers(formattedUsers);
-      setTotalUsers(totalCount);
+      if (gen !== fetchGenRef.current) return;
+
+      if (lastPageIndex >= 1) {
+        setUsers(formatUsersForList(data));
+        setTotalUsers(lastReportedTotal != null ? lastReportedTotal : data.length);
+      }
     } catch (error) {
       console.error('Failed to fetch users:', error);
       showStatusModal('error', 'Error', 'Failed to load users. Please try again.');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (gen === fetchGenRef.current) {
+        setFetchInProgress(false);
+        setRefreshing(false);
+      }
     }
-  }, [filter, searchQuery, showStatusModal]);
+  }, [filter, debouncedSearch, showStatusModal]);
+
+  const emptyStateMessage =
+    filter === 'all'
+      ? 'No users found'
+      : filter === 'premium'
+        ? 'No premium users'
+        : filter === 'free'
+          ? 'No free users'
+          : filter === 'blocked'
+            ? 'No blocked accounts yet — blocked users appear here.'
+            : 'No expired subscriptions';
 
   useEffect(() => {
     fetchUsers();
     fetchDashboardStats();
-  }, [filter, searchQuery, fetchUsers, fetchDashboardStats]);
+  }, [filter, debouncedSearch, fetchUsers, fetchDashboardStats]);
 
   // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
   useEffect(() => {
@@ -164,7 +230,7 @@ const UsersSection = ({ isActive }) => {
       fetchDashboardStats();
     }, 15000);
     return () => clearInterval(id);
-  }, [isActive, filter, searchQuery, fetchUsers, fetchDashboardStats]);
+  }, [isActive, filter, debouncedSearch, fetchUsers, fetchDashboardStats]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -287,19 +353,11 @@ const UsersSection = ({ isActive }) => {
     }
   };
 
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.loadingContainer]}>
-        <ActivityIndicator size="large" color="#7c3aed" />
-        <Text style={styles.loadingText}>Loading users...</Text>
-      </View>
-    );
-  }
-
   const statTotal = dashboardStats?.totalUsers ?? totalUsers;
   const statPremium = dashboardStats?.premiumUsers;
   const statFree = dashboardStats?.freeUsers;
   const statExpired = dashboardStats?.expiredSubscriptions;
+  const statBlocked = dashboardStats?.blockedUsers;
 
   const listHeader = (
     <>
@@ -320,6 +378,10 @@ const UsersSection = ({ isActive }) => {
           <Text style={styles.statValue}>{statExpired ?? '—'}</Text>
           <Text style={styles.statLabel}>Expired</Text>
         </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statValue}>{statBlocked ?? '—'}</Text>
+          <Text style={styles.statLabel}>Blocked</Text>
+        </View>
       </View>
 
       <View style={styles.searchContainer}>
@@ -327,11 +389,27 @@ const UsersSection = ({ isActive }) => {
           <Icon name="magnify" size={20} color="#9ca3af" />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search users..."
+            placeholder="Search by external ID…"
             placeholderTextColor="#6b7280"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
+            value={searchInput}
+            onChangeText={setSearchInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+            clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
           />
+          {searchPending ? (
+            <ActivityIndicator size="small" color="#a78bfa" style={styles.searchSpinner} />
+          ) : fetchInProgress && users.length === 0 ? (
+            <ActivityIndicator size="small" color="#a78bfa" style={styles.searchSpinner} />
+          ) : null}
+          {searchInput.length > 0 ? (
+            <TouchableOpacity
+              onPress={() => setSearchInput('')}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Clear search">
+              <Icon name="close-circle" size={22} color="#6b7280" />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -371,6 +449,14 @@ const UsersSection = ({ isActive }) => {
           <Icon name="clock-alert" size={16} color={filter === 'expired' ? '#fff' : '#9ca3af'} />
           <Text style={[styles.filterTabText, filter === 'expired' && styles.filterTabTextActive]}>Expired</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.filterTab, filter === 'blocked' && styles.filterTabActive]}
+          onPress={() => setFilter('blocked')}
+          activeOpacity={0.7}>
+          <Icon name="block-helper" size={16} color={filter === 'blocked' ? '#fff' : '#9ca3af'} />
+          <Text style={[styles.filterTabText, filter === 'blocked' && styles.filterTabTextActive]}>Blocked</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {filter === 'expired' ? (
@@ -405,6 +491,8 @@ const UsersSection = ({ isActive }) => {
               ? 'Premium Users'
               : filter === 'free'
               ? 'Free Users'
+              : filter === 'blocked'
+              ? 'Blocked Users'
               : 'Expired'}{' '}
             ({users.length}
             {totalUsers > 0 ? ` / ${totalUsers}` : ''})
@@ -446,6 +534,8 @@ const UsersSection = ({ isActive }) => {
                   ? styles.premiumBadge
                   : user.status === 'Expired'
                   ? styles.expiredBadge
+                  : user.status === 'Blocked'
+                  ? styles.blockedBadge
                   : styles.freeBadge,
               ]}>
               <Text
@@ -455,12 +545,14 @@ const UsersSection = ({ isActive }) => {
                     ? styles.premiumText
                     : user.status === 'Expired'
                     ? styles.expiredText
+                    : user.status === 'Blocked'
+                    ? styles.blockedText
                     : styles.freeText,
                 ]}>
                 {user.status}
               </Text>
             </View>
-            {user.blocked ? (
+            {user.blocked && user.status !== 'Blocked' ? (
               <View style={[styles.statusBadge, styles.blockedBadge]}>
                 <Text style={[styles.statusText, styles.blockedText]}>Blocked</Text>
               </View>
@@ -507,29 +599,42 @@ const UsersSection = ({ isActive }) => {
     </View>
   );
 
+  const listEmpty = () => (
+    <View style={[styles.tableCard, styles.tableCardEmpty]}>
+      <View style={styles.emptyState}>
+        {fetchInProgress || searchPending ? (
+          <>
+            <ActivityIndicator size="large" color="#a78bfa" />
+            <Text style={[styles.emptyStateText, styles.emptyStateHint]}>
+              {searchPending ? 'Waiting for search…' : 'Loading users…'}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Icon name="account-off" size={48} color="#6b7280" />
+            <Text style={styles.emptyStateText}>{emptyStateMessage}</Text>
+          </>
+        )}
+      </View>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <FlatList
         data={users}
+        extraData={`${users.length}-${fetchInProgress}-${filter}`}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderUserItem}
         ListHeaderComponent={listHeader}
-        ListEmptyComponent={
-          <View style={[styles.tableCard, styles.tableCardEmpty]}>
-            <View style={styles.emptyState}>
-              <Icon name="account-off" size={48} color="#6b7280" />
-              <Text style={styles.emptyStateText}>
-                {filter === 'all'
-                  ? 'No users found'
-                  : filter === 'premium'
-                  ? 'No premium users'
-                  : filter === 'free'
-                  ? 'No free users'
-                  : 'No expired subscriptions'}
-              </Text>
-            </View>
-          </View>
-        }
+        ListEmptyComponent={listEmpty}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        removeClippedSubviews={Platform.OS === 'android'}
+        initialNumToRender={12}
+        maxToRenderPerBatch={16}
+        windowSize={8}
+        updateCellsBatchingPeriod={50}
         contentContainerStyle={styles.flatListContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
@@ -855,6 +960,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  searchSpinner: {
+    marginRight: 4,
   },
   searchContainer: {
     marginBottom: 16,
@@ -1204,21 +1312,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingTop: 100,
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#9ca3af',
-  },
   emptyState: {
     padding: 48,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  emptyStateHint: {
+    marginTop: 16,
+    color: '#9ca3af',
   },
   emptyStateText: {
     fontSize: 16,

@@ -24,7 +24,7 @@ class StreamingApp extends StatefulWidget {
   State<StreamingApp> createState() => _StreamingAppState();
 }
 
-class _StreamingAppState extends State<StreamingApp> {
+class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver {
   final GlobalKey<CombinedHomeState> _homeKey = GlobalKey<CombinedHomeState>();
 
   bool _premium = false;
@@ -81,7 +81,8 @@ class _StreamingAppState extends State<StreamingApp> {
       if (uid == null) return;
       final userData = await userApi.getUser(uid);
       if (!mounted) return;
-      final premium = userData['isPremium'] == true;
+      final blocked = userData['blocked'] == true;
+      final premium = !blocked && userData['isPremium'] == true;
       final pts = (userData['points'] as num?)?.toInt() ?? 0;
       setState(() {
         _points = pts;
@@ -101,6 +102,7 @@ class _StreamingAppState extends State<StreamingApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_hydrateChannelsPremiumOnlyFromCache());
     _bootstrap();
     unawaited(_initConnectivity());
@@ -108,9 +110,19 @@ class _StreamingAppState extends State<StreamingApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     _pendingPaymentWatcher?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshUser());
+      final home = _homeKey.currentState;
+      if (home != null) unawaited(home.reloadRemoteData());
+    }
   }
 
   Future<void> _initConnectivity() async {
