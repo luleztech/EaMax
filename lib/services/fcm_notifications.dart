@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api.dart';
 import '../firebase_options.dart';
+import 'user_id.dart' as user_id;
 
 /// Must match [AndroidManifest] `com.google.firebase.messaging.default_notification_channel_id`.
 const kFcmAndroidChannelId = 'eamax_high_priority';
@@ -106,7 +107,7 @@ Future<void> _ensureLocalNotificationsPlugin() async {
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
   if (_pluginInitialized) return;
   await _local.initialize(
-    const InitializationSettings(
+    settings: const InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     ),
     onDidReceiveNotificationResponse: _onLocalNotificationTapped,
@@ -119,7 +120,7 @@ void _onLocalNotificationTapped(NotificationResponse response) {
   final nid = int.tryParse(payload ?? '');
   if (nid == null) return;
   Future<void> run() async {
-    final uid = await getStoredUserId();
+    final uid = await user_id.getStoredUserId();
     if (uid == null || uid.isEmpty) return;
     String? tok;
     try {
