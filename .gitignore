@@ -104,3 +104,6 @@ migrate_working_dir/
 # IntelliJ related
 *.ipr
 *.iws
+
+# Duplicate Flutter tree sometimes created under project root by mistake (older copy).
+/EaMax/
