@@ -11,8 +11,10 @@ router.get('/', async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const result = await query(
-      `SELECT id, title, message, category, type, sent_at, scheduled_for, clicks,
-              sent_count, delivered_count
+      `SELECT id, title, message, category, type, sent_at, scheduled_for,
+              COALESCE(clicks, 0) AS clicks,
+              COALESCE(sent_count, 0) AS sent_count,
+              COALESCE(delivered_count, 0) AS delivered_count
          FROM notifications
         WHERE sent_at IS NOT NULL OR scheduled_for IS NOT NULL
         ORDER BY (CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) ASC,
@@ -36,6 +38,7 @@ router.post('/:id/click', async (req, res, next) => {
     const bodySchema = z.object({
       userId: z.number().int().positive().optional(),
       externalId: z.string().optional(),
+      fcmToken: z.string().optional(),
     });
     const { id } = paramsSchema.parse(req.params);
     const body = bodySchema.parse(req.body || {});
@@ -104,6 +107,7 @@ router.post('/:id/delivered', async (req, res, next) => {
     const bodySchema = z.object({
       userId: z.number().int().positive().optional(),
       externalId: z.string().optional(),
+      fcmToken: z.string().optional(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -111,6 +115,7 @@ router.post('/:id/delivered', async (req, res, next) => {
 
     const notificationId = Number(id);
     let userId = body.userId;
+    const fcmTokenBody = body.fcmToken && String(body.fcmToken).trim() !== '' ? String(body.fcmToken).trim() : null;
 
     // If externalId provided, look up userId
     if (!userId && body.externalId) {
@@ -141,10 +146,12 @@ router.post('/:id/delivered', async (req, res, next) => {
     // Upsert delivery row so topic-based sends are tracked too.
     await query(
       `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token, delivered_at)
-       VALUES ($1, $2, NULL, now())
+       VALUES ($1, $2, $3, now())
        ON CONFLICT (notification_id, user_id)
-       DO UPDATE SET delivered_at = COALESCE(notification_deliveries.delivered_at, now())`,
-      [notificationId, userId]
+       DO UPDATE SET
+         delivered_at = COALESCE(notification_deliveries.delivered_at, now()),
+         fcm_token = COALESCE(EXCLUDED.fcm_token, notification_deliveries.fcm_token)`,
+      [notificationId, userId, fcmTokenBody]
     ).catch(async () => {
       // Fallback for older schema where delivered_at may be missing
       await query(

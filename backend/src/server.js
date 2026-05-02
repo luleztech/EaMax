@@ -103,6 +103,16 @@ query(
   `ALTER TABLE stream_aliases ALTER COLUMN stream_url DROP NOT NULL`
 ).catch(() => {});
 
+// notification_deliveries: allow NULL fcm_token (topic / client-reported delivery)
+query(
+  `ALTER TABLE notification_deliveries
+     ALTER COLUMN fcm_token DROP NOT NULL`
+).catch((err) => {
+  if (err?.code !== '42P01' && !String(err?.message || '').includes('does not exist')) {
+    console.warn('Migration notification_deliveries fcm_token (non-fatal):', err.message);
+  }
+});
+
 // Notification click tracking (unique by user + notification for real click analytics)
 query(
   `CREATE TABLE IF NOT EXISTS notification_clicks (

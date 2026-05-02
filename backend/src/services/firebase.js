@@ -37,7 +37,6 @@ const initializeFirebase = () => {
 // TTL: 28 days (max) so user gets the notification as soon as they have internet.
 // No collapseKey so every notification is delivered (not replaced by a newer one).
 const FCM_TTL_MS = 28 * 24 * 60 * 60 * 1000; // 28 days in milliseconds
-const FCM_ANDROID_CHANNEL_ID = 'eamax_high_priority';
 
 // Ensure all data payload values are strings (FCM requirement)
 const stringifyData = (data) => {
@@ -48,6 +47,19 @@ const stringifyData = (data) => {
   return out;
 };
 
+/**
+ * Data-only FCM (no top-level `notification` key) so Android delivers to
+ * firebaseMessagingBackgroundHandler — apps show a local notification and can
+ * POST /api/notifications/:id/delivered for accurate delivery counts.
+ */
+const buildDataOnlyPayload = (title, body, data = {}) =>
+  stringifyData({
+    title,
+    body,
+    ...data,
+    click_action: 'FLUTTER_NOTIFICATION_CLICK',
+  });
+
 // Send push notification to a single FCM token
 const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   if (!firebaseInitialized) {
@@ -56,23 +68,11 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
 
   try {
     const message = {
-      notification: {
-        title,
-        body,
-      },
-      data: stringifyData({
-        ...data,
-        click_action: 'FLUTTER_NOTIFICATION_CLICK', // For React Native compatibility
-      }),
+      data: buildDataOnlyPayload(title, body, data),
       token: fcmToken,
       android: {
         priority: 'high',
         ttl: FCM_TTL_MS,
-        notification: {
-          channelId: FCM_ANDROID_CHANNEL_ID,
-          sound: 'default',
-          priority: 'high',
-        },
       },
       apns: {
         payload: {
@@ -84,7 +84,6 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
         },
         headers: {
           'apns-priority': '10',
-          'apns-push-type': 'alert',
         },
       },
     };
@@ -171,22 +170,10 @@ const sendPushNotificationToTopic = async (topic, title, body, data = {}) => {
 
   const message = {
     topic: String(topic).trim(),
-    notification: {
-      title,
-      body,
-    },
-    data: stringifyData({
-      ...data,
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    }),
+    data: buildDataOnlyPayload(title, body, data),
     android: {
       priority: 'high',
       ttl: FCM_TTL_MS,
-      notification: {
-        channelId: FCM_ANDROID_CHANNEL_ID,
-        sound: 'default',
-        priority: 'high',
-      },
     },
     apns: {
       payload: {
@@ -198,7 +185,6 @@ const sendPushNotificationToTopic = async (topic, title, body, data = {}) => {
       },
       headers: {
         'apns-priority': '10',
-        'apns-push-type': 'alert',
       },
     },
   };

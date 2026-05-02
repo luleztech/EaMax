@@ -136,17 +136,22 @@ router.get('/stats', async (req, res, next) => {
        AND DATE_TRUNC('month', sent_at) = DATE_TRUNC('month', CURRENT_DATE)`
     );
     
-    const notificationStats = notificationStatsResult.rows[0] || {
-      total_sent: 0,
-      total_devices_sent: 0,
-      total_delivered: 0,
-      total_clicks: 0
+    const rawStats = notificationStatsResult.rows[0] || {};
+    const notificationStats = {
+      total_sent: Number(rawStats.total_sent) || 0,
+      total_devices_sent: Number(rawStats.total_devices_sent) || 0,
+      total_delivered: Number(rawStats.total_delivered) || 0,
+      total_clicks: Number(rawStats.total_clicks) || 0,
     };
 
-    // Calculate delivery rate
-    const deliveryRate = notificationStats.total_devices_sent > 0
-      ? ((notificationStats.total_delivered / notificationStats.total_devices_sent) * 100).toFixed(1)
-      : '0';
+    // Calculate delivery rate (guard NaN / null from pg bigint)
+    const deliveryRate =
+      notificationStats.total_devices_sent > 0
+        ? (
+            (notificationStats.total_delivered / notificationStats.total_devices_sent) *
+            100
+          ).toFixed(1)
+        : '0';
 
     // Format change percentage properly (no double ++)
     const fmtChange = (val) => {
@@ -169,12 +174,12 @@ router.get('/stats', async (req, res, next) => {
       adsWatched,
       adsChange: fmtChange(adsChange),
       notifications: {
-        sent: parseInt(notificationStats.total_sent) || 0,
-        devicesSent: parseInt(notificationStats.total_devices_sent) || 0,
-        delivered: parseInt(notificationStats.total_delivered) || 0,
-        clicks: parseInt(notificationStats.total_clicks) || 0,
-        deliveryRate: `${deliveryRate}%`
-      }
+        sent: notificationStats.total_sent,
+        devicesSent: notificationStats.total_devices_sent,
+        delivered: notificationStats.total_delivered,
+        clicks: notificationStats.total_clicks,
+        deliveryRate: `${deliveryRate}%`,
+      },
     });
   } catch (err) {
     console.error('Dashboard stats error:', err);

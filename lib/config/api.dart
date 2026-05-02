@@ -225,8 +225,35 @@ class PaymentsApi {
   }
 }
 
+/// Delivery + click analytics for admin broadcasts ([notificationId] in FCM data).
+class NotificationsApi {
+  Future<void> reportDelivered(int notificationId, String externalId, {String? fcmToken}) async {
+    try {
+      await apiRequest(
+        '/api/notifications/$notificationId/delivered',
+        method: 'POST',
+        body: {
+          'externalId': externalId,
+          if (fcmToken != null && fcmToken.isNotEmpty) 'fcmToken': fcmToken,
+        },
+      );
+    } catch (_) {}
+  }
+
+  Future<void> reportClick(int notificationId, String externalId) async {
+    try {
+      await apiRequest(
+        '/api/notifications/$notificationId/click',
+        method: 'POST',
+        body: {'externalId': externalId},
+      );
+    } catch (_) {}
+  }
+}
+
 final userApi = UserApi();
 final channelsApi = ChannelsApi();
 final settingsApi = SettingsApi();
 final matchesApi = MatchesApi();
 final paymentsApi = PaymentsApi();
+final notificationsApi = NotificationsApi();
