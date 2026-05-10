@@ -48,7 +48,7 @@ try { ExoPlayerConfig = require('../native/ExoPlayerConfig').default; } catch (_
 let WebView = null;
 try { WebView = require('react-native-webview').WebView; } catch (_) {}
 
-const NATIVE_USER_AGENT  = 'ExoPlayerLib/2.18.0 (Linux;Android 11) ReactNativeVideo/3.0';
+const NATIVE_USER_AGENT  = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
 const WEBVIEW_USER_AGENT = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
 
 const DEFAULT_PLAYBACK_HEIGHT = DEFAULT_START_HEIGHT; // 360

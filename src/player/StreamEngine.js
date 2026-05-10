@@ -23,7 +23,7 @@ const LOG_REDIRECT = 'CDN_REDIRECT';
 const LOG_VALIDATE = 'STREAM_VALIDATE';
 const LOG_CACHE    = 'STREAM_CACHE';
 
-const DEFAULT_USER_AGENT   = 'ExoPlayerLib/2.18 (Linux; Android 11)';
+const DEFAULT_USER_AGENT   = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
 const MAX_REDIRECTS        = 5;
 const VALIDATE_TIMEOUT_MS  = 10000;
 const MANIFEST_TIMEOUT_MS  = 15000;

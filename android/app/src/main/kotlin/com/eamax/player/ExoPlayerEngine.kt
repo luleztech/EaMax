@@ -298,11 +298,7 @@ class ExoPlayerEngine(
                 val manifestLikely = ul.contains(".mpd") || ul.contains(".m3u8")
                 put(
                     "User-Agent",
-                    if (StreamUrlClassifier.isYcnRedirectHost(streamSession.mpdUrl) || manifestLikely) {
-                        PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
-                    } else {
-                        "ExoPlayerLib/2.18.0 (Linux;Android 11) ReactNativeVideo/3.0"
-                    },
+                    PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
                 )
             }
             

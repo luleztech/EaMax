@@ -109,7 +109,7 @@ object StreamProbe {
                 StreamUrlClassifier.isYcnRedirectHost(session.mpdUrl) ->
                 h["User-Agent"] = PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
             else ->
-                h.putIfAbsent("User-Agent", "ExoPlayerLib/2.18.0 (Linux; Android 11)")
+                h.putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
         }
         return h
     }
