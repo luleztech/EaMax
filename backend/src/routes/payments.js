@@ -45,9 +45,12 @@ const getPaymentProviderForOrder = async (orderId) => {
   return result.rows[0].payment_provider || null;
 };
 
-/** Our Zeno flow uses provider_ref `${user_id}_${epochMs}` — SonicPesa uses its own order_id shape. */
-const isLikelyInternalZenoOrderRef = (orderId) =>
-  /^\d+_\d{10,}$/.test(String(orderId || '').trim());
+/** Legacy Zeno refs `${user_id}_${epochMs}` or UUID v4 (current). */
+const isLikelyInternalZenoOrderRef = (orderId) => {
+  const s = String(orderId || '').trim();
+  if (/^\d+_\d{10,}$/.test(s)) return true;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+};
 
 /**
  * Routing rules (EaAdmin → app_settings.payment_provider):
@@ -95,8 +98,23 @@ const ensureZenoConfigured = () => {
 };
 
 /**
- * Hint only (logging / support). ZenoPay’s published samples omit `provider` and route from `buyer_phone`.
- * Sending wrong explicit values breaks some rails (e.g. Vodacom / Halotel); omit the field in the API payload.
+ * ZenoPay: most TZ prefixes route from `buyer_phone` alone. Vodacom M-Pesa often needs an explicit
+ * `provider` or the push never arrives while the API still returns success. Optional env override:
+ * `ZENO_VODACOM_WALLET_PROVIDER` (default `M-PESA`).
+ */
+const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
+  const p = String(normalizedPhoneLocal0 || '');
+  const isVoda =
+    p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
+  if (!isVoda) return;
+  const fromEnv = process.env.ZENO_VODACOM_WALLET_PROVIDER;
+  const explicit =
+    typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'M-PESA';
+  payload.provider = explicit;
+};
+
+/**
+ * Hint only (logging / support). ZenoPay’s published samples omit `provider` for most networks.
  */
 const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   const p = String(localPhone0 || '');
@@ -127,7 +145,8 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
     /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
       combined,
     ) ||
-    /exception.*upstream/i.test(msg)
+    /exception.*upstream/i.test(msg) ||
+    /\babort(ed)?\b/i.test(msg)
   ) {
     return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu, salio la kutosha, na nambari sahihi ya malipo. Jaribu tena; ikiendelea subiri dakika 2–5 kisha ujaribu.';
   }
@@ -242,8 +261,8 @@ async function handlePaymentStart(req, res, next) {
     }
     const amountToSend = data.amount != null ? data.amount : planInfo.amount;
 
-    const orderId = `${userId}_${Date.now()}`;
-    console.log(`[Backend] Generated orderId: ${orderId}`);
+    const orderId = crypto.randomUUID();
+    console.log('[Backend] Generated payment orderId:', orderId);
 
     const selectedProvider = await getSelectedPaymentProvider();
     const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
@@ -339,6 +358,7 @@ async function handlePaymentStart(req, res, next) {
       amount: amountToSend,
       webhook_url: webhookUrl,
     };
+    applyZenoWalletProviderForPayload(payload, normalizedPhone);
 
     // Insert BEFORE calling Zeno so /status always sees payment_provider=zeno (avoids races with fast polling
     // or admin switching gateway while the HTTP round-trip is in flight).
@@ -361,6 +381,7 @@ async function handlePaymentStart(req, res, next) {
       phone: phoneForZeno,
       phonePrefix: normalizedPhone.slice(0, 3),
       walletHint: resolveZenoMobileWalletProviderHint(normalizedPhone),
+      providerField: payload.provider ?? '(omit)',
       amount: amountToSend,
       bundle: data.bundle,
       network: (normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063'))
@@ -376,6 +397,9 @@ async function handlePaymentStart(req, res, next) {
         : 'Unknown',
     });
 
+    const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 26000, 8000), 60000);
+    const ac = new AbortController();
+    const zenoTimeout = setTimeout(() => ac.abort(), zenoHttpMs);
     let response;
     try {
       response = await fetch(
@@ -387,9 +411,11 @@ async function handlePaymentStart(req, res, next) {
             'x-api-key': ZENO_API_KEY,
           },
           body: JSON.stringify(payload),
+          signal: ac.signal,
         },
       );
     } catch (fetchErr) {
+      clearTimeout(zenoTimeout);
       console.error('[ZenoPay] Network error calling ZenoPay:', fetchErr?.message || fetchErr);
       await rollbackPendingZenoRow();
       return res.status(502).json({
@@ -399,6 +425,7 @@ async function handlePaymentStart(req, res, next) {
         ),
       });
     }
+    clearTimeout(zenoTimeout);
 
     const zenoBodyText = await response.text();
     let zenoData = {};
@@ -417,6 +444,7 @@ async function handlePaymentStart(req, res, next) {
       zenoStatus: zenoData.status,
       message: zenoData.message,
       resultcode: zenoData.resultcode,
+      responseOrderId: zenoData.order_id || zenoData.orderId || null,
     });
 
     if (!response.ok || zenoData.status !== 'success') {
@@ -431,10 +459,26 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
+    let clientFacingOrderId = orderId;
+    const zenoCanon = String(zenoData.order_id ?? zenoData.orderId ?? '').trim();
+    if (zenoCanon && zenoCanon !== orderId) {
+      const upd = await query(
+        `UPDATE subscription_payments SET provider_ref = $1 WHERE provider_ref = $2 AND status = 'pending' AND payment_provider = $3`,
+        [zenoCanon, orderId, provider],
+      );
+      const n = upd.rowCount != null ? upd.rowCount : (upd.rows?.length ?? 0);
+      if (n < 1) {
+        console.warn('[ZenoPay] Could not remap provider_ref to gateway order_id', { orderId, zenoCanon });
+      } else {
+        console.log('[ZenoPay] provider_ref remapped to gateway order_id', { was: orderId, now: zenoCanon });
+        clientFacingOrderId = zenoCanon;
+      }
+    }
+
     // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.
     return res.json({
       status: 'pending',
-      orderId,
+      orderId: clientFacingOrderId,
       message:
         zenoData.message ||
         'Request in progress. You will receive a prompt on your phone.',
