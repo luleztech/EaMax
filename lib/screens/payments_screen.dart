@@ -35,7 +35,8 @@ const _paySurface2 = Color(0xFF151B2E);
 const _payLine = Color(0x14FFFFFF);
 const _payMuted = Color(0xFF8B9CAF);
 
-const int _kPaymentWaitSeconds = 60;
+/// Halotel / Airtel USSD can take longer than Vodacom; keep user in "waiting" long enough for polling to see completion.
+const int _kPaymentWaitSeconds = 180;
 
 enum _PaymentUiPhase {
   none,
@@ -261,7 +262,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           }
         }
       }
-      if (polls >= 100) {
+      if (polls >= 150) {
         _pollTimer?.cancel();
         _pollTimer = null;
         _waitingTimer?.cancel();
@@ -283,7 +284,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (!mounted || _pollingOrderId == null) return;
     unawaited(_finalizeSessionTimedOut(
       detail:
-          'Muda wa dakika 1 umeisha bila uthibitisho. Hakikisha umeingiza namba ya siri au PIN kwenye simu. Unaweza kujaribu tena.',
+          'Muda wa kusubiri umeisha bila uthibitisho. Halopesa/Airtel huenda zikachukua muda mrefu — hakikisha umeingiza PIN kwenye simu. Unaweza kujaribu tena.',
     ));
   }
 
@@ -1594,7 +1595,7 @@ class _PaymentWaitingModal extends StatelessWidget {
                 const SizedBox(height: 16),
                 Text(
                   'Ukighairi au ukiacha hatua kwenye simu, malipo hayatakamilika. '
-                  'Baada ya dakika 1 bila uthibitisho utaweza kuanza upya kutoka hatua ya 1.',
+                  'Baada ya muda wa kusubiri bila uthibitisho utaweza kuanza upya kutoka hatua ya 1.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 13,

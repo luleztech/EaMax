@@ -492,6 +492,121 @@ const parseOrderNotFound = (message, statusResp) => {
   ));
 };
 
+/** Values some carriers (Halopesa/Halotel, Airtel) return instead of plain COMPLETED */
+const ZENO_PAID_STATUSES = new Set([
+  'COMPLETED', 'SUCCESS', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'SETTLED', 'CONFIRMED',
+]);
+
+const isZenoPaidRaw = (rawUpper) => {
+  if (!rawUpper) return false;
+  const u = String(rawUpper).toUpperCase().trim();
+  if (ZENO_PAID_STATUSES.has(u)) return true;
+  const lower = u.toLowerCase();
+  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
+};
+
+const pickZenoStatusFromObject = (o) => {
+  if (!o || typeof o !== 'object') return '';
+  const keys = [
+    'payment_status', 'paymentStatus', 'payment_state', 'paymentState',
+    'status', 'state', 'transaction_status', 'transactionStatus', 'mpesa_status',
+  ];
+  for (const k of keys) {
+    const v = o[k];
+    if (v != null && typeof v !== 'object') {
+      const s = String(v).toUpperCase().trim();
+      if (s) return s;
+    }
+  }
+  return '';
+};
+
+/**
+ * Zeno order-status (and similar) payloads: `data` may be an array OR object; Halotel/Airtel
+ * often nest status under `result` or a single object instead of data[0].
+ */
+const extractRawZenoPaymentStatus = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return '';
+  let s = pickZenoStatusFromObject(statusData);
+  if (s) return s;
+  const d = statusData.data;
+  if (Array.isArray(d) && d.length) {
+    for (const row of d) {
+      s = pickZenoStatusFromObject(row) || (row && typeof row === 'object' ? pickZenoStatusFromObject(row.order) : '');
+      if (s) return s;
+    }
+  } else if (d && typeof d === 'object') {
+    s = pickZenoStatusFromObject(d) || pickZenoStatusFromObject(d.order) || pickZenoStatusFromObject(d.transaction);
+    if (s) return s;
+  }
+  const r = statusData.result;
+  if (typeof r === 'string') {
+    s = String(r).toUpperCase().trim();
+    if (s) return s;
+  }
+  if (r && typeof r === 'object') {
+    s = pickZenoStatusFromObject(r);
+    if (s) return s;
+  }
+  if (statusData.order && typeof statusData.order === 'object') {
+    s = pickZenoStatusFromObject(statusData.order);
+    if (s) return s;
+  }
+  return '';
+};
+
+const zenoOrderStatusFirstRecord = (statusData) => {
+  if (!statusData?.data) return null;
+  if (Array.isArray(statusData.data)) return statusData.data[0] || null;
+  if (typeof statusData.data === 'object') return statusData.data;
+  return null;
+};
+
+const evaluateZenoOrderStatusForApply = (statusData) => {
+  const firstItem = zenoOrderStatusFirstRecord(statusData);
+  const rawStatus = extractRawZenoPaymentStatus(statusData);
+  const isCompleted = isZenoPaidRaw(rawStatus);
+  return { isCompleted, rawStatus, firstItem };
+};
+
+/** Webhook bodies vary by MNO; merge nested `data` and common aliases. */
+const extractZenoWebhookOrderAndPaid = (payload) => {
+  const nested = payload.data;
+  const first = Array.isArray(nested) ? nested[0] : (nested && typeof nested === 'object' ? nested : null);
+  const orderId = String(
+    payload.order_id ||
+      payload.orderId ||
+      first?.order_id ||
+      first?.orderId ||
+      payload.reference ||
+      payload.metadata?.order_id ||
+      payload.metadata?.orderId ||
+      '',
+  ).trim();
+  const statusCandidates = [
+    payload.payment_status,
+    payload.paymentStatus,
+    payload.status,
+    first?.payment_status,
+    first?.paymentStatus,
+    first?.status,
+    payload.result && typeof payload.result === 'object' ? payload.result.payment_status : null,
+    payload.result && typeof payload.result === 'object' ? payload.result.status : null,
+  ];
+  let raw = '';
+  for (const f of statusCandidates) {
+    if (f != null && typeof f !== 'object') {
+      raw = String(f).toUpperCase().trim();
+      if (raw) break;
+    }
+  }
+  if (!raw && typeof payload.result === 'string') {
+    raw = String(payload.result).toUpperCase().trim();
+  }
+  const paid = isZenoPaidRaw(raw);
+  return { orderId: orderId || null, paid, raw };
+};
+
 // Helper: Extract SonicPesa payment status from response
 const getSonicPesaRawStatus = (statusData) => {
   return String(
@@ -502,21 +617,6 @@ const getSonicPesaRawStatus = (statusData) => {
     statusData.status ||
     ''
   ).toUpperCase().trim();
-};
-
-// Helper: Extract ZenoPay payment status from response
-const getZenoRawStatus = (statusData) => {
-  const paymentStatus = statusData.data && Array.isArray(statusData.data)
-    ? statusData.data[0]?.payment_status
-    : null;
-  const firstItem = statusData.data && Array.isArray(statusData.data) ? statusData.data[0] : null;
-  const statusNormalized =
-    (firstItem && (firstItem.payment_status || firstItem.paymentStatus)) ||
-    statusData.payment_status ||
-    statusData.paymentStatus ||
-    (statusData.result && String(statusData.result).toUpperCase() === 'COMPLETED' ? 'COMPLETED' : null);
-
-  return String(paymentStatus || statusNormalized || statusData.result || '').toUpperCase().trim();
 };
 
 // Check payment status (polling from app)
@@ -661,26 +761,7 @@ router.get('/zeno/status', async (req, res, next) => {
         .json({ error: statusData.message || 'Failed to fetch order status' });
     }
 
-    const paymentStatus =
-      statusData.data &&
-      Array.isArray(statusData.data) &&
-      statusData.data[0]?.payment_status;
-
-    // Also accept data[0].paymentStatus or top-level payment_status / paymentStatus / result
-    const firstItem = statusData.data && Array.isArray(statusData.data) ? statusData.data[0] : null;
-    const statusNormalized =
-      (firstItem && (firstItem.payment_status || firstItem.paymentStatus)) ||
-      statusData.payment_status ||
-      statusData.paymentStatus ||
-      (statusData.result && String(statusData.result).toUpperCase() === 'COMPLETED' ? 'COMPLETED' : null);
-
-    // Treat any completion-like value as COMPLETED (ZenoPay may use "Completed", "SUCCESS", etc. in production)
-    const rawStatus = String(paymentStatus || statusNormalized || statusData.result || '').toUpperCase().trim();
-    const isCompleted =
-      rawStatus === 'COMPLETED' ||
-      rawStatus === 'SUCCESS' ||
-      rawStatus === 'PAID' ||
-      (statusData.status && String(statusData.status).toLowerCase() === 'success' && (rawStatus || firstItem?.payment_status));
+    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
 
     console.log(`[Backend] Payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
 
@@ -690,7 +771,7 @@ router.get('/zeno/status', async (req, res, next) => {
     }
 
     return res.json({
-      status: isCompleted ? 'COMPLETED' : (statusData.result || paymentStatus || statusNormalized || 'UNKNOWN'),
+      status: isCompleted ? 'COMPLETED' : (rawStatus || String(statusData.result || '') || 'UNKNOWN'),
       raw: statusData,
     });
   } catch (err) {
@@ -716,42 +797,44 @@ router.post('/zeno/webhook', async (req, res, next) => {
       orderId: z.string().optional(),
       payment_status: z.string().optional(),
       paymentStatus: z.string().optional(),
+      status: z.string().optional(),
       reference: z.string().optional(),
       transid: z.string().optional(),
       metadata: z.any().optional(),
+      data: z.any().optional(),
+      result: z.any().optional(),
     }).passthrough();
 
     const payload = bodySchema.parse(req.body);
-    const orderId = payload.order_id || payload.orderId;
-    const paymentStatus = (payload.payment_status || payload.paymentStatus || '').toUpperCase();
-    console.log('[ZenoPay] Webhook payload parsed:', { orderId, paymentStatus });
+    const { orderId: webhookOrderId, paid, raw: webhookStatusRaw } = extractZenoWebhookOrderAndPaid(payload);
+    console.log('[ZenoPay] Webhook payload parsed:', { orderId: webhookOrderId, webhookStatusRaw, paid });
 
-    if (!orderId) {
-      console.log('[ZenoPay] Webhook missing order_id/orderId');
+    if (!webhookOrderId) {
+      console.log('[ZenoPay] Webhook missing order_id/orderId/reference');
       return res.status(400).json({ error: 'Missing order_id' });
     }
 
-    // If key is missing/invalid, only allow COMPLETED if we have a pending payment for this order (ZenoPay often doesn't send x-api-key on webhooks)
+    // If key is missing/invalid, only allow completion when we have a pending payment for this order (ZenoPay often doesn't send x-api-key on webhooks)
     if (!keyValid) {
       const pendingCheck = await query(
         'SELECT id FROM subscription_payments WHERE provider_ref = $1 AND status = $2 LIMIT 1',
-        [orderId, 'pending'],
+        [webhookOrderId, 'pending'],
       );
       if (pendingCheck.rows.length === 0) {
         console.log('[ZenoPay] Webhook rejected: invalid API key and order not found or not pending');
         return res.status(401).json({ error: 'Invalid webhook signature' });
       }
-      if (paymentStatus === 'COMPLETED') {
+      if (paid) {
         console.warn('[ZenoPay] Webhook accepted without API key (order exists as pending). Configure ZenoPay to send x-api-key if supported.');
       }
     }
 
-    if (paymentStatus === 'COMPLETED') {
-      console.log('[ZenoPay] Processing completed payment:', orderId);
-      await applyCompletedPayment(orderId, payload);
-      console.log('[ZenoPay] Payment processing completed for:', orderId);
+    if (paid) {
+      console.log('[ZenoPay] Processing completed payment:', webhookOrderId);
+      await applyCompletedPayment(webhookOrderId, payload);
+      console.log('[ZenoPay] Payment processing completed for:', webhookOrderId);
     } else {
-      console.log('[ZenoPay] Ignoring non-completed payment status:', paymentStatus || '(empty)');
+      console.log('[ZenoPay] Ignoring non-completed payment status:', webhookStatusRaw || '(empty)');
     }
 
     return res.json({ received: true });
@@ -791,7 +874,7 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     }).passthrough();
 
     const payload = bodySchema.parse(req.body);
-    const orderId = payload.order_id?.toString().trim();
+    const orderId = (payload.order_id || payload.reference)?.toString().trim();
     const paymentStatus = (payload.status || '').toString().toUpperCase().trim();
     console.log('[SonicPesa] Webhook payload parsed:', { orderId, paymentStatus, signatureValid });
 
@@ -1000,26 +1083,7 @@ router.get('/status', async (req, res, next) => {
         .json({ error: statusData.message || 'Failed to fetch order status' });
     }
 
-    const paymentStatus =
-      statusData.data &&
-      Array.isArray(statusData.data) &&
-      statusData.data[0]?.payment_status;
-
-    // Also accept data[0].paymentStatus or top-level payment_status / paymentStatus / result
-    const firstItem = statusData.data && Array.isArray(statusData.data) ? statusData.data[0] : null;
-    const statusNormalized =
-      (firstItem && (firstItem.payment_status || firstItem.paymentStatus)) ||
-      statusData.payment_status ||
-      statusData.paymentStatus ||
-      (statusData.result && String(statusData.result).toUpperCase() === 'COMPLETED' ? 'COMPLETED' : null);
-
-    // Treat any completion-like value as COMPLETED (ZenoPay may use "Completed", "SUCCESS", etc. in production)
-    const rawStatus = String(paymentStatus || statusNormalized || statusData.result || '').toUpperCase().trim();
-    const isCompleted =
-      rawStatus === 'COMPLETED' ||
-      rawStatus === 'SUCCESS' ||
-      rawStatus === 'PAID' ||
-      (statusData.status && String(statusData.status).toLowerCase() === 'success' && (rawStatus || firstItem?.payment_status));
+    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
 
     console.log(`[Backend] Payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
 
@@ -1029,7 +1093,7 @@ router.get('/status', async (req, res, next) => {
     }
 
     return res.json({
-      status: isCompleted ? 'COMPLETED' : (statusData.result || paymentStatus || statusNormalized || 'UNKNOWN'),
+      status: isCompleted ? 'COMPLETED' : (rawStatus || String(statusData.result || '') || 'UNKNOWN'),
       raw: statusData,
     });
   } catch (err) {

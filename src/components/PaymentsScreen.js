@@ -213,7 +213,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     const timeoutId = setTimeout(() => {
       setConsecutiveOrderNotFound(0); // Reset counter when starting polling
       let pollCount = 0;
-      const maxPolls = 100; // 100 polls × 3 seconds = 5 minutes
+      const maxPolls = 150; // ~7.5 min @ 3s — Halopesa/Airtel can lag behind Vodacom
 
       const interval = setInterval(async () => {
         pollCount += 1;

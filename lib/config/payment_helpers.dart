@@ -24,7 +24,10 @@ bool isPaymentCompleted(Object? status) {
       s == 'SUCCESS' ||
       s == 'PAID' ||
       s == 'COMPLETE' ||
-      s == 'SUCCEEDED';
+      s == 'SUCCEEDED' ||
+      s == 'APPROVED' ||
+      s == 'SETTLED' ||
+      s == 'CONFIRMED';
 }
 
 /// Terminal failure — stop polling and let the user start a new payment from step 1.
