@@ -21,6 +21,7 @@ bool isPaymentPending(Object? status) {
 bool isPaymentCompleted(Object? status) {
   final s = normalizedPaymentStatus(status);
   return s == 'COMPLETED' ||
+      s == 'SUCCESS' ||
       s == 'PAID' ||
       s == 'COMPLETE' ||
       s == 'SUCCEEDED';

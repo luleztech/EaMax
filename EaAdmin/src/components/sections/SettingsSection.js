@@ -20,6 +20,9 @@ const SettingsSection = () => {
   const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
   const [channelsPremiumOnlyLoading, setChannelsPremiumOnlyLoading] = useState(true);
   const [channelsPremiumOnlySaving, setChannelsPremiumOnlySaving] = useState(false);
+  const [paymentProvider, setPaymentProvider] = useState('zeno');
+  const [paymentProviderLoading, setPaymentProviderLoading] = useState(true);
+  const [paymentProviderSaving, setPaymentProviderSaving] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
@@ -33,17 +36,20 @@ const SettingsSection = () => {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const [whatsappRes, premiumRes] = await Promise.all([
+        const [whatsappRes, premiumRes, providerRes] = await Promise.all([
           adminSettingsAPI.getWhatsAppNumber(),
           adminSettingsAPI.getChannelsPremiumOnly().catch(() => ({ channelsPremiumOnly: false })),
+          adminSettingsAPI.getPaymentProvider().catch(() => ({ paymentProvider: 'zeno' })),
         ]);
         if (whatsappRes.number) setWhatsappNumber(whatsappRes.number);
         setChannelsPremiumOnly(!!premiumRes.channelsPremiumOnly);
+        setPaymentProvider(providerRes.paymentProvider || 'zeno');
       } catch (error) {
         console.error('Failed to load settings:', error);
       } finally {
         setLoading(false);
         setChannelsPremiumOnlyLoading(false);
+        setPaymentProviderLoading(false);
       }
     };
     loadSettings();
@@ -85,6 +91,29 @@ const SettingsSection = () => {
       showStatusModal('Update failed', 'Could not update access mode. Try again.');
     } finally {
       setChannelsPremiumOnlySaving(false);
+    }
+  };
+
+  const handlePaymentProviderToggle = async (enabled) => {
+    if (paymentProviderSaving) return;
+    const newProvider = enabled ? 'sonicpesa' : 'zeno';
+    const previous = paymentProvider;
+    setPaymentProvider(newProvider);
+    try {
+      setPaymentProviderSaving(true);
+      await adminSettingsAPI.updatePaymentProvider(newProvider);
+      showStatusModal(
+        'Setting saved',
+        newProvider === 'sonicpesa'
+          ? 'Payment provider switched to SonicPesa.'
+          : 'Payment provider switched to ZenoPay.',
+      );
+    } catch (error) {
+      console.error('Failed to update payment provider:', error);
+      setPaymentProvider(previous);
+      showStatusModal('Update failed', 'Could not update payment provider. Try again.');
+    } finally {
+      setPaymentProviderSaving(false);
     }
   };
 
@@ -167,6 +196,39 @@ const SettingsSection = () => {
                   onValueChange={handleChannelsPremiumOnlyToggle}
                   disabled={channelsPremiumOnlyLoading}
                   trackColor={{ false: '#374151', true: '#7c3aed' }}
+                  thumbColor="#fff"
+                />
+              )}
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.settingsCard}>
+          <View style={styles.headerSection}>
+            <Text style={styles.settingsTitle}>Payment provider</Text>
+          </View>
+          <Text style={styles.settingsDescription}>
+            Choose the active payment API for user payments.
+          </Text>
+          <View style={styles.contactItem}>
+            <View style={styles.contactHeader}>
+              <View style={styles.contactIconContainer}>
+                <Icon name="credit-card-outline" size={24} color="#22c55e" />
+              </View>
+              <View style={styles.contactInfo}>
+                <Text style={styles.singleLabel}>Use SonicPesa</Text>
+                <Text style={styles.singleLabelSmall}>
+                  {paymentProvider === 'sonicpesa' ? 'SonicPesa is active' : 'ZenoPay is active'}
+                </Text>
+              </View>
+              {paymentProviderSaving ? (
+                <ActivityIndicator size="small" color="#22c55e" />
+              ) : (
+                <Switch
+                  value={paymentProvider === 'sonicpesa'}
+                  onValueChange={handlePaymentProviderToggle}
+                  disabled={paymentProviderLoading}
+                  trackColor={{ false: '#374151', true: '#22c55e' }}
                   thumbColor="#fff"
                 />
               )}
@@ -299,6 +361,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  singleLabelSmall: {
+    fontSize: 13,
+    color: '#cbd5e1',
+    marginTop: 4,
   },
   statusModalOverlay: {
     flex: 1,

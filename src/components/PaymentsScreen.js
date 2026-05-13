@@ -53,12 +53,26 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
   const [pollingIntervalId, setPollingIntervalId] = useState(null);
   const [consecutiveOrderNotFound, setConsecutiveOrderNotFound] = useState(0);
   const [simulating, setSimulating] = useState(false);
+  const [lastPaymentSuccess, setLastPaymentSuccess] = useState(false);
 
   const bundles = [
     { id: 'week', name: 'Kwa Wiki', price: '2,000', duration: '7 siku', value: 2000, popular: false },
     { id: 'month', name: 'Mwezi', price: '5,000', duration: '30 siku', value: 5000, popular: true },
     { id: 'year', name: 'Miezi 3', price: '12,000', duration: 'miezi 3', value: 12000, popular: false },
   ];
+
+  // When success modal closes, trigger one more refresh to be absolutely sure
+  useEffect(() => {
+    if (lastPaymentSuccess && !statusModalVisible) {
+      console.log('[Payment] Modal closed after success, triggering final refresh...');
+      if (onPaymentSuccess) {
+        Promise.resolve(onPaymentSuccess()).catch(err => {
+          console.warn('Final refresh callback error:', err);
+        });
+      }
+      setLastPaymentSuccess(false);
+    }
+  }, [statusModalVisible, lastPaymentSuccess, onPaymentSuccess]);
 
   useEffect(() => {
     const loadWhatsApp = async () => {
@@ -93,9 +107,9 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       try {
         const pending = await AsyncStorage.getItem('pendingPaymentOrderId');
         if (!pending || !pending.trim()) return;
-        const res = await paymentsAPI.checkZenoStatus(pending.trim());
+        const res = await paymentsAPI.checkPaymentStatus(pending.trim());
         const status = res?.status || res?.raw?.data?.[0]?.payment_status;
-        if (status === 'COMPLETED') {
+        if (String(status).toUpperCase() === 'COMPLETED') {
           await AsyncStorage.removeItem('pendingPaymentOrderId');
           if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess());
         } else {
@@ -123,35 +137,39 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     const pollPaymentStatus = async () => {
       try {
         console.log(`[Payment] Checking status for order: ${pollingOrderId}`);
-        const response = await paymentsAPI.checkZenoStatus(pollingOrderId);
-        const paymentStatus = response.status || response.raw?.data?.[0]?.payment_status;
-        console.log(`[Payment] Status response:`, { status: paymentStatus, raw: response.raw });
-
+          const response = await paymentsAPI.checkPaymentStatus(pollingOrderId);
         if (paymentStatus === 'COMPLETED') {
           // Payment successful! Backend has already applied unlock + premium + revenue
           clearInterval(pollingIntervalId);
           setPollingIntervalId(null);
           setPollingOrderId(null);
           setConsecutiveOrderNotFound(0);
-          AsyncStorage.removeItem('pendingPaymentOrderId');
+          await AsyncStorage.removeItem('pendingPaymentOrderId');
 
-          // Show success modal
+          console.log('[Payment] Payment COMPLETED! Triggering immediate upgrade...');
+
+          // Call onPaymentSuccess IMMEDIATELY without delay for instant upgrade
+          if (onPaymentSuccess) {
+            try {
+              console.log('[Payment] Calling onPaymentSuccess callback immediately');
+              await Promise.resolve(onPaymentSuccess());
+              setLastPaymentSuccess(true);
+            } catch (e) {
+              console.warn('Payment success callback error:', e);
+            }
+          }
+
+          // Show success modal with auto-close
           showStatusModal(
             'Habari Njema!',
-            'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote. Ikiwa chaneli bado hazifunguki, tafadhali subiri dakika chache au fungua tena programu.',
+            'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
             true,
           );
 
-          // Refresh user data (premium, remaining time, channels) then notify parent
-          setTimeout(async () => {
-            if (onPaymentSuccess) {
-              try {
-                await Promise.resolve(onPaymentSuccess());
-              } catch (e) {
-                console.warn('Payment success callback error:', e);
-              }
-            }
-          }, 1000);
+          // Auto-close modal after 2 seconds so user sees the upgrade immediately
+          setTimeout(() => {
+            setStatusModalVisible(false);
+          }, 2000);
         }
       } catch (error) {
         console.error('Error checking payment status:', error);
@@ -273,7 +291,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     const bundle = bundles.find(b => b.id === selectedBundle);
     try {
       setSubmitting(true);
-      const result = await paymentsAPI.startZenoPayment({
+      const result = await paymentsAPI.startPayment({
         externalId: userId,
         bundle: bundle.id,
         amount: bundle.value,

@@ -26,6 +26,9 @@ import {
   requestNotificationPermission,
   refreshAndRegisterFCMToken,
 } from '../services/notifications';
+import realtimeSyncService from '../services/realtimeSync';
+import backgroundSyncService from '../services/backgroundSync';
+import cacheService from '../services/cacheService';
 
 const StreamingApp = () => {
   const [isPremium, setIsPremium] = useState(false);
@@ -39,13 +42,74 @@ const StreamingApp = () => {
 
   const CONGRATS_STORAGE_KEY = 'premiumCongratsShown';
 
+  // Handle real-time WebSocket updates
+  const handleRealtimeUpdate = useCallback((channel, data) => {
+    console.log(`[RealtimeUpdate] Received update on ${channel}:`, data);
+    if (channel === 'user_premium_update') {
+      // Update premium status immediately from WebSocket
+      // Support both camelCase and snake_case from backend
+      const isPrem = !!data.isPremium || !!data.is_premium;
+      const expiresAt = data.premiumExpiresAt || data.premium_expires_at;
+      
+      console.log(`[RealtimeUpdate] Premium update: ${isPrem}, expires: ${expiresAt}`);
+      
+      // Instantly set UI to premium
+      setIsPremium(isPrem);
+      
+      // Show congrats if wasn't already shown
+      if (isPrem) {
+        AsyncStorage.getItem('userId').then(uid => {
+          if (uid) {
+            AsyncStorage.getItem(`${CONGRATS_STORAGE_KEY}_${uid}`).then(shown => {
+              if (!shown) {
+                setCongratsModalVisible(true);
+                setHasShownCongrats(true);
+                AsyncStorage.setItem(`${CONGRATS_STORAGE_KEY}_${uid}`, '1');
+              }
+            });
+          }
+        });
+      }
+      
+      cacheService.update('user_data', {
+        isPremium: isPrem,
+        premium_expires_at: expiresAt,
+      });
+    } else if (channel === 'user_points_update') {
+      // Update points immediately from WebSocket
+      const pts = data.points || 0;
+      console.log(`[RealtimeUpdate] Points update: ${pts}`);
+      setUserPoints(pts);
+      cacheService.update('user_data', { points: pts });
+    }
+  }, [CONGRATS_STORAGE_KEY]);
+
+  // Handle notifications from FCM
+  const handleNotificationReceived = useCallback((remoteMessage) => {
+    const data = remoteMessage?.data || {};
+    if (data.type === 'payment_success' || data.type === 'admin_access_granted') {
+      // Refresh user data when payment succeeds or admin grants access
+      refreshUserPoints();
+    }
+  }, [refreshUserPoints]);
+
   const refreshUserPoints = useCallback(async () => {
     try {
       const userId = await AsyncStorage.getItem('userId');
       if (userId) {
+        // Fetch user data and update cache
         const userData = await userAPI.getUser(userId);
         const points = userData.points ?? 0;
         const premium = !!userData.isPremium;
+
+        // Cache the user data with 60 second TTL
+        cacheService.set('user_data', {
+          points,
+          isPremium: premium,
+          premium_expires_at: userData.subscriptionEndDate,
+          _fetchedAt: Date.now(),
+        }, 60);
+
         setUserPoints(points);
         if (premium) {
           const alreadyShown = await AsyncStorage.getItem(`${CONGRATS_STORAGE_KEY}_${userId}`);
@@ -80,15 +144,39 @@ const StreamingApp = () => {
         if (!cancelled) setChannelsPremiumOnly(!!settings.channelsPremiumOnly);
         if (cancelled) return;
         if (userId) {
+          // Check cache first for faster load
+          const cachedUser = cacheService.get('user_data');
+          if (cachedUser) {
+            setUserPoints(cachedUser.points ?? 0);
+            setIsPremium(!!cachedUser.isPremium);
+          }
+
+          // Then refresh from server (will update cache)
           await refreshUserPoints();
+
           // Refresh FCM token on every app open so backend has latest token
-          // (users who haven't opened in weeks get their token updated when they do)
           refreshAndRegisterFCMToken(userId).catch(() => {});
+
+          // Initialize real-time WebSocket connection for instant updates
+          try {
+            await realtimeSyncService.connect(userId);
+            // Subscribe to user-specific channels
+            realtimeSyncService.subscribe('user_premium_update', (data) =>
+              handleRealtimeUpdate('user_premium_update', data)
+            );
+            realtimeSyncService.subscribe('user_points_update', (data) =>
+              handleRealtimeUpdate('user_points_update', data)
+            );
+            console.log('[App] Real-time sync connected');
+          } catch (err) {
+            console.warn('[App] Failed to connect real-time sync:', err.message);
+          }
+
           // Pending payment check
           const pendingOrderId = await AsyncStorage.getItem('pendingPaymentOrderId');
           if (pendingOrderId && typeof pendingOrderId === 'string' && pendingOrderId.trim()) {
             try {
-              const res = await paymentsAPI.checkZenoStatus(pendingOrderId.trim());
+              const res = await paymentsAPI.checkPaymentStatus(pendingOrderId.trim());
               const status = (res && (res.status || res.raw?.data?.[0]?.payment_status)) || '';
               if (String(status).toUpperCase() === 'COMPLETED') {
                 await AsyncStorage.removeItem('pendingPaymentOrderId');
@@ -101,7 +189,42 @@ const StreamingApp = () => {
         console.warn('App user init:', e?.message || e);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // Disconnect real-time sync on unmount
+      realtimeSyncService.disconnect();
+    };
+  }, [refreshUserPoints, handleRealtimeUpdate]);
+
+  // Initialize background sync service
+  useEffect(() => {
+    backgroundSyncService.initialize();
+
+    // Register sync task to check user status
+    backgroundSyncService.registerTask('refresh_user_status', refreshUserPoints, 60000); // 60 seconds
+
+    // Start sync timer
+    backgroundSyncService.startSyncTimer(30000); // Check every 30 seconds
+
+    return () => {
+      backgroundSyncService.cleanup();
+    };
+  }, [refreshUserPoints]);
+
+  // Poll user status every 30 seconds for faster updates
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const userId = await AsyncStorage.getItem('userId');
+        if (userId) {
+          await refreshUserPoints();
+        }
+      } catch (error) {
+        console.error('Polling user status failed:', error);
+      }
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
   }, [refreshUserPoints]);
 
   // Show notification permission modal for every user who has not granted yet (like YouTube/WhatsApp).
@@ -118,7 +241,7 @@ const StreamingApp = () => {
         // If already granted, initialize notifications immediately so they receive in status bar
         if (isGranted) {
           await initializeNotifications(userId);
-          setupNotificationHandlers(() => {}, userId);
+          setupNotificationHandlers(handleNotificationReceived, userId);
           return;
         }
 
@@ -151,7 +274,7 @@ const StreamingApp = () => {
             const userId = await getOrCreateUserId();
             if (userId) {
               await initializeNotifications(userId);
-              setupNotificationHandlers(() => {}, userId);
+              setupNotificationHandlers(handleNotificationReceived, userId);
               console.log('[NotifModal] Notifications initialized successfully');
             }
           } else {
@@ -210,6 +333,44 @@ const StreamingApp = () => {
     setAdModalVisible(false);
   };
 
+  /**
+   * Ultra-fast payment success handler
+   * Instantly updates UI and triggers server refresh in background
+   */
+  const handlePaymentSuccess = useCallback(async () => {
+    console.log('[Payment] Success! Triggering instant premium upgrade...');
+    
+    // Immediately set premium to true for instant visual feedback
+    setIsPremium(true);
+    
+    // Clear any congrats storage to show message
+    const userId = await AsyncStorage.getItem('userId');
+    if (userId) {
+      await AsyncStorage.removeItem(`${CONGRATS_STORAGE_KEY}_${userId}`);
+      setCongratsModalVisible(true);
+      setHasShownCongrats(true);
+    }
+
+    // Refresh user data from server in the background (won't block UI)
+    refreshUserPoints().catch(err => console.error('Background refresh failed:', err));
+    
+    // Also trigger real-time WebSocket sync if available
+    if (realtimeSyncService.isConnected) {
+      try {
+        realtimeSyncService.send({
+          type: 'sync_user_data',
+          userId,
+        });
+      } catch (err) {
+        console.log('[Payment] Could not trigger WebSocket sync:', err.message);
+      }
+    }
+  }, [refreshUserPoints, CONGRATS_STORAGE_KEY]);
+
+  const handleCloseAd = () => {
+    setAdModalVisible(false);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.appContainer}>
@@ -219,7 +380,7 @@ const StreamingApp = () => {
           userPoints={userPoints}
           onWatchAd={handleWatchAd}
           onPaymentsActiveChange={setIsPaymentsActive}
-          onPointsRefresh={refreshUserPoints}
+          onPointsRefresh={handlePaymentSuccess}
         />
       </View>
 

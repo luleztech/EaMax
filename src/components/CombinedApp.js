@@ -406,15 +406,36 @@ const CombinedApp = ({
       }
       case 'zote':
       default: {
+        const allChannels = [
+          ...footballChannels,
+          ...Object.values(channelsByCategory).flat(),
+        ];
+
+        const freeChannels = allChannels.filter((ch) => ch.unlockToFree || ch.pointsRequired === 0);
+        const freeIds = new Set(freeChannels.map((ch) => ch.id));
+
         const sections = [];
-        if (footballChannels.length > 0) {
-          sections.push({ key: 'football', name: 'Mpira', icon: 'soccer', color: '#4ade80', channels: footballChannels });
+        if (freeChannels.length > 0) {
+          sections.push({
+            key: 'free',
+            name: 'Chaneli za bure',
+            icon: 'gift',
+            color: '#22c55e',
+            channels: freeChannels,
+          });
         }
+
+        const footballNonFree = footballChannels.filter((ch) => !freeIds.has(ch.id));
+        if (footballNonFree.length > 0) {
+          sections.push({ key: 'football', name: 'Mpira', icon: 'soccer', color: '#4ade80', channels: footballNonFree });
+        }
+
         MOVIE_GENRES.forEach(g => {
-          const channels = channelsByCategory[g.key] || [];
+          const channels = (channelsByCategory[g.key] || []).filter((ch) => !freeIds.has(ch.id));
           if (channels.length > 0) sections.push({ key: g.key, name: g.name, icon: g.icon, color: g.color, channels });
         });
-        const habari = channelsByCategory.habari || [];
+
+        const habari = (channelsByCategory.habari || []).filter((ch) => !freeIds.has(ch.id));
         if (habari.length > 0) {
           sections.push({ key: 'habari', name: 'Habari', icon: 'newspaper-variant', color: '#ef4444', channels: habari });
         }
@@ -548,12 +569,19 @@ const CombinedApp = ({
           </View>
           <Text style={styles.sectionCount}>{section.channels.length} channels</Text>
         </View>
-        <View style={styles.channelsGrid}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.channelsRow}
+          scrollEventThrottle={16}
+          decelerationRate="fast"
+          snapToAlignment="start"
+          keyboardShouldPersistTaps="handled">
           {section.channels.map((ch) => {
             const cardIndex = globalCardIndex++;
             return renderChannelCard(ch, section.color, cardIndex);
           })}
-        </View>
+        </ScrollView>
       </View>
     ));
   };
@@ -927,6 +955,7 @@ const styles = StyleSheet.create({
   // ── Channel card (new design) ──
   cardTouchable: {
     width: CARD_WIDTH,
+    marginRight: 12,
     marginBottom: 4,
   },
   cardOuter: {
@@ -1025,9 +1054,10 @@ const styles = StyleSheet.create({
   sectionHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
   sectionCount: { fontSize: 13, color: '#6b7280' },
-  channelsGrid: {
-    flexDirection: 'row', flexWrap: 'wrap',
-    justifyContent: 'space-between', gap: 12,
+  channelsRow: {
+    flexDirection: 'row',
+    paddingBottom: 8,
+    paddingLeft: 12,
   },
   emptyChannels: { paddingVertical: 48, alignItems: 'center', gap: 12 },
   emptyChannelsText: { color: '#6b7280', fontSize: 15 },

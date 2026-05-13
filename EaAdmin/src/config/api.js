@@ -334,6 +334,20 @@ export const adminSettingsAPI = {
       body: JSON.stringify({ channelsPremiumOnly: !!channelsPremiumOnly }),
     });
   },
+
+  // Get currently active payment provider
+  getPaymentProvider: async () => {
+    const data = await apiRequest('/api/admin/settings/payment-provider');
+    return { paymentProvider: data.paymentProvider || 'zeno' };
+  },
+
+  // Update active payment provider
+  updatePaymentProvider: async (paymentProvider) => {
+    return apiRequest('/api/admin/settings/payment-provider', {
+      method: 'PUT',
+      body: JSON.stringify({ paymentProvider }),
+    });
+  },
 };
 
 /**

@@ -3,10 +3,17 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const http = require('http');
 
 const { query } = require('./db');
 const usersRouter = require('./routes/users');
 const channelsRouter = require('./routes/channels');
+
+const getRawBody = (req, res, buf, encoding) => {
+  if (buf && buf.length) {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  }
+};
 const adminRouter = require('./routes/admin');
 const notificationsRouter = require('./routes/notifications');
 const settingsRouter = require('./routes/settings');
@@ -14,6 +21,7 @@ const carouselRouter = require('./routes/carousel');
 const paymentsRouter = require('./routes/payments');
 const matchesRouter = require('./routes/matches');
 const dashboardRouter = require('./routes/dashboard');
+const { initializeRealtimeServer } = require('./services/realtimeServer');
 
 const app = express();
 
@@ -22,7 +30,7 @@ app.use(
     origin: '*', // you can restrict this to your app bundle IDs / domains later
   }),
 );
-app.use(express.json());
+app.use(express.json({ verify: getRawBody }));
 app.use(morgan('dev'));
 
 // Ensure drm_clear_key column exists on channels (run once on startup)
@@ -54,6 +62,15 @@ query(
 ).catch((err) => {
   if (err.message && !err.message.includes('does not exist')) {
     console.warn('Migration buyer_phone (non-fatal):', err.message);
+  }
+});
+
+// Track which payment provider was used for each order
+query(
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(32) NOT NULL DEFAULT 'zeno'`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration payment_provider (non-fatal):', err.message);
   }
 });
 
@@ -202,6 +219,23 @@ app.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`EaMax backend listening on ${HOST}:${PORT}`);
 });
+
+// Create HTTP server and initialize WebSocket for real-time updates
+const server = http.createServer(app);
+const { broadcastToUser, notifyPremiumUpdate, notifyPaymentReceived } = initializeRealtimeServer(server);
+
+// Listen on HTTPS/HTTP with WebSocket support
+const REALTIME_PORT = process.env.REALTIME_PORT || 3001;
+server.listen(REALTIME_PORT, HOST, () => {
+  console.log(`EaMax real-time server listening on ${HOST}:${REALTIME_PORT}`);
+});
+
+// Export realtime functions for use in route handlers
+global.realtimeServer = {
+  broadcastToUser,
+  notifyPremiumUpdate,
+  notifyPaymentReceived,
+};
 
 // Daily FCM reminders for expired subscriptions (7-day throttle per user unless manual force)
 const DAY_MS = 24 * 60 * 60 * 1000;

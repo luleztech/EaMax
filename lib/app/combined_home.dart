@@ -328,12 +328,32 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                 ChannelSection(key: 'habari', name: 'Habari', icon: 'newspaper', color: '#ef4444', channels: h),
               ];
       default:
+        final allChannels = [
+          ..._football,
+          ..._byCat.values.expand((list) => list),
+        ];
+
+        final freeChannels = allChannels.where((ch) => ch.unlockToFree || ch.pointsRequired == 0).toList();
+        final freeIds = freeChannels.map((ch) => ch.id).toSet();
+
         final sections = <ChannelSection>[];
-        if (_football.isNotEmpty) {
-          sections.add(ChannelSection(key: 'football', name: 'Mpira', icon: 'soccer', color: '#4ade80', channels: _football));
+        if (freeChannels.isNotEmpty) {
+          sections.add(ChannelSection(
+            key: 'free',
+            name: 'Chaneli za bure',
+            icon: 'gift',
+            color: '#22c55e',
+            channels: freeChannels,
+          ));
         }
+
+        final footballNonFree = _football.where((ch) => !freeIds.contains(ch.id)).toList();
+        if (footballNonFree.isNotEmpty) {
+          sections.add(ChannelSection(key: 'football', name: 'Mpira', icon: 'soccer', color: '#4ade80', channels: footballNonFree));
+        }
+
         for (final g in _movieGenres) {
-          final list = _byCat[g.key] ?? [];
+          final list = (_byCat[g.key] ?? []).where((ch) => !freeIds.contains(ch.id)).toList();
           if (list.isNotEmpty) {
             sections.add(ChannelSection(
               key: g.key,
@@ -344,7 +364,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
             ));
           }
         }
-        final hab = _byCat['habari'] ?? [];
+
+        final hab = (_byCat['habari'] ?? []).where((ch) => !freeIds.contains(ch.id)).toList();
         if (hab.isNotEmpty) {
           sections.add(ChannelSection(key: 'habari', name: 'Habari', icon: 'newspaper', color: '#ef4444', channels: hab));
         }
@@ -360,6 +381,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         return Icons.movie;
       case 'newspaper':
         return Icons.article;
+      case 'gift':
+        return Icons.card_giftcard;
       default:
         return Icons.tv;
     }

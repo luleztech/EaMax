@@ -223,7 +223,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       return;
     }
     try {
-      final res = await paymentsApi.checkZenoStatus(pending);
+      final res = await paymentsApi.checkPaymentStatus(pending);
       final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
       if (isPaymentCompleted(st)) {
         await prefs.remove('pendingPaymentOrderId');

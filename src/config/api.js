@@ -232,43 +232,38 @@ export const matchesAPI = {
 /**
  * Payments API
  */
-export const paymentsAPI = {
-  // Start ZenoPay mobile money payment (amount = exact TZS user selected: 2000, 5000, 12000)
-  startZenoPayment: async ({ externalId, bundle, amount, phone, email, name }) => {
-    return apiRequest('/api/payments/zeno/start', {
-      method: 'POST',
-      body: JSON.stringify({
-        externalId,
-        bundle,
-        amount,
-        phone,
-        email,
-        name,
-      }),
-    });
-  },
+const startPayment = async ({ externalId, bundle, amount, phone, email, name }) => {
+  return apiRequest('/api/payments/start', {
+    method: 'POST',
+    body: JSON.stringify({ externalId, bundle, amount, phone, email, name }),
+  });
+};
 
-  // Check ZenoPay order status (optional polling). Backend returns 200 with PENDING when ZenoPay has no order yet.
-  checkZenoStatus: async (orderId) => {
-    try {
-      return await apiRequest(`/api/payments/zeno/status?orderId=${encodeURIComponent(orderId)}`);
-    } catch (error) {
-      // "No order found" from ZenoPay is normal right after starting payment – treat as PENDING so polling continues
-      const msg = (error.message || '').toLowerCase();
-      if (msg.includes('no order found') || msg.includes('order not found') || (msg.includes('order') && msg.includes('not found'))) {
-        return { status: 'PENDING', raw: {} };
-      }
-      throw error;
+const checkPaymentStatus = async (orderId) => {
+  try {
+    return await apiRequest(`/api/payments/status?orderId=${encodeURIComponent(orderId)}`);
+  } catch (error) {
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('no order found') || msg.includes('order not found') || (msg.includes('order') && msg.includes('not found'))) {
+      return { status: 'PENDING', raw: {} };
     }
-  },
+    throw error;
+  }
+};
 
-  // Mark payment as completed on backend (for testing when ZenoPay doesn't complete, e.g. emulator).
-  // After this, next status poll will return COMPLETED and app will refresh to Premium + unlocked channels.
-  completePaymentForTesting: async (orderId) => {
-    return apiRequest(`/api/payments/zeno/complete/${encodeURIComponent(orderId)}`, {
-      method: 'POST',
-    });
-  },
+const completePaymentForTesting = async (orderId) => {
+  return apiRequest(`/api/payments/complete/${encodeURIComponent(orderId)}`, {
+    method: 'POST',
+  });
+};
+
+export const paymentsAPI = {
+  startPayment,
+  checkPaymentStatus,
+  completePaymentForTesting,
+  // Legacy aliases for compatibility
+  startZenoPayment: startPayment,
+  checkZenoStatus: checkPaymentStatus,
 };
 
 export default {

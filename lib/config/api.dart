@@ -157,7 +157,20 @@ class SettingsApi {
     if (data is Map) return data['channelsPremiumOnly'] == true;
     return false;
   }
-
+  /// Get the currently active payment provider ('zeno' or 'sonicpesa').
+  /// Defaults to 'zeno' if not configured.
+  Future<String> getPaymentProvider() async {
+    try {
+      final data = await apiRequest('/api/settings/payment-provider');
+      if (data is Map && data.containsKey('paymentProvider')) {
+        final provider = data['paymentProvider'] as String;
+        return provider == 'sonicpesa' ? 'sonicpesa' : 'zeno';
+      }
+    } catch (e) {
+      // If endpoint fails, default to zeno for backward compatibility
+    }
+    return 'zeno';
+  }
   Future<List<dynamic>> getCarouselSlides(String category) async {
     final data = await apiRequest('/api/carousel?category=$category');
     if (data is List) return data;
@@ -180,7 +193,8 @@ class MatchesApi {
 }
 
 class PaymentsApi {
-  Future<Map<String, dynamic>> startZenoPayment({
+  /// Start a payment using the currently active payment provider
+  Future<Map<String, dynamic>> startPayment({
     required String externalId,
     required String bundle,
     required int amount,
@@ -189,7 +203,7 @@ class PaymentsApi {
     required String name,
   }) async {
     final r = await apiRequest(
-      '/api/payments/zeno/start',
+      '/api/payments/start',
       method: 'POST',
       body: {
         'externalId': externalId,
@@ -201,6 +215,39 @@ class PaymentsApi {
       },
     );
     return Map<String, dynamic>.from(r as Map);
+  }
+
+  /// Legacy name: always uses `/api/payments/start` so the server picks Zeno vs SonicPesa from admin settings.
+  Future<Map<String, dynamic>> startZenoPayment({
+    required String externalId,
+    required String bundle,
+    required int amount,
+    required String phone,
+    required String email,
+    required String name,
+  }) {
+    return startPayment(
+      externalId: externalId,
+      bundle: bundle,
+      amount: amount,
+      phone: phone,
+      email: email,
+      name: name,
+    );
+  }
+
+  /// Check payment status using the unified endpoint
+  Future<Map<String, dynamic>> checkPaymentStatus(String orderId) async {
+    try {
+      final r = await apiRequest('/api/payments/status?orderId=${Uri.encodeComponent(orderId)}');
+      return Map<String, dynamic>.from(r as Map);
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('no order found') || msg.contains('order not found') || msg.contains('404')) {
+        return {'status': 'PENDING', 'raw': {}};
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> checkZenoStatus(String orderId) async {
@@ -218,7 +265,7 @@ class PaymentsApi {
 
   Future<Map<String, dynamic>> completePaymentForTesting(String orderId) async {
     final r = await apiRequest(
-      '/api/payments/zeno/complete/${Uri.encodeComponent(orderId)}',
+      '/api/payments/complete/${Uri.encodeComponent(orderId)}',
       method: 'POST',
     );
     return Map<String, dynamic>.from(r as Map);

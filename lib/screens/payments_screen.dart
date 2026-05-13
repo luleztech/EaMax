@@ -149,7 +149,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     final pending = prefs.getString('pendingPaymentOrderId')?.trim();
     if (pending != null && pending.isNotEmpty) {
       try {
-        final res = await paymentsApi.checkZenoStatus(pending);
+        final res = await paymentsApi.checkPaymentStatus(pending);
         final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
         if (isPaymentCompleted(st)) {
           await _markPaymentCompleted(
@@ -221,7 +221,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       polls++;
       if (!mounted) return;
       try {
-        final response = await paymentsApi.checkZenoStatus(orderId);
+        final response = await paymentsApi.checkPaymentStatus(orderId);
         final paymentStatus =
             response['status'] ??
             response['raw']?['data']?[0]?['payment_status'];
@@ -356,8 +356,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (lower.contains('401') || lower.contains('403')) {
       return 'Ombi halikuidhinishwa. Fungua tena programu kisha ujaribu.';
     }
-    if (lower.contains('404')) {
-      return 'Huduma ya malipo haipatikani kwa sasa. Jaribu tena baadaye.';
+    if (lower.contains('404') ||
+        lower == 'exception: not found' ||
+        (lower.contains('not found') &&
+            !lower.contains('order') &&
+            !lower.contains('user'))) {
+      return 'Huduma ya malipo haipatikani kwa sasa (seva au njia ya malipo). Hakikisha toleo jipya la seva limebandikwa, kisha jaribu tena.';
     }
     if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
       return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
@@ -470,7 +474,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     final bundle = _bundles.firstWhere((b) => b.id == _selectedBundle);
     setState(() => _submitting = true);
     try {
-      final result = await paymentsApi.startZenoPayment(
+      // Always use the unified backend start endpoint.
+      // The backend decides whether to route to Zeno or SonicPesa based on current settings.
+      final result = await paymentsApi.startPayment(
         externalId: _userId!,
         bundle: bundle.id,
         amount: bundle.value,
@@ -478,6 +484,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         email: '$_userId@eamax.app',
         name: _userId!,
       );
+
       final orderId = (result['orderId']?.toString() ?? '').trim();
       final serverMsg = (result['message']?.toString() ?? '').trim();
 

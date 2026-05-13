@@ -334,7 +334,7 @@ class HomeMainTab extends StatelessWidget {
             padding: EdgeInsets.only(bottom: bottomPad),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
-                if (initialLoading || refreshing) _ShimmerHome(cardW: cardW, cardH: cardH) else ...[
+                if (refreshing) _ShimmerHome(cardW: cardW, cardH: cardH) else ...[
                   if (carousel.isNotEmpty) EamaxCarousel(items: carousel),
                   const Padding(
                     padding: EdgeInsets.fromLTRB(16, 20, 16, 2),
@@ -440,7 +440,7 @@ class ChannelsTab extends StatelessWidget {
                   ),
                 ),
                 _FilterRow(active: channelFilter, onSelect: onFilter),
-                if (initialLoading || refreshing)
+                if (refreshing)
                   _ShimmerGrid(cardW: cardW, cardH: cardH)
                 else ...[
                   ...sections.map((sec) => _SectionBlock(
@@ -748,27 +748,29 @@ class _SectionBlock extends StatelessWidget {
               ],
             ),
           ),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: List.generate(section.channels.length, (i) {
-              final ch = section.channels[i];
-              return SizedBox(
-                width: cardW,
-                child: _ChannelCard(
-                  channel: ch,
-                  sectionColor: sc,
-                  cardIndex: i,
-                  cardH: cardH,
-                  glowCtrl: glowCtrl,
-                  badge: channelBadge(ch),
-                  loading: loadingChannelId == ch.id,
-                  onTap: () => onChannel(ch),
-                  iconFor: iconFor,
-                  isPremiumUser: isPremiumUser,
-                ),
-              );
-            }),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: List.generate(section.channels.length, (i) {
+                final ch = section.channels[i];
+                return Container(
+                  width: cardW,
+                  margin: EdgeInsets.only(right: i < section.channels.length - 1 ? 12 : 0),
+                  child: _ChannelCard(
+                    channel: ch,
+                    sectionColor: sc,
+                    cardIndex: i,
+                    cardH: cardH,
+                    glowCtrl: glowCtrl,
+                    badge: channelBadge(ch),
+                    loading: loadingChannelId == ch.id,
+                    onTap: () => onChannel(ch),
+                    iconFor: iconFor,
+                    isPremiumUser: isPremiumUser,
+                  ),
+                );
+              }),
+            ),
           ),
         ],
       ),
