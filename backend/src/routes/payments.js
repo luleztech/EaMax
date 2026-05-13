@@ -354,10 +354,12 @@ router.post('/start', handlePaymentStart);
 
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
-const applyCompletedPayment = async (orderId, meta) => {
-  console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta);
+// [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents Zeno callbacks from completing Sonic orders and vice versa.
+const applyCompletedPayment = async (orderId, meta, options = {}) => {
+  const { expectedPaymentProvider = null } = options;
+  console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta, 'expectedProvider:', expectedPaymentProvider || '(any)');
   const payRes = await query(
-    'SELECT id, user_id, plan, amount_cents, currency, status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+    'SELECT id, user_id, plan, amount_cents, currency, status, payment_provider FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
     [orderId],
   );
   if (payRes.rows.length === 0) {
@@ -365,6 +367,16 @@ const applyCompletedPayment = async (orderId, meta) => {
     return null;
   }
   const payment = payRes.rows[0];
+
+  const dbProvider = (payment.payment_provider || PAYMENT_PROVIDERS.ZENO).toLowerCase().trim();
+  if (expectedPaymentProvider && dbProvider !== expectedPaymentProvider) {
+    console.warn('[Payment] Skipping applyCompletedPayment: payment_provider mismatch', {
+      orderId,
+      expected: expectedPaymentProvider,
+      actual: dbProvider,
+    });
+    return null;
+  }
 
   // Validate real data from DB
   const userId = Number(payment.user_id);
@@ -817,8 +829,10 @@ router.post('/zeno/webhook', async (req, res, next) => {
     // If key is missing/invalid, only allow completion when we have a pending payment for this order (ZenoPay often doesn't send x-api-key on webhooks)
     if (!keyValid) {
       const pendingCheck = await query(
-        'SELECT id FROM subscription_payments WHERE provider_ref = $1 AND status = $2 LIMIT 1',
-        [webhookOrderId, 'pending'],
+        `SELECT id FROM subscription_payments
+           WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
+           LIMIT 1`,
+        [webhookOrderId, 'pending', PAYMENT_PROVIDERS.ZENO],
       );
       if (pendingCheck.rows.length === 0) {
         console.log('[ZenoPay] Webhook rejected: invalid API key and order not found or not pending');
@@ -831,7 +845,7 @@ router.post('/zeno/webhook', async (req, res, next) => {
 
     if (paid) {
       console.log('[ZenoPay] Processing completed payment:', webhookOrderId);
-      await applyCompletedPayment(webhookOrderId, payload);
+      await applyCompletedPayment(webhookOrderId, payload, { expectedPaymentProvider: PAYMENT_PROVIDERS.ZENO });
       console.log('[ZenoPay] Payment processing completed for:', webhookOrderId);
     } else {
       console.log('[ZenoPay] Ignoring non-completed payment status:', webhookStatusRaw || '(empty)');
@@ -844,66 +858,173 @@ router.post('/zeno/webhook', async (req, res, next) => {
   }
 });
 
+// SonicPesa: production callbacks must hit this URL only (configure in SonicPesa dashboard).
+// ZenoPay uses /zeno/webhook separately — each path applies only to its own payment_provider rows.
+const SONIC_WEBHOOK_PAID_STATUSES = new Set([
+  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
+]);
+
+const timingSafeEqualHexOrString = (a, b) => {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  const xa = x.includes('=') ? x.split('=').pop().trim() : x;
+  const yb = y.includes('=') ? y.split('=').pop().trim() : y;
+  if (xa.length !== yb.length) return false;
+  try {
+    const bx = Buffer.from(xa, 'hex');
+    const by = Buffer.from(yb, 'hex');
+    if (bx.length > 0 && bx.length === by.length && bx.length === xa.length / 2) {
+      return crypto.timingSafeEqual(bx, by);
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  const bufA = Buffer.from(xa, 'utf8');
+  const bufB = Buffer.from(yb, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+};
+
+const verifySonicPesaWebhookHmac = (rawBodyString, headerValue) => {
+  if (!SONICPESA_WEBHOOK_SECRET || typeof headerValue !== 'string' || !headerValue.trim()) return false;
+  if (typeof rawBodyString !== 'string' || !rawBodyString.length) return false;
+  const expected = crypto.createHmac('sha256', SONICPESA_WEBHOOK_SECRET).update(rawBodyString, 'utf8').digest('hex');
+  return (
+    timingSafeEqualHexOrString(headerValue, expected) ||
+    timingSafeEqualHexOrString(headerValue, `sha256=${expected}`)
+  );
+};
+
+const extractSonicWebhookOrderAndPaid = (payload) => {
+  const d = payload.data;
+  const nest =
+    d && typeof d === 'object' && !Array.isArray(d)
+      ? d
+      : Array.isArray(d) && d.length
+        ? d[0]
+        : null;
+  const orderId = String(
+    payload.order_id ??
+      payload.orderId ??
+      nest?.order_id ??
+      nest?.orderId ??
+      payload.reference ??
+      payload.reference_id ??
+      payload.invoice_id ??
+      nest?.reference ??
+      '',
+  ).trim();
+
+  const st = String(
+    payload.status || nest?.status || nest?.payment_status || nest?.paymentStatus || '',
+  ).toUpperCase().trim();
+  const ev = String(payload.event || payload.type || '').toLowerCase().trim();
+  let paid = SONIC_WEBHOOK_PAID_STATUSES.has(st);
+  if (!paid && ev) {
+    paid =
+      ev === 'payment.success' ||
+      ev === 'payment.completed' ||
+      ev === 'payment_completed' ||
+      ev === 'invoice.paid' ||
+      ev === 'charge.succeeded';
+  }
+  return { orderId: orderId || null, paid, raw: st || ev };
+};
+
 // Webhook endpoint for SonicPesa
 router.post('/sonicpesa/webhook', async (req, res, next) => {
   try {
-    console.log('[SonicPesa] Webhook received:', req.body);
     ensureSonicPesaConfigured();
 
-    const incomingSignature = req.headers['x-sonicpesa-signature'];
-    const rawBody = req.rawBody || JSON.stringify(req.body);
-    let signatureValid = false;
-    if (typeof incomingSignature === 'string' && SONICPESA_WEBHOOK_SECRET) {
-      const expected = crypto.createHmac('sha256', SONICPESA_WEBHOOK_SECRET)
-        .update(rawBody)
-        .digest('hex');
-      signatureValid = expected === incomingSignature;
-    }
+    const rawBodyString =
+      typeof req.rawBody === 'string' && req.rawBody.length > 0
+        ? req.rawBody
+        : JSON.stringify(req.body || {});
+
+    const sigHeader =
+      req.headers['x-sonicpesa-signature'] ||
+      req.headers['x-webhook-signature'] ||
+      req.headers['x-signature'];
+
+    const signatureValid = verifySonicPesaWebhookHmac(rawBodyString, sigHeader);
 
     const bodySchema = z.object({
       event: z.string().optional(),
-      order_id: z.string().optional(),
-      amount: z.number().int().optional(),
+      type: z.string().optional(),
+      order_id: z.union([z.string(), z.number()]).optional(),
+      orderId: z.union([z.string(), z.number()]).optional(),
+      amount: z.number().optional(),
       currency: z.string().optional(),
       status: z.string().optional(),
       transid: z.string().optional(),
       channel: z.string().optional(),
       reference: z.string().optional(),
+      reference_id: z.string().optional(),
+      invoice_id: z.string().optional(),
       msisdn: z.string().optional(),
       timestamp: z.string().optional(),
+      data: z.any().optional(),
     }).passthrough();
 
-    const payload = bodySchema.parse(req.body);
-    const orderId = (payload.order_id || payload.reference)?.toString().trim();
-    const paymentStatus = (payload.status || '').toString().toUpperCase().trim();
-    console.log('[SonicPesa] Webhook payload parsed:', { orderId, paymentStatus, signatureValid });
+    let payload;
+    try {
+      payload = bodySchema.parse(req.body || {});
+    } catch (e) {
+      console.error('[SonicPesa] Webhook payload validation failed:', e?.errors || e.message);
+      return res.status(400).json({ error: 'Invalid payload' });
+    }
+
+    const { orderId, paid, raw } = extractSonicWebhookOrderAndPaid(payload);
+    console.log('[SonicPesa] Webhook:', {
+      orderId,
+      paid,
+      raw,
+      signatureValid,
+      secretConfigured: Boolean(SONICPESA_WEBHOOK_SECRET),
+    });
 
     if (!orderId) {
-      console.log('[SonicPesa] Webhook missing order_id');
-      return res.status(400).json({ error: 'Missing order_id' });
+      return res.status(400).json({ error: 'Missing order reference' });
     }
 
-    if (!signatureValid) {
-      const pendingCheck = await query(
-        'SELECT id FROM subscription_payments WHERE provider_ref = $1 AND status = $2 LIMIT 1',
-        [orderId, 'pending'],
-      );
-      if (pendingCheck.rows.length === 0) {
-        console.log('[SonicPesa] Webhook rejected: invalid signature and order not found or not pending');
+    const pendingSonic = await query(
+      `SELECT id FROM subscription_payments
+         WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
+         LIMIT 1`,
+      [orderId, 'pending', PAYMENT_PROVIDERS.SONICPESA],
+    );
+    const hasPendingSonic = pendingSonic.rows.length > 0;
+
+    if (SONICPESA_WEBHOOK_SECRET) {
+      if (!signatureValid) {
+        console.warn('[SonicPesa] Webhook rejected: invalid HMAC (SONICPESA_WEBHOOK_SECRET is set).');
         return res.status(401).json({ error: 'Invalid webhook signature' });
       }
-      console.warn('[SonicPesa] Webhook accepted without valid signature (order exists as pending). Configure webhook signing secret if available.');
-    }
-
-    if (paymentStatus === 'SUCCESS' || paymentStatus === 'COMPLETED' || paymentStatus === 'PAID') {
-      console.log('[SonicPesa] Processing completed payment:', orderId);
-      await applyCompletedPayment(orderId, payload);
-      console.log('[SonicPesa] Payment processing completed for:', orderId);
+    } else if (!hasPendingSonic) {
+      console.warn('[SonicPesa] Webhook rejected: set SONICPESA_WEBHOOK_SECRET in production, or no pending SonicPesa order for this reference.');
+      return res.status(401).json({ error: 'Webhook not verified' });
     } else {
-      console.log('[SonicPesa] Ignoring non-completed payment status:', paymentStatus || '(empty)');
+      console.warn('[SonicPesa] Webhook accepted without HMAC (pending SonicPesa order only). Set SONICPESA_WEBHOOK_SECRET for production.');
     }
 
-    return res.json({ received: true });
+    if (!paid) {
+      return res.status(200).json({ received: true, processed: false });
+    }
+
+    try {
+      const result = await applyCompletedPayment(orderId, payload, {
+        expectedPaymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+      });
+      if (!result) {
+        return res.status(200).json({ received: true, processed: false });
+      }
+    } catch (e) {
+      console.error('[SonicPesa] Webhook applyCompletedPayment failed:', e?.message || e);
+      return res.status(500).json({ error: 'Processing failed' });
+    }
+
+    return res.status(200).json({ received: true, processed: true });
   } catch (err) {
     console.error('[SonicPesa] Webhook error:', err);
     return next(err);
