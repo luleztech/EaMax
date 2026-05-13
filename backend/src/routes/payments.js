@@ -83,11 +83,10 @@ const ensureZenoConfigured = () => {
 };
 
 /**
- * ZenoPay `provider` for mobile_money_tanzania (local MSISDN 0…).
- * Aligns with public ZenoPay SDK docs (M-PESA, TIGOPESA, HALOPESA, AIRTEL MONEY).
- * Explicit routing avoids wrong-rail / “upstream” failures when auto-detect is ambiguous.
+ * Hint only (logging / support). ZenoPay’s published samples omit `provider` and route from `buyer_phone`.
+ * Sending wrong explicit values breaks some rails (e.g. Vodacom / Halotel); omit the field in the API payload.
  */
-const resolveZenoMobileWalletProvider = (localPhone0) => {
+const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   const p = String(localPhone0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
   if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
@@ -327,16 +326,13 @@ async function handlePaymentStart(req, res, next) {
       amount: amountToSend,
       webhook_url: webhookUrl,
     };
-    const zenoWalletProvider = resolveZenoMobileWalletProvider(normalizedPhone);
-    if (zenoWalletProvider) {
-      payload.provider = zenoWalletProvider;
-    }
 
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Sending payment request (exact amount):', {
       orderId,
       phone: phoneForZeno,
       phonePrefix: normalizedPhone.slice(0, 3),
+      walletHint: resolveZenoMobileWalletProviderHint(normalizedPhone),
       amount: amountToSend,
       bundle: data.bundle,
       network: (normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063'))
