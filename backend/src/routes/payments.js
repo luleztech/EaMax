@@ -98,9 +98,24 @@ const ensureZenoConfigured = () => {
 };
 
 /**
- * ZenoPay: most TZ prefixes route from `buyer_phone` alone. Vodacom M-Pesa often needs an explicit
- * `provider` or the push never arrives while the API still returns success. Optional env override:
- * `ZENO_VODACOM_WALLET_PROVIDER` (default `M-PESA`).
+ * ZenoPay accepts local `0…` in samples; many MNO rails (especially Vodacom) match faster on `255…` MSISDN.
+ * `ZENO_BUYER_PHONE_FORMAT`: `auto` (default: intl for Vodacom only), `local`, or `intl`.
+ */
+const formatBuyerPhoneForZeno = (local0) => {
+  const p = String(local0 || '');
+  const mode = String(process.env.ZENO_BUYER_PHONE_FORMAT || 'auto').toLowerCase().trim();
+  const intl = p.startsWith('0') ? `255${p.slice(1)}` : p;
+  const isVoda =
+    p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
+  if (mode === 'intl') return intl;
+  if (mode === 'local') return p;
+  if (isVoda) return intl;
+  return p;
+};
+
+/**
+ * ZenoPay: Vodacom M-Pesa usually needs explicit `provider`. Hyphenated `M-PESA` breaks some gateways; default `MPESA`.
+ * Override with `ZENO_VODACOM_WALLET_PROVIDER` (e.g. `M-PESA`, `VODACOM`).
  */
 const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
   const p = String(normalizedPhoneLocal0 || '');
@@ -108,9 +123,8 @@ const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
     p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
   if (!isVoda) return;
   const fromEnv = process.env.ZENO_VODACOM_WALLET_PROVIDER;
-  const explicit =
-    typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'M-PESA';
-  payload.provider = explicit;
+  payload.provider =
+    typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'MPESA';
 };
 
 /**
@@ -120,7 +134,7 @@ const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   const p = String(localPhone0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
   if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
-    return 'M-PESA';
+    return 'MPESA';
   }
   if (p.startsWith('065') || p.startsWith('071')) return 'TIGOPESA';
   if (p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
@@ -154,6 +168,64 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
     return 'Muamala haukuidhinishwa kwenye simu (PIN au hatua ya USSD). Jaribu tena ukiangalia maelekezo kwa makini.';
   }
   return msg || 'Malipo hayajaweza kuanza. Jaribu tena baada ya muda mfupi.';
+};
+
+const zenoTerminalStartStatuses = new Set([
+  'FAILED', 'CANCELLED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID', 'REVERSED',
+]);
+
+/** Immediately after create, order-status sometimes already shows a hard failure (no USSD). */
+const zenoQuickPostCreateVerify = async (orderRef) => {
+  if (process.env.ZENO_SKIP_POST_VERIFY === '1') return { ok: true };
+  const ref = String(orderRef || '').trim();
+  if (!ref || !ZENO_API_KEY) return { ok: true };
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), Math.min(Math.max(Number(process.env.ZENO_VERIFY_TIMEOUT_MS) || 6000, 2000), 12000));
+  try {
+    const statusResp = await fetch(
+      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(ref)}`,
+      {
+        method: 'GET',
+        headers: { 'x-api-key': ZENO_API_KEY },
+        signal: ac.signal,
+      },
+    );
+    const text = await statusResp.text();
+    let statusData = {};
+    try {
+      if (text && text.trim()) statusData = JSON.parse(text);
+    } catch (_) {
+      return { ok: true };
+    }
+    const d = statusData.data;
+    const row0 = Array.isArray(d) ? d[0] : d && typeof d === 'object' ? d : null;
+    const raw = String(
+      row0?.payment_status ||
+        row0?.paymentStatus ||
+        row0?.status ||
+        statusData.payment_status ||
+        statusData.paymentStatus ||
+        statusData.status ||
+        (typeof statusData.result === 'string' ? statusData.result : '') ||
+        '',
+    )
+      .toUpperCase()
+      .trim();
+    if (raw && zenoTerminalStartStatuses.has(raw)) {
+      const reason =
+        statusData.message ||
+        statusData.error ||
+        row0?.message ||
+        `Malipo yamesitishwa (${raw})`;
+      return { ok: false, reason: String(reason) };
+    }
+    return { ok: true };
+  } catch (_) {
+    return { ok: true };
+  } finally {
+    clearTimeout(t);
+  }
 };
 
 // Map bundle to amount and duration
@@ -347,8 +419,8 @@ async function handlePaymentStart(req, res, next) {
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
-    // ZenoPay mobile_money_tanzania: must receive local format 0XXXXXXXXX only (never foreign country codes)
-    const phoneForZeno = normalizedPhone;
+    // ZenoPay: `buyer_phone` is usually local `0…`; Vodacom often routes STK better on `255…` (see formatBuyerPhoneForZeno).
+    const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
 
     const payload = {
       order_id: orderId,
@@ -365,14 +437,17 @@ async function handlePaymentStart(req, res, next) {
     await query(
       `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, provider, phoneForZeno],
+      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, provider, buyerPhoneLocal],
     );
 
-    const rollbackPendingZenoRow = async () => {
+    const rollbackPendingZenoByRef = async (ref) => {
       await query(
         `DELETE FROM subscription_payments WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
-        [orderId, provider],
+        [ref, provider],
       );
+    };
+    const rollbackPendingZenoRow = async () => {
+      await rollbackPendingZenoByRef(orderId);
     };
 
     // eslint-disable-next-line no-console
@@ -397,7 +472,7 @@ async function handlePaymentStart(req, res, next) {
         : 'Unknown',
     });
 
-    const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 26000, 8000), 60000);
+    const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 18000, 7000), 55000);
     const ac = new AbortController();
     const zenoTimeout = setTimeout(() => ac.abort(), zenoHttpMs);
     let response;
@@ -473,6 +548,19 @@ async function handlePaymentStart(req, res, next) {
         console.log('[ZenoPay] provider_ref remapped to gateway order_id', { was: orderId, now: zenoCanon });
         clientFacingOrderId = zenoCanon;
       }
+    }
+
+    const postVerify = await zenoQuickPostCreateVerify(clientFacingOrderId);
+    if (!postVerify.ok) {
+      console.warn('[ZenoPay] Post-create verify failed; rolling back pending row', {
+        orderId: clientFacingOrderId,
+        reason: postVerify.reason,
+      });
+      await rollbackPendingZenoByRef(clientFacingOrderId);
+      return res.status(400).json({
+        error: mapPaymentGatewayUserError(postVerify.reason, ''),
+        zenoPostVerifyFailed: true,
+      });
     }
 
     // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.

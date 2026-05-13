@@ -160,7 +160,10 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     const pollPaymentStatus = async () => {
       try {
         console.log(`[Payment] Checking status for order: ${pollingOrderId}`);
-          const response = await paymentsAPI.checkPaymentStatus(pollingOrderId);
+        const response = await paymentsAPI.checkPaymentStatus(pollingOrderId);
+        const paymentStatus = String(
+          response?.status || response?.raw?.data?.[0]?.payment_status || '',
+        ).toUpperCase();
         if (paymentStatus === 'COMPLETED') {
           // Payment successful! Backend has already applied unlock + premium + revenue
           clearInterval(pollingIntervalId);
@@ -208,18 +211,17 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             console.log(`[Payment] Consecutive order not found: ${newCount}`);
             
             // If we've had too many consecutive "order not found" errors, stop polling
-            if (newCount >= 20) { // 20 * 3 seconds = 1 minute of failures
+            if (newCount >= 12) {
               console.error('[Payment] Too many consecutive "order not found" errors, stopping polling');
               clearInterval(pollingIntervalId);
               setPollingIntervalId(null);
               setPollingOrderId(null);
               setConsecutiveOrderNotFound(0);
-              
-              // Show success message anyway, assuming webhook will handle completion
+
               showStatusModal(
-                'Malipo Inasubiri uthibitisho',
-                'Malipo yako yamepokelewa. Ikiwa haitafanyiwa kazi mara moja, tafadhali subiri dakika chache kisha ufungue tena programu. Msaada utapatikana ikiwa tatizo litaendelea.',
-                true,
+                'Malipo hayajathibitishwa',
+                'Hatukuweza kuthibitisha ombi la malipo kwa muda mfupi. Jaribu tena na mtandao mzuri wa simu.',
+                false,
               );
             }
             return newCount;
@@ -236,7 +238,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
     const timeoutId = setTimeout(() => {
       setConsecutiveOrderNotFound(0); // Reset counter when starting polling
       let pollCount = 0;
-      const maxPolls = 150; // ~7.5 min @ 3s — Halopesa/Airtel can lag behind Vodacom
+      const maxPolls = 30; // ~1 min @ 2s — aligns with app UX; webhook still completes if user pays late
 
       const interval = setInterval(async () => {
         pollCount += 1;
@@ -248,10 +250,10 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           setPollingIntervalId(null);
           setPollingOrderId(null);
         }
-      }, 3000); // Poll every 3 seconds
+      }, 2000); // Poll every 2 seconds
 
       setPollingIntervalId(interval);
-    }, 2000); // Start polling after 2 seconds (was 5s – catch real payments faster)
+    }, 500); // Start polling quickly after STK is sent
 
     return () => {
       clearTimeout(timeoutId);

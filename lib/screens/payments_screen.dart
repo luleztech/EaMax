@@ -35,8 +35,8 @@ const _paySurface2 = Color(0xFF151B2E);
 const _payLine = Color(0x14FFFFFF);
 const _payMuted = Color(0xFF8B9CAF);
 
-/// Halotel / Airtel USSD can take longer than Vodacom; keep user in "waiting" long enough for polling to see completion.
-const int _kPaymentWaitSeconds = 180;
+/// Tight window: prompt should arrive in seconds; long waits feel broken. Halotel/Airtel can retry.
+const int _kPaymentWaitSeconds = 60;
 
 enum _PaymentUiPhase {
   none,
@@ -226,7 +226,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (orderId == null || orderId.isEmpty) return;
 
     var polls = 0;
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       polls++;
       if (!mounted) return;
       try {
@@ -252,7 +252,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         final msg = e.toString().toLowerCase();
         if (msg.contains('no order') || msg.contains('not found')) {
           _notFoundStreak++;
-          if (_notFoundStreak >= 20) {
+          if (_notFoundStreak >= 12) {
             _pollTimer?.cancel();
             _pollTimer = null;
             _waitingTimer?.cancel();
@@ -264,20 +264,20 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                 _notFoundStreak = 0;
                 _paymentUiPhase = _PaymentUiPhase.timedOut;
                 _sessionEndDetail =
-                    'Hatukuweza kuthibitisha ombi la malipo. Hakikisha una mtandao mzuri kisha anza upya kutoka hatua ya 1.';
+                    'Hatukuweza kuthibitisha ombi la malipo. Jaribu tena na mtandao mzuri wa simu.';
               });
             }
           }
         }
       }
-      if (polls >= 150) {
+      if (polls >= 30) {
         _pollTimer?.cancel();
         _pollTimer = null;
         _waitingTimer?.cancel();
         _waitingTimer = null;
         unawaited(_finalizeSessionTimedOut(
           detail:
-              'Hatukuweza kupata uthibitisho baada ya muda mrefu. Anza upya na nambari yako.',
+              'Muda wa kusubiri umeisha. Hakikisha umeona ombi kwenye simu na umeingiza PIN. Jaribu tena ikiwa haijafika.',
         ));
       }
     });
@@ -292,7 +292,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (!mounted || _pollingOrderId == null) return;
     unawaited(_finalizeSessionTimedOut(
       detail:
-          'Muda wa kusubiri umeisha bila uthibitisho. Halopesa/Airtel huenda zikachukua muda mrefu — hakikisha umeingiza PIN kwenye simu. Unaweza kujaribu tena.',
+          'Muda wa dakika 1 umeisha bila uthibitisho. Hakikisha mtandao mzuri na namba sahihi ya Vodacom/M-Pesa, kisha jaribu tena.',
     ));
   }
 
@@ -518,8 +518,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         setState(() {
           _pollingOrderId = orderId;
           _notFoundStreak = 0;
-          _paymentUiPhase = _PaymentUiPhase.instruction;
           _pendingBundleLabel = bundle.name;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _startPolling();
         });
       } else {
         final msg = serverMsg.isNotEmpty

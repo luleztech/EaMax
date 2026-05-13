@@ -223,7 +223,7 @@ class PaymentsApi {
         'name': name,
       },
       enableRetries: false,
-      timeout: const Duration(seconds: 35),
+      timeout: const Duration(seconds: 28),
     );
     return Map<String, dynamic>.from(r as Map);
   }
