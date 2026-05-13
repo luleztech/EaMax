@@ -1491,34 +1491,68 @@ router.put('/settings/channels-premium-only', async (req, res, next) => {
 // Admin: get active payment provider selection
 router.get('/settings/payment-provider', async (req, res, next) => {
   try {
+    // Ensure table exists
+    await query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id SERIAL PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `).catch(() => {});
+    
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
     );
     const provider = result.rows.length > 0 ? result.rows[0].value : 'zeno';
+    console.log('[Admin] Current payment provider:', provider);
     return res.json({ paymentProvider: provider === 'sonicpesa' ? 'sonicpesa' : 'zeno' });
   } catch (err) {
+    console.error('[Admin] get payment-provider error:', err?.message);
     return next(err);
   }
 });
 
 router.put('/settings/payment-provider', async (req, res, next) => {
   try {
+    console.log('[Admin] Payment provider update request:', req.body);
+    
+    // Ensure table exists
+    await query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id SERIAL PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `).catch(() => {});
+    
     const bodySchema = z.object({
       paymentProvider: z.enum(['zeno', 'sonicpesa']),
     });
     const { paymentProvider } = bodySchema.parse(req.body);
+    console.log('[Admin] Validated payment provider:', paymentProvider);
 
-    await query(
+    const result = await query(
       `INSERT INTO app_settings (key, value)
        VALUES ('payment_provider', $1)
        ON CONFLICT (key)
-       DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+       DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+       RETURNING key, value`,
       [paymentProvider],
     );
+    
+    console.log('[Admin] Database update result:', result.rows);
+    
+    if (!result.rows || result.rows.length === 0) {
+      throw new Error('Failed to update payment provider in database');
+    }
 
+    console.log('[Admin] Payment provider updated successfully to:', paymentProvider);
     return res.json({ paymentProvider });
   } catch (err) {
     console.error('[Admin] payment-provider update error:', err?.message || err);
+    console.error('[Admin] Error stack:', err?.stack);
     return next(err);
   }
 });
