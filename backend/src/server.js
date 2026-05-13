@@ -215,22 +215,15 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, HOST, () => {
-  // eslint-disable-next-line no-console
-  console.log(`EaMax backend listening on ${HOST}:${PORT}`);
-});
-
-// Create HTTP server and initialize WebSocket for real-time updates
+// One HTTP server: Express + WebSocket (Railway exposes a single PORT)
 const server = http.createServer(app);
 const { broadcastToUser, notifyPremiumUpdate, notifyPaymentReceived } = initializeRealtimeServer(server);
 
-// Listen on HTTPS/HTTP with WebSocket support
-const REALTIME_PORT = process.env.REALTIME_PORT || 3001;
-server.listen(REALTIME_PORT, HOST, () => {
-  console.log(`EaMax real-time server listening on ${HOST}:${REALTIME_PORT}`);
+server.listen(PORT, HOST, () => {
+  // eslint-disable-next-line no-console
+  console.log(`EaMax backend listening on ${HOST}:${PORT} (HTTP + WebSocket)`);
 });
 
-// Export realtime functions for use in route handlers
 global.realtimeServer = {
   broadcastToUser,
   notifyPremiumUpdate,
