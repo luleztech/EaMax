@@ -16,12 +16,12 @@ bool isPaymentPending(Object? status) {
 
 /// True only when money is confirmed (polling `/api/payments/status` or user record).
 ///
-/// **Never** treat `SUCCESS` / `success` as paid — the start-payment API uses that
-/// for “request accepted, check your phone”, not “payment completed”.
+/// **Never** treat `SUCCESS` as paid here — Zeno’s order-status often uses `result: SUCCESS`
+/// for “HTTP OK / query OK” while `payment_status` is still pending; the backend maps
+/// real completion to `COMPLETED` for the app.
 bool isPaymentCompleted(Object? status) {
   final s = normalizedPaymentStatus(status);
   return s == 'COMPLETED' ||
-      s == 'SUCCESS' ||
       s == 'PAID' ||
       s == 'COMPLETE' ||
       s == 'SUCCEEDED' ||

@@ -28,6 +28,13 @@ function mapPaymentGatewayErrorToSwahili(message) {
   const m = String(message || '');
   const l = m.toLowerCase();
   if (
+    l.includes('user not found') ||
+    l.includes('could not resolve user') ||
+    (l.includes('not found') && l.includes('user'))
+  ) {
+    return 'Akaunti haijasawirishwa kwenye seva. Fungua Wasifu kisha jaribu tena.';
+  }
+  if (
     l.includes('9009') ||
     l.includes('not enough') ||
     l.includes('insufficient') ||

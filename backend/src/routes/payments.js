@@ -107,18 +107,25 @@ const formatBuyerPhoneForZeno = (local0) => {
   const intl = p.startsWith('0') ? `255${p.slice(1)}` : p;
   const isVoda =
     p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
+  const isHalotel = p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
   if (mode === 'intl') return intl;
   if (mode === 'local') return p;
-  if (isVoda) return intl;
+  if (isVoda || isHalotel) return intl;
   return p;
 };
 
 /**
- * ZenoPay: Vodacom M-Pesa usually needs explicit `provider`. Hyphenated `M-PESA` breaks some gateways; default `MPESA`.
- * Override with `ZENO_VODACOM_WALLET_PROVIDER` (e.g. `M-PESA`, `VODACOM`).
+ * ZenoPay explicit `provider` where auto-detect fails STK: Vodacom (MPESA), Halotel (HALOPESA).
  */
 const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
   const p = String(normalizedPhoneLocal0 || '');
+  const isHalotel = p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
+  if (isHalotel) {
+    const fromEnv = process.env.ZENO_HALOTEL_WALLET_PROVIDER;
+    payload.provider =
+      typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'HALOPESA';
+    return;
+  }
   const isVoda =
     p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
   if (!isVoda) return;
@@ -311,12 +318,18 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
-    // Find user by externalId
-    const userRes = await query('SELECT id FROM users WHERE external_id = $1', [
-      data.externalId,
-    ]);
+    // Ensure user row exists (apps sometimes open Pay before /register finishes; Zeno STK can still fire).
+    let userRes = await query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
     if (userRes.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      await query(
+        `INSERT INTO users (external_id) VALUES ($1)
+         ON CONFLICT (external_id) DO NOTHING`,
+        [data.externalId],
+      );
+      userRes = await query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
+    }
+    if (userRes.rows.length === 0) {
+      return res.status(500).json({ error: 'Could not resolve user for payment' });
     }
     const userId = userRes.rows[0].id;
 
@@ -783,10 +796,6 @@ const extractRawZenoPaymentStatus = (statusData) => {
     if (s) return s;
   }
   const r = statusData.result;
-  if (typeof r === 'string') {
-    s = String(r).toUpperCase().trim();
-    if (s) return s;
-  }
   if (r && typeof r === 'object') {
     s = pickZenoStatusFromObject(r);
     if (s) return s;
@@ -810,6 +819,23 @@ const evaluateZenoOrderStatusForApply = (statusData) => {
   const rawStatus = extractRawZenoPaymentStatus(statusData);
   const isCompleted = isZenoPaidRaw(rawStatus);
   return { isCompleted, rawStatus, firstItem };
+};
+
+/** Zeno `result: "SUCCESS"` is API-level success, not wallet paid — never leak that to clients as payment status. */
+const zenoClientStatusFromPoll = (isCompleted, rawStatus, statusData) => {
+  let clientStatus = isCompleted
+    ? 'COMPLETED'
+    : (rawStatus || (typeof statusData.result === 'string' ? statusData.result : '') || 'PENDING');
+  clientStatus = String(clientStatus).toUpperCase().trim() || 'PENDING';
+  if (!isCompleted) {
+    if (clientStatus === 'SUCCESS' || clientStatus === '000' || clientStatus === 'OK') {
+      clientStatus = 'PENDING';
+    }
+    if (clientStatus === 'UNKNOWN' || clientStatus === '') {
+      clientStatus = 'PENDING';
+    }
+  }
+  return clientStatus;
 };
 
 /** Webhook bodies vary by MNO; merge nested `data` and common aliases. */
@@ -1018,7 +1044,7 @@ router.get('/zeno/status', async (req, res, next) => {
     }
 
     return res.json({
-      status: isCompleted ? 'COMPLETED' : (rawStatus || String(statusData.result || '') || 'UNKNOWN'),
+      status: zenoClientStatusFromPoll(isCompleted, rawStatus, statusData),
       raw: statusData,
     });
   } catch (err) {
@@ -1453,7 +1479,7 @@ router.get('/status', async (req, res, next) => {
     }
 
     return res.json({
-      status: isCompleted ? 'COMPLETED' : (rawStatus || String(statusData.result || '') || 'UNKNOWN'),
+      status: zenoClientStatusFromPoll(isCompleted, rawStatus, statusData),
       raw: statusData,
     });
   } catch (err) {

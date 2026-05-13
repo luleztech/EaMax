@@ -365,6 +365,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (lower.contains('401') || lower.contains('403')) {
       return 'Ombi halikuidhinishwa. Fungua tena programu kisha ujaribu.';
     }
+    if (lower.contains('user not found') ||
+        lower.contains('could not resolve user') ||
+        (lower.contains('not found') && lower.contains('user'))) {
+      return 'Akaunti haijasawirishwa kwenye seva. Fungua Wasifu kisha jaribu tena, au subiri muunganisho utakapokuwa thabiti.';
+    }
     if (lower.contains('404') ||
         lower == 'exception: not found' ||
         (lower.contains('not found') &&
