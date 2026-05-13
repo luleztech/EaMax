@@ -88,50 +88,59 @@ const normalizePhoneForSonicPesa = (normalizedPhone) => {
 
 const router = express.Router();
 
-const ZENO_API_KEY = process.env.ZENO_API_KEY;
+const ZENO_API_KEY =
+  process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY;
 const ZENO_API_BASE = 'https://zenoapi.com/api';
 
 const ensureZenoConfigured = () => {
   if (!ZENO_API_KEY) {
-    throw new Error('ZENOPAY API key (ZENOURI_API_KEY) is not configured on the server');
+    throw new Error(
+      'ZenoPay API key missing: set ZENO_API_KEY (or ZENOPAY_API_KEY / ZENOURI_API_KEY) on the server',
+    );
   }
 };
 
 /**
- * ZenoPay accepts local `0…` in samples; many MNO rails (especially Vodacom) match faster on `255…` MSISDN.
- * `ZENO_BUYER_PHONE_FORMAT`: `auto` (default: intl for Vodacom only), `local`, or `intl`.
+ * ZenoPay public samples use local MSISDN `0XXXXXXXXX` only. Optional `ZENO_BUYER_PHONE_FORMAT=intl`
+ * sends `255…` (some rails need it; default stays local to match docs and avoid silent non-push).
  */
 const formatBuyerPhoneForZeno = (local0) => {
   const p = String(local0 || '');
   const mode = String(process.env.ZENO_BUYER_PHONE_FORMAT || 'auto').toLowerCase().trim();
   const intl = p.startsWith('0') ? `255${p.slice(1)}` : p;
-  const isVoda =
-    p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
-  const isHalotel = p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
   if (mode === 'intl') return intl;
   if (mode === 'local') return p;
-  if (isVoda || isHalotel) return intl;
   return p;
 };
 
 /**
- * ZenoPay explicit `provider` where auto-detect fails STK: Vodacom (MPESA), Halotel (HALOPESA).
+ * ZenoPay SDK-style wallet names: M-PESA, TIGOPESA, HALOPESA, AIRTEL MONEY.
+ * Set `ZENO_SEND_PROVIDER=0` to omit `provider` (pure auto-detect — not recommended for all MNOs).
+ * Per-MNO overrides: ZENO_VODACOM_WALLET_PROVIDER, ZENO_HALOTEL_WALLET_PROVIDER, ZENO_TIGO_WALLET_PROVIDER, ZENO_AIRTEL_WALLET_PROVIDER.
  */
 const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
+  if (String(process.env.ZENO_SEND_PROVIDER || '1').trim() === '0') return;
   const p = String(normalizedPhoneLocal0 || '');
-  const isHalotel = p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
-  if (isHalotel) {
-    const fromEnv = process.env.ZENO_HALOTEL_WALLET_PROVIDER;
-    payload.provider =
-      typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'HALOPESA';
+  if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) {
+    const v = process.env.ZENO_HALOTEL_WALLET_PROVIDER;
+    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'HALOPESA';
     return;
   }
-  const isVoda =
-    p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
-  if (!isVoda) return;
-  const fromEnv = process.env.ZENO_VODACOM_WALLET_PROVIDER;
-  payload.provider =
-    typeof fromEnv === 'string' && fromEnv.trim().length > 0 ? fromEnv.trim() : 'MPESA';
+  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
+    const v = process.env.ZENO_VODACOM_WALLET_PROVIDER;
+    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'M-PESA';
+    return;
+  }
+  if (p.startsWith('065') || p.startsWith('067') || p.startsWith('071') || p.startsWith('077')) {
+    const v = process.env.ZENO_TIGO_WALLET_PROVIDER;
+    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'TIGOPESA';
+    return;
+  }
+  if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) {
+    const v = process.env.ZENO_AIRTEL_WALLET_PROVIDER;
+    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'AIRTEL MONEY';
+    return;
+  }
 };
 
 /**
@@ -141,7 +150,7 @@ const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   const p = String(localPhone0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
   if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
-    return 'MPESA';
+    return 'M-PESA';
   }
   if (p.startsWith('065') || p.startsWith('071')) return 'TIGOPESA';
   if (p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
@@ -181,9 +190,10 @@ const zenoTerminalStartStatuses = new Set([
   'FAILED', 'CANCELLED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID', 'REVERSED',
 ]);
 
-/** Immediately after create, order-status sometimes already shows a hard failure (no USSD). */
+/** Second GET right after create; off by default — Zeno responses vary and can false-fail. Set ZENO_POST_VERIFY=1 to enable. */
 const zenoQuickPostCreateVerify = async (orderRef) => {
-  if (process.env.ZENO_SKIP_POST_VERIFY === '1') return { ok: true };
+  if (String(process.env.ZENO_POST_VERIFY || '').trim() !== '1') return { ok: true };
+  if (String(process.env.ZENO_SKIP_POST_VERIFY || '').trim() === '1') return { ok: true };
   const ref = String(orderRef || '').trim();
   if (!ref || !ZENO_API_KEY) return { ok: true };
 
@@ -214,7 +224,6 @@ const zenoQuickPostCreateVerify = async (orderRef) => {
         statusData.payment_status ||
         statusData.paymentStatus ||
         statusData.status ||
-        (typeof statusData.result === 'string' ? statusData.result : '') ||
         '',
     )
       .toUpperCase()
@@ -432,7 +441,7 @@ async function handlePaymentStart(req, res, next) {
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
-    // ZenoPay: `buyer_phone` is usually local `0…`; Vodacom often routes STK better on `255…` (see formatBuyerPhoneForZeno).
+    // ZenoPay: send local `0…` MSISDN (official); optional intl with ZENO_BUYER_PHONE_FORMAT=intl
     const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
 
     const payload = {
