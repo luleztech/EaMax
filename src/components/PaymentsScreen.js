@@ -23,6 +23,29 @@ const ACCENT_DARK = '#16a34a';
 /** Tanzanian GSM prefixes — must match backend `payments.js` */
 const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
 
+/** Align with backend `mapPaymentGatewayUserError` for any raw gateway strings still shown in the client. */
+function mapPaymentGatewayErrorToSwahili(message) {
+  const m = String(message || '');
+  const l = m.toLowerCase();
+  if (
+    l.includes('9009') ||
+    l.includes('not enough') ||
+    l.includes('insufficient') ||
+    l.includes('balance of customer is not enough')
+  ) {
+    return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
+  }
+  if (
+    l.includes('upstream') ||
+    l.includes('no response from upstream') ||
+    l.includes('malipo hayajatumika') ||
+    l.includes('hayajatumika')
+  ) {
+    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na salio la kutosha, kisha ujaribu tena.';
+  }
+  return m;
+}
+
 /** Normalize user input to local TZ format (0…). Returns { local } or { error: 'international' | 'invalid' } */
 function normalizeTzPhoneToLocal(raw) {
   let s = String(raw || '').replace(/\s+/g, '');
@@ -313,9 +336,12 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       setPhoneNumber('');
     } catch (error) {
       console.error('Failed to start payment:', error);
+      const mapped = mapPaymentGatewayErrorToSwahili(error?.message);
       showStatusModal(
         'Malipo yameshindikana',
-        error?.message || 'Imeshindikana kutuma ombi la malipo. Jaribu tena baadae.',
+        mapped && mapped.trim()
+          ? mapped
+          : 'Imeshindikana kutuma ombi la malipo. Jaribu tena baadae.',
         false,
       );
     } finally {

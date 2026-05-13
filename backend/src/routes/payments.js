@@ -82,6 +82,50 @@ const ensureZenoConfigured = () => {
   }
 };
 
+/**
+ * ZenoPay `provider` for mobile_money_tanzania (local MSISDN 0…).
+ * Aligns with public ZenoPay SDK docs (M-PESA, TIGOPESA, HALOPESA, AIRTEL MONEY).
+ * Explicit routing avoids wrong-rail / “upstream” failures when auto-detect is ambiguous.
+ */
+const resolveZenoMobileWalletProvider = (localPhone0) => {
+  const p = String(localPhone0 || '');
+  if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
+  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
+    return 'M-PESA';
+  }
+  if (p.startsWith('065') || p.startsWith('071')) return 'TIGOPESA';
+  if (p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
+  if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL MONEY';
+  return null;
+};
+
+/** User-facing Swahili text; keeps support logs in server console via raw gateway payloads. */
+const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
+  const msg = String(rawMessage || '').trim();
+  const code = rawCode != null && rawCode !== '' ? String(rawCode).trim() : '';
+  const combined = `${msg} ${code}`.toLowerCase();
+
+  if (
+    code === '9009' ||
+    /\b9009\b/.test(combined) ||
+    /not enough|insufficient|haiatoshi|balance of customer is not enough|salio.*hali/.test(combined)
+  ) {
+    return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
+  }
+  if (
+    /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
+      combined,
+    ) ||
+    /exception.*upstream/i.test(msg)
+  ) {
+    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu, salio la kutosha, na nambari sahihi ya malipo. Jaribu tena; ikiendelea subiri dakika 2–5 kisha ujaribu.';
+  }
+  if (/denied|declined|rejected|invalid pin|wrong pin|incorrect pin/i.test(msg)) {
+    return 'Muamala haukuidhinishwa kwenye simu (PIN au hatua ya USSD). Jaribu tena ukiangalia maelekezo kwa makini.';
+  }
+  return msg || 'Malipo hayajaweza kuanza. Jaribu tena baada ya muda mfupi.';
+};
+
 // Map bundle to amount and duration
 const PLAN_CONFIG = {
   week: { amount: 2000, interval: '7 days' },
@@ -235,9 +279,9 @@ async function handlePaymentStart(req, res, next) {
       console.log('[SonicPesa] Response:', { status: response.status, sonicData });
 
       if (!response.ok || sonicData.status !== 'success') {
-        const errorMsg = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
+        const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
         return res.status(400).json({
-          error: errorMsg,
+          error: mapPaymentGatewayUserError(rawErr, sonicData.resultcode || sonicData.code),
           sonicResponse: sonicData,
         });
       }
@@ -272,7 +316,6 @@ async function handlePaymentStart(req, res, next) {
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
 
-    const isHalotel = normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063');
     // ZenoPay mobile_money_tanzania: must receive local format 0XXXXXXXXX only (never foreign country codes)
     const phoneForZeno = normalizedPhone;
 
@@ -284,8 +327,9 @@ async function handlePaymentStart(req, res, next) {
       amount: amountToSend,
       webhook_url: webhookUrl,
     };
-    if (isHalotel) {
-      payload.provider = 'HALOPESA';
+    const zenoWalletProvider = resolveZenoMobileWalletProvider(normalizedPhone);
+    if (zenoWalletProvider) {
+      payload.provider = zenoWalletProvider;
     }
 
     // eslint-disable-next-line no-console
@@ -320,7 +364,16 @@ async function handlePaymentStart(req, res, next) {
       },
     );
 
-    const zenoData = await response.json();
+    const zenoBodyText = await response.text();
+    let zenoData = {};
+    try {
+      if (zenoBodyText && zenoBodyText.trim()) zenoData = JSON.parse(zenoBodyText);
+    } catch (_) {
+      zenoData = {
+        status: 'error',
+        message: zenoBodyText ? zenoBodyText.slice(0, 500) : 'Invalid response from payment gateway',
+      };
+    }
 
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Response:', {
@@ -331,12 +384,12 @@ async function handlePaymentStart(req, res, next) {
     });
 
     if (!response.ok || zenoData.status !== 'success') {
-      const errorMsg =
+      const rawError =
         zenoData.message ||
-        `ZenoPay error (code: ${zenoData.resultcode || 'unknown'})` ||
+        (zenoData.resultcode ? `ZenoPay (${zenoData.resultcode})` : '') ||
         'Failed to start payment request';
       return res.status(400).json({
-        error: errorMsg,
+        error: mapPaymentGatewayUserError(rawError, zenoData.resultcode),
         zenoResponse: zenoData,
       });
     }
@@ -711,7 +764,12 @@ router.get('/zeno/status', async (req, res, next) => {
 
       if (!statusResp.ok) {
         console.log(`[Backend] SonicPesa status check failed for ${orderId}:`, statusData);
-        return res.status(400).json({ error: statusData.message || 'Failed to fetch order status' });
+        return res.status(400).json({
+          error: mapPaymentGatewayUserError(
+            statusData.message || statusData.error || 'Failed to fetch order status',
+            statusData.resultcode || statusData.code,
+          ),
+        });
       }
 
       const rawStatus = String(
@@ -780,9 +838,12 @@ router.get('/zeno/status', async (req, res, next) => {
 
     if (!statusResp.ok) {
       console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
-      return res
-        .status(400)
-        .json({ error: statusData.message || 'Failed to fetch order status' });
+      return res.status(400).json({
+        error: mapPaymentGatewayUserError(
+          statusData.message || statusData.error || 'Failed to fetch order status',
+          statusData.resultcode,
+        ),
+      });
     }
 
     const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
@@ -1145,7 +1206,12 @@ router.get('/status', async (req, res, next) => {
 
       if (!statusResp.ok) {
         console.log(`[Backend] SonicPesa status check failed for ${orderId}:`, statusData);
-        return res.status(400).json({ error: statusData.message || 'Failed to fetch order status' });
+        return res.status(400).json({
+          error: mapPaymentGatewayUserError(
+            statusData.message || statusData.error || 'Failed to fetch order status',
+            statusData.resultcode || statusData.code,
+          ),
+        });
       }
 
       const rawStatus = getSonicPesaRawStatus(statusData);
@@ -1207,9 +1273,12 @@ router.get('/status', async (req, res, next) => {
 
     if (!statusResp.ok) {
       console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
-      return res
-        .status(400)
-        .json({ error: statusData.message || 'Failed to fetch order status' });
+      return res.status(400).json({
+        error: mapPaymentGatewayUserError(
+          statusData.message || statusData.error || 'Failed to fetch order status',
+          statusData.resultcode,
+        ),
+      });
     }
 
     const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);

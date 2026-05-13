@@ -367,6 +367,18 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
       return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
     }
+    if (lower.contains('9009') ||
+        lower.contains('not enough') ||
+        lower.contains('insufficient') ||
+        lower.contains('balance of customer is not enough')) {
+      return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
+    }
+    if (lower.contains('upstream') ||
+        lower.contains('no response from upstream') ||
+        lower.contains('malipo hayajatumika') ||
+        lower.contains('hayajatumika')) {
+      return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na salio la kutosha, kisha ujaribu tena.';
+    }
     if (raw.length > 200) {
       return 'Malipo hayajaweza kukamilika. Jaribu tena au wasiliana na msaada.';
     }
