@@ -20,6 +20,7 @@ Future<dynamic> _apiRequestOnce(
   String endpoint, {
   String method = 'GET',
   Map<String, dynamic>? body,
+  Duration timeout = const Duration(seconds: 45),
 }) async {
   final url = Uri.parse('$apiBaseUrl$endpoint');
   final headers = <String, String>{'Content-Type': 'application/json'};
@@ -28,10 +29,10 @@ Future<dynamic> _apiRequestOnce(
     case 'POST':
       response = await http
           .post(url, headers: headers, body: body != null ? jsonEncode(body) : null)
-          .timeout(const Duration(seconds: 45));
+          .timeout(timeout);
     case 'GET':
     default:
-      response = await http.get(url, headers: headers).timeout(const Duration(seconds: 45));
+      response = await http.get(url, headers: headers).timeout(timeout);
   }
 
   dynamic decoded;
@@ -54,15 +55,23 @@ Future<dynamic> apiRequest(
   String endpoint, {
   String method = 'GET',
   Map<String, dynamic>? body,
+  bool enableRetries = true,
+  Duration? timeout,
 }) async {
-  const maxAttempts = 4;
+  final maxAttempts = enableRetries ? 4 : 1;
+  final effectiveTimeout = timeout ?? const Duration(seconds: 45);
   Object? lastErr;
   for (var attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await _apiRequestOnce(endpoint, method: method, body: body);
+      return await _apiRequestOnce(
+        endpoint,
+        method: method,
+        body: body,
+        timeout: effectiveTimeout,
+      );
     } catch (e) {
       lastErr = e;
-      if (attempt < maxAttempts && _isTransientNetworkError(e)) {
+      if (enableRetries && attempt < maxAttempts && _isTransientNetworkError(e)) {
         await _sleep(400 * attempt);
         continue;
       }
@@ -213,6 +222,8 @@ class PaymentsApi {
         'email': email,
         'name': name,
       },
+      enableRetries: false,
+      timeout: const Duration(seconds: 35),
     );
     return Map<String, dynamic>.from(r as Map);
   }

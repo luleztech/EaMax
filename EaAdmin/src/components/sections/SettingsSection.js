@@ -94,17 +94,16 @@ const SettingsSection = () => {
     }
   };
 
-  const handlePaymentProviderToggle = async (enabled) => {
-    if (paymentProviderSaving) return;
-    const newProvider = enabled ? 'sonicpesa' : 'zeno';
+  const handlePaymentProviderSelect = async (next) => {
+    if (paymentProviderSaving || next === paymentProvider) return;
     const previous = paymentProvider;
-    setPaymentProvider(newProvider);
+    setPaymentProvider(next);
     try {
       setPaymentProviderSaving(true);
-      await adminSettingsAPI.updatePaymentProvider(newProvider);
+      await adminSettingsAPI.updatePaymentProvider(next);
       showStatusModal(
         'Setting saved',
-        newProvider === 'sonicpesa'
+        next === 'sonicpesa'
           ? 'Payment provider switched to SonicPesa.'
           : 'Payment provider switched to ZenoPay.',
       );
@@ -208,7 +207,7 @@ const SettingsSection = () => {
             <Text style={styles.settingsTitle}>Payment provider</Text>
           </View>
           <Text style={styles.settingsDescription}>
-            Choose the active payment API for user payments.
+            Pick which API receives new checkouts. This does not affect old pending orders.
           </Text>
           <View style={styles.contactItem}>
             <View style={styles.contactHeader}>
@@ -216,22 +215,48 @@ const SettingsSection = () => {
                 <Icon name="credit-card-outline" size={24} color="#22c55e" />
               </View>
               <View style={styles.contactInfo}>
-                <Text style={styles.singleLabel}>Use SonicPesa</Text>
+                <Text style={styles.singleLabel}>Active provider</Text>
                 <Text style={styles.singleLabelSmall}>
-                  {paymentProvider === 'sonicpesa' ? 'SonicPesa is active' : 'ZenoPay is active'}
+                  {paymentProvider === 'sonicpesa' ? 'SonicPesa' : 'ZenoPay'} is live for the app
                 </Text>
               </View>
               {paymentProviderSaving ? (
                 <ActivityIndicator size="small" color="#22c55e" />
-              ) : (
-                <Switch
-                  value={paymentProvider === 'sonicpesa'}
-                  onValueChange={handlePaymentProviderToggle}
-                  disabled={paymentProviderLoading}
-                  trackColor={{ false: '#374151', true: '#22c55e' }}
-                  thumbColor="#fff"
-                />
-              )}
+              ) : null}
+            </View>
+            <View style={styles.providerPickRow}>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                disabled={paymentProviderLoading || paymentProviderSaving}
+                onPress={() => handlePaymentProviderSelect('zeno')}
+                style={[
+                  styles.providerChip,
+                  paymentProvider === 'zeno' && styles.providerChipSelected,
+                ]}>
+                <Text
+                  style={[
+                    styles.providerChipText,
+                    paymentProvider === 'zeno' && styles.providerChipTextSelected,
+                  ]}>
+                  ZenoPay
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                disabled={paymentProviderLoading || paymentProviderSaving}
+                onPress={() => handlePaymentProviderSelect('sonicpesa')}
+                style={[
+                  styles.providerChip,
+                  paymentProvider === 'sonicpesa' && styles.providerChipSelected,
+                ]}>
+                <Text
+                  style={[
+                    styles.providerChipText,
+                    paymentProvider === 'sonicpesa' && styles.providerChipTextSelected,
+                  ]}>
+                  SonicPesa
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -405,6 +430,33 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 13,
+  },
+  providerPickRow: {
+    flexDirection: 'row',
+    marginTop: 4,
+    marginHorizontal: -4,
+  },
+  providerChip: {
+    flex: 1,
+    marginHorizontal: 4,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#4b5563',
+    backgroundColor: 'rgba(3, 7, 18, 0.6)',
+    alignItems: 'center',
+  },
+  providerChipSelected: {
+    borderColor: '#22c55e',
+    backgroundColor: 'rgba(34, 197, 94, 0.18)',
+  },
+  providerChipText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#9ca3af',
+  },
+  providerChipTextSelected: {
+    color: '#fff',
   },
 });
 

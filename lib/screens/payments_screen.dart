@@ -133,21 +133,29 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   }
 
   Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final pending = prefs.getString('pendingPaymentOrderId')?.trim();
+
+    Map<String, dynamic> wMap = <String, dynamic>{};
+    String? uid;
     try {
-      final w = await settingsApi.getWhatsAppNumber();
-      final n = w['number']?.toString();
-      if (n != null && n.isNotEmpty) {
-        setState(() => _whatsapp = n.replaceAll(RegExp(r'\s+'), ''));
-      }
+      final parts = await Future.wait([
+        settingsApi.getWhatsAppNumber().catchError((_) => <String, dynamic>{}),
+        getOrCreateUserId().catchError((_) => null),
+      ]);
+      wMap = parts[0] as Map<String, dynamic>;
+      uid = parts[1] as String?;
     } catch (_) {}
 
-    final uid = await getOrCreateUserId();
+    if (!mounted) return;
+    final n = wMap['number']?.toString();
+    if (n != null && n.isNotEmpty) {
+      setState(() => _whatsapp = n.replaceAll(RegExp(r'\s+'), ''));
+    }
     if (uid != null && uid.isNotEmpty) {
       setState(() => _userId = uid);
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    final pending = prefs.getString('pendingPaymentOrderId')?.trim();
     if (pending != null && pending.isNotEmpty) {
       try {
         final res = await paymentsApi.checkPaymentStatus(pending);
@@ -1018,6 +1026,64 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                 failed: _paymentUiPhase == _PaymentUiPhase.failed,
                 detail: _sessionEndDetail,
                 onStartOver: _resetPaymentFlowFromStepOne,
+              ),
+            ),
+          ],
+          if (_submitting) ...[
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.52),
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 300),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Tunatuma ombi la malipo',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                              decoration: TextDecoration.none,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black.withValues(alpha: 0.35),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Usifunge skrini — hii huchukua sekunde chache tu.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              height: 1.45,
+                              color: Colors.blueGrey.shade200,
+                              fontWeight: FontWeight.w500,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],

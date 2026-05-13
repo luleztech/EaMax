@@ -1491,6 +1491,7 @@ router.put('/settings/channels-premium-only', async (req, res, next) => {
 // Admin: get active payment provider selection
 router.get('/settings/payment-provider', async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'private, no-store, max-age=0');
     // Ensure table exists
     await query(`
       CREATE TABLE IF NOT EXISTS app_settings (

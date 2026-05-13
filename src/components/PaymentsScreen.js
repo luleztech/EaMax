@@ -545,6 +545,14 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         </View>
       </ScrollView>
 
+      <Modal visible={submitting} transparent animationType="fade">
+        <View style={styles.sendingOverlay} pointerEvents="box-none">
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.sendingTitle}>Tunatuma ombi la malipo…</Text>
+          <Text style={styles.sendingHint}>Subiri kidogo — mtandao unaweza kuchukua sekunde chache.</Text>
+        </View>
+      </Modal>
+
       {/* Status modal */}
       <Modal
         visible={statusModalVisible}
@@ -854,6 +862,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+  },
+  sendingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 28,
+  },
+  sendingTitle: {
+    marginTop: 18,
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  sendingHint: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#94a3b8',
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 12,
   },
   modalCard: {
     width: '100%',

@@ -54,9 +54,10 @@ async function apiRequestOnce(endpoint, options = {}) {
 
 /**
  * API request with retries for flaky mobile networks / slow TLS (e.g. Railway wake-up).
+ * @param {object} [options] fetch options plus `maxAttempts` (default 4). Use maxAttempts: 1 for non-idempotent POSTs (e.g. payment start).
  */
 const apiRequest = async (endpoint, options = {}) => {
-  const maxAttempts = 4;
+  const maxAttempts = options.maxAttempts != null ? options.maxAttempts : 4;
   const baseDelayMs = 400;
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -236,6 +237,7 @@ const startPayment = async ({ externalId, bundle, amount, phone, email, name }) 
   return apiRequest('/api/payments/start', {
     method: 'POST',
     body: JSON.stringify({ externalId, bundle, amount, phone, email, name }),
+    maxAttempts: 1,
   });
 };
 

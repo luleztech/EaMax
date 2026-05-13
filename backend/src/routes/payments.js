@@ -45,11 +45,16 @@ const getPaymentProviderForOrder = async (orderId) => {
   return result.rows[0].payment_provider || null;
 };
 
+/** Our Zeno flow uses provider_ref `${user_id}_${epochMs}` — SonicPesa uses its own order_id shape. */
+const isLikelyInternalZenoOrderRef = (orderId) =>
+  /^\d+_\d{10,}$/.test(String(orderId || '').trim());
+
 /**
  * Routing rules (EaAdmin → app_settings.payment_provider):
  * - New payments: handlePaymentStart() uses ONLY getSelectedPaymentProvider() — never the URL path name.
  * - Status polling: prefer the payment row's payment_provider (set at start) so an admin toggle mid-checkout
- *   does not move an in-flight order to the wrong gateway. If the row is missing, use the admin default.
+ *   does not move an in-flight order to the wrong gateway. If the row is missing briefly, infer Zeno from ref
+ *   shape; otherwise fall back to the current admin default.
  */
 const resolveGatewayForOrderId = async (orderId) => {
   const raw = await getPaymentProviderForOrder(orderId);
@@ -57,6 +62,13 @@ const resolveGatewayForOrderId = async (orderId) => {
     const compact = raw.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
     if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
     if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.ZENO;
+    if (compact.length > 0) {
+      console.warn('[Payment] Unknown payment_provider on row; treating as zeno', { orderId, raw });
+      return PAYMENT_PROVIDERS.ZENO;
+    }
+  }
+  if (isLikelyInternalZenoOrderRef(orderId)) {
+    return PAYMENT_PROVIDERS.ZENO;
   }
   return getSelectedPaymentProvider();
 };
@@ -237,7 +249,8 @@ async function handlePaymentStart(req, res, next) {
     const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
       ? PAYMENT_PROVIDERS.SONICPESA
       : PAYMENT_PROVIDERS.ZENO;
-    console.log('[Payment] /start using app_settings.payment_provider →', provider);
+    const rawSetting = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.ZENO);
+    console.log('[Payment] /start app_settings.payment_provider raw:', rawSetting, '→ gateway:', provider);
 
     const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
@@ -327,6 +340,21 @@ async function handlePaymentStart(req, res, next) {
       webhook_url: webhookUrl,
     };
 
+    // Insert BEFORE calling Zeno so /status always sees payment_provider=zeno (avoids races with fast polling
+    // or admin switching gateway while the HTTP round-trip is in flight).
+    await query(
+      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, provider, phoneForZeno],
+    );
+
+    const rollbackPendingZenoRow = async () => {
+      await query(
+        `DELETE FROM subscription_payments WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
+        [orderId, provider],
+      );
+    };
+
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Sending payment request (exact amount):', {
       orderId,
@@ -348,17 +376,29 @@ async function handlePaymentStart(req, res, next) {
         : 'Unknown',
     });
 
-    const response = await fetch(
-      `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ZENO_API_KEY,
+    let response;
+    try {
+      response = await fetch(
+        `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ZENO_API_KEY,
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-      },
-    );
+      );
+    } catch (fetchErr) {
+      console.error('[ZenoPay] Network error calling ZenoPay:', fetchErr?.message || fetchErr);
+      await rollbackPendingZenoRow();
+      return res.status(502).json({
+        error: mapPaymentGatewayUserError(
+          String(fetchErr?.message || fetchErr || 'network'),
+          '',
+        ),
+      });
+    }
 
     const zenoBodyText = await response.text();
     let zenoData = {};
@@ -380,6 +420,7 @@ async function handlePaymentStart(req, res, next) {
     });
 
     if (!response.ok || zenoData.status !== 'success') {
+      await rollbackPendingZenoRow();
       const rawError =
         zenoData.message ||
         (zenoData.resultcode ? `ZenoPay (${zenoData.resultcode})` : '') ||
@@ -389,13 +430,6 @@ async function handlePaymentStart(req, res, next) {
         zenoResponse: zenoData,
       });
     }
-
-    // Record payment as pending, store orderId in provider_ref for lookup
-    await query(
-      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, provider, phoneForZeno],
-    );
 
     // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.
     return res.json({

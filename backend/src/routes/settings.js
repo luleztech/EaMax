@@ -84,6 +84,7 @@ router.get('/channels-premium-only', async (req, res, next) => {
 // Public: get payment provider in use (zeno or sonicpesa)
 router.get('/payment-provider', async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'private, no-store, max-age=0');
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
     );
