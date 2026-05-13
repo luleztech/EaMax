@@ -45,6 +45,22 @@ const getPaymentProviderForOrder = async (orderId) => {
   return result.rows[0].payment_provider || null;
 };
 
+/**
+ * Routing rules (EaAdmin → app_settings.payment_provider):
+ * - New payments: handlePaymentStart() uses ONLY getSelectedPaymentProvider() — never the URL path name.
+ * - Status polling: prefer the payment row's payment_provider (set at start) so an admin toggle mid-checkout
+ *   does not move an in-flight order to the wrong gateway. If the row is missing, use the admin default.
+ */
+const resolveGatewayForOrderId = async (orderId) => {
+  const raw = await getPaymentProviderForOrder(orderId);
+  if (typeof raw === 'string') {
+    const compact = raw.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
+    if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.ZENO;
+  }
+  return getSelectedPaymentProvider();
+};
+
 const normalizePhoneForSonicPesa = (normalizedPhone) => {
   if (normalizedPhone.startsWith('0')) {
     return `255${normalizedPhone.slice(1)}`;
@@ -74,8 +90,8 @@ const PLAN_CONFIG = {
   year: { amount: 12000, interval: '90 days' },
 };
 
-// Mobile money start: `/start` (used by apps) and legacy `/zeno/start` share this handler.
-// Provider is chosen from app_settings.payment_provider (zeno | sonicpesa).
+// Mobile money start: `/start` and legacy `/zeno/start` share this handler.
+// Active gateway for NEW payments is ONLY `app_settings.payment_provider` (never inferred from the URL path).
 async function handlePaymentStart(req, res, next) {
   try {
     const bodySchema = z.object({
@@ -654,13 +670,9 @@ router.get('/zeno/status', async (req, res, next) => {
       });
     }
 
-    const dbProvider = await getPaymentProviderForOrder(orderId);
-    const selectedProvider = dbProvider || await getSelectedPaymentProvider();
-    const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
-      ? PAYMENT_PROVIDERS.SONICPESA
-      : PAYMENT_PROVIDERS.ZENO;
+    const gateway = await resolveGatewayForOrderId(orderId);
 
-    if (provider === PAYMENT_PROVIDERS.SONICPESA) {
+    if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
       const statusResp = await fetch(
         `${SONICPESA_API_BASE}/payment/order_status`,
@@ -1092,13 +1104,9 @@ router.get('/status', async (req, res, next) => {
     }
 
     // Get payment record to determine which provider was used
-    const dbProvider = await getPaymentProviderForOrder(orderId);
-    const selectedProvider = dbProvider || await getSelectedPaymentProvider();
-    const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
-      ? PAYMENT_PROVIDERS.SONICPESA
-      : PAYMENT_PROVIDERS.ZENO;
+    const gateway = await resolveGatewayForOrderId(orderId);
 
-    if (provider === PAYMENT_PROVIDERS.SONICPESA) {
+    if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
       const statusResp = await fetch(
         `${SONICPESA_API_BASE}/payment/order_status`,

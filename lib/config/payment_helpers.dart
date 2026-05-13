@@ -14,7 +14,7 @@ bool isPaymentPending(Object? status) {
       s == 'WAITING';
 }
 
-/// True only when money is confirmed (polling `/zeno/status` or user record).
+/// True only when money is confirmed (polling `/api/payments/status` or user record).
 ///
 /// **Never** treat `SUCCESS` / `success` as paid — the start-payment API uses that
 /// for “request accepted, check your phone”, not “payment completed”.

@@ -250,17 +250,9 @@ class PaymentsApi {
     }
   }
 
-  Future<Map<String, dynamic>> checkZenoStatus(String orderId) async {
-    try {
-      final r = await apiRequest('/api/payments/zeno/status?orderId=${Uri.encodeComponent(orderId)}');
-      return Map<String, dynamic>.from(r as Map);
-    } catch (e) {
-      final msg = e.toString().toLowerCase();
-      if (msg.contains('no order found') || msg.contains('order not found')) {
-        return {'status': 'PENDING', 'raw': {}};
-      }
-      rethrow;
-    }
+  /// Legacy name: uses `/api/payments/status` so polling follows the order's gateway (or admin default).
+  Future<Map<String, dynamic>> checkZenoStatus(String orderId) {
+    return checkPaymentStatus(orderId);
   }
 
   Future<Map<String, dynamic>> completePaymentForTesting(String orderId) async {
