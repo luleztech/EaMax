@@ -158,17 +158,32 @@ const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   return null;
 };
 
+/**
+ * Insufficient-balance mapping must stay strict: broad patterns like `salio.*hali` false-positive on
+ * Halotel/Sonic messages such as “Salio la akaunti halipo…” (account/state), not low balance.
+ */
+const looksLikeInsufficientBalance = (msg, code, combined) => {
+  if (code === '9009' || /\b9009\b/.test(combined)) return true;
+  if (
+    /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b/i.test(
+      combined,
+    )
+  ) {
+    return true;
+  }
+  if (/\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b|\bhaatoshi\b/i.test(combined)) return true;
+  if (/\bsi\s+la\s+kutosha\b/i.test(combined)) return true;
+  if (/\bsalio\s+(?:dogo|chache)\b/i.test(combined)) return true;
+  return false;
+};
+
 /** User-facing Swahili text; keeps support logs in server console via raw gateway payloads. */
 const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
   const msg = String(rawMessage || '').trim();
   const code = rawCode != null && rawCode !== '' ? String(rawCode).trim() : '';
   const combined = `${msg} ${code}`.toLowerCase();
 
-  if (
-    code === '9009' ||
-    /\b9009\b/.test(combined) ||
-    /not enough|insufficient|haiatoshi|balance of customer is not enough|salio.*hali/.test(combined)
-  ) {
+  if (looksLikeInsufficientBalance(msg, code, combined)) {
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
   if (

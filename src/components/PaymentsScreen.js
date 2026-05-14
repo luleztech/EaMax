@@ -35,10 +35,13 @@ function mapPaymentGatewayErrorToSwahili(message) {
     return 'Akaunti haijasawirishwa kwenye seva. Fungua Wasifu kisha jaribu tena.';
   }
   if (
-    l.includes('9009') ||
-    l.includes('not enough') ||
-    l.includes('insufficient') ||
-    l.includes('balance of customer is not enough')
+    /\b9009\b/.test(l) ||
+    /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b/i.test(
+      l,
+    ) ||
+    /\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b|\bhaatoshi\b/i.test(l) ||
+    /\bsi\s+la\s+kutosha\b/i.test(l) ||
+    /\bsalio\s+(?:dogo|chache)\b/i.test(l)
   ) {
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
   }

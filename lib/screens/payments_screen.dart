@@ -353,7 +353,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   }
 
   String _mapPaymentError(Object e) {
-    final raw = e.toString();
+    var raw = e.toString();
+    const exc = 'Exception: ';
+    if (raw.startsWith(exc)) raw = raw.substring(exc.length).trim();
     final lower = raw.toLowerCase();
     if (lower.contains('socketexception') ||
         lower.contains('connection') ||
@@ -380,10 +382,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
       return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
     }
-    if (lower.contains('9009') ||
-        lower.contains('not enough') ||
-        lower.contains('insufficient') ||
-        lower.contains('balance of customer is not enough')) {
+    if (RegExp(r'\b9009\b').hasMatch(lower) ||
+        RegExp(r'\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b')
+            .hasMatch(lower) ||
+        RegExp(r'\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b').hasMatch(lower) ||
+        RegExp(r'\bsi\s+la\s+kutosha\b').hasMatch(lower) ||
+        RegExp(r'\bsalio\s+(?:dogo|chache)\b').hasMatch(lower)) {
       return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
     }
     if (lower.contains('upstream') ||
@@ -499,6 +503,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     final bundle = _bundles.firstWhere((b) => b.id == _selectedBundle);
     setState(() => _submitting = true);
+    // Let release builds paint “Tunatuma ombi…” before the HTTP work schedules; avoids a dead UI until the waiting modal.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
     try {
       // Always use the unified backend start endpoint.
       // The backend decides whether to route to Zeno or SonicPesa based on current settings.
@@ -573,7 +580,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   Widget build(BuildContext context) {
     final bottom = 48.0 + widget.bottomPadding;
     final ac = widget.accentColor;
-    final canPay = _phoneOk && _selectedBundle != null && !_submitting;
+    final canShowPayCta = _phoneOk && _selectedBundle != null;
 
     // Material is required for TextField / TextButton (enforced on web).
     return Material(
@@ -789,13 +796,13 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                       ),
                     ),
                   ],
-                  if (canPay) ...[
+                  if (canShowPayCta) ...[
                     const SizedBox(height: 8),
                     Material(
                       color: Colors.transparent,
                       elevation: 0,
                       child: InkWell(
-                        onTap: _send,
+                        onTap: _submitting ? null : _send,
                         borderRadius: BorderRadius.circular(18),
                         child: Ink(
                           decoration: BoxDecoration(
