@@ -161,7 +161,18 @@ const resolveZenoMobileWalletProviderHint = (localPhone0) => {
 /**
  * Insufficient-balance mapping must stay strict: broad patterns like `salio.*hali` false-positive on
  * Halotel/Sonic messages such as “Salio la akaunti halipo…” (account/state), not low balance.
+ * Sonic sometimes appends `90009` without a separator: `...payment90009`.
  */
+const extractPoorBalanceCodes = (msg, code, combined) => {
+  const bucket = `${String(code || '')} ${String(msg || '')} ${String(combined || '')}`;
+  const hits = new Set();
+  if (/\b90009\b|payment\s*90009/i.test(bucket)) hits.add('90009');
+  if (/\b9009\b/.test(bucket) && !/\b90009\b|payment\s*90009/i.test(bucket)) hits.add('9009');
+  if (String(code || '').trim() === '90009') hits.add('90009');
+  if (String(code || '').trim() === '9009') hits.add('9009');
+  return [...hits];
+};
+
 const looksLikeInsufficientBalance = (msg, code, combined) => {
   if (
     /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b/i.test(
@@ -172,19 +183,36 @@ const looksLikeInsufficientBalance = (msg, code, combined) => {
   }
   if (/\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b|\bhaatoshi\b/i.test(combined)) return true;
   if (/\bsalio\s+(?:dogo|chache)\b/i.test(combined)) return true;
-  // Avoid `\bsi\s+la\s+kutosha\b`: it matches inside our own copy (“…yako si la kutosha…”) and many
-  // non-balance Swahili lines from carriers (Halotel/Sonic), causing false “salio” dialogs.
-  const code9009 = code === '9009' || /\b9009\b/.test(combined);
-  if (code9009) {
-    const m = String(msg || '').trim();
-    const balanceHint =
-      /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough|haiatoshi|halitoshi|hatoshi)\b/i.test(
-        combined,
-      ) || /\b(?:salio|pesa)\b.*\b(?:dogo|chache|kidogo|haitoshi|halitoshi)\b/i.test(combined);
-    if (balanceHint || m.length <= 2) return true;
-    return false;
-  }
+  const poorCodes = extractPoorBalanceCodes(msg, code, combined);
+  if (poorCodes.length === 0) return false;
+  const m = String(msg || '').trim();
+  const balanceHint =
+    /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough|haiatoshi|halitoshi|hatoshi)\b/i.test(
+      combined,
+    ) || /\b(?:salio|pesa)\b.*\b(?:dogo|chache|kidogo|haitoshi|halitoshi)\b/i.test(combined);
+  if (balanceHint || m.length <= 2) return true;
   return false;
+};
+
+/** Sonic/Zeno explicit “not enough balance” wording (initiate) — translate without sounding like a blind app guess. */
+const isExplicitGatewayInsufficientReport = (msg, combined, code) => {
+  if (/\bbalance of customer is not enough\b/i.test(combined)) return true;
+  if (/\binsufficient (?:funds|balance)\b/i.test(combined)) return true;
+  if (/\bnot enough (?:money|funds|balance)\b/i.test(combined)) return true;
+  if (/\b90009\b|payment\s*90009/i.test(combined)) return true;
+  const c = String(code || '').trim();
+  if (c === '9009' || c === '90009') return true;
+  return false;
+};
+
+const swahiliInitiateInsufficientFromProvider = (msg, code) => {
+  const codes = extractPoorBalanceCodes(msg, code, `${msg} ${code}`.toLowerCase());
+  const codeLabel = codes.includes('90009') ? '90009' : codes.includes('9009') ? '9009' : codes[0] || '';
+  const tail = codeLabel ? ` (msimbo ${codeLabel})` : '';
+  return (
+    `Mtoa huduma wa malipo alikataa ombi kabla ya hatua ya PIN: alisema salio halitoshi kwa kiasi hicho${tail}. ` +
+    'Ikiwa una salio la kutosha, jaribu tena baada ya dakika 1–2, au wasiliana na SonicPesa / huduma ya Halotel.'
+  );
 };
 
 /** User-facing Swahili text; keeps support logs in server console via raw gateway payloads.
@@ -198,6 +226,9 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
 
   if (looksLikeInsufficientBalance(msg, code, combined)) {
     if (context === 'initiate') {
+      if (isExplicitGatewayInsufficientReport(msg, combined, code)) {
+        return swahiliInitiateInsufficientFromProvider(msg, code);
+      }
       return (
         msg ||
         'Hatukuweza kutuma ombi la malipo kwenye mtandao wa simu. Hakikisha namba ni sahihi na mtandao unaendana na malipo, kisha jaribu tena.'
