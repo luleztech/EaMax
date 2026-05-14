@@ -163,7 +163,6 @@ const resolveZenoMobileWalletProviderHint = (localPhone0) => {
  * Halotel/Sonic messages such as “Salio la akaunti halipo…” (account/state), not low balance.
  */
 const looksLikeInsufficientBalance = (msg, code, combined) => {
-  if (code === '9009' || /\b9009\b/.test(combined)) return true;
   if (
     /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b/i.test(
       combined,
@@ -172,8 +171,19 @@ const looksLikeInsufficientBalance = (msg, code, combined) => {
     return true;
   }
   if (/\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b|\bhaatoshi\b/i.test(combined)) return true;
-  if (/\bsi\s+la\s+kutosha\b/i.test(combined)) return true;
   if (/\bsalio\s+(?:dogo|chache)\b/i.test(combined)) return true;
+  // Avoid `\bsi\s+la\s+kutosha\b`: it matches inside our own copy (“…yako si la kutosha…”) and many
+  // non-balance Swahili lines from carriers (Halotel/Sonic), causing false “salio” dialogs.
+  const code9009 = code === '9009' || /\b9009\b/.test(combined);
+  if (code9009) {
+    const m = String(msg || '').trim();
+    const balanceHint =
+      /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough|haiatoshi|halitoshi|hatoshi)\b/i.test(
+        combined,
+      ) || /\b(?:salio|pesa)\b.*\b(?:dogo|chache|kidogo|haitoshi|halitoshi)\b/i.test(combined);
+    if (balanceHint || m.length <= 2) return true;
+    return false;
+  }
   return false;
 };
 
