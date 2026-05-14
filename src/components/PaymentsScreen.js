@@ -34,28 +34,13 @@ function mapPaymentGatewayErrorToSwahili(message) {
   ) {
     return 'Akaunti haijasawirishwa kwenye seva. Fungua Wasifu kisha jaribu tena.';
   }
-  const code9009 = /\b9009\b/.test(l);
-  const balanceHint =
-    /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough|haiatoshi|halitoshi|hatoshi)\b/i.test(
-      l,
-    ) || /\b(?:salio|pesa)\b.*\b(?:dogo|chache|kidogo|haitoshi|halitoshi)\b/i.test(l);
-  if (
-    /\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b/i.test(
-      l,
-    ) ||
-    /\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b|\bhaatoshi\b/i.test(l) ||
-    /\bsalio\s+(?:dogo|chache)\b/i.test(l) ||
-    (code9009 && (balanceHint || String(message || '').trim().length <= 2))
-  ) {
-    return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
-  }
   if (
     l.includes('upstream') ||
     l.includes('no response from upstream') ||
     l.includes('malipo hayajatumika') ||
     l.includes('hayajatumika')
   ) {
-    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na salio la kutosha, kisha ujaribu tena.';
+    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo, kisha ujaribu tena.';
   }
   return m;
 }

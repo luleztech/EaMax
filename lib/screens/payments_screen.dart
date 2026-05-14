@@ -382,23 +382,13 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
       return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
     }
-    final code9009 = RegExp(r'\b9009\b').hasMatch(lower);
-    final balanceHint = RegExp(
-            r'\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough|haiatoshi|halitoshi|hatoshi)\b')
-        .hasMatch(lower) ||
-        RegExp(r'\b(?:salio|pesa)\b.*\b(?:dogo|chache|kidogo|haitoshi|halitoshi)\b').hasMatch(lower);
-    if (RegExp(r'\b(?:not enough|insufficient funds?|insufficient balance|low balance|balance of customer is not enough)\b')
-            .hasMatch(lower) ||
-        RegExp(r'\bhaiatoshi\b|\bhalitoshi\b|\bhatoshi\b').hasMatch(lower) ||
-        RegExp(r'\bsalio\s+(?:dogo|chache)\b').hasMatch(lower) ||
-        (code9009 && (balanceHint || raw.trim().length <= 2))) {
-      return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu, kisha ujaribu tena.';
-    }
+    // Do not map “insufficient balance” here — `/api/payments/start` errors are chosen on the server
+    // (initiate vs paid). Showing canned salio on the client hid cases where STK was never sent.
     if (lower.contains('upstream') ||
         lower.contains('no response from upstream') ||
         lower.contains('malipo hayajatumika') ||
         lower.contains('hayajatumika')) {
-      return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na salio la kutosha, kisha ujaribu tena.';
+      return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo, kisha ujaribu tena.';
     }
     if (raw.length > 200) {
       return 'Malipo hayajaweza kukamilika. Jaribu tena au wasiliana na msaada.';

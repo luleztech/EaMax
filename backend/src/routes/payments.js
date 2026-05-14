@@ -187,13 +187,22 @@ const looksLikeInsufficientBalance = (msg, code, combined) => {
   return false;
 };
 
-/** User-facing Swahili text; keeps support logs in server console via raw gateway payloads. */
-const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
+/** User-facing Swahili text; keeps support logs in server console via raw gateway payloads.
+ * @param {{ context?: 'initiate' | 'default' }} [options] — `initiate` = create/start STK (no PIN yet); never imply “salio” from heuristics alone.
+ */
+const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
+  const context = options.context === 'initiate' ? 'initiate' : 'default';
   const msg = String(rawMessage || '').trim();
   const code = rawCode != null && rawCode !== '' ? String(rawCode).trim() : '';
   const combined = `${msg} ${code}`.toLowerCase();
 
   if (looksLikeInsufficientBalance(msg, code, combined)) {
+    if (context === 'initiate') {
+      return (
+        msg ||
+        'Hatukuweza kutuma ombi la malipo kwenye mtandao wa simu. Hakikisha namba ni sahihi na mtandao unaendana na malipo, kisha jaribu tena.'
+      );
+    }
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
   if (
@@ -203,7 +212,7 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode) => {
     /exception.*upstream/i.test(msg) ||
     /\babort(ed)?\b/i.test(msg)
   ) {
-    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu, salio la kutosha, na nambari sahihi ya malipo. Jaribu tena; ikiendelea subiri dakika 2–5 kisha ujaribu.';
+    return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo. Jaribu tena; ikiendelea subiri dakika 2–5 kisha ujaribu.';
   }
   if (/denied|declined|rejected|invalid pin|wrong pin|incorrect pin/i.test(msg)) {
     return 'Muamala haukuidhinishwa kwenye simu (PIN au hatua ya USSD). Jaribu tena ukiangalia maelekezo kwa makini.';
@@ -431,7 +440,9 @@ async function handlePaymentStart(req, res, next) {
       if (!response.ok || sonicData.status !== 'success') {
         const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
         return res.status(400).json({
-          error: mapPaymentGatewayUserError(rawErr, sonicData.resultcode || sonicData.code),
+          error: mapPaymentGatewayUserError(rawErr, sonicData.resultcode || sonicData.code, {
+            context: 'initiate',
+          }),
           sonicResponse: sonicData,
         });
       }
@@ -541,10 +552,9 @@ async function handlePaymentStart(req, res, next) {
       console.error('[ZenoPay] Network error calling ZenoPay:', fetchErr?.message || fetchErr);
       await rollbackPendingZenoRow();
       return res.status(502).json({
-        error: mapPaymentGatewayUserError(
-          String(fetchErr?.message || fetchErr || 'network'),
-          '',
-        ),
+        error: mapPaymentGatewayUserError(String(fetchErr?.message || fetchErr || 'network'), '', {
+          context: 'initiate',
+        }),
       });
     }
     clearTimeout(zenoTimeout);
@@ -576,7 +586,7 @@ async function handlePaymentStart(req, res, next) {
         (zenoData.resultcode ? `ZenoPay (${zenoData.resultcode})` : '') ||
         'Failed to start payment request';
       return res.status(400).json({
-        error: mapPaymentGatewayUserError(rawError, zenoData.resultcode),
+        error: mapPaymentGatewayUserError(rawError, zenoData.resultcode, { context: 'initiate' }),
         zenoResponse: zenoData,
       });
     }
@@ -605,7 +615,7 @@ async function handlePaymentStart(req, res, next) {
       });
       await rollbackPendingZenoByRef(clientFacingOrderId);
       return res.status(400).json({
-        error: mapPaymentGatewayUserError(postVerify.reason, ''),
+        error: mapPaymentGatewayUserError(postVerify.reason, '', { context: 'initiate' }),
         zenoPostVerifyFailed: true,
       });
     }
