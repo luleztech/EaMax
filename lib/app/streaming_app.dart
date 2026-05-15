@@ -16,6 +16,10 @@ import '../theme/app_theme.dart';
 import '../widgets/ad_reward_modal.dart';
 import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
+import 'main_shell.dart';
+import '../screens/loader_screen.dart';
+import '../theme/app_theme.dart';
+import 'package:provider/provider.dart';
 
 class StreamingApp extends StatefulWidget {
   const StreamingApp({super.key});
@@ -28,6 +32,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   final GlobalKey<CombinedHomeState> _homeKey = GlobalKey<CombinedHomeState>();
 
   bool _premium = false;
+  DateTime? _premiumExpiresAt;
   bool _channelsPremiumOnly = false;
   int _points = 0;
   bool _congratsOpen = false;
@@ -37,6 +42,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _checkingPendingPayment = false;
   bool _offlineModalVisible = false;
   bool _retryingConnection = false;
+  bool _splashDone = false;
 
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
   bool _adOverlayVisible = false;
@@ -84,9 +90,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       final blocked = userData['blocked'] == true;
       final premium = !blocked && userData['isPremium'] == true;
       final pts = (userData['points'] as num?)?.toInt() ?? 0;
+      final endStr = userData['subscriptionEndDate']?.toString();
+      DateTime? expires;
+      if (!blocked && endStr != null && endStr.isNotEmpty) {
+        expires = DateTime.tryParse(endStr);
+      }
       setState(() {
         _points = pts;
         _premium = premium;
+        _premiumExpiresAt = premium ? expires : null;
       });
       if (premium) {
         final prefs = await SharedPreferences.getInstance();
@@ -341,17 +353,21 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+    if (!_splashDone) {
+      return LoaderScreen(onDone: () => setState(() => _splashDone = true));
+    }
+
     return Stack(
       fit: StackFit.expand,
       children: [
-        CombinedHome(
-          key: _homeKey,
+        MainShell(
+          homeKey: _homeKey,
           isPremium: _premium,
+          subscriptionEndDate: _premiumExpiresAt,
           channelsPremiumOnly: _channelsPremiumOnly,
           userPoints: _points,
           onWatchAd: _openAd,
           onPointsRefresh: _refreshUser,
-          onPaymentsActiveChange: (_) {},
           syncPremiumSetting: refreshChannelsPremiumOnlySetting,
         ),
         if (_adOverlayVisible)

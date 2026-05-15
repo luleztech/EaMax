@@ -91,13 +91,17 @@ router.get('/payment-provider', async (req, res, next) => {
     const raw = result.rows.length > 0 ? result.rows[0].value : 'zeno';
     const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
     const paymentProvider = compact === 'sonicpesa' ? 'sonicpesa' : 'zeno';
-    const configured =
-      paymentProvider === 'sonicpesa'
-        ? Boolean(process.env.SONICPESA_API_KEY)
-        : Boolean(
-            process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY,
-          );
-    return res.json({ paymentProvider, configured });
+    const zenoConfigured = Boolean(
+      process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY,
+    );
+    const sonicConfigured = Boolean(process.env.SONICPESA_API_KEY);
+    const configured = paymentProvider === 'sonicpesa' ? sonicConfigured : zenoConfigured;
+    return res.json({
+      paymentProvider,
+      configured,
+      zenoConfigured,
+      sonicConfigured,
+    });
   } catch (err) {
     return next(err);
   }

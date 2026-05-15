@@ -32,11 +32,13 @@ const BOTTOM_NAV_BASE_HEIGHT = 56;
 
 const FootballApp = ({
   isPremium,
+  subscriptionEndDate,
   channelsPremiumOnly,
   userPoints,
   onWatchAd,
   onPaymentsActiveChange,
   onPointsRefresh,
+  onPaymentSuccess,
   onSwitchToMovies,
 }) => {
   const insets = useSafeAreaInsets();
@@ -413,12 +415,14 @@ const FootballApp = ({
       )}
 
       {activeTab === 'payments' ? (
-        <PaymentsScreen accentColor="#4ade80" bottomPadding={contentBottomPadding} onPaymentSuccess={onPointsRefresh} />
+        <PaymentsScreen accentColor="#4ade80" bottomPadding={contentBottomPadding} onPaymentSuccess={onPaymentSuccess} />
       ) : activeTab === 'profile' ? (
         <ProfileScreen
           accentColor="#4ade80"
           onWatchAd={onWatchAd}
           userPoints={userPoints}
+          isPremium={isPremium}
+          subscriptionEndDate={subscriptionEndDate}
           onPointsRefresh={onPointsRefresh}
           bottomPadding={contentBottomPadding}
         />

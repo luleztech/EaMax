@@ -31,7 +31,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { width } = Dimensions.get('window');
 const BOTTOM_NAV_BASE_HEIGHT = 56;
 
-const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPaymentsActiveChange, onPointsRefresh }) => {
+const MoviesApp = ({
+  isPremium,
+  subscriptionEndDate,
+  channelsPremiumOnly,
+  userPoints,
+  onWatchAd,
+  onPaymentsActiveChange,
+  onPointsRefresh,
+  onPaymentSuccess,
+}) => {
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
   const contentBottomPadding = BOTTOM_NAV_BASE_HEIGHT + bottomInset;
@@ -393,12 +402,14 @@ const MoviesApp = ({ isPremium, channelsPremiumOnly, userPoints, onWatchAd, onPa
       )}
 
       {activeTab === 'payments' ? (
-        <PaymentsScreen accentColor="#a855f7" bottomPadding={contentBottomPadding} onPaymentSuccess={onPointsRefresh} />
+        <PaymentsScreen accentColor="#a855f7" bottomPadding={contentBottomPadding} onPaymentSuccess={onPaymentSuccess} />
       ) : activeTab === 'profile' ? (
         <ProfileScreen
           accentColor="#a855f7"
           onWatchAd={onWatchAd}
           userPoints={userPoints}
+          isPremium={isPremium}
+          subscriptionEndDate={subscriptionEndDate}
           onPointsRefresh={onPointsRefresh}
           bottomPadding={contentBottomPadding}
         />

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -22,19 +22,21 @@ import {
 
 const { width } = Dimensions.get('window');
 
-const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentPoints, onPointsRefresh, bottomPadding = 0 }) => {
+const ProfileScreen = ({
+  accentColor = '#4ade80',
+  onWatchAd,
+  userPoints: parentPoints,
+  isPremium: parentIsPremium,
+  subscriptionEndDate: parentSubscriptionEndDate,
+  onPointsRefresh,
+  bottomPadding = 0,
+}) => {
   const [userId, setUserId] = useState(null);
-  const [isPremium, setIsPremium] = useState(false);
+  const [isPremium, setIsPremium] = useState(!!parentIsPremium);
   const [userPoints, setUserPoints] = useState(parentPoints ?? 0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // When parent passes points (same as header), use them so profile and header match
-  useEffect(() => {
-    if (parentPoints !== undefined && parentPoints !== null) {
-      setUserPoints(parentPoints);
-    }
-  }, [parentPoints]);
   const [timeRemaining, setTimeRemaining] = useState({
     days: 0,
     hours: 0,
@@ -42,6 +44,7 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
     seconds: 0,
   });
   const [subscriptionEndDate, setSubscriptionEndDate] = useState(null);
+  const prevParentPremium = useRef(undefined);
 
   // Load user data: use shared getOrCreateUserId (ID already created on app load), then fetch latest from backend
   const loadUserData = useCallback(async (showLoading = false) => {
@@ -59,7 +62,8 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
       // Fetch latest user data (source of truth for points, premium, subscription)
       try {
         const userData = await userAPI.getUser(storedUserId);
-        setIsPremium(userData.isPremium ?? false);
+        const apiPremium = userData.isPremium ?? false;
+        setIsPremium(parentIsPremium === true ? true : apiPremium);
         if (parentPoints === undefined || parentPoints === null) {
           setUserPoints(userData.points ?? 0);
         }
@@ -79,7 +83,38 @@ const ProfileScreen = ({ accentColor = '#4ade80', onWatchAd, userPoints: parentP
         setLoading(false);
       }
     }
+  }, [parentPoints, parentIsPremium]);
+
+  useEffect(() => {
+    if (parentPoints !== undefined && parentPoints !== null) {
+      setUserPoints(parentPoints);
+    }
   }, [parentPoints]);
+
+  useEffect(() => {
+    if (parentIsPremium !== undefined && parentIsPremium !== null) {
+      setIsPremium(!!parentIsPremium);
+    }
+  }, [parentIsPremium]);
+
+  useEffect(() => {
+    if (parentSubscriptionEndDate) {
+      const d =
+        parentSubscriptionEndDate instanceof Date
+          ? parentSubscriptionEndDate
+          : new Date(parentSubscriptionEndDate);
+      if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+    } else if (parentIsPremium === false) {
+      setSubscriptionEndDate(null);
+    }
+  }, [parentSubscriptionEndDate, parentIsPremium]);
+
+  useEffect(() => {
+    if (parentIsPremium && !prevParentPremium.current) {
+      loadUserData(false);
+    }
+    prevParentPremium.current = parentIsPremium;
+  }, [parentIsPremium, loadUserData]);
 
   // Load or generate user ID and register with backend
   useEffect(() => {

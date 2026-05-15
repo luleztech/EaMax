@@ -2,13 +2,19 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../models/carousel_slide.dart';
 import '../models/channel_ui.dart';
 import '../theme/app_theme.dart';
+import '../theme/app_typography.dart';
+import '../widgets/app_header.dart';
+import '../widgets/cat_pill.dart';
+import '../widgets/channel_card.dart';
+import '../widgets/channel_rail.dart';
 import '../widgets/eamax_carousel.dart';
+import '../widgets/pro_shimmer.dart';
 
 /// Bottom filter chips — same keys/labels/colors as RN `CHANNEL_FILTERS`.
 class FilterTabConfig {
@@ -27,66 +33,63 @@ const kChannelFilters = [
 ];
 
 class HomeHeader extends StatelessWidget {
-  const HomeHeader({super.key, required this.points, required this.isPremium, required this.onPremium});
+  const HomeHeader({
+    super.key,
+    this.title = 'EaMax',
+    this.subtitle = 'LIVE TV',
+    required this.points,
+    required this.isPremium,
+    required this.onPremium,
+    this.onSettings,
+    this.onSearch,
+  });
+
+  final String title;
+  final String subtitle;
   final int points;
   final bool isPremium;
   final VoidCallback onPremium;
+  final VoidCallback? onSettings;
+  final VoidCallback? onSearch;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: const BoxDecoration(
-        color: Color(0x99000000),
-        border: Border(bottom: BorderSide(color: Color(0x3360A5FA))),
-      ),
-      child: Row(
+    final t = context.watch<ThemeController>().colors;
+    return AppHeader(
+      title: title,
+      subtitle: subtitle,
+      logoLetter: 'E',
+      onSettings: onSettings,
+      onSearch: onSearch,
+      rightSlot: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.live_tv, size: 24, color: AppColors.accentBlue),
-          const SizedBox(width: 8),
-          const Text(
-            'EaMax TV',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-              letterSpacing: 0.5,
-              decoration: TextDecoration.none,
-            ),
-          ),
-          const Spacer(),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0x1F60A5FA),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0x4D60A5FA)),
+              color: t.card,
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(color: t.border),
             ),
             child: Row(
               children: [
-                const Icon(Icons.star, size: 16, color: AppColors.gold),
-                const SizedBox(width: 6),
-                Text('$points pts', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+                Icon(Icons.star_rounded, size: 14, color: t.gold),
+                const SizedBox(width: 4),
+                Text('$points', style: rajdhani(12, weight: FontWeight.w700).copyWith(color: t.text)),
               ],
             ),
           ),
           if (!isPremium) ...[
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Material(
-              color: AppColors.premiumBtn,
-              borderRadius: BorderRadius.circular(20),
+              color: t.accent,
+              borderRadius: BorderRadius.circular(99),
               child: InkWell(
                 onTap: onPremium,
-                borderRadius: BorderRadius.circular(20),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  child: Row(
-                    children: [
-                      Icon(Icons.star, size: 14, color: Colors.white),
-                      SizedBox(width: 4),
-                      Text('Premium', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12)),
-                    ],
-                  ),
+                borderRadius: BorderRadius.circular(99),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Text('PREMIUM', style: orbitron(9, weight: FontWeight.w900).copyWith(color: Colors.white)),
                 ),
               ),
             ),
@@ -280,101 +283,262 @@ class _HomeNavItem extends StatelessWidget {
   }
 }
 
+const _homeFilterPills = [
+  CategoryPillItem(key: 'zote', label: 'Zote', icon: 'flame-outline'),
+  CategoryPillItem(key: 'mpira', label: 'Mpira', icon: 'football-outline'),
+  CategoryPillItem(key: 'movies', label: 'Movies', icon: 'film-outline'),
+  CategoryPillItem(key: 'habari', label: 'Habari', icon: 'newspaper-outline'),
+];
+
+List<ChannelUi> _filterHomeChannels(List<ChannelUi> all, String filterKey, String query) {
+  var list = List<ChannelUi>.from(all);
+  final needle = query.trim().toLowerCase();
+  if (needle.isNotEmpty) {
+    return list
+        .where((c) =>
+            c.name.toLowerCase().contains(needle) ||
+            (c.category ?? '').toLowerCase().contains(needle))
+        .toList();
+  }
+  switch (filterKey) {
+    case 'mpira':
+      return list.where((c) => c.category == 'football' || c.category == 'mpira').toList();
+    case 'movies':
+      return list
+          .where((c) =>
+              c.category == 'movies' ||
+              c.category == 'tamthilia' ||
+              c.category == 'wanyama' ||
+              c.category == 'katuni' ||
+              c.category == 'sayansi')
+          .toList();
+    case 'habari':
+      return list.where((c) => c.category == 'habari').toList();
+    default:
+      return list;
+  }
+}
+
 class HomeMainTab extends StatelessWidget {
   const HomeMainTab({
     super.key,
     required this.initialLoading,
     required this.refreshing,
     required this.carousel,
+    required this.allChannels,
     required this.channelFilter,
     required this.onFilter,
-    required this.sections,
-    required this.matches,
     required this.isPremium,
-    required this.channelFilterKey,
+    required this.channelsPremiumOnly,
+    required this.searchQuery,
     required this.bottomPad,
-    required this.glowCtrl,
-    required this.cardW,
-    required this.cardH,
-    required this.channelBadge,
     required this.onChannel,
     required this.onRefresh,
-    required this.loadingChannelId,
-    required this.iconFor,
   });
 
   final bool initialLoading;
   final bool refreshing;
   final List<CarouselSlide> carousel;
+  final List<ChannelUi> allChannels;
   final String channelFilter;
   final ValueChanged<String> onFilter;
-  final List<ChannelSection> sections;
-  final List<dynamic> matches;
   final bool isPremium;
-  final String channelFilterKey;
+  final bool channelsPremiumOnly;
+  final String searchQuery;
   final double bottomPad;
-  final AnimationController glowCtrl;
-  final double cardW;
-  final double cardH;
-  final ChannelBadgeUi Function(ChannelUi) channelBadge;
   final Future<void> Function(ChannelUi) onChannel;
   final Future<void> Function() onRefresh;
-  final int? loadingChannelId;
-  final IconData Function(String) iconFor;
+
+  bool _locked(ChannelUi ch) =>
+      channelLockedForViewer(ch, isPremium: isPremium, channelsPremiumOnly: channelsPremiumOnly);
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      color: AppColors.accentBlue,
-      onRefresh: onRefresh,
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverPadding(
-            padding: EdgeInsets.only(bottom: bottomPad),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                if (refreshing) _ShimmerHome(cardW: cardW, cardH: cardH) else ...[
-                  if (carousel.isNotEmpty) EamaxCarousel(items: carousel),
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 20, 16, 2),
-                    child: Row(
-                      children: [
-                        Icon(Icons.tv, size: 20, color: AppColors.accentBlue),
-                        SizedBox(width: 8),
-                        Text('Channels', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  _FilterRow(active: channelFilter, onSelect: onFilter),
-                  ...sections.map((sec) => _SectionBlock(
-                        section: sec,
-                        cardW: cardW,
-                        cardH: cardH,
-                        glowCtrl: glowCtrl,
-                        channelBadge: channelBadge,
-                        onChannel: onChannel,
-                        loadingChannelId: loadingChannelId,
-                        iconFor: iconFor,
-                        isPremiumUser: isPremium,
-                      )),
-                  if (sections.isEmpty && !initialLoading)
-                    const Padding(
-                      padding: EdgeInsets.all(48),
-                      child: Column(
-                        children: [
-                          Icon(Icons.tv_off, size: 52, color: Color(0xFF374151)),
-                          SizedBox(height: 12),
-                          Text('Bado hakuna channels.', style: TextStyle(color: Color(0xFF6B7280), fontSize: 15)),
-                        ],
-                      ),
-                    ),
-                  if ((channelFilterKey == 'zote' || channelFilterKey == 'mpira') && matches.isNotEmpty) _MatchesBlock(matches: matches, isPremium: isPremium),
-                ],
-              ]),
+    final t = context.watch<ThemeController>().colors;
+    final fk = _homeFilterPills.any((p) => p.key == channelFilter) ? channelFilter : 'zote';
+    final filtered = _filterHomeChannels(allChannels, fk, searchQuery);
+    final searching = searchQuery.trim().isNotEmpty;
+
+    final slivers = <Widget>[];
+
+    if (refreshing && allChannels.isEmpty) {
+      slivers.add(
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPad),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              childAspectRatio: 16 / 10,
+            ),
+            delegate: SliverChildBuilderDelegate((_, __) => const ShimmerBox(radius: 16), childCount: 6),
+          ),
+        ),
+      );
+    } else {
+      if (carousel.isNotEmpty && !searching) {
+        slivers.add(SliverToBoxAdapter(child: EamaxCarousel(items: carousel)));
+      }
+
+      if (!searching) {
+        slivers.add(
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 22),
+              child: Container(
+                height: 52,
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  color: t.card.withValues(alpha: 0.45),
+                  border: Border.all(color: t.border.withValues(alpha: 0.55)),
+                ),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _homeFilterPills.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 10),
+                  itemBuilder: (context, i) {
+                    final cat = _homeFilterPills[i];
+                    return CatPill(
+                      label: cat.label,
+                      icon: cat.icon,
+                      active: fk == cat.key,
+                      onPress: () => onFilter(cat.key),
+                    );
+                  },
+                ),
+              ),
             ),
           ),
-        ],
+        );
+      }
+
+      if (searching) {
+        slivers.add(
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+              child: Text.rich(
+                TextSpan(
+                  style: rajdhani(12).copyWith(color: t.text2),
+                  children: [
+                    TextSpan(text: '${filtered.length} matokeo kwa '),
+                    TextSpan(text: '"$searchQuery"', style: TextStyle(color: t.accent)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+
+      if (filtered.isEmpty && !initialLoading) {
+        slivers.add(
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.tv_off_outlined, size: 40, color: t.border),
+                  const SizedBox(height: 12),
+                  Text('Hakuna channels', style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2)),
+                ],
+              ),
+            ),
+          ),
+        );
+      } else if (searching || fk == 'mpira' || fk == 'habari') {
+        slivers.add(
+          SliverToBoxAdapter(
+            child: ChannelRail(
+              title: searching ? '🔎 MATOKEO' : (fk == 'mpira' ? 'Mpira' : 'Habari'),
+              channels: filtered,
+              lockedFor: _locked,
+              onChannel: (ch) => onChannel(ch),
+            ),
+          ),
+        );
+      } else if (fk == 'movies') {
+        for (final key in ['tamthilia', 'movies', 'wanyama', 'katuni', 'sayansi']) {
+          final list = filtered.where((c) => c.category == key).toList();
+          if (list.isEmpty) continue;
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ChannelRail(
+                title: categoryPillLabel(key),
+                channels: list,
+                lockedFor: _locked,
+                onChannel: (ch) => onChannel(ch),
+              ),
+            ),
+          );
+        }
+      } else {
+        final freeOnly = filtered.where((ch) => ch.isFreeForCatalog(channelsPremiumOnly)).toList();
+        final freeIds = freeOnly.map((c) => c.id).toSet();
+
+        if (freeOnly.isNotEmpty) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ChannelRail(
+                title: 'Chaneli za bure',
+                channels: freeOnly,
+                lockedFor: (_) => false,
+                onChannel: (ch) => onChannel(ch),
+              ),
+            ),
+          );
+        }
+
+        final mpira = filtered.where((c) => (c.category == 'football' || c.category == 'mpira') && !freeIds.contains(c.id)).toList();
+        if (mpira.isNotEmpty) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ChannelRail(title: 'Mpira', channels: mpira, lockedFor: _locked, onChannel: (ch) => onChannel(ch)),
+            ),
+          );
+        }
+
+        for (final key in ['tamthilia', 'movies', 'wanyama', 'katuni', 'sayansi']) {
+          final list = filtered.where((c) => c.category == key && !freeIds.contains(c.id)).toList();
+          if (list.isEmpty) continue;
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ChannelRail(
+                title: categoryPillLabel(key),
+                channels: list,
+                lockedFor: _locked,
+                onChannel: (ch) => onChannel(ch),
+              ),
+            ),
+          );
+        }
+
+        final habari = filtered.where((c) => c.category == 'habari' && !freeIds.contains(c.id)).toList();
+        if (habari.isNotEmpty) {
+          slivers.add(
+            SliverToBoxAdapter(
+              child: ChannelRail(title: 'Habari', channels: habari, lockedFor: _locked, onChannel: (ch) => onChannel(ch)),
+            ),
+          );
+        }
+      }
+
+    }
+
+    slivers.add(SliverToBoxAdapter(child: SizedBox(height: bottomPad)));
+
+    return ColoredBox(
+      color: t.bg1,
+      child: RefreshIndicator(
+        color: t.accent,
+        onRefresh: onRefresh,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: slivers,
+        ),
       ),
     );
   }
@@ -385,91 +549,184 @@ class ChannelsTab extends StatelessWidget {
     super.key,
     required this.initialLoading,
     required this.refreshing,
+    required this.allChannels,
     required this.channelFilter,
     required this.onFilter,
-    required this.sections,
+    required this.searchQuery,
     required this.bottomPad,
-    required this.glowCtrl,
-    required this.cardW,
-    required this.cardH,
-    required this.channelBadge,
     required this.onChannel,
     required this.onRefresh,
-    required this.loadingChannelId,
-    required this.iconFor,
     required this.isPremium,
+    required this.channelsPremiumOnly,
   });
 
   final bool initialLoading;
   final bool refreshing;
+  final List<ChannelUi> allChannels;
   final String channelFilter;
   final ValueChanged<String> onFilter;
-  final List<ChannelSection> sections;
+  final String searchQuery;
   final double bottomPad;
-  final AnimationController glowCtrl;
-  final double cardW;
-  final double cardH;
-  final ChannelBadgeUi Function(ChannelUi) channelBadge;
   final Future<void> Function(ChannelUi) onChannel;
   final Future<void> Function() onRefresh;
-  final int? loadingChannelId;
-  final IconData Function(String) iconFor;
   final bool isPremium;
+  final bool channelsPremiumOnly;
+
+  List<String> _filterKeys() {
+    final cats = allChannels.map((c) => c.category ?? 'other').toSet().toList()..sort();
+    return ['all', 'free', 'premium', ...cats];
+  }
+
+  String _filterLabel(String key) {
+    switch (key) {
+      case 'all':
+        return 'Zote';
+      case 'free':
+        return 'Bure';
+      case 'premium':
+        return 'Premium';
+      default:
+        return categoryPillLabel(key);
+    }
+  }
+
+  String _filterIcon(String key) {
+    switch (key) {
+      case 'all':
+        return 'flame-outline';
+      case 'free':
+        return 'flame-outline';
+      case 'premium':
+        return 'tv-outline';
+      default:
+        return categoryPillIconName(key);
+    }
+  }
+
+  List<ChannelUi> _filtered(String fk) {
+    var list = List<ChannelUi>.from(allChannels);
+    switch (fk) {
+      case 'all':
+        break;
+      case 'free':
+        list = list.where((c) => c.isFreeForCatalog(channelsPremiumOnly)).toList();
+        break;
+      case 'premium':
+        list = list.where((c) => !c.isFreeForCatalog(channelsPremiumOnly)).toList();
+        break;
+      default:
+        list = list.where((c) => c.category == fk).toList();
+    }
+    final q = searchQuery.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      list = list.where((c) => c.name.toLowerCase().contains(q) || (c.category ?? '').toLowerCase().contains(q)).toList();
+    }
+    return list;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      color: AppColors.accentBlue,
-      onRefresh: onRefresh,
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverPadding(
-            padding: EdgeInsets.only(bottom: bottomPad),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Vituo Vyote', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
-                      SizedBox(height: 4),
-                      Text('Chagua channel unayotaka kuangalia', style: TextStyle(fontSize: 14, color: AppColors.muted)),
-                    ],
+    final t = context.watch<ThemeController>().colors;
+    final keys = _filterKeys();
+    var fk = channelFilter;
+    if (fk == 'zote') fk = 'all'; // legacy
+    if (!keys.contains(fk)) fk = 'all';
+    final list = _filtered(fk);
+
+    final w = MediaQuery.sizeOf(context).width;
+    const hPad = 12.0;
+    const gap = 8.0;
+    const inset = 4.0;
+    final crossAxis = w >= 320 ? 2 : 1;
+    final cellW = crossAxis == 1 ? (w - hPad * 2) : (w - hPad * 2 - gap) / 2;
+    final innerW = (cellW - inset * 2).clamp(40.0, double.infinity);
+    final posterH = channelGridCellHeight(innerW) - 1.5;
+    final tileH = posterH.clamp(56.0, double.infinity);
+
+    bool locked(ChannelUi ch) =>
+        channelLockedForViewer(ch, isPremium: isPremium, channelsPremiumOnly: channelsPremiumOnly);
+
+    return ColoredBox(
+      color: t.bg1,
+      child: RefreshIndicator(
+        color: t.accent,
+        onRefresh: onRefresh,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: 44,
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: keys.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, i) {
+                    final opt = keys[i];
+                    final active = fk == opt;
+                    return CatPill(
+                      label: _filterLabel(opt),
+                      icon: _filterIcon(opt),
+                      active: active,
+                      onPress: () => onFilter(opt),
+                    );
+                  },
+                ),
+              ),
+            ),
+            if (refreshing && list.isEmpty)
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(hPad, 0, hPad, bottomPad),
+                sliver: SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxis,
+                    mainAxisSpacing: gap,
+                    crossAxisSpacing: gap,
+                    childAspectRatio: cellW / tileH,
+                  ),
+                  delegate: SliverChildBuilderDelegate((_, __) => const ShimmerBox(radius: 16), childCount: 6),
+                ),
+              )
+            else if (list.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Text('Hakuna channels', style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2)),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(hPad, 8, hPad, bottomPad),
+                sliver: SliverGrid(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxis,
+                    mainAxisSpacing: gap,
+                    crossAxisSpacing: gap,
+                    childAspectRatio: cellW / tileH,
+                  ),
+                  delegate: SliverChildBuilderDelegate(
+                    (context, i) {
+                      final ch = list[i];
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: inset),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: ChannelCard(
+                            compactGrid: true,
+                            channel: ch,
+                            locked: locked(ch),
+                            onPress: () => onChannel(ch),
+                          ),
+                        ),
+                      );
+                    },
+                    childCount: list.length,
                   ),
                 ),
-                _FilterRow(active: channelFilter, onSelect: onFilter),
-                if (refreshing)
-                  _ShimmerGrid(cardW: cardW, cardH: cardH)
-                else ...[
-                  ...sections.map((sec) => _SectionBlock(
-                        section: sec,
-                        cardW: cardW,
-                        cardH: cardH,
-                        glowCtrl: glowCtrl,
-                        channelBadge: channelBadge,
-                        onChannel: onChannel,
-                        loadingChannelId: loadingChannelId,
-                        iconFor: iconFor,
-                        isPremiumUser: isPremium,
-                      )),
-                  if (sections.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(48),
-                      child: Column(
-                        children: [
-                          Icon(Icons.tv_off, size: 52, color: Color(0xFF374151)),
-                          SizedBox(height: 12),
-                          Text('Bado hakuna channels.', style: TextStyle(color: Color(0xFF6B7280), fontSize: 15)),
-                        ],
-                      ),
-                    ),
-                ],
-              ]),
-            ),
-          ),
-        ],
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -556,82 +813,6 @@ class _ShimmerGrid extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _MatchesBlock extends StatelessWidget {
-  const _MatchesBlock({required this.matches, required this.isPremium});
-  final List<dynamic> matches;
-  final bool isPremium;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.calendar_month, size: 20, color: Color(0xFF4ADE80)),
-              SizedBox(width: 8),
-              Text('Ratiba ya michezo', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-            ],
-          ),
-          const SizedBox(height: 14),
-          ...matches.map((raw) {
-            final m = Map<String, dynamic>.from(raw as Map);
-            final t = DateTime.tryParse(m['match_time']?.toString() ?? '') ?? DateTime.now();
-            final timeStr = DateFormat('d MMM, HH:mm').format(t);
-            final pts = (m['points_required'] as num?)?.toInt() ?? 15;
-            return Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0x801F2937),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0x80374151)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(m['league']?.toString() ?? '', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(child: Text(m['team1']?.toString() ?? '', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white))),
-                      const Text('VS', style: TextStyle(color: Color(0xFF6B7280), fontWeight: FontWeight.bold)),
-                      Expanded(child: Text(m['team2']?.toString() ?? '', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white))),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.schedule, size: 14, color: AppColors.muted),
-                          const SizedBox(width: 6),
-                          Text(timeStr, style: const TextStyle(fontSize: 13, color: AppColors.muted)),
-                        ],
-                      ),
-                      if (!isPremium)
-                        Row(
-                          children: [
-                            const Icon(Icons.star, size: 12, color: AppColors.gold),
-                            const SizedBox(width: 4),
-                            Text('Earn $pts pts', style: const TextStyle(fontSize: 12, color: AppColors.gold)),
-                          ],
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            );
-          }),
-        ],
       ),
     );
   }

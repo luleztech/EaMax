@@ -538,7 +538,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       );
 
       final orderId = (result['orderId']?.toString() ?? '').trim();
-      final serverMsg = (result['message']?.toString() ?? '').trim();
+      var serverMsg = (result['message']?.toString() ?? '').trim();
+      final usedFallback = result['fallbackFrom']?.toString().trim().isNotEmpty == true;
+      if (usedFallback && serverMsg.isEmpty) {
+        serverMsg =
+            'Ombi limetumwa kupitia ZenoPay. Angalia simu yako na uingize PIN ya malipo (M-Pesa, Halopesa, Tigopesa, Airtel).';
+      }
 
       // Start endpoint never means “paid” — only `orderId` + instruction + polling/webhook.
       // (Backend used to return status: success for “prompt sent”; that must not open success UI.)
@@ -603,7 +608,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     // Material is required for TextField / TextButton (enforced on web).
     return Material(
-      color: AppColors.scaffold,
+      color: const Color(0xFF02040A),
       child: Stack(
         children: [
           Positioned.fill(child: _PayAmbientLayer(accent: ac)),

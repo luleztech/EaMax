@@ -47,7 +47,9 @@ async function apiRequestOnce(endpoint, options = {}) {
     // non-JSON or empty response
   }
   if (!response.ok) {
-    throw new Error(data.error || `HTTP error! status: ${response.status}`);
+    const err = data.error || `HTTP error! status: ${response.status}`;
+    const detail = data.detail && String(data.detail).trim();
+    throw new Error(detail && detail !== err ? `${err} (${detail})` : err);
   }
   return data;
 }
@@ -237,7 +239,7 @@ const startPayment = async ({ externalId, bundle, amount, phone, email, name }) 
   return apiRequest('/api/payments/start', {
     method: 'POST',
     body: JSON.stringify({ externalId, bundle, amount, phone, email, name }),
-    maxAttempts: 1,
+    maxAttempts: 3,
   });
 };
 

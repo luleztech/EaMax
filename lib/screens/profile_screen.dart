@@ -1,11 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:ionicons/ionicons.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
 
 import '../config/api.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
+import '../theme/app_typography.dart';
+import '../widgets/app_header.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -13,17 +17,23 @@ class ProfileScreen extends StatefulWidget {
     this.accentColor = AppColors.accentBlue,
     this.bottomPadding = 0,
     this.userPoints = 0,
+    this.isPremium = false,
+    this.subscriptionEndDate,
     this.onWatchAd,
     this.onPointsRefresh,
     this.onOpenPayments,
+    this.onOpenSettings,
   });
 
   final Color accentColor;
   final double bottomPadding;
   final int userPoints;
+  final bool isPremium;
+  final DateTime? subscriptionEndDate;
   final VoidCallback? onWatchAd;
   final Future<void> Function()? onPointsRefresh;
   final VoidCallback? onOpenPayments;
+  final VoidCallback? onOpenSettings;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -44,7 +54,36 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (widget.isPremium) {
+      _premium = true;
+      _subEnd = widget.subscriptionEndDate;
+    }
     _load(true);
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfileScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isPremium != oldWidget.isPremium ||
+        widget.subscriptionEndDate != oldWidget.subscriptionEndDate) {
+      _syncFromParent(widget.isPremium, widget.subscriptionEndDate);
+    }
+  }
+
+  void _syncFromParent(bool premium, DateTime? end) {
+    if (!mounted) return;
+    setState(() {
+      _premium = premium;
+      _subEnd = premium ? end : null;
+      _loading = false;
+    });
+    _countdownTimer?.cancel();
+    if (_subscriptionTimeActive) {
+      _tick();
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+    } else if (mounted) {
+      setState(() => _remain = Duration.zero);
+    }
   }
 
   @override
@@ -113,8 +152,9 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return Container(
-        color: AppColors.scaffold,
+      final t = context.watch<ThemeController>().colors;
+      return ColoredBox(
+        color: t.bg1,
         child: Stack(
           children: [
             const Positioned.fill(
@@ -143,144 +183,148 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       );
     }
 
-    final ac = widget.accentColor;
+    final t = context.watch<ThemeController>().colors;
     final bottom = 32.0 + widget.bottomPadding;
+    final letters = (_userId != null && _userId!.length >= 2) ? _userId!.substring(0, 2).toUpperCase() : 'EM';
 
-    return Container(
-      color: AppColors.scaffold,
-      child: Stack(
-        children: [
-          const Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF030712), Color(0xFF111827), Color(0xFF000000)],
-                ),
-              ),
-            ),
-          ),
-          SafeArea(
-            top: true,
-            bottom: false,
-            child: RefreshIndicator(
-              color: ac,
-              onRefresh: () async {
-                await widget.onPointsRefresh?.call();
-                await _load(false);
-              },
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: EdgeInsets.only(bottom: bottom),
+    return ColoredBox(
+      color: t.bg1,
+      child: RefreshIndicator(
+        color: t.accent,
+        onRefresh: () async {
+          await widget.onPointsRefresh?.call();
+          await _load(false);
+        },
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.only(bottom: bottom),
+          children: [
+            const AppHeader(title: 'Akaunti', subtitle: 'AKAUNTI YAKO', logoLetter: 'E'),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 24),
+              child: Column(
                 children: [
-                  const SizedBox(height: 20),
-                  Center(
-                    child: Container(
-                      width: 100,
-                      height: 100,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: ac.withValues(alpha: 0.12),
-                        border: Border.all(color: const Color(0x4D22C55E), width: 3),
-                        boxShadow: [
-                          BoxShadow(
-                            color: ac.withValues(alpha: 0.2),
-                            blurRadius: 24,
-                            spreadRadius: 0,
-                          ),
-                        ],
-                      ),
-                      child: Icon(Icons.person_rounded, size: 48, color: ac),
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(colors: [t.accent, t.accent2]),
+                      boxShadow: [BoxShadow(color: t.accent.withValues(alpha: 0.4), blurRadius: 20)],
                     ),
+                    alignment: Alignment.center,
+                    child: Text(letters, style: orbitron(28, weight: FontWeight.w900).copyWith(color: Colors.black)),
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    _userId ?? '...',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      letterSpacing: 0.8,
-                      decoration: TextDecoration.none,
-                    ),
-                  ),
+                  Text(_userId ?? '...', style: orbitron(18).copyWith(color: t.text, letterSpacing: 0.6)),
                   const SizedBox(height: 12),
-                  Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _premium ? const Color(0x33FBBF24) : const Color(0x339CA3AF),
-                        borderRadius: BorderRadius.circular(100),
-                        border: Border.all(color: _premium ? const Color(0x66FBBF24) : const Color(0x669CA3AF)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _premium ? Icons.workspace_premium_rounded : Icons.person_outline_rounded,
-                            size: 18,
-                            color: _premium ? AppColors.gold : AppColors.muted,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            _premium ? 'Premium User' : 'Free User',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: _premium ? AppColors.gold : AppColors.muted,
-                              decoration: TextDecoration.none,
-                            ),
-                          ),
-                        ],
-                      ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _premium ? t.gold.withValues(alpha: 0.15) : t.card,
+                      borderRadius: BorderRadius.circular(100),
+                      border: Border.all(color: _premium ? t.gold.withValues(alpha: 0.4) : t.border),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(_premium ? Ionicons.star : Ionicons.person_outline, size: 16, color: _premium ? t.gold : t.text2),
+                        const SizedBox(width: 8),
+                        Text(
+                          _premium ? 'Premium User' : 'Free User',
+                          style: rajdhani(14, weight: FontWeight.w600).copyWith(color: _premium ? t.gold : t.text2),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 28),
-                  if (_subscriptionTimeActive)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: _SubscriptionRemainCard(
-                        accent: ac,
-                        remain: _remain,
-                        subEnd: _subEnd,
-                      ),
-                    )
-                  else ...[
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: _ProfileActionTile(
-                        leading: Container(
-                          width: 52,
-                          height: 52,
-                          decoration: BoxDecoration(
-                            color: ac.withValues(alpha: 0.18),
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: Icon(Icons.lock_open_rounded, color: ac, size: 26),
-                        ),
-                        title: 'Fungua Channel zote',
-                        subtitle: 'Chagua michango na huduma za Premium',
-                        onTap: widget.onOpenPayments,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: _ProfileActionTile(
-                        leading: const _GreenPlusBadge(),
-                        title: 'Kusanya Point',
-                        subtitle: 'Tazama tangazo ufunge Point',
-                        onTap: widget.onWatchAd != null ? _onKusanyaPoint : null,
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),
-          ),
-        ],
+            const SizedBox(height: 8),
+            if (_subscriptionTimeActive)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: _SubscriptionRemainCard(accent: t.accent, remain: _remain, subEnd: _subEnd),
+              )
+            else ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: _MenuTile(
+                  t: t,
+                  g: [t.accent, t.accent2],
+                  icon: Ionicons.key_outline,
+                  title: 'Fungua Channel zote',
+                  subtitle: 'Chagua michango Premium',
+                  onTap: widget.onOpenPayments,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: _MenuTile(
+                  t: t,
+                  g: [t.free, const Color(0xFF34d399)],
+                  icon: Ionicons.play_circle_outline,
+                  title: 'Kusanya Point',
+                  subtitle: 'Tazama tangazo',
+                  onTap: widget.onWatchAd != null ? _onKusanyaPoint : null,
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _MenuTile(
+                t: t,
+                g: [t.accent, t.accent2],
+                icon: Ionicons.settings_outline,
+                title: 'Settings',
+                subtitle: 'Themes, preferences',
+                onTap: widget.onOpenSettings,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuTile extends StatelessWidget {
+  const _MenuTile({
+    required this.t,
+    required this.g,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+
+  final AppThemeColors t;
+  final List<Color> g;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: t.card,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: BorderSide(color: t.border)),
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        onTap: onTap,
+        leading: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), gradient: LinearGradient(colors: g)),
+          alignment: Alignment.center,
+          child: Icon(icon, size: 18, color: Colors.black),
+        ),
+        title: Text(title, style: rajdhani(15, weight: FontWeight.w600).copyWith(color: t.text)),
+        subtitle: Text(subtitle, style: rajdhani(12).copyWith(color: t.text2)),
+        trailing: Text('›', style: TextStyle(color: t.text2, fontSize: 20)),
       ),
     );
   }

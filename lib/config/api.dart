@@ -45,8 +45,14 @@ Future<dynamic> _apiRequestOnce(
     }
   }
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    final err = decoded is Map ? decoded['error'] : null;
-    throw Exception(err ?? 'HTTP ${response.statusCode}');
+    if (decoded is Map) {
+      final err = decoded['error']?.toString().trim();
+      final detail = decoded['detail']?.toString().trim();
+      if (err != null && err.isNotEmpty) {
+        throw Exception(detail != null && detail.isNotEmpty && detail != err ? '$err ($detail)' : err);
+      }
+    }
+    throw Exception('HTTP ${response.statusCode}');
   }
   return decoded ?? <String, dynamic>{};
 }
@@ -222,8 +228,8 @@ class PaymentsApi {
         'email': email,
         'name': name,
       },
-      enableRetries: false,
-      timeout: const Duration(seconds: 28),
+      enableRetries: true,
+      timeout: const Duration(seconds: 50),
     );
     return Map<String, dynamic>.from(r as Map);
   }

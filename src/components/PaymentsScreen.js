@@ -145,7 +145,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         const status = res?.status || res?.raw?.data?.[0]?.payment_status;
         if (String(status).toUpperCase() === 'COMPLETED') {
           await AsyncStorage.removeItem('pendingPaymentOrderId');
-          if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess());
+          if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess(res?.user));
         } else {
           setPollingOrderId(pending.trim());
         }
@@ -207,10 +207,9 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
 
           console.log('[Payment] Payment COMPLETED! Triggering immediate upgrade...');
 
-          // Call onPaymentSuccess immediately so StreamingApp sets isPremium=true
           if (onPaymentSuccess) {
             try {
-              await Promise.resolve(onPaymentSuccess());
+              await Promise.resolve(onPaymentSuccess(response?.user));
               setLastPaymentSuccess(true);
             } catch (e) {
               console.warn('[Payment] Success callback error:', e);

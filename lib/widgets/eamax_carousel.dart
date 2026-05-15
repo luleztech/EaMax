@@ -1,18 +1,16 @@
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../models/carousel_slide.dart';
 import '../theme/app_theme.dart';
+import '../theme/app_typography.dart';
+import 'safe_network_image.dart';
 
-/// Home hero carousel — layout matches RN `ImageCarousel` (320px height, rounded, dots, arrows).
-/// Slides are **display-only** (no tap-to-play / no navigation to the player).
+/// Supasoka-style hero carousel: 360px, in-card dots, LIVE badge overlay.
 class EamaxCarousel extends StatefulWidget {
-  const EamaxCarousel({
-    super.key,
-    required this.items,
-  });
+  const EamaxCarousel({super.key, required this.items});
 
   final List<CarouselSlide> items;
 
@@ -25,36 +23,18 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
   int _index = 0;
   Timer? _timer;
 
-  static const double _height = 320;
-  static const _autoMs = 5000;
+  static const double _height = 360;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController();
-    _startTimer();
-  }
-
-  void _startTimer() {
-    _timer?.cancel();
-    if (widget.items.length <= 1) return;
-    _timer = Timer.periodic(const Duration(milliseconds: _autoMs), (_) {
-      if (!mounted || !_pageController.hasClients) return;
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || widget.items.length <= 1) return;
       final next = (_index + 1) % widget.items.length;
-      _pageController.animateToPage(
-        next,
-        duration: const Duration(milliseconds: 680),
-        curve: Curves.easeInOutCubic,
-      );
+      setState(() => _index = next);
+      _pageController.animateToPage(next, duration: const Duration(milliseconds: 450), curve: Curves.easeOut);
     });
-  }
-
-  @override
-  void didUpdateWidget(covariant EamaxCarousel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.items.length != widget.items.length) {
-      _startTimer();
-    }
   }
 
   @override
@@ -66,264 +46,130 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
 
   @override
   Widget build(BuildContext context) {
-    final w = MediaQuery.sizeOf(context).width - 32;
+    final t = context.watch<ThemeController>().colors;
     if (widget.items.isEmpty) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-      child: Column(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: SizedBox(
-              width: w,
-              height: _height,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  PageView.builder(
-                    controller: _pageController,
-                    itemCount: widget.items.length,
-                    onPageChanged: (i) => setState(() => _index = i),
-                    itemBuilder: (context, i) {
-                      final item = widget.items[i];
-                      return _SlideContent(item: item);
-                    },
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: t.border.withValues(alpha: 0.6)),
+          boxShadow: [
+            BoxShadow(
+              color: t.accent.withValues(alpha: 0.14),
+              blurRadius: 24,
+              spreadRadius: -6,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: SizedBox(
+            height: _height,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                PageView.builder(
+                  controller: _pageController,
+                  itemCount: widget.items.length,
+                  onPageChanged: (i) => setState(() => _index = i),
+                  itemBuilder: (context, i) => _CarouselSlideWidget(item: widget.items[i], colors: t),
+                ),
+                Positioned(
+                  left: 18,
+                  right: 18,
+                  bottom: 14,
+                  child: Row(
+                    children: List.generate(widget.items.length, (i) {
+                      final active = i == _index;
+                      return GestureDetector(
+                        onTap: () {
+                          setState(() => _index = i);
+                          _pageController.animateToPage(i, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          margin: const EdgeInsets.only(right: 6),
+                          height: 3,
+                          width: active ? 32 : 14,
+                          decoration: BoxDecoration(
+                            color: active ? t.accent : const Color(0xFF52525b),
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                        ),
+                      );
+                    }),
                   ),
-                  if (widget.items.length > 1) ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: _NavArrow(
-                          icon: Icons.chevron_left,
-                          onTap: () {
-                            final next = (_index - 1 + widget.items.length) % widget.items.length;
-                            _pageController.animateToPage(
-                              next,
-                              duration: const Duration(milliseconds: 680),
-                              curve: Curves.easeInOutCubic,
-                            );
-                            _startTimer();
-                          },
-                        ),
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: _NavArrow(
-                          icon: Icons.chevron_right,
-                          onTap: () {
-                            final next = (_index + 1) % widget.items.length;
-                            _pageController.animateToPage(
-                              next,
-                              duration: const Duration(milliseconds: 680),
-                              curve: Curves.easeInOutCubic,
-                            );
-                            _startTimer();
-                          },
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+                ),
+              ],
             ),
           ),
-          if (widget.items.length > 1)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(widget.items.length, (i) {
-                  final active = i == _index;
-                  return GestureDetector(
-                    onTap: () {
-                      _pageController.animateToPage(
-                        i,
-                        duration: const Duration(milliseconds: 680),
-                        curve: Curves.easeInOutCubic,
-                      );
-                      _startTimer();
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: active ? 22 : 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: active ? const Color(0xFF22C55E) : const Color(0x47FFFFFF),
-                        borderRadius: BorderRadius.circular(3.5),
-                      ),
-                    ),
-                  );
-                }),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _NavArrow extends StatelessWidget {
-  const _NavArrow({required this.icon, required this.onTap});
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0x61000000),
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Icon(icon, color: const Color(0xD9FFFFFF), size: 20),
         ),
       ),
     );
   }
 }
 
-class _SlideContent extends StatelessWidget {
-  const _SlideContent({required this.item});
+class _CarouselSlideWidget extends StatelessWidget {
+  const _CarouselSlideWidget({required this.item, required this.colors});
   final CarouselSlide item;
-
-  Widget _fallback() {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF0C0F1A), Color(0xFF111827), Color(0xFF000000)],
-        ),
-      ),
-      child: const Center(
-        child: Icon(Icons.image_not_supported_outlined, color: Color(0x66FFFFFF), size: 44),
-      ),
-    );
-  }
+  final AppThemeColors colors;
 
   @override
   Widget build(BuildContext context) {
+    final badge = (item.badge != null && item.badge!.trim().isNotEmpty) ? item.badge!.trim() : 'LIVE';
+    final title = item.title?.trim() ?? '';
+
     return Stack(
       fit: StackFit.expand,
       children: [
         if (item.imageUrl != null && item.imageUrl!.isNotEmpty)
-          CachedNetworkImage(
-            imageUrl: item.imageUrl!,
-            fit: BoxFit.cover,
-            placeholder: (_, __) => _fallback(),
-            errorWidget: (_, __, ___) => _fallback(),
-          )
+          SafeNetworkImage(imageUrl: item.imageUrl!, fit: BoxFit.cover, placeholderColor: colors.card)
         else
-          _fallback(),
-        Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.black.withValues(alpha: 0.08),
-                Colors.black.withValues(alpha: 0.18),
-                Colors.black.withValues(alpha: 0.72),
-              ],
-            ),
-          ),
-        ),
-        if (item.badge != null && item.badge!.isNotEmpty)
-          Positioned(
-            top: 14,
-            left: 14,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppColors.liveRed,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 5),
-                  Text(
-                    item.badge!,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.4,
-                    ),
-                  ),
-                ],
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: item.gradient.length >= 2 ? item.gradient : [colors.card, colors.bg2],
               ),
             ),
           ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+        Positioned(
+          left: 20,
+          right: 24,
+          bottom: 36,
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.end,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (item.title != null && item.title!.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: colors.red, borderRadius: BorderRadius.circular(4)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(width: 4, height: 4, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle)),
+                    const SizedBox(width: 6),
+                    Text(badge.toUpperCase(), style: orbitron(8, weight: FontWeight.w900).copyWith(color: Colors.white, letterSpacing: 1.5)),
+                  ],
+                ),
+              ),
+              if (title.isNotEmpty) ...[
+                const SizedBox(height: 8),
                 Text(
-                  item.title!,
+                  title.toUpperCase(),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
+                  style: inter(18, weight: FontWeight.w900).copyWith(
                     color: Colors.white,
-                    letterSpacing: 0.3,
-                    shadows: [Shadow(blurRadius: 6, color: Colors.black87, offset: Offset(0, 2))],
+                    height: 1.15,
+                    fontStyle: FontStyle.italic,
+                    letterSpacing: -0.5,
+                    shadows: const [Shadow(color: Colors.black54, blurRadius: 12, offset: Offset(0, 2))],
                   ),
-                ),
-              if (item.subtitle != null && item.subtitle!.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  item.subtitle!,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.white.withValues(alpha: 0.82),
-                    shadows: const [Shadow(blurRadius: 4, color: Colors.black54, offset: Offset(0, 1))],
-                  ),
-                ),
-              ],
-              if (item.info.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 4,
-                  children: item.info
-                      .map(
-                        (inf) => Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.schedule, size: 13, color: AppColors.gold),
-                            const SizedBox(width: 4),
-                            Text(
-                              inf.text,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                      .toList(),
                 ),
               ],
             ],

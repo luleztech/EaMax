@@ -32,6 +32,7 @@ import cacheService from '../services/cacheService';
 
 const StreamingApp = () => {
   const [isPremium, setIsPremium] = useState(false);
+  const [subscriptionEndDate, setSubscriptionEndDate] = useState(null);
   const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
   const [userPoints, setUserPoints] = useState(0);
   const [adModalVisible, setAdModalVisible] = useState(false);
@@ -53,9 +54,14 @@ const StreamingApp = () => {
       
       console.log(`[RealtimeUpdate] Premium update: ${isPrem}, expires: ${expiresAt}`);
       
-      // Instantly set UI to premium
       setIsPremium(isPrem);
-      
+      if (expiresAt) {
+        const d = new Date(expiresAt);
+        if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+      } else if (!isPrem) {
+        setSubscriptionEndDate(null);
+      }
+
       // Show congrats if wasn't already shown
       if (isPrem) {
         AsyncStorage.getItem('userId').then(uid => {
@@ -101,8 +107,12 @@ const StreamingApp = () => {
         const userData = await userAPI.getUser(userId);
         const points = userData.points ?? 0;
         const premium = !!userData.isPremium;
+        let subEnd = null;
+        if (userData.subscriptionEndDate) {
+          const d = new Date(userData.subscriptionEndDate);
+          if (!Number.isNaN(d.getTime())) subEnd = d;
+        }
 
-        // Cache the user data with 60 second TTL
         cacheService.set('user_data', {
           points,
           isPremium: premium,
@@ -111,6 +121,8 @@ const StreamingApp = () => {
         }, 60);
 
         setUserPoints(points);
+        setIsPremium(premium);
+        setSubscriptionEndDate(premium ? subEnd : null);
         if (premium) {
           const alreadyShown = await AsyncStorage.getItem(`${CONGRATS_STORAGE_KEY}_${userId}`);
           if (!alreadyShown) {
@@ -121,7 +133,6 @@ const StreamingApp = () => {
             setHasShownCongrats(true);
           }
         }
-        setIsPremium(premium);
         return points;
       }
     } catch (error) {
@@ -149,6 +160,11 @@ const StreamingApp = () => {
           if (cachedUser) {
             setUserPoints(cachedUser.points ?? 0);
             setIsPremium(!!cachedUser.isPremium);
+            const cachedExp = cachedUser.premium_expires_at || cachedUser.premiumExpiresAt;
+            if (cachedExp) {
+              const d = new Date(cachedExp);
+              if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+            }
           }
 
           // Then refresh from server (will update cache)
@@ -338,12 +354,19 @@ const StreamingApp = () => {
    * Sets isPremium=true instantly for a snappy UI, then does a real server refresh in the
    * background to confirm and update expiry/points.
    */
-  const handlePaymentSuccess = useCallback(async () => {
+  const handlePaymentSuccess = useCallback(async (paymentUser) => {
     console.log('[Payment] Success! Triggering instant premium upgrade...');
 
-    // Instant UI feedback — do not wait for server
     setIsPremium(true);
-    cacheService.delete('user_data'); // Bust stale cache so next read goes to server
+    const exp =
+      paymentUser?.premiumExpiresAt ||
+      paymentUser?.premium_expires_at ||
+      paymentUser?.subscriptionEndDate;
+    if (exp) {
+      const d = new Date(exp);
+      if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+    }
+    cacheService.delete('user_data');
 
     const userId = await AsyncStorage.getItem('userId');
     if (userId) {
@@ -365,11 +388,13 @@ const StreamingApp = () => {
       <View style={styles.appContainer}>
         <CombinedApp
           isPremium={isPremium}
+          subscriptionEndDate={subscriptionEndDate}
           channelsPremiumOnly={channelsPremiumOnly}
           userPoints={userPoints}
           onWatchAd={handleWatchAd}
           onPaymentsActiveChange={setIsPaymentsActive}
-          onPointsRefresh={handlePaymentSuccess}
+          onPointsRefresh={refreshUserPoints}
+          onPaymentSuccess={handlePaymentSuccess}
         />
       </View>
 

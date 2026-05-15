@@ -169,12 +169,13 @@ const formatPhoneForSonicPesaApi = (local0) => {
 };
 
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
-  const candidates = [];
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  if (api255) candidates.push(api255);
-  if (local && local !== api255) candidates.push(local);
-  return [...new Set(candidates)];
+  // Halopesa (061–063) often rejects 255… on Sonic; try local 0… first.
+  if (isHalotelLocalPhone(normalizedPhone)) {
+    return [...new Set([local, api255].filter(Boolean))];
+  }
+  return [...new Set([api255, local].filter((p) => p && p.length > 0))];
 };
 
 const isSonicInitiateSuccess = (sonicData, httpResponse) => {
@@ -188,14 +189,30 @@ const isSonicInitiateSuccess = (sonicData, httpResponse) => {
   return false;
 };
 
+/** Sonic result codes / messages where STK/USSD was not delivered — safe to try ZenoPay next. */
+const SONIC_STK_FAILURE_CODES = new Set([
+  '9012', '999', '103', '9009', '90009', '500', '502', '503', '504', '408', '429',
+]);
+
 const isSonicPaymentSendFailure = (rawMessage, rawCode) => {
-  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
+  const msg = String(rawMessage || '').trim();
+  const code = String(rawCode ?? '').trim();
+  const combined = `${msg} ${code}`.toLowerCase();
+  if (code && SONIC_STK_FAILURE_CODES.has(code)) return true;
+  if (/^general system error/i.test(msg)) return true;
+  if (/\b9012\b|\b999\b/.test(combined)) return true;
+  if (/\bambiguous\b|\bfail\b|\berror\b/.test(combined) && /upstream|system|ussd|push|send|reponse|response/i.test(combined)) {
+    return true;
+  }
   return (
-    /hayajatumika|malipo hayajatumika|hayajaweza kutumika|malipo hayajaweza kutumika|hayajaweza kutuma|hayajaweza kutumika/i.test(
+    /hayajatumika|malipo hayajatumika|hayajaweza kutumika|malipo hayajaweza kutumika|hayajaweza kutuma/i.test(
       combined,
     ) ||
-    /not sent|could not send|push failed|failed to send|unable to send|cannot send|was not sent/i.test(combined) ||
-    /no response from upstream|upstream/i.test(combined)
+    /not sent|could not send|push failed|failed to send|unable to send|cannot send|was not sent/i.test(
+      combined,
+    ) ||
+    /no reponse from upstream|no response from upstream|upstream system|upstream/i.test(combined) ||
+    /rejecting.*ussd|ongoing ussd|ussd session/i.test(combined)
   );
 };
 
@@ -204,11 +221,21 @@ const isHalotelLocalPhone = (local0) => {
   return p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
 };
 
-const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
+const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}) => {
+  const code = String(rawCode ?? '').trim();
+  const msg = String(rawMessage || '').trim();
+  if (options.zenoAlsoFailed) {
+    return (
+      'Hatukuweza kutuma ombi la malipo kwenye simu yako (SonicPesa na ZenoPay). Hakikisha nambari ni sahihi, mtandao wa pesa unafanya kazi, na una salio la kutosha, kisha jaribu tena.'
+    );
+  }
+  if (code === '103' || /ongoing ussd/i.test(msg)) {
+    return 'Simu yako ina USSD nyingine zinazoendelea. Funga dirisha la malipo/USSD kwenye simu, subiri sekunde 30, kisha jaribu tena.';
+  }
   if (isSonicPaymentSendFailure(rawMessage, rawCode)) {
     if (isHalotelLocalPhone(localPhone)) {
       return (
-        'SonicPesa haikutuma ombi kwa Halopesa (061–063). Tumia ZenoPay kwenye admin, au hakikisha Halopesa iko active na nambari sahihi, kisha jaribu tena.'
+        'Halopesa (061–063) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu ZenoPay kiotomatiki.'
       );
     }
     return (
@@ -549,6 +576,11 @@ const isActivePaymentProviderConfigured = (provider) => {
   return Boolean(ZENO_API_KEY);
 };
 
+/** When Sonic is admin default but cannot push STK, attempt Zeno if keys exist. */
+const shouldFallbackSonicToZeno = (rawMessage, rawCode) =>
+  isSonicPaymentSendFailure(rawMessage, rawCode) &&
+  isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO);
+
 /** Second GET right after create; off by default — Zeno responses vary and can false-fail. Set ZENO_POST_VERIFY=1 to enable. */
 const zenoQuickPostCreateVerify = async (orderRef) => {
   if (String(process.env.ZENO_POST_VERIFY || '').trim() !== '1') return { ok: true };
@@ -827,19 +859,41 @@ async function handlePaymentStart(req, res, next) {
     const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
 
-    if (!isActivePaymentProviderConfigured(provider)) {
-      const label = provider === PAYMENT_PROVIDERS.SONICPESA ? 'SonicPesa' : 'ZenoPay';
+    const zenoReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO);
+    const sonicReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.SONICPESA);
+    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && !zenoReady) {
       return res.status(503).json({
-        error: `${label} haijasanidi kwenye seva. Wasiliana na admin au chagua mtoa huduma mwingine kwenye EaAdmin.`,
+        error: 'SonicPesa na ZenoPay hazijasanidi kwenye seva. Wasiliana na admin.',
         activeProvider: provider,
         configured: false,
       });
     }
-
+    if (provider === PAYMENT_PROVIDERS.ZENO && !zenoReady) {
+      return res.status(503).json({
+        error: 'ZenoPay haijasanidi kwenye seva. Wasiliana na admin au chagua SonicPesa kwenye EaAdmin.',
+        activeProvider: provider,
+        configured: false,
+      });
+    }
     let paymentProviderForRow = provider;
-    let usedZenoFallbackForHalotel = false;
+    let usedZenoFallbackFromSonic = false;
+    let sonicFailureForClient = null;
 
-    if (provider === PAYMENT_PROVIDERS.SONICPESA) {
+    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && zenoReady) {
+      console.warn('[Payment] SonicPesa not configured — using ZenoPay for all networks');
+      paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+    }
+
+    const skipSonicForHalotel =
+      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
+      isHalotelLocalPhone(normalizedPhone) &&
+      zenoReady;
+
+    if (skipSonicForHalotel) {
+      console.log('[Payment] Halotel MSISDN — using ZenoPay directly (SonicPesa Halopesa often returns 9012)');
+      paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+      usedZenoFallbackFromSonic = true;
+    } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
       if (!SONICPESA_SECRET_KEY) {
         console.warn(
@@ -899,29 +953,27 @@ async function handlePaymentStart(req, res, next) {
       }
 
       const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
+      const rawCode = sonicData.resultcode || sonicData.code;
       console.warn('[SonicPesa] Initiate failed:', {
         phoneLocal: normalizedPhone,
         phoneForSonicApi,
         status: response.status,
         message: rawErr,
-        resultcode: sonicData.resultcode || sonicData.code,
+        resultcode: rawCode,
       });
 
-      if (
-        isHalotelLocalPhone(normalizedPhone) &&
-        isSonicPaymentSendFailure(rawErr, sonicData.resultcode || sonicData.code) &&
-        isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO)
-      ) {
-        console.warn('[Payment] Halotel + SonicPesa send failure — falling back to ZenoPay for this payment');
+      sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
+
+      if (shouldFallbackSonicToZeno(rawErr, rawCode)) {
+        console.warn('[Payment] SonicPesa STK not sent — falling back to ZenoPay for this payment', {
+          phonePrefix: normalizedPhone.slice(0, 3),
+          resultcode: rawCode,
+        });
         paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
-        usedZenoFallbackForHalotel = true;
+        usedZenoFallbackFromSonic = true;
       } else {
         return res.status(400).json({
-          error: mapSonicInitiateUserError(
-            normalizedPhone,
-            rawErr,
-            sonicData.resultcode || sonicData.code,
-          ),
+          error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
           sonicResponse: sonicData,
         });
       }
@@ -988,8 +1040,22 @@ async function handlePaymentStart(req, res, next) {
         zenoData.message ||
         (zenoData.resultcode ? `ZenoPay (${zenoData.resultcode})` : '') ||
         'Failed to start payment request';
+      const zenoMapped = mapPaymentGatewayUserError(rawError, zenoData.resultcode, { context: 'initiate' });
+      if (usedZenoFallbackFromSonic && sonicFailureForClient) {
+        return res.status(400).json({
+          error: mapSonicInitiateUserError(
+            normalizedPhone,
+            sonicFailureForClient.message,
+            sonicFailureForClient.code,
+            { zenoAlsoFailed: true },
+          ),
+          detail: zenoMapped,
+          sonicResponse: sonicFailureForClient.sonicData,
+          zenoResponse: zenoData,
+        });
+      }
       return res.status(400).json({
-        error: mapPaymentGatewayUserError(rawError, zenoData.resultcode, { context: 'initiate' }),
+        error: zenoMapped,
         zenoResponse: zenoData,
       });
     }
@@ -1029,12 +1095,14 @@ async function handlePaymentStart(req, res, next) {
       orderId: clientFacingOrderId,
       message:
         zenoData.message ||
-        (usedZenoFallbackForHalotel
-          ? 'Ombi limetumwa kupitia ZenoPay (Halopesa). Fuata maelekezo kwenye simu yako.'
+        (usedZenoFallbackFromSonic
+          ? isHalotelLocalPhone(normalizedPhone)
+            ? 'Ombi limetumwa kupitia ZenoPay (Halopesa). Angalia simu yako na uingize PIN.'
+            : 'Ombi limetumwa kupitia ZenoPay. Angalia simu yako na uingize PIN ya malipo.'
           : 'Request in progress. You will receive a prompt on your phone.'),
       provider: PAYMENT_PROVIDERS.ZENO,
       activeProvider: provider,
-      ...(usedZenoFallbackForHalotel ? { fallbackFrom: PAYMENT_PROVIDERS.SONICPESA } : {}),
+      ...(usedZenoFallbackFromSonic ? { fallbackFrom: PAYMENT_PROVIDERS.SONICPESA } : {}),
     });
   } catch (err) {
     console.error('[Payment] Start error:', err?.message || err);

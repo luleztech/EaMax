@@ -57,11 +57,13 @@ const MOVIE_GENRES = [
 
 const CombinedApp = ({
   isPremium,
+  subscriptionEndDate,
   channelsPremiumOnly,
   userPoints,
   onWatchAd,
   onPaymentsActiveChange,
   onPointsRefresh,
+  onPaymentSuccess,
 }) => {
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
@@ -679,13 +681,15 @@ const CombinedApp = ({
         <PaymentsScreen
           accentColor="#60a5fa"
           bottomPadding={contentBottomPadding}
-          onPaymentSuccess={onPointsRefresh}
+          onPaymentSuccess={onPaymentSuccess}
         />
       ) : activeTab === 'profile' ? (
         <ProfileScreen
           accentColor="#60a5fa"
           onWatchAd={onWatchAd}
           userPoints={userPoints}
+          isPremium={isPremium}
+          subscriptionEndDate={subscriptionEndDate}
           onPointsRefresh={onPointsRefresh}
           bottomPadding={contentBottomPadding}
         />

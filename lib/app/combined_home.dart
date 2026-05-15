@@ -4,18 +4,22 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:provider/provider.dart';
 import '../config/api.dart';
 import '../models/carousel_slide.dart';
 import '../models/channel_ui.dart';
 import '../screens/fullscreen_video_page.dart';
 import '../screens/payments_screen.dart';
 import '../screens/profile_screen.dart';
+import '../screens/settings_screen.dart';
 import '../services/native_android_player.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
+import '../widgets/channel_card.dart';
 import '../widgets/channel_unavailable_modal.dart';
-import '../widgets/eamax_carousel.dart';
+import '../widgets/home_search_bar.dart';
 
+import '../screens/ratiba_tab.dart';
 import 'home_tabs.dart';
 
 
@@ -28,13 +32,13 @@ class _MalipoScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.scaffold,
+      backgroundColor: const Color(0xFF02040A),
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        backgroundColor: const Color(0xEE030712),
+        backgroundColor: const Color(0xEE02040A),
         elevation: 0,
         foregroundColor: Colors.white,
-        title: const Text('Malipo', style: TextStyle(fontWeight: FontWeight.w700)),
+        title: const Text('Fungua zote', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.5)),
       ),
       body: PaymentsScreen(
         bottomPadding: bottomPadding,
@@ -77,15 +81,19 @@ class CombinedHome extends StatefulWidget {
   const CombinedHome({
     super.key,
     required this.isPremium,
+    this.subscriptionEndDate,
     required this.channelsPremiumOnly,
     required this.userPoints,
     required this.onWatchAd,
     required this.onPointsRefresh,
     required this.onPaymentsActiveChange,
     required this.syncPremiumSetting,
+    this.externalTabIndex = 0,
   });
 
+  final int externalTabIndex;
   final bool isPremium;
+  final DateTime? subscriptionEndDate;
   final bool channelsPremiumOnly;
   final int userPoints;
   final VoidCallback onWatchAd;
@@ -101,8 +109,8 @@ class CombinedHome extends StatefulWidget {
 class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderStateMixin {
   late final AnimationController _glowCtrl;
 
-  int _tab = 0;
-  String _channelFilter = 'zote';
+  String _homeChannelFilter = 'zote';
+  String _channelsGridFilter = 'all';
   List<CarouselSlide> _carousel = [];
   List<ChannelUi> _football = [];
   Map<String, List<ChannelUi>> _byCat = {
@@ -120,6 +128,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   int _localPoints = 0;
   int? _loadingChannelId;
 
+  bool _searchOpen = false;
+  String _searchQuery = '';
+  final FocusNode _searchFocus = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -131,9 +143,27 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   @override
   void dispose() {
+    _searchFocus.dispose();
     _glowCtrl.dispose();
     super.dispose();
   }
+
+  void _toggleSearch() {
+    setState(() {
+      _searchOpen = !_searchOpen;
+      if (!_searchOpen) {
+        _searchQuery = '';
+        _searchFocus.unfocus();
+      } else {
+        Future.microtask(_searchFocus.requestFocus);
+      }
+    });
+  }
+
+  List<ChannelUi> _allChannels() => [
+        ..._football,
+        ..._byCat.values.expand((list) => list),
+      ];
 
   @override
   void didUpdateWidget(covariant CombinedHome oldWidget) {
@@ -157,7 +187,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       ),
     );
     if (!mounted) return;
-    widget.onPaymentsActiveChange(_tab == 2);
+    widget.onPaymentsActiveChange(widget.externalTabIndex == 3);
+  }
+
+  void openPaymentsTab() {
+    context.read<AppNav>().setTab(3);
   }
 
   Future<void> _loadAll() async {
@@ -296,7 +330,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   List<ChannelSection> _sections() {
-    switch (_channelFilter) {
+    switch (_homeChannelFilter) {
       case 'mpira':
         return _football.isEmpty
             ? []
@@ -333,7 +367,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
           ..._byCat.values.expand((list) => list),
         ];
 
-        final freeChannels = allChannels.where((ch) => ch.unlockToFree || ch.pointsRequired == 0).toList();
+        final freeChannels = allChannels
+            .where((ch) => ch.isFreeForCatalog(widget.channelsPremiumOnly))
+            .toList();
         final freeIds = freeChannels.map((ch) => ch.id).toSet();
 
         final sections = <ChannelSection>[];
@@ -616,104 +652,114 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   @override
   Widget build(BuildContext context) {
-    final inset = MediaQuery.paddingOf(context).bottom;
-    final bottomPad = kHomeBottomNavScrollPaddingBody + inset;
-    final w = MediaQuery.sizeOf(context).width;
-    final cardW = (w - 44) / 2;
-    const cardH = 240.0;
+    final t = context.watch<ThemeController>().colors;
+    final tab = widget.externalTabIndex;
+    const bottomPad = 100.0;
 
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      widget.onPaymentsActiveChange(_tab == 2);
+      widget.onPaymentsActiveChange(tab == 3 || tab == 4);
     });
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        const Positioned.fill(
+        Positioned.fill(
           child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: AppColors.backgroundGradient,
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [t.bg2, t.bg1],
               ),
             ),
           ),
         ),
-        SafeArea(
-          top: true,
-          bottom: false,
-          child: Column(
-            children: [
-              if (_tab != 2)
-                HomeHeader(
-                  points: widget.userPoints,
-                  isPremium: widget.isPremium,
-                  onPremium: _openMalipo,
-                ),
-              Expanded(
-                child: IndexedStack(
-                  index: _tab,
-                  children: [
-                    HomeMainTab(
-                      initialLoading: _initialLoading,
-                      refreshing: _refreshing,
-                      carousel: _carousel,
-                      channelFilter: _channelFilter,
-                      onFilter: (k) => setState(() => _channelFilter = k),
-                      sections: _sections(),
-                      matches: _matches,
-                      isPremium: widget.isPremium,
-                      channelFilterKey: _channelFilter,
-                      bottomPad: bottomPad,
-                      glowCtrl: _glowCtrl,
-                      cardW: cardW,
-                      cardH: cardH,
-                      channelBadge: _channelBadge,
-                      onChannel: _openChannel,
-                      onRefresh: _onRefresh,
-                      loadingChannelId: _loadingChannelId,
-                      iconFor: _icon,
-                    ),
-                    ChannelsTab(
-                      initialLoading: _initialLoading,
-                      refreshing: _refreshing,
-                      channelFilter: _channelFilter,
-                      onFilter: (k) => setState(() => _channelFilter = k),
-                      sections: _sections(),
-                      bottomPad: bottomPad,
-                      glowCtrl: _glowCtrl,
-                      cardW: cardW,
-                      cardH: cardH,
-                      channelBadge: _channelBadge,
-                      onChannel: _openChannel,
-                      onRefresh: _onRefresh,
-                      loadingChannelId: _loadingChannelId,
-                      iconFor: _icon,
-                      isPremium: widget.isPremium,
-                    ),
-                    ProfileScreen(
-                      bottomPadding: bottomPad,
-                      userPoints: widget.userPoints,
-                      onWatchAd: widget.onWatchAd,
-                      onPointsRefresh: widget.onPointsRefresh,
-                      onOpenPayments: _openMalipo,
-                    ),
-                  ],
-                ),
+        Column(
+          children: [
+            if (tab == 0 || tab == 1 || tab == 2)
+              HomeHeader(
+                title: tab == 0 ? 'EaMax' : (tab == 1 ? 'Ratiba' : 'Channels'),
+                subtitle: tab == 0 ? 'MPIRA NA TAMTHILIA' : (tab == 1 ? 'MECHI ZIJAZO' : 'ALL STREAMS'),
+                points: widget.userPoints,
+                isPremium: widget.isPremium,
+                onPremium: openPaymentsTab,
+                onSearch: tab == 0 || tab == 2 ? _toggleSearch : null,
+                onSettings: () {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  );
+                },
               ),
-            ],
-          ),
-        ),
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: HomeBottomNav(
-            index: _tab,
-            onTap: (i) => setState(() => _tab = i),
-            bottomInset: inset,
-          ),
+            if ((tab == 0 || tab == 2) && _searchOpen)
+              HomeSearchBar(
+                open: _searchOpen,
+                query: _searchQuery,
+                focusNode: _searchFocus,
+                onChanged: (v) => setState(() => _searchQuery = v),
+                onClear: () => setState(() => _searchQuery = ''),
+              ),
+            Expanded(
+              child: IndexedStack(
+                index: tab,
+                children: [
+                  HomeMainTab(
+                    initialLoading: _initialLoading,
+                    refreshing: _refreshing,
+                    carousel: _carousel,
+                    allChannels: _allChannels(),
+                    channelFilter: _homeChannelFilter,
+                    onFilter: (k) => setState(() => _homeChannelFilter = k),
+                    isPremium: widget.isPremium,
+                    channelsPremiumOnly: widget.channelsPremiumOnly,
+                    searchQuery: _searchQuery,
+                    bottomPad: bottomPad,
+                    onChannel: _openChannel,
+                    onRefresh: _onRefresh,
+                  ),
+                  RatibaTab(
+                    matches: _matches,
+                    initialLoading: _initialLoading,
+                    refreshing: _refreshing,
+                    bottomPad: bottomPad,
+                    onRefresh: _onRefresh,
+                    isPremium: widget.isPremium,
+                    channelsPremiumOnly: widget.channelsPremiumOnly,
+                  ),
+                  ChannelsTab(
+                    initialLoading: _initialLoading,
+                    refreshing: _refreshing,
+                    allChannels: _allChannels(),
+                    channelFilter: _channelsGridFilter,
+                    onFilter: (k) => setState(() => _channelsGridFilter = k),
+                    searchQuery: _searchQuery,
+                    bottomPad: bottomPad,
+                    onChannel: _openChannel,
+                    onRefresh: _onRefresh,
+                    isPremium: widget.isPremium,
+                    channelsPremiumOnly: widget.channelsPremiumOnly,
+                  ),
+                  PaymentsScreen(
+                    bottomPadding: bottomPad,
+                    onPaymentSuccess: widget.onPointsRefresh,
+                  ),
+                  ProfileScreen(
+                    bottomPadding: bottomPad,
+                    userPoints: widget.userPoints,
+                    isPremium: widget.isPremium,
+                    subscriptionEndDate: widget.subscriptionEndDate,
+                    onWatchAd: widget.onWatchAd,
+                    onPointsRefresh: widget.onPointsRefresh,
+                    onOpenPayments: openPaymentsTab,
+                    onOpenSettings: () {
+                      Navigator.of(context).push<void>(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         if (_unlockOpen && _selectedChannel != null)
           UnlockChannelOverlay(
