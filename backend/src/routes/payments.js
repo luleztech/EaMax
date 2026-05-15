@@ -11,7 +11,21 @@ const PAYMENT_PROVIDERS = {
 };
 const SONICPESA_API_BASE = 'https://api.sonicpesa.com/api/v1';
 const SONICPESA_API_KEY = process.env.SONICPESA_API_KEY;
+const SONICPESA_SECRET_KEY =
+  process.env.SONICPESA_SECRET_KEY || process.env.SONICPESA_API_SECRET || process.env.SONICPESA_SECRETE_KEY;
 const SONICPESA_WEBHOOK_SECRET = process.env.SONICPESA_WEBHOOK_SECRET;
+
+const getSonicPesaRequestHeaders = () => {
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-API-KEY': SONICPESA_API_KEY,
+    Accept: 'application/json',
+  };
+  if (SONICPESA_SECRET_KEY) {
+    headers['X-SECRET-KEY'] = SONICPESA_SECRET_KEY;
+  }
+  return headers;
+};
 
 const SONIC_WEBHOOK_PAID_STATUSES = new Set([
   'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
@@ -146,10 +160,43 @@ const formatPhoneForSonicPesaApi = (local0) => {
     return formatBuyerPhoneLocal(local0);
   }
   const local = formatBuyerPhoneLocal(local0);
-  if (local.startsWith('0')) return `255${local.slice(1)}`;
-  if (local.startsWith('+255')) return local.slice(1);
-  if (local.startsWith('255') && local.length >= 12) return local;
-  return local;
+  let intl = local;
+  if (local.startsWith('0')) intl = `255${local.slice(1)}`;
+  else if (local.startsWith('+255')) intl = local.slice(1);
+  // Sonic docs: 255 + 9 digits (12 chars total)
+  if (intl.startsWith('255') && intl.length > 12) intl = intl.slice(0, 12);
+  return intl;
+};
+
+const sonicPhoneCandidatesForApi = (normalizedPhone) => {
+  const candidates = [];
+  const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
+  const local = formatBuyerPhoneLocal(normalizedPhone);
+  if (api255) candidates.push(api255);
+  if (local && local !== api255) candidates.push(local);
+  return [...new Set(candidates)];
+};
+
+const isSonicInitiateSuccess = (sonicData, httpResponse) => {
+  if (!sonicData || typeof sonicData !== 'object') return false;
+  const st = String(sonicData.status || '').toLowerCase().trim();
+  if (st === 'success') return true;
+  if (sonicData.success === true) return true;
+  const orderId =
+    sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId;
+  if (orderId && (httpResponse?.ok || st !== 'error')) return true;
+  return false;
+};
+
+const isSonicPaymentSendFailure = (rawMessage, rawCode) => {
+  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
+  return (
+    /hayajatumika|malipo hayajatumika|hayajaweza kutumika|malipo hayajaweza kutumika|hayajaweza kutuma|hayajaweza kutumika/i.test(
+      combined,
+    ) ||
+    /not sent|could not send|push failed|failed to send|unable to send|cannot send|was not sent/i.test(combined) ||
+    /no response from upstream|upstream/i.test(combined)
+  );
 };
 
 const isHalotelLocalPhone = (local0) => {
@@ -158,16 +205,10 @@ const isHalotelLocalPhone = (local0) => {
 };
 
 const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
-  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
-  if (
-    /hayajatumika|malipo hayajatumika|not sent|could not send|push failed|failed to send|unable to send/i.test(
-      combined,
-    )
-  ) {
+  if (isSonicPaymentSendFailure(rawMessage, rawCode)) {
     if (isHalotelLocalPhone(localPhone)) {
       return (
-        'Hatukuweza kutuma ombi la malipo kwenye Halopesa. Hakikisha nambari sahihi (061–063), ' +
-        'Halopesa iko active kwenye simu yako, kisha jaribu tena.'
+        'SonicPesa haikutuma ombi kwa Halopesa (061–063). Tumia ZenoPay kwenye admin, au hakikisha Halopesa iko active na nambari sahihi, kisha jaribu tena.'
       );
     }
     return (
@@ -572,36 +613,52 @@ const PLAN_CONFIG = {
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
-  const phoneForSonicApi = formatPhoneForSonicPesaApi(normalizedPhone);
-  const sonicPayload = {
-    buyer_email: data.email || 'user@eamax.app',
-    buyer_name: data.name || externalId,
-    buyer_phone: phoneForSonicApi,
-    amount: amountToSend,
-    currency: 'TZS',
+  const candidates = sonicPhoneCandidatesForApi(normalizedPhone);
+  let last = {
+    response: { ok: false, status: 500 },
+    sonicData: { status: 'error', message: 'Failed to start SonicPesa payment' },
+    phoneLocal,
+    phoneForSonicApi: candidates[0] || phoneLocal,
   };
-  try {
-    const { response, data: sonicData } = await gatewayFetchJson(
-      `${SONICPESA_API_BASE}/payment/create_order`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': SONICPESA_API_KEY,
-        },
-        body: JSON.stringify(sonicPayload),
-      },
-      SONIC_HTTP_TIMEOUT_MS,
-    );
-    return { response, sonicData, phoneLocal, phoneForSonicApi };
-  } catch (fetchErr) {
-    return {
-      response: { ok: false, status: 502 },
-      sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-      phoneLocal,
-      phoneForSonicApi,
+
+  for (const phoneForSonicApi of candidates) {
+    const sonicPayload = {
+      buyer_email: data.email || 'user@eamax.app',
+      buyer_name: data.name || externalId,
+      buyer_phone: phoneForSonicApi,
+      amount: amountToSend,
+      currency: 'TZS',
     };
+    try {
+      const { response, data: sonicData } = await gatewayFetchJson(
+        `${SONICPESA_API_BASE}/payment/create_order`,
+        {
+          method: 'POST',
+          headers: getSonicPesaRequestHeaders(),
+          body: JSON.stringify(sonicPayload),
+        },
+        SONIC_HTTP_TIMEOUT_MS,
+      );
+      last = { response, sonicData, phoneLocal, phoneForSonicApi };
+      if (isSonicInitiateSuccess(sonicData, response)) {
+        return last;
+      }
+      console.warn('[SonicPesa] create_order attempt failed:', {
+        phoneForSonicApi,
+        httpStatus: response.status,
+        sonicStatus: sonicData?.status,
+        message: sonicData?.message || sonicData?.error,
+      });
+    } catch (fetchErr) {
+      last = {
+        response: { ok: false, status: 502 },
+        sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+        phoneLocal,
+        phoneForSonicApi,
+      };
+    }
   }
+  return last;
 };
 
 const initiateZenoPayment = async ({
@@ -674,10 +731,7 @@ const pollSonicOrderStatus = async (orderId) => {
       `${SONICPESA_API_BASE}/payment/order_status`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-KEY': SONICPESA_API_KEY,
-        },
+        headers: getSonicPesaRequestHeaders(),
         body: JSON.stringify({ order_id: orderId }),
       },
       SONIC_HTTP_TIMEOUT_MS,
@@ -782,36 +836,86 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
+    let paymentProviderForRow = provider;
+    let usedZenoFallbackForHalotel = false;
+
     if (provider === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
+      if (!SONICPESA_SECRET_KEY) {
+        console.warn(
+          '[SonicPesa] SONICPESA_SECRET_KEY not set — some accounts require X-SECRET-KEY (see SonicPesa dashboard).',
+        );
+      }
 
       // eslint-disable-next-line no-console
       console.log('[SonicPesa] Sending payment request:', {
         orderId,
         phoneLocal: normalizedPhone,
-        phoneApi: formatPhoneForSonicPesaApi(normalizedPhone),
+        phoneCandidates: sonicPhoneCandidatesForApi(normalizedPhone),
         amount: amountToSend,
         bundle: data.bundle,
+        hasSecretKey: Boolean(SONICPESA_SECRET_KEY),
       });
 
-      const { response, sonicData } = await initiateSonicPayment({
+      const { response, sonicData, phoneForSonicApi } = await initiateSonicPayment({
         normalizedPhone,
         amountToSend,
         data,
         externalId: data.externalId,
       });
       // eslint-disable-next-line no-console
-      console.log('[SonicPesa] Response:', { status: response.status, sonicData });
+      console.log('[SonicPesa] Response:', {
+        status: response.status,
+        sonicStatus: sonicData?.status,
+        phoneForSonicApi,
+        sonicData,
+      });
 
-      if (!response.ok || sonicData.status !== 'success') {
-        const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
-        console.warn('[SonicPesa] Initiate failed:', {
-          phoneLocal: normalizedPhone,
-          phoneApi: formatPhoneForSonicPesaApi(normalizedPhone),
-          status: response.status,
-          message: rawErr,
-          resultcode: sonicData.resultcode || sonicData.code,
+      if (isSonicInitiateSuccess(sonicData, response)) {
+        const sonicOrderId = String(
+          sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId ?? '',
+        ).trim();
+        if (!sonicOrderId) {
+          return res.status(400).json({
+            error: 'SonicPesa did not return an order_id',
+            sonicResponse: sonicData,
+          });
+        }
+
+        providerResponseMessage = sonicData.message || providerResponseMessage;
+        await query(
+          `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [userId, data.bundle, planInfo.amount, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
+        );
+
+        return res.json({
+          status: 'pending',
+          orderId: sonicOrderId,
+          message: providerResponseMessage,
+          provider: PAYMENT_PROVIDERS.SONICPESA,
+          activeProvider: provider,
         });
+      }
+
+      const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
+      console.warn('[SonicPesa] Initiate failed:', {
+        phoneLocal: normalizedPhone,
+        phoneForSonicApi,
+        status: response.status,
+        message: rawErr,
+        resultcode: sonicData.resultcode || sonicData.code,
+      });
+
+      if (
+        isHalotelLocalPhone(normalizedPhone) &&
+        isSonicPaymentSendFailure(rawErr, sonicData.resultcode || sonicData.code) &&
+        isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO)
+      ) {
+        console.warn('[Payment] Halotel + SonicPesa send failure — falling back to ZenoPay for this payment');
+        paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+        usedZenoFallbackForHalotel = true;
+      } else {
         return res.status(400).json({
           error: mapSonicInitiateUserError(
             normalizedPhone,
@@ -821,29 +925,6 @@ async function handlePaymentStart(req, res, next) {
           sonicResponse: sonicData,
         });
       }
-
-      const sonicOrderId = sonicData.data?.order_id?.toString().trim();
-      if (!sonicOrderId) {
-        return res.status(400).json({
-          error: 'SonicPesa did not return an order_id',
-          sonicResponse: sonicData,
-        });
-      }
-
-      providerResponseMessage = sonicData.message || providerResponseMessage;
-      await query(
-        `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [userId, data.bundle, planInfo.amount, 'TZS', 'pending', sonicOrderId, provider, buyerPhoneLocal],
-      );
-
-      return res.json({
-        status: 'pending',
-        orderId: sonicOrderId,
-        message: providerResponseMessage,
-        provider: PAYMENT_PROVIDERS.SONICPESA,
-        activeProvider: provider,
-      });
     }
 
     ensureZenoConfigured();
@@ -858,13 +939,13 @@ async function handlePaymentStart(req, res, next) {
     await query(
       `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, provider, buyerPhoneLocal],
+      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, paymentProviderForRow, buyerPhoneLocal],
     );
 
     const rollbackPendingZenoByRef = async (ref) => {
       await query(
         `DELETE FROM subscription_payments WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
-        [ref, provider],
+        [ref, paymentProviderForRow],
       );
     };
     const rollbackPendingZenoRow = async () => {
@@ -901,7 +982,7 @@ async function handlePaymentStart(req, res, next) {
       responseOrderId: zenoData.order_id || zenoData.orderId || null,
     });
 
-    if (!response.ok || zenoData.status !== 'success') {
+    if (!response.ok || !String(zenoData.status || '').toLowerCase().includes('success')) {
       await rollbackPendingZenoRow();
       const rawError =
         zenoData.message ||
@@ -918,7 +999,7 @@ async function handlePaymentStart(req, res, next) {
     if (zenoCanon && zenoCanon !== orderId) {
       const upd = await query(
         `UPDATE subscription_payments SET provider_ref = $1 WHERE provider_ref = $2 AND status = 'pending' AND payment_provider = $3`,
-        [zenoCanon, orderId, provider],
+        [zenoCanon, orderId, paymentProviderForRow],
       );
       const n = upd.rowCount != null ? upd.rowCount : (upd.rows?.length ?? 0);
       if (n < 1) {
@@ -948,9 +1029,12 @@ async function handlePaymentStart(req, res, next) {
       orderId: clientFacingOrderId,
       message:
         zenoData.message ||
-        'Request in progress. You will receive a prompt on your phone.',
+        (usedZenoFallbackForHalotel
+          ? 'Ombi limetumwa kupitia ZenoPay (Halopesa). Fuata maelekezo kwenye simu yako.'
+          : 'Request in progress. You will receive a prompt on your phone.'),
       provider: PAYMENT_PROVIDERS.ZENO,
       activeProvider: provider,
+      ...(usedZenoFallbackForHalotel ? { fallbackFrom: PAYMENT_PROVIDERS.SONICPESA } : {}),
     });
   } catch (err) {
     console.error('[Payment] Start error:', err?.message || err);

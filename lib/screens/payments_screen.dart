@@ -401,10 +401,16 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     }
     // Do not map “insufficient balance” here — `/api/payments/start` errors are chosen on the server
     // (initiate vs paid). Showing canned salio on the client hid cases where STK was never sent.
-    if (lower.contains('upstream') ||
-        lower.contains('no response from upstream') ||
+    if (lower.contains('hayajaweza kutumika') ||
+        lower.contains('hayajatumika') ||
         lower.contains('malipo hayajatumika') ||
-        lower.contains('hayajatumika')) {
+        lower.contains('sonicpesa haikutuma')) {
+      return raw.length < 220
+          ? raw
+          : 'Hatukuweza kutuma ombi la malipo kwenye simu. Hakikisha nambari sahihi na mtandao wa pesa, kisha jaribu tena.';
+    }
+    if (lower.contains('upstream') ||
+        lower.contains('no response from upstream')) {
       return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo, kisha ujaribu tena.';
     }
     if (raw.length > 200) {
