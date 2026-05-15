@@ -129,14 +129,52 @@ const normalizePhoneToLocal0 = (rawPhone) => {
   return { local: normalizedPhone };
 };
 
-/**
- * All payment gateways: Tanzania local MSISDN only (0…). Never send international 255… to APIs.
- */
+/** Canonical storage + user-facing + ZenoPay: local 0… (e.g. 0631234567). */
 const formatBuyerPhoneLocal = (local0) => {
   const norm = normalizePhoneToLocal0(local0);
   if (norm.local) return norm.local;
   const p = String(local0 || '').trim();
   return p.startsWith('0') ? p : p;
+};
+
+/**
+ * SonicPesa API requires country code 255… (docs); users still type 0… in the app.
+ * DB `buyer_phone` stays local — only the create_order payload uses 255….
+ */
+const formatPhoneForSonicPesaApi = (local0) => {
+  if (String(process.env.SONIC_SEND_LOCAL_PHONE || '').trim() === '1') {
+    return formatBuyerPhoneLocal(local0);
+  }
+  const local = formatBuyerPhoneLocal(local0);
+  if (local.startsWith('0')) return `255${local.slice(1)}`;
+  if (local.startsWith('+255')) return local.slice(1);
+  if (local.startsWith('255') && local.length >= 12) return local;
+  return local;
+};
+
+const isHalotelLocalPhone = (local0) => {
+  const p = String(local0 || '');
+  return p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
+};
+
+const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
+  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
+  if (
+    /hayajatumika|malipo hayajatumika|not sent|could not send|push failed|failed to send|unable to send/i.test(
+      combined,
+    )
+  ) {
+    if (isHalotelLocalPhone(localPhone)) {
+      return (
+        'Hatukuweza kutuma ombi la malipo kwenye Halopesa. Hakikisha nambari sahihi (061–063), ' +
+        'Halopesa iko active kwenye simu yako, kisha jaribu tena.'
+      );
+    }
+    return (
+      'Hatukuweza kutuma ombi la malipo kwenye simu yako. Hakikisha nambari ni sahihi na mtandao wa pesa unafanya kazi, kisha jaribu tena.'
+    );
+  }
+  return mapPaymentGatewayUserError(rawMessage, rawCode, { context: 'initiate' });
 };
 
 const router = express.Router();
@@ -153,7 +191,7 @@ const ensureZenoConfigured = () => {
   }
 };
 
-/** ZenoPay + SonicPesa: always local 0… (Tanzania app — no international 255…). */
+/** ZenoPay: local 0… per official samples. */
 const formatBuyerPhoneForZeno = (local0) => formatBuyerPhoneLocal(local0);
 
 const isRetriableZenoInitiateFailure = (httpOk, zenoData, httpStatus) => {
@@ -533,11 +571,12 @@ const PLAN_CONFIG = {
 };
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
-  const phoneForSonic = formatBuyerPhoneLocal(normalizedPhone);
+  const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
+  const phoneForSonicApi = formatPhoneForSonicPesaApi(normalizedPhone);
   const sonicPayload = {
     buyer_email: data.email || 'user@eamax.app',
     buyer_name: data.name || externalId,
-    buyer_phone: phoneForSonic,
+    buyer_phone: phoneForSonicApi,
     amount: amountToSend,
     currency: 'TZS',
   };
@@ -554,12 +593,13 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
       },
       SONIC_HTTP_TIMEOUT_MS,
     );
-    return { response, sonicData, phoneForSonic };
+    return { response, sonicData, phoneLocal, phoneForSonicApi };
   } catch (fetchErr) {
     return {
       response: { ok: false, status: 502 },
       sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-      phoneForSonic,
+      phoneLocal,
+      phoneForSonicApi,
     };
   }
 };
@@ -749,7 +789,7 @@ async function handlePaymentStart(req, res, next) {
       console.log('[SonicPesa] Sending payment request:', {
         orderId,
         phoneLocal: normalizedPhone,
-        phoneApi: formatBuyerPhoneLocal(normalizedPhone),
+        phoneApi: formatPhoneForSonicPesaApi(normalizedPhone),
         amount: amountToSend,
         bundle: data.bundle,
       });
@@ -765,10 +805,19 @@ async function handlePaymentStart(req, res, next) {
 
       if (!response.ok || sonicData.status !== 'success') {
         const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
+        console.warn('[SonicPesa] Initiate failed:', {
+          phoneLocal: normalizedPhone,
+          phoneApi: formatPhoneForSonicPesaApi(normalizedPhone),
+          status: response.status,
+          message: rawErr,
+          resultcode: sonicData.resultcode || sonicData.code,
+        });
         return res.status(400).json({
-          error: mapPaymentGatewayUserError(rawErr, sonicData.resultcode || sonicData.code, {
-            context: 'initiate',
-          }),
+          error: mapSonicInitiateUserError(
+            normalizedPhone,
+            rawErr,
+            sonicData.resultcode || sonicData.code,
+          ),
           sonicResponse: sonicData,
         });
       }
