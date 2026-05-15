@@ -23,6 +23,19 @@ const ACCENT_DARK = '#16a34a';
 /** Tanzanian GSM prefixes — must match backend `payments.js` */
 const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
 
+const PAYMENT_TERMINAL_STATUSES = new Set([
+  'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'DECLINED', 'VOID', 'CANCEL', 'ERROR',
+]);
+
+function isTerminalPaymentStatus(status) {
+  return PAYMENT_TERMINAL_STATUSES.has(String(status || '').toUpperCase().trim());
+}
+
+function isCancelledPaymentStatus(status) {
+  const u = String(status || '').toUpperCase().trim();
+  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID';
+}
+
 /** Align with backend `mapPaymentGatewayUserError` for any raw gateway strings still shown in the client. */
 function mapPaymentGatewayErrorToSwahili(message) {
   const m = String(message || '');
@@ -45,18 +58,17 @@ function mapPaymentGatewayErrorToSwahili(message) {
   return m;
 }
 
-/** Normalize user input to local TZ format (0…). Returns { local } or { error: 'international' | 'invalid' } */
+/** Tanzania local only (0…). Rejects non-TZ international; converts pasted +255/255 to 0… */
 function normalizeTzPhoneToLocal(raw) {
   let s = String(raw || '').replace(/\s+/g, '');
   if (!s) return { error: 'invalid', local: null };
-  if (s.startsWith('+')) {
-    if (!s.startsWith('+255')) return { error: 'international', local: null };
-    s = `0${s.slice(4)}`;
-  } else if (s.startsWith('00255')) {
-    s = `0${s.slice(5)}`;
-  } else if (s.startsWith('255') && s.length >= 12) {
-    s = `0${s.slice(3)}`;
-  }
+  if (s.startsWith('+') && !s.startsWith('+255')) return { error: 'international', local: null };
+  if (s.startsWith('00') && !s.startsWith('00255')) return { error: 'international', local: null };
+  if (s.startsWith('+255')) s = `0${s.slice(4)}`;
+  else if (s.startsWith('00255')) s = `0${s.slice(5)}`;
+  else if (s.startsWith('255') && s.length >= 12) s = `0${s.slice(3)}`;
+  // Digits only without leading 0 (e.g. 712345678) → local 0712345678
+  if (/^[1-9]\d{8}$/.test(s)) s = `0${s}`;
   if (!/^\d+$/.test(s)) return { error: 'invalid', local: null };
   return { error: null, local: s };
 }
@@ -156,6 +168,15 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       return;
     }
 
+    let activeInterval = null;
+    const stopPolling = () => {
+      if (activeInterval) clearInterval(activeInterval);
+      activeInterval = null;
+      setPollingIntervalId(null);
+      setPollingOrderId(null);
+      setConsecutiveOrderNotFound(0);
+    };
+
     const pollPaymentStatus = async () => {
       try {
         console.log(`[Payment] Checking status for order: ${pollingOrderId}`);
@@ -163,38 +184,47 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         const paymentStatus = String(
           response?.status || response?.raw?.data?.[0]?.payment_status || '',
         ).toUpperCase();
+
+        if (response?.terminal === true || isTerminalPaymentStatus(paymentStatus)) {
+          stopPolling();
+          await AsyncStorage.removeItem('pendingPaymentOrderId');
+          const msg =
+            response?.userMessage ||
+            (isCancelledPaymentStatus(paymentStatus)
+              ? 'Ulighairi malipo kwenye simu. Unaweza kujaribu tena ukiwa tayari.'
+              : 'Malipo hayajakamilika. Jaribu tena.');
+          showStatusModal(
+            isCancelledPaymentStatus(paymentStatus) ? 'Malipo yameghairiwa' : 'Malipo hayajakamilika',
+            msg,
+            false,
+          );
+          return;
+        }
+
         if (paymentStatus === 'COMPLETED') {
-          // Payment successful! Backend has already applied unlock + premium + revenue
-          clearInterval(pollingIntervalId);
-          setPollingIntervalId(null);
-          setPollingOrderId(null);
-          setConsecutiveOrderNotFound(0);
+          stopPolling();
           await AsyncStorage.removeItem('pendingPaymentOrderId');
 
           console.log('[Payment] Payment COMPLETED! Triggering immediate upgrade...');
 
-          // Call onPaymentSuccess IMMEDIATELY without delay for instant upgrade
+          // Call onPaymentSuccess immediately so StreamingApp sets isPremium=true
           if (onPaymentSuccess) {
             try {
-              console.log('[Payment] Calling onPaymentSuccess callback immediately');
               await Promise.resolve(onPaymentSuccess());
               setLastPaymentSuccess(true);
             } catch (e) {
-              console.warn('Payment success callback error:', e);
+              console.warn('[Payment] Success callback error:', e);
             }
           }
 
-          // Show success modal with auto-close
           showStatusModal(
-            'Habari Njema!',
+            'Habari Njema! 🎉',
             'Malipo yako yamefaulu! Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
             true,
           );
 
-          // Auto-close modal after 2 seconds so user sees the upgrade immediately
-          setTimeout(() => {
-            setStatusModalVisible(false);
-          }, 2000);
+          // Auto-close after 2.5s so user sees the upgrade screen immediately
+          setTimeout(() => setStatusModalVisible(false), 2500);
         }
       } catch (error) {
         console.error('Error checking payment status:', error);
@@ -212,10 +242,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             // If we've had too many consecutive "order not found" errors, stop polling
             if (newCount >= 12) {
               console.error('[Payment] Too many consecutive "order not found" errors, stopping polling');
-              clearInterval(pollingIntervalId);
-              setPollingIntervalId(null);
-              setPollingOrderId(null);
-              setConsecutiveOrderNotFound(0);
+              stopPolling();
 
               showStatusModal(
                 'Malipo hayajathibitishwa',
@@ -233,26 +260,22 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       }
     };
 
-    // Start polling after a short delay so we catch COMPLETED quickly (user may complete payment on phone within seconds)
+    // Fast polling: first check ~300ms after STK, then every 1s for up to 90s
     const timeoutId = setTimeout(() => {
-      setConsecutiveOrderNotFound(0); // Reset counter when starting polling
+      setConsecutiveOrderNotFound(0);
       let pollCount = 0;
-      const maxPolls = 30; // ~1 min @ 2s — aligns with app UX; webhook still completes if user pays late
+      const maxPolls = 90;
 
-      const interval = setInterval(async () => {
+      const runPoll = async () => {
         pollCount += 1;
         await pollPaymentStatus();
+        if (pollCount >= maxPolls) stopPolling();
+      };
 
-        // Stop polling after max attempts
-        if (pollCount >= maxPolls) {
-          clearInterval(interval);
-          setPollingIntervalId(null);
-          setPollingOrderId(null);
-        }
-      }, 2000); // Poll every 2 seconds
-
-      setPollingIntervalId(interval);
-    }, 500); // Start polling quickly after STK is sent
+      runPoll();
+      activeInterval = setInterval(runPoll, 1000);
+      setPollingIntervalId(activeInterval);
+    }, 300);
 
     return () => {
       clearTimeout(timeoutId);
@@ -290,15 +313,26 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       showStatusModal('Chagua bundle', 'Tafadhali chagua bundle unayotaka kulipa.', false);
       return;
     }
-    const validPrefixes = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
-    const cleanPhone = phoneNumber.replace(/\s+/g, '');
-    const isValidFormat = /^0[0-9]{8,9}$/.test(cleanPhone);
-    const hasValidPrefix = validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
 
-    if (!phoneNumber || !isValidFormat || !hasValidPrefix) {
+    // Normalize input to local 0… (handles +255, 255, 0…)
+    const norm = normalizeTzPhoneToLocal(phoneNumber);
+    if (norm.error === 'international') {
       showStatusModal(
         'Nambari ya simu',
-        'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0632345678, 0712345678, 0742345678, 0782345678).',
+        'Tumia nambari ya simu ya Tanzania pekee — anza kwa 0 (mfano 0712345678).',
+        false,
+      );
+      return;
+    }
+    const cleanPhone = norm.local;
+    const validPrefixes = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
+    const isValidFormat = cleanPhone && /^0[0-9]{8,9}$/.test(cleanPhone);
+    const hasValidPrefix = cleanPhone && validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
+
+    if (!cleanPhone || !isValidFormat || !hasValidPrefix) {
+      showStatusModal(
+        'Nambari ya simu',
+        'Tafadhali ingiza nambari ya simu sahihi ya Tanzania (mfano: 0612345678, 0712345678, 0742345678).',
         false,
       );
       return;
@@ -455,21 +489,18 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Namba yako ya simu (Tanzania)</Text>
           <View style={styles.inputWrap}>
-            <View style={styles.inputPrefix}>
-              <Text style={styles.inputPrefixText}>+255</Text>
-            </View>
             <TextInput
-              style={styles.input}
-              placeholder="Weka namba yako ya simu"
+              style={[styles.input, styles.inputFull]}
+              placeholder="0712345678"
               placeholderTextColor="#64748b"
               value={phoneNumber}
               onChangeText={setPhoneNumber}
               keyboardType="phone-pad"
-              maxLength={15}
+              maxLength={10}
             />
           </View>
           <Text style={styles.inputHint}>
-            Nambari ya Tanzania pekee: anza kwa 0 (mfano 0712345678) au bandika +255712345678 — ombi litatumwa kwa muundo wa ndani (0…).
+            Nambari ya Tanzania pekee — muundo wa ndani: anza kwa 0 (mfano 0712345678, 0742345678, 0612345678).
           </Text>
           {(phoneNumber.startsWith('061') || phoneNumber.startsWith('062') || phoneNumber.startsWith('063')) && (
             <Text style={[styles.inputHint, styles.halotelHint]}>
@@ -762,6 +793,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     color: '#fff',
     fontSize: 16,
+  },
+  inputFull: {
+    width: '100%',
+    paddingHorizontal: 16,
   },
   inputHint: {
     fontSize: 12,

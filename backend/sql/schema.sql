@@ -77,8 +77,16 @@ CREATE TABLE IF NOT EXISTS subscription_payments (
   status VARCHAR(16) NOT NULL DEFAULT 'pending', -- pending | completed | failed
   provider_ref TEXT,
   payment_provider VARCHAR(32) NOT NULL DEFAULT 'zeno',
+  buyer_phone VARCHAR(20),
+  completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Safe migration columns (idempotent: no-op when columns already exist)
+DO $$ BEGIN
+  BEGIN ALTER TABLE subscription_payments ADD COLUMN buyer_phone VARCHAR(20); EXCEPTION WHEN duplicate_column THEN NULL; END;
+  BEGIN ALTER TABLE subscription_payments ADD COLUMN completed_at TIMESTAMPTZ; EXCEPTION WHEN duplicate_column THEN NULL; END;
+END $$;
 
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,

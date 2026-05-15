@@ -334,16 +334,17 @@ const StreamingApp = () => {
   };
 
   /**
-   * Ultra-fast payment success handler
-   * Instantly updates UI and triggers server refresh in background
+   * Called immediately when a payment completes (from polling or PaymentsScreen callback).
+   * Sets isPremium=true instantly for a snappy UI, then does a real server refresh in the
+   * background to confirm and update expiry/points.
    */
   const handlePaymentSuccess = useCallback(async () => {
     console.log('[Payment] Success! Triggering instant premium upgrade...');
-    
-    // Immediately set premium to true for instant visual feedback
+
+    // Instant UI feedback — do not wait for server
     setIsPremium(true);
-    
-    // Clear any congrats storage to show message
+    cacheService.delete('user_data'); // Bust stale cache so next read goes to server
+
     const userId = await AsyncStorage.getItem('userId');
     if (userId) {
       await AsyncStorage.removeItem(`${CONGRATS_STORAGE_KEY}_${userId}`);
@@ -351,25 +352,13 @@ const StreamingApp = () => {
       setHasShownCongrats(true);
     }
 
-    // Refresh user data from server in the background (won't block UI)
-    refreshUserPoints().catch(err => console.error('Background refresh failed:', err));
-    
-    // Also trigger real-time WebSocket sync if available
-    if (realtimeSyncService.isConnected) {
-      try {
-        realtimeSyncService.send({
-          type: 'sync_user_data',
-          userId,
-        });
-      } catch (err) {
-        console.log('[Payment] Could not trigger WebSocket sync:', err.message);
-      }
+    // Refresh from server to get authoritative premium expiry & points (non-blocking)
+    try {
+      await refreshUserPoints();
+    } catch (err) {
+      console.error('[Payment] Background server refresh failed:', err?.message || err);
     }
   }, [refreshUserPoints, CONGRATS_STORAGE_KEY]);
-
-  const handleCloseAd = () => {
-    setAdModalVisible(false);
-  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

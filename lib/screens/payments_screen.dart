@@ -115,15 +115,25 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     ),
   ];
 
-  /// Must be exactly 10 characters: `0` plus nine digits. Valid only when complete.
+  /// Tanzania local MSISDN only (`0` + 8–9 digits). Converts pasted +255/255 to 0…
+  String _normalizeToLocal(String raw) {
+    var s = raw.replaceAll(RegExp(r'\s+'), '');
+    if (s.startsWith('+') && !s.startsWith('+255')) return s;
+    if (s.startsWith('+255')) s = '0${s.substring(4)}';
+    else if (s.startsWith('00255')) s = '0${s.substring(5)}';
+    else if (s.startsWith('255') && s.length >= 12) s = '0${s.substring(3)}';
+    if (RegExp(r'^[1-9]\d{8}$').hasMatch(s)) s = '0$s';
+    return s;
+  }
+
   bool _phoneValid(String raw) {
-    final clean = raw.replaceAll(RegExp(r'\s+'), '');
-    if (clean.length != 10) return false;
-    if (!RegExp(r'^0\d{9}$').hasMatch(clean)) return false;
+    final clean = _normalizeToLocal(raw);
+    if (clean.startsWith('+') && !clean.startsWith('+255')) return false;
+    if (!RegExp(r'^0\d{8,9}$').hasMatch(clean)) return false;
     return _tzPrefixes.any((p) => clean.startsWith(p));
   }
 
-  String get _cleanPhone => _phoneCtrl.text.replaceAll(RegExp(r'\s+'), '');
+  String get _cleanPhone => _normalizeToLocal(_phoneCtrl.text);
   bool get _phoneOk => _phoneValid(_phoneCtrl.text);
 
   @override
@@ -226,7 +236,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (orderId == null || orderId.isEmpty) return;
 
     var polls = 0;
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       polls++;
       if (!mounted) return;
       try {
@@ -234,6 +244,13 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         final paymentStatus =
             response['status'] ??
             response['raw']?['data']?[0]?['payment_status'];
+        if (response['terminal'] == true || isPaymentTerminalFailure(paymentStatus)) {
+          await _finalizeSessionFailed(
+            response['userMessage']?.toString() ??
+                _paymentFailureUserMessage(paymentStatus),
+          );
+          return;
+        }
         if (isPaymentCompleted(paymentStatus)) {
           await _markPaymentCompleted(
             title: 'Hongera — malipo yamehakikiwa',
@@ -270,7 +287,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           }
         }
       }
-      if (polls >= 30) {
+      if (polls >= 90) {
         _pollTimer?.cancel();
         _pollTimer = null;
         _waitingTimer?.cancel();
@@ -441,9 +458,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       _pendingBundleLabel = null;
     });
 
+    // Trigger the parent callback IMMEDIATELY so the host app shows Premium access
+    // before we show any status dialog — gives instant visual confirmation.
+    widget.onPaymentSuccess?.call().catchError((_) {});
+
     _showStatus(title, message, _PayDialogTone.success);
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    await widget.onPaymentSuccess?.call();
   }
 
   Future<void> _openWhatsApp() async {
@@ -668,7 +687,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                   ),
                                   decoration: InputDecoration(
                                     border: InputBorder.none,
-                                    hintText: '074xxxxxxx',
+                                    hintText: '0712345678',
                                     hintStyle: TextStyle(
                                       color: _payMuted.withValues(alpha: 0.65),
                                       fontWeight: FontWeight.w500,

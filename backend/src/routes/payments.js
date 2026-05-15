@@ -13,6 +13,10 @@ const SONICPESA_API_BASE = 'https://api.sonicpesa.com/api/v1';
 const SONICPESA_API_KEY = process.env.SONICPESA_API_KEY;
 const SONICPESA_WEBHOOK_SECRET = process.env.SONICPESA_WEBHOOK_SECRET;
 
+const SONIC_WEBHOOK_PAID_STATUSES = new Set([
+  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
+]);
+
 const ensureSonicPesaConfigured = () => {
   if (!SONICPESA_API_KEY) {
     throw new Error('SONICPESA API key (SONICPESA_API_KEY) is not configured on the server');
@@ -76,14 +80,63 @@ const resolveGatewayForOrderId = async (orderId) => {
   return getSelectedPaymentProvider();
 };
 
-const normalizePhoneForSonicPesa = (normalizedPhone) => {
-  if (normalizedPhone.startsWith('0')) {
-    return `255${normalizedPhone.slice(1)}`;
+const TZ_VALID_PREFIXES = [
+  '061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079',
+];
+
+/**
+ * Normalize any accepted TZ input to canonical local 0… (9 digits after 0).
+ * Rejects non-Tanzania international numbers.
+ */
+const normalizePhoneToLocal0 = (rawPhone) => {
+  let normalizedPhone = String(rawPhone || '').replace(/\s+/g, '');
+  if (normalizedPhone.startsWith('+') && !normalizedPhone.startsWith('+255')) {
+    return {
+      error:
+        'Malipo yanatumwa kwa nambari za simu za Tanzania pekee. Tumia muundo wa ndani unaoanza na 0 (mfano 0712345678).',
+    };
+  }
+  if (normalizedPhone.startsWith('00') && !normalizedPhone.startsWith('00255')) {
+    return {
+      error:
+        'Malipo yanatumwa kwa nambari za simu za Tanzania pekee. Tumia muundo wa ndani unaoanza na 0 (mfano 0712345678).',
+    };
   }
   if (normalizedPhone.startsWith('+255')) {
-    return normalizedPhone.slice(1);
+    normalizedPhone = `0${normalizedPhone.slice(4)}`;
+  } else if (normalizedPhone.startsWith('00255')) {
+    normalizedPhone = `0${normalizedPhone.slice(5)}`;
+  } else if (normalizedPhone.startsWith('255') && normalizedPhone.length >= 12) {
+    normalizedPhone = `0${normalizedPhone.slice(3)}`;
   }
-  return normalizedPhone;
+  if (/^[1-9]\d{8}$/.test(normalizedPhone)) {
+    normalizedPhone = `0${normalizedPhone}`;
+  }
+  if (!/^\d+$/.test(normalizedPhone)) {
+    return {
+      error:
+        'Nambari ya simu lazima iwe nambari ya Tanzania tu: anza kwa 0 (mfano 0712345678).',
+    };
+  }
+  const isValidFormat = /^0[0-9]{8,9}$/.test(normalizedPhone);
+  const hasValidPrefix = TZ_VALID_PREFIXES.some((prefix) => normalizedPhone.startsWith(prefix));
+  if (!isValidFormat || !hasValidPrefix) {
+    return {
+      error:
+        'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/071 (Yas), 067/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
+    };
+  }
+  return { local: normalizedPhone };
+};
+
+/**
+ * All payment gateways: Tanzania local MSISDN only (0…). Never send international 255… to APIs.
+ */
+const formatBuyerPhoneLocal = (local0) => {
+  const norm = normalizePhoneToLocal0(local0);
+  if (norm.local) return norm.local;
+  const p = String(local0 || '').trim();
+  return p.startsWith('0') ? p : p;
 };
 
 const router = express.Router();
@@ -100,17 +153,132 @@ const ensureZenoConfigured = () => {
   }
 };
 
-/**
- * ZenoPay public samples use local MSISDN `0XXXXXXXXX` only. Optional `ZENO_BUYER_PHONE_FORMAT=intl`
- * sends `255…` (some rails need it; default stays local to match docs and avoid silent non-push).
- */
-const formatBuyerPhoneForZeno = (local0) => {
-  const p = String(local0 || '');
-  const mode = String(process.env.ZENO_BUYER_PHONE_FORMAT || 'auto').toLowerCase().trim();
-  const intl = p.startsWith('0') ? `255${p.slice(1)}` : p;
-  if (mode === 'intl') return intl;
-  if (mode === 'local') return p;
-  return p;
+/** ZenoPay + SonicPesa: always local 0… (Tanzania app — no international 255…). */
+const formatBuyerPhoneForZeno = (local0) => formatBuyerPhoneLocal(local0);
+
+const isRetriableZenoInitiateFailure = (httpOk, zenoData, httpStatus) => {
+  if (httpOk && zenoData?.status === 'success') return false;
+  const combined = `${zenoData?.message || ''} ${zenoData?.resultcode || ''}`.toLowerCase();
+  if (
+    /timeout|timed out|upstream|temporarily|unavailable|network|econnreset|abort|could not reach|try again|busy/i.test(
+      combined,
+    )
+  ) {
+    return true;
+  }
+  return httpStatus >= 502 || httpStatus === 408 || httpStatus === 429;
+};
+
+const isPhoneFormatZenoError = (zenoData, httpStatus) => {
+  const combined = `${zenoData?.message || ''} ${zenoData?.resultcode || ''}`.toLowerCase();
+  if (/invalid.*phone|phone.*invalid|msisdn|buyer_phone|nambari|number format|malformed/i.test(combined)) {
+    return true;
+  }
+  return httpStatus === 400 && /phone|msisdn/i.test(combined);
+};
+
+const SONIC_HTTP_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SONIC_HTTP_TIMEOUT_MS) || 22000, 8000),
+  55000,
+);
+
+const isSonicPaidRaw = (rawUpper) => {
+  if (!rawUpper) return false;
+  const u = String(rawUpper).toUpperCase().trim();
+  if (SONIC_WEBHOOK_PAID_STATUSES.has(u)) return true;
+  const lower = u.toLowerCase();
+  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
+};
+
+const extractSonicPaymentStatus = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return '';
+  const d = statusData.data;
+  const nest = Array.isArray(d) ? d[0] : d && typeof d === 'object' ? d : null;
+  const candidates = [
+    nest?.payment_status,
+    nest?.paymentStatus,
+    nest?.status,
+    statusData.payment_status,
+    statusData.paymentStatus,
+    statusData.status,
+  ];
+  for (const c of candidates) {
+    if (c != null && typeof c !== 'object') {
+      const s = String(c).toUpperCase().trim();
+      if (s) return s;
+    }
+  }
+  return '';
+};
+
+const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
+  const ms = Math.min(Math.max(Number(timeoutMs) || 18000, 5000), 55000);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    const response = await fetch(url, { ...options, signal: ac.signal });
+    const text = await response.text();
+    let data = {};
+    try {
+      if (text && text.trim()) data = JSON.parse(text);
+    } catch (_) {
+      data = { status: 'error', message: text ? text.slice(0, 500) : 'Invalid gateway response' };
+    }
+    return { response, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const allowPaymentTestComplete = () =>
+  process.env.NODE_ENV !== 'production' || String(process.env.PAYMENT_ALLOW_TEST_COMPLETE || '').trim() === '1';
+
+const computeIsPremiumActive = (row) => {
+  if (!row || row.is_premium !== true) return false;
+  if (!row.premium_expires_at) return true;
+  const exp = new Date(row.premium_expires_at);
+  return !Number.isNaN(exp.getTime()) && exp > new Date();
+};
+
+const fetchUserPremiumSnapshotByUserId = async (userId) => {
+  const r = await query(
+    'SELECT is_premium, premium_expires_at, external_id FROM users WHERE id = $1 LIMIT 1',
+    [userId],
+  );
+  if (r.rows.length === 0) return null;
+  const row = r.rows[0];
+  const expiresAt = row.premium_expires_at ? new Date(row.premium_expires_at).toISOString() : null;
+  const isPremium = computeIsPremiumActive(row);
+  return {
+    isPremium,
+    is_premium: isPremium,
+    premiumExpiresAt: expiresAt,
+    premium_expires_at: expiresAt,
+    subscriptionEndDate: expiresAt,
+    externalId: row.external_id,
+  };
+};
+
+const fetchUserPremiumSnapshotForOrder = async (orderId) => {
+  const r = await query(
+    `SELECT u.id AS user_id
+       FROM subscription_payments sp
+       JOIN users u ON u.id = sp.user_id
+      WHERE sp.provider_ref = $1
+      LIMIT 1`,
+    [orderId],
+  );
+  if (r.rows.length === 0) return null;
+  return fetchUserPremiumSnapshotByUserId(r.rows[0].user_id);
+};
+
+const buildCompletedStatusPayload = async (orderId, rawPayload) => {
+  const user = await fetchUserPremiumSnapshotForOrder(orderId);
+  return {
+    status: 'COMPLETED',
+    raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
+    ...(user ? { user } : {}),
+  };
 };
 
 /**
@@ -127,8 +295,10 @@ const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
     return;
   }
   if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
-    const v = process.env.ZENO_VODACOM_WALLET_PROVIDER;
-    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'M-PESA';
+    if (String(process.env.ZENO_VODACOM_SEND_PROVIDER || '1').trim() === '1') {
+      const v = process.env.ZENO_VODACOM_WALLET_PROVIDER;
+      payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'M-PESA';
+    }
     return;
   }
   if (p.startsWith('065') || p.startsWith('067') || p.startsWith('071') || p.startsWith('077')) {
@@ -211,7 +381,7 @@ const swahiliInitiateInsufficientFromProvider = (msg, code) => {
   const tail = codeLabel ? ` (msimbo ${codeLabel})` : '';
   return (
     `Mtoa huduma wa malipo alikataa ombi kabla ya hatua ya PIN: alisema salio halitoshi kwa kiasi hicho${tail}. ` +
-    'Ikiwa una salio la kutosha, jaribu tena baada ya dakika 1–2, au wasiliana na SonicPesa / huduma ya Halotel.'
+    'Ikiwa una salio la kutosha, jaribu tena baada ya dakika 1–2, au wasiliana na mtoa huduma wa malipo / kampuni ya simu yako.'
   );
 };
 
@@ -254,6 +424,51 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
 const zenoTerminalStartStatuses = new Set([
   'FAILED', 'CANCELLED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID', 'REVERSED',
 ]);
+
+/** Gateway ended without pay — stop app polling; only user cancel gets a soft message. */
+const PAYMENT_TERMINAL_STATUSES = new Set([
+  'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID',
+  'REVERSED', 'CANCEL',
+]);
+
+const isPaymentTerminalStatus = (raw) => {
+  const u = String(raw || '').toUpperCase().trim();
+  return Boolean(u && PAYMENT_TERMINAL_STATUSES.has(u));
+};
+
+const isPaymentCancelledStatus = (raw) => {
+  const u = String(raw || '').toUpperCase().trim();
+  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID';
+};
+
+const mapTerminalStatusUserMessage = (raw) => {
+  if (isPaymentCancelledStatus(raw)) {
+    return 'Ulighairi malipo kwenye simu. Unaweza kujaribu tena ukiwa tayari.';
+  }
+  const u = String(raw || '').toUpperCase().trim();
+  if (u === 'EXPIRED' || u === 'TIMEOUT') {
+    return 'Muda wa malipo umeisha. Tafadhali tuma ombi jipya na ukamilishe kwenye simu haraka.';
+  }
+  if (u === 'REJECTED' || u === 'DECLINED') {
+    return 'Malipo hayakuidhinishwa kwenye simu. Hakikisha una salio la kutosha kisha ujaribu tena.';
+  }
+  return 'Malipo hayajakamilika. Jaribu tena baada ya muda mfupi.';
+};
+
+const markOrderTerminalIfPending = async (orderId, rawStatus) => {
+  if (!isPaymentTerminalStatus(rawStatus)) return;
+  await query(
+    `UPDATE subscription_payments
+        SET status = 'failed'
+      WHERE provider_ref = $1 AND status = 'pending'`,
+    [orderId],
+  );
+};
+
+const isActivePaymentProviderConfigured = (provider) => {
+  if (provider === PAYMENT_PROVIDERS.SONICPESA) return Boolean(SONICPESA_API_KEY);
+  return Boolean(ZENO_API_KEY);
+};
 
 /** Second GET right after create; off by default — Zeno responses vary and can false-fail. Set ZENO_POST_VERIFY=1 to enable. */
 const zenoQuickPostCreateVerify = async (orderRef) => {
@@ -317,6 +532,145 @@ const PLAN_CONFIG = {
   year: { amount: 12000, interval: '90 days' },
 };
 
+const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
+  const phoneForSonic = formatBuyerPhoneLocal(normalizedPhone);
+  const sonicPayload = {
+    buyer_email: data.email || 'user@eamax.app',
+    buyer_name: data.name || externalId,
+    buyer_phone: phoneForSonic,
+    amount: amountToSend,
+    currency: 'TZS',
+  };
+  try {
+    const { response, data: sonicData } = await gatewayFetchJson(
+      `${SONICPESA_API_BASE}/payment/create_order`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-KEY': SONICPESA_API_KEY,
+        },
+        body: JSON.stringify(sonicPayload),
+      },
+      SONIC_HTTP_TIMEOUT_MS,
+    );
+    return { response, sonicData, phoneForSonic };
+  } catch (fetchErr) {
+    return {
+      response: { ok: false, status: 502 },
+      sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+      phoneForSonic,
+    };
+  }
+};
+
+const initiateZenoPayment = async ({
+  orderId,
+  normalizedPhone,
+  amountToSend,
+  data,
+  externalId,
+  webhookUrl,
+}) => {
+  const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
+  const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 22000, 8000), 55000);
+  const payload = {
+    order_id: orderId,
+    buyer_email: data.email || 'user@eamax.app',
+    buyer_name: data.name || externalId,
+    buyer_phone: phoneForZeno,
+    amount: amountToSend,
+    webhook_url: webhookUrl,
+  };
+  applyZenoWalletProviderForPayload(payload, normalizedPhone);
+
+  const maxAttempts = 2;
+  let last = {
+    response: { ok: false, status: 500 },
+    zenoData: { status: 'error', message: 'Failed to start payment request' },
+    phoneUsed: phoneForZeno,
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const { response, data: zenoData } = await gatewayFetchJson(
+        `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ZENO_API_KEY,
+          },
+          body: JSON.stringify(payload),
+        },
+        zenoHttpMs,
+      );
+      last = { response, zenoData, phoneUsed: phoneForZeno };
+      if (response.ok && zenoData?.status === 'success') return last;
+      if (
+        attempt < maxAttempts &&
+        isRetriableZenoInitiateFailure(response.ok, zenoData, response.status)
+      ) {
+        console.warn('[ZenoPay] Retrying initiate (same local MSISDN)', { attempt, phone: phoneForZeno });
+        continue;
+      }
+      break;
+    } catch (fetchErr) {
+      last = {
+        response: { ok: false, status: 502 },
+        zenoData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+        phoneUsed: phoneForZeno,
+      };
+      if (attempt < maxAttempts) continue;
+      break;
+    }
+  }
+  return last;
+};
+
+const pollSonicOrderStatus = async (orderId) => {
+  try {
+    const { response, data: statusData } = await gatewayFetchJson(
+      `${SONICPESA_API_BASE}/payment/order_status`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-KEY': SONICPESA_API_KEY,
+        },
+        body: JSON.stringify({ order_id: orderId }),
+      },
+      SONIC_HTTP_TIMEOUT_MS,
+    );
+    return { statusResp: response, statusData };
+  } catch (fetchErr) {
+    return {
+      statusResp: { ok: false, status: 502 },
+      statusData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+    };
+  }
+};
+
+const pollZenoOrderStatus = async (orderId) => {
+  const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 22000, 8000), 55000);
+  try {
+    const { response, data: statusData } = await gatewayFetchJson(
+      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(orderId)}`,
+      {
+        method: 'GET',
+        headers: { 'x-api-key': ZENO_API_KEY },
+      },
+      zenoHttpMs,
+    );
+    return { statusResp: response, statusData };
+  } catch (fetchErr) {
+    return {
+      statusResp: { ok: false, status: 502 },
+      statusData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+    };
+  }
+};
+
 // Mobile money start: `/start` and legacy `/zeno/start` share this handler.
 // Active gateway for NEW payments is ONLY `app_settings.payment_provider` (never inferred from the URL path).
 async function handlePaymentStart(req, res, next) {
@@ -332,65 +686,11 @@ async function handlePaymentStart(req, res, next) {
 
     const data = bodySchema.parse(req.body);
 
-    // Normalize phone number to ZenoPay format
-    // Accept: 0712345678, 0621234567, 255712345678, +255712345678
-    // Tanzanian mobile prefixes (0 + national significant number):
-    // - Halotel: 061, 062, 063
-    // - Vodacom: 074, 075, 076, 079
-    // - Mixx by Yas: 065, 071
-    // - Airtel: 068, 069, 078
-    // - Tigo: 067, 077 (0671…, 0679…, etc.)
-    let normalizedPhone = data.phone.replace(/\s+/g, ''); // Remove spaces
-
-    // Payments only go to Tanzania mobile money — reject any other international dialing form
-    if (normalizedPhone.startsWith('+') && !normalizedPhone.startsWith('+255')) {
-      return res.status(400).json({
-        error:
-          'Malipo yanatumwa kwa nambari za simu za Tanzania pekee (M-Pesa, Airtel, Tigo, Halopesa, Yas). Tumia 07…/06… au +255….',
-      });
+    const phoneNorm = normalizePhoneToLocal0(data.phone);
+    if (phoneNorm.error) {
+      return res.status(400).json({ error: phoneNorm.error });
     }
-    if (normalizedPhone.startsWith('00') && !normalizedPhone.startsWith('00255')) {
-      return res.status(400).json({
-        error:
-          'Malipo yanatumwa kwa nambari za simu za Tanzania pekee. Tumia 07…/06… au +255….',
-      });
-    }
-
-    // Convert Tanzania country code → local 0… (only format sent to ZenoPay)
-    if (normalizedPhone.startsWith('+255')) {
-      normalizedPhone = '0' + normalizedPhone.slice(4);
-    } else if (normalizedPhone.startsWith('00255')) {
-      normalizedPhone = '0' + normalizedPhone.slice(5);
-    } else if (normalizedPhone.startsWith('255') && normalizedPhone.length >= 12) {
-      normalizedPhone = '0' + normalizedPhone.slice(3);
-    }
-
-    if (!/^\d+$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        error:
-          'Nambari ya simu lazima iwe nambari ya Tanzania tu: tarakimu pekee baada ya kuweka muundo sahihi (mfano 0712345678 au +255712345678).',
-      });
-    }
-    
-    // Validate Tanzanian mobile number format
-    // Must start with 0 and have valid prefix, then 7-8 more digits (total 9-10 digits after 0)
-    const validPrefixes = [
-      '061', '062', '063', // Halotel
-      '065', '071', // Mixx by Yas
-      '067', '077', // Tigo
-      '068', '069', '078', // Airtel
-      '074', '075', '076', '079', // Vodacom
-    ];
-    
-    const isValidFormat = /^0[0-9]{8,9}$/.test(normalizedPhone);
-    const hasValidPrefix = validPrefixes.some(prefix => normalizedPhone.startsWith(prefix));
-    
-    if (!isValidFormat || !hasValidPrefix) {
-      return res.status(400).json({
-        error:
-          'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/071 (Yas), 067/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
-      });
-    }
+    const normalizedPhone = phoneNorm.local;
 
     // Ensure user row exists (apps sometimes open Pay before /register finishes; Zeno STK can still fire).
     let userRes = await query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
@@ -433,38 +733,33 @@ async function handlePaymentStart(req, res, next) {
     const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
 
+    if (!isActivePaymentProviderConfigured(provider)) {
+      const label = provider === PAYMENT_PROVIDERS.SONICPESA ? 'SonicPesa' : 'ZenoPay';
+      return res.status(503).json({
+        error: `${label} haijasanidi kwenye seva. Wasiliana na admin au chagua mtoa huduma mwingine kwenye EaAdmin.`,
+        activeProvider: provider,
+        configured: false,
+      });
+    }
+
     if (provider === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
-      const phoneForSonic = normalizePhoneForSonicPesa(normalizedPhone);
-      const sonicPayload = {
-        buyer_email: data.email || 'user@eamax.app',
-        buyer_name: data.name || data.externalId,
-        buyer_phone: phoneForSonic,
-        amount: amountToSend,
-        currency: 'TZS',
-      };
 
       // eslint-disable-next-line no-console
       console.log('[SonicPesa] Sending payment request:', {
         orderId,
-        phone: phoneForSonic,
+        phoneLocal: normalizedPhone,
+        phoneApi: formatBuyerPhoneLocal(normalizedPhone),
         amount: amountToSend,
         bundle: data.bundle,
       });
 
-      const response = await fetch(
-        `${SONICPESA_API_BASE}/payment/create_order`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-KEY': SONICPESA_API_KEY,
-          },
-          body: JSON.stringify(sonicPayload),
-        },
-      );
-
-      const sonicData = await response.json();
+      const { response, sonicData } = await initiateSonicPayment({
+        normalizedPhone,
+        amountToSend,
+        data,
+        externalId: data.externalId,
+      });
       // eslint-disable-next-line no-console
       console.log('[SonicPesa] Response:', { status: response.status, sonicData });
 
@@ -498,6 +793,7 @@ async function handlePaymentStart(req, res, next) {
         orderId: sonicOrderId,
         message: providerResponseMessage,
         provider: PAYMENT_PROVIDERS.SONICPESA,
+        activeProvider: provider,
       });
     }
 
@@ -507,19 +803,6 @@ async function handlePaymentStart(req, res, next) {
       process.env.ZENO_WEBHOOK_URL ||
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
     console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
-
-    // ZenoPay: send local `0…` MSISDN (official); optional intl with ZENO_BUYER_PHONE_FORMAT=intl
-    const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
-
-    const payload = {
-      order_id: orderId,
-      buyer_email: data.email || 'user@eamax.app',
-      buyer_name: data.name || data.externalId,
-      buyer_phone: phoneForZeno,
-      amount: amountToSend,
-      webhook_url: webhookUrl,
-    };
-    applyZenoWalletProviderForPayload(payload, normalizedPhone);
 
     // Insert BEFORE calling Zeno so /status always sees payment_provider=zeno (avoids races with fast polling
     // or admin switching gateway while the HTTP round-trip is in flight).
@@ -539,67 +822,25 @@ async function handlePaymentStart(req, res, next) {
       await rollbackPendingZenoByRef(orderId);
     };
 
+    const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Sending payment request (exact amount):', {
       orderId,
       phone: phoneForZeno,
       phonePrefix: normalizedPhone.slice(0, 3),
       walletHint: resolveZenoMobileWalletProviderHint(normalizedPhone),
-      providerField: payload.provider ?? '(omit)',
       amount: amountToSend,
       bundle: data.bundle,
-      network: (normalizedPhone.startsWith('061') || normalizedPhone.startsWith('062') || normalizedPhone.startsWith('063'))
-        ? 'Halotel'
-        : normalizedPhone.startsWith('065') || normalizedPhone.startsWith('071')
-        ? 'Mixx by Yas'
-        : normalizedPhone.startsWith('067') || normalizedPhone.startsWith('077')
-        ? 'Tigo'
-        : normalizedPhone.startsWith('068') || normalizedPhone.startsWith('069') || normalizedPhone.startsWith('078')
-        ? 'Airtel'
-        : normalizedPhone.startsWith('074') || normalizedPhone.startsWith('075') || normalizedPhone.startsWith('076') || normalizedPhone.startsWith('079')
-        ? 'Vodacom'
-        : 'Unknown',
     });
 
-    const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 18000, 7000), 55000);
-    const ac = new AbortController();
-    const zenoTimeout = setTimeout(() => ac.abort(), zenoHttpMs);
-    let response;
-    try {
-      response = await fetch(
-        `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': ZENO_API_KEY,
-          },
-          body: JSON.stringify(payload),
-          signal: ac.signal,
-        },
-      );
-    } catch (fetchErr) {
-      clearTimeout(zenoTimeout);
-      console.error('[ZenoPay] Network error calling ZenoPay:', fetchErr?.message || fetchErr);
-      await rollbackPendingZenoRow();
-      return res.status(502).json({
-        error: mapPaymentGatewayUserError(String(fetchErr?.message || fetchErr || 'network'), '', {
-          context: 'initiate',
-        }),
-      });
-    }
-    clearTimeout(zenoTimeout);
-
-    const zenoBodyText = await response.text();
-    let zenoData = {};
-    try {
-      if (zenoBodyText && zenoBodyText.trim()) zenoData = JSON.parse(zenoBodyText);
-    } catch (_) {
-      zenoData = {
-        status: 'error',
-        message: zenoBodyText ? zenoBodyText.slice(0, 500) : 'Invalid response from payment gateway',
-      };
-    }
+    const { response, zenoData, phoneUsed } = await initiateZenoPayment({
+      orderId,
+      normalizedPhone,
+      amountToSend,
+      data,
+      externalId: data.externalId,
+      webhookUrl,
+    });
 
     // eslint-disable-next-line no-console
     console.log('[ZenoPay] Response:', {
@@ -607,6 +848,7 @@ async function handlePaymentStart(req, res, next) {
       zenoStatus: zenoData.status,
       message: zenoData.message,
       resultcode: zenoData.resultcode,
+      phoneUsed,
       responseOrderId: zenoData.order_id || zenoData.orderId || null,
     });
 
@@ -659,6 +901,7 @@ async function handlePaymentStart(req, res, next) {
         zenoData.message ||
         'Request in progress. You will receive a prompt on your phone.',
       provider: PAYMENT_PROVIDERS.ZENO,
+      activeProvider: provider,
     });
   } catch (err) {
     console.error('[Payment] Start error:', err?.message || err);
@@ -670,6 +913,49 @@ async function handlePaymentStart(req, res, next) {
 
 router.post('/zeno/start', handlePaymentStart);
 router.post('/start', handlePaymentStart);
+
+/** Premium + unlock all channels for the plan interval (must run inside an open transaction). */
+const grantUserEntitlementsInTransaction = async (client, userId, planInterval) => {
+  const userUpdate = await client.query(
+    `UPDATE users
+        SET is_premium = TRUE,
+            blocked = FALSE,
+            premium_expires_at = GREATEST(COALESCE(premium_expires_at, now()), now()) + $2::interval
+      WHERE id = $1
+      RETURNING id, is_premium, premium_expires_at, blocked`,
+    [userId, planInterval],
+  );
+  if (userUpdate.rowCount !== 1) {
+    throw new Error(`Failed to update user id=${userId} (rowCount=${userUpdate.rowCount})`);
+  }
+  const unlockResult = await client.query(
+    `INSERT INTO user_unlocked_channels (user_id, channel_id)
+     SELECT $1, id FROM channels
+     ON CONFLICT (user_id, channel_id) DO NOTHING`,
+    [userId],
+  );
+  console.log('[Payment] User premium + channels:', {
+    userId,
+    premium_expires_at: userUpdate.rows[0].premium_expires_at,
+    channelsUnlocked: unlockResult.rowCount,
+  });
+  return userUpdate.rows[0];
+};
+
+/** Idempotent repair if payment row is completed but premium/unlocks were missed. */
+const repairUserEntitlements = async (userId, planInterval) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await grantUserEntitlementsInTransaction(client, userId, planInterval);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[Payment] repairUserEntitlements failed:', err?.message || err);
+  } finally {
+    client.release();
+  }
+};
 
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
@@ -715,7 +1001,9 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
 
   if (payment.status === 'completed') {
     console.log('[Payment] Payment already completed:', orderId);
-    return payment;
+    await repairUserEntitlements(userId, planInfo.interval);
+    const user = await fetchUserPremiumSnapshotByUserId(userId);
+    return { ...payment, user };
   }
 
   console.log('[Payment] Found payment:', { id: paymentId, user_id: userId, plan, amount_cents: payment.amount_cents, interval: planInfo.interval });
@@ -724,44 +1012,28 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   try {
     await client.query('BEGIN');
 
-    // 1) Mark payment completed → revenue in admin (SUM(amount_cents) WHERE status='completed')
+    // 1) Mark payment completed (idempotent — only one worker wins pending → completed)
     const payUpdate = await client.query(
       `UPDATE subscription_payments
           SET status = 'completed',
               completed_at = COALESCE(completed_at, NOW())
-        WHERE id = $1
+        WHERE id = $1 AND status = 'pending'
         RETURNING id, status, completed_at`,
       [paymentId],
     );
     if (payUpdate.rowCount !== 1) {
+      const cur = await client.query('SELECT status FROM subscription_payments WHERE id = $1', [paymentId]);
+      if (cur.rows[0]?.status === 'completed') {
+        await client.query('COMMIT');
+        await repairUserEntitlements(userId, planInfo.interval);
+        const user = await fetchUserPremiumSnapshotByUserId(userId);
+        return { ...payment, user };
+      }
       throw new Error(`Failed to update payment id=${paymentId} (rowCount=${payUpdate.rowCount})`);
     }
     console.log('[Payment] Payment status set to completed, id:', paymentId);
 
-    // 2) Set user premium + remaining time → premium users count in admin
-    const userUpdate = await client.query(
-      `UPDATE users
-         SET is_premium = TRUE,
-             blocked = FALSE,
-             premium_expires_at = GREATEST(COALESCE(premium_expires_at, now()), now()) + $2::interval
-       WHERE id = $1
-       RETURNING id, is_premium, premium_expires_at, blocked`,
-      [userId, planInfo.interval],
-    );
-    if (userUpdate.rowCount !== 1) {
-      throw new Error(`Failed to update user id=${userId} (rowCount=${userUpdate.rowCount})`);
-    }
-    const updatedUser = userUpdate.rows[0];
-    console.log('[Payment] User premium updated:', { id: userId, premium_expires_at: updatedUser.premium_expires_at });
-
-    // 3) Unlock all active channels for this user
-    const unlockResult = await client.query(
-      `INSERT INTO user_unlocked_channels (user_id, channel_id)
-       SELECT $1, id FROM channels WHERE is_active = TRUE
-       ON CONFLICT (user_id, channel_id) DO NOTHING`,
-      [userId],
-    );
-    console.log('[Payment] Channels unlocked for user:', userId, 'rows inserted/updated:', unlockResult.rowCount);
+    await grantUserEntitlementsInTransaction(client, userId, planInfo.interval);
 
     await client.query('COMMIT');
     console.log('[Payment] Transaction committed for order:', orderId, '- revenue and premium users will reflect in admin.');
@@ -809,7 +1081,138 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     client.release();
   }
 
-  return payment;
+  const user = await fetchUserPremiumSnapshotByUserId(userId);
+  return { ...payment, user };
+};
+
+/** Shared GET /status and GET /zeno/status handler. */
+const handlePaymentStatusPoll = async (orderId, res, next) => {
+  try {
+    const dbCheck = await query(
+      'SELECT status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+      [orderId],
+    );
+
+    if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
+      const payRow = await query(
+        'SELECT user_id, plan FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+        [orderId],
+      );
+      if (payRow.rows.length > 0) {
+        const plan = String(payRow.rows[0].plan || '').toLowerCase();
+        const planInfo = PLAN_CONFIG[plan];
+        if (planInfo?.interval) {
+          await repairUserEntitlements(Number(payRow.rows[0].user_id), planInfo.interval);
+        }
+      }
+      return res.json(await buildCompletedStatusPayload(orderId, { data: [{ payment_status: 'COMPLETED' }] }));
+    }
+
+    const gateway = await resolveGatewayForOrderId(orderId);
+    const expectedProvider =
+      gateway === PAYMENT_PROVIDERS.SONICPESA ? PAYMENT_PROVIDERS.SONICPESA : PAYMENT_PROVIDERS.ZENO;
+
+    if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
+      ensureSonicPesaConfigured();
+      const { statusResp, statusData } = await pollSonicOrderStatus(orderId);
+
+      const sonicMessage = String(statusData.message || statusData.error || '').toLowerCase();
+      const isOrderNotFound =
+        !statusResp.ok &&
+        (sonicMessage.includes('no order found') ||
+          sonicMessage.includes('order not found') ||
+          statusResp.status === 404);
+      if (isOrderNotFound) {
+        return res.json({ status: 'PENDING', raw: statusData });
+      }
+
+      if (!statusResp.ok) {
+        return res.status(400).json({
+          error: mapPaymentGatewayUserError(
+            statusData.message || statusData.error || 'Failed to fetch order status',
+            statusData.resultcode || statusData.code,
+          ),
+        });
+      }
+
+      const rawStatus = extractSonicPaymentStatus(statusData);
+      const isCompleted = isSonicPaidRaw(rawStatus);
+
+      if (isCompleted) {
+        await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
+          expectedPaymentProvider: expectedProvider,
+        });
+        return res.json(await buildCompletedStatusPayload(orderId, statusData));
+      }
+
+      if (isPaymentTerminalStatus(rawStatus)) {
+        await markOrderTerminalIfPending(orderId, rawStatus);
+        const clientStatus = isPaymentCancelledStatus(rawStatus) ? 'CANCELLED' : rawStatus;
+        return res.json({
+          status: clientStatus,
+          terminal: true,
+          userMessage: mapTerminalStatusUserMessage(rawStatus),
+          raw: statusData,
+        });
+      }
+
+      return res.json({
+        status: rawStatus || 'PENDING',
+        raw: statusData,
+      });
+    }
+
+    ensureZenoConfigured();
+    const { statusResp, statusData } = await pollZenoOrderStatus(orderId);
+
+    const zenoMessage = String(statusData.message || statusData.error || '').toLowerCase();
+    const isOrderNotFound =
+      !statusResp.ok &&
+      (zenoMessage.includes('no order found') ||
+        zenoMessage.includes('order not found') ||
+        (zenoMessage.includes('order_id') && zenoMessage.includes('not found')) ||
+        statusResp.status === 404);
+    if (isOrderNotFound) {
+      return res.json({ status: 'PENDING', raw: statusData });
+    }
+
+    if (!statusResp.ok) {
+      return res.status(400).json({
+        error: mapPaymentGatewayUserError(
+          statusData.message || statusData.error || 'Failed to fetch order status',
+          statusData.resultcode,
+        ),
+      });
+    }
+
+    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
+
+    if (isCompleted) {
+      await applyCompletedPayment(orderId, firstItem || statusData || {}, {
+        expectedPaymentProvider: expectedProvider,
+      });
+      return res.json(await buildCompletedStatusPayload(orderId, statusData));
+    }
+
+    const clientStatus = zenoClientStatusFromPoll(isCompleted, rawStatus, statusData);
+    if (isPaymentTerminalStatus(clientStatus) || isPaymentTerminalStatus(rawStatus)) {
+      const term = isPaymentTerminalStatus(rawStatus) ? rawStatus : clientStatus;
+      await markOrderTerminalIfPending(orderId, term);
+      return res.json({
+        status: isPaymentCancelledStatus(term) ? 'CANCELLED' : term,
+        terminal: true,
+        userMessage: mapTerminalStatusUserMessage(term),
+        raw: statusData,
+      });
+    }
+
+    return res.json({
+      status: clientStatus,
+      raw: statusData,
+    });
+  } catch (err) {
+    return next(err);
+  }
 };
 
 // Helper: Parse "order not found" from API responses
@@ -951,177 +1354,13 @@ const extractZenoWebhookOrderAndPaid = (payload) => {
   return { orderId: orderId || null, paid, raw };
 };
 
-// Helper: Extract SonicPesa payment status from response
-const getSonicPesaRawStatus = (statusData) => {
-  return String(
-    statusData.data?.payment_status ||
-    statusData.data?.status ||
-    statusData.payment_status ||
-    statusData.paymentStatus ||
-    statusData.status ||
-    ''
-  ).toUpperCase().trim();
-};
-
 // Check payment status (polling from app)
 router.get('/zeno/status', async (req, res, next) => {
   try {
-    const paramsSchema = z.object({
-      orderId: z.string().min(1),
-    });
+    const paramsSchema = z.object({ orderId: z.string().min(1) });
     const { orderId } = paramsSchema.parse(req.query);
     console.log(`[Backend] Checking status for orderId: ${orderId}`);
-
-    // First check if payment is already completed in our database
-    const dbCheck = await query(
-      'SELECT status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
-      [orderId],
-    );
-
-    if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
-      console.log(`[Backend] Payment already completed in database for ${orderId}`);
-      return res.json({
-        status: 'COMPLETED',
-        raw: { data: [{ payment_status: 'COMPLETED' }] },
-      });
-    }
-
-    const gateway = await resolveGatewayForOrderId(orderId);
-
-    if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
-      ensureSonicPesaConfigured();
-      const statusResp = await fetch(
-        `${SONICPESA_API_BASE}/payment/order_status`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-KEY': SONICPESA_API_KEY,
-          },
-          body: JSON.stringify({ order_id: orderId }),
-        },
-      );
-
-      let statusData = {};
-      try {
-        const text = await statusResp.text();
-        if (text && text.trim()) statusData = JSON.parse(text);
-      } catch (_) {
-        // SonicPesa should return JSON; fallback to empty object on parse failure.
-      }
-      console.log(`[Backend] SonicPesa status response for ${orderId}:`, {
-        status: statusResp.status,
-        data: statusData,
-      });
-
-      const sonicMessage = String(statusData.message || statusData.error || '').toLowerCase();
-      const isOrderNotFound = !statusResp.ok && (
-        sonicMessage.includes('no order found') ||
-        sonicMessage.includes('order not found') ||
-        statusResp.status === 404
-      );
-      if (isOrderNotFound) {
-        console.log(`[Backend] SonicPesa has no order yet for ${orderId}, returning PENDING so app keeps polling`);
-        return res.json({ status: 'PENDING', raw: statusData });
-      }
-
-      if (!statusResp.ok) {
-        console.log(`[Backend] SonicPesa status check failed for ${orderId}:`, statusData);
-        return res.status(400).json({
-          error: mapPaymentGatewayUserError(
-            statusData.message || statusData.error || 'Failed to fetch order status',
-            statusData.resultcode || statusData.code,
-          ),
-        });
-      }
-
-      const rawStatus = String(
-        statusData.data?.payment_status ||
-        statusData.data?.status ||
-        statusData.payment_status ||
-        statusData.paymentStatus ||
-        statusData.status ||
-        '',
-      ).toUpperCase().trim();
-      const isCompleted = rawStatus === 'SUCCESS' || rawStatus === 'COMPLETED' || rawStatus === 'PAID';
-
-      console.log(`[Backend] SonicPesa payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
-
-      if (isCompleted) {
-        console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
-        await applyCompletedPayment(orderId, statusData.data || statusData || {});
-      }
-
-      return res.json({
-        status: isCompleted ? 'COMPLETED' : (rawStatus || 'PENDING'),
-        raw: statusData,
-      });
-    }
-
-    ensureZenoConfigured();
-    const statusResp = await fetch(
-      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(
-        orderId,
-      )}`,
-      {
-        method: 'GET',
-        headers: {
-          'x-api-key': ZENO_API_KEY,
-        },
-      },
-    );
-
-    let statusData = {};
-    try {
-      const text = await statusResp.text();
-      if (text && text.trim()) statusData = JSON.parse(text);
-    } catch (_) {
-      // ZenoPay might return non-JSON (e.g. HTML) for 404
-    }
-    console.log(`[Backend] ZenoPay status response for ${orderId}:`, {
-      status: statusResp.status,
-      data: statusData
-    });
-
-    // "Order not found" from ZenoPay is normal right after creating the order (or in sandbox) – return PENDING so app keeps polling
-    const zenoMessage = String(statusData.message || statusData.error || '').toLowerCase();
-    const isOrderNotFound = !statusResp.ok && (
-      zenoMessage.includes('no order found') ||
-      zenoMessage.includes('order not found') ||
-      (zenoMessage.includes('order_id') && zenoMessage.includes('not found')) ||
-      statusResp.status === 404
-    );
-    if (isOrderNotFound) {
-      console.log(`[Backend] ZenoPay has no order yet for ${orderId}, returning PENDING so app keeps polling`);
-      return res.json({
-        status: 'PENDING',
-        raw: statusData,
-      });
-    }
-
-    if (!statusResp.ok) {
-      console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
-      return res.status(400).json({
-        error: mapPaymentGatewayUserError(
-          statusData.message || statusData.error || 'Failed to fetch order status',
-          statusData.resultcode,
-        ),
-      });
-    }
-
-    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
-
-    console.log(`[Backend] Payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
-
-    if (isCompleted) {
-      console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
-      await applyCompletedPayment(orderId, firstItem || statusData || {});
-    }
-
-    return res.json({
-      status: zenoClientStatusFromPoll(isCompleted, rawStatus, statusData),
-      raw: statusData,
-    });
+    return handlePaymentStatusPoll(orderId, res, next);
   } catch (err) {
     return next(err);
   }
@@ -1196,9 +1435,6 @@ router.post('/zeno/webhook', async (req, res, next) => {
 
 // SonicPesa: production callbacks must hit this URL only (configure in SonicPesa dashboard).
 // ZenoPay uses /zeno/webhook separately — each path applies only to its own payment_provider rows.
-const SONIC_WEBHOOK_PAID_STATUSES = new Set([
-  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
-]);
 
 const timingSafeEqualHexOrString = (a, b) => {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -1367,200 +1603,31 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
   }
 });
 
-// Unified: Complete payment manually for testing (works for both providers)
-router.post('/complete/:orderId', async (req, res, next) => {
+// Manual test-complete — only allowed when PAYMENT_ALLOW_TEST_COMPLETE=1 (never in production without explicit opt-in).
+const manualCompleteHandler = async (req, res, next) => {
   try {
+    if (!allowPaymentTestComplete()) {
+      return res.status(403).json({ error: 'Manual payment completion is disabled in production.' });
+    }
     const { orderId } = req.params;
     console.log('[Payment] Manual completion requested for order:', orderId);
-    
     const result = await applyCompletedPayment(orderId, { manual: true });
-    
-    if (result) {
-      res.json({ success: true, message: 'Payment completed manually' });
-    } else {
-      res.status(404).json({ error: 'Payment not found' });
-    }
+    if (!result) return res.status(404).json({ error: 'Payment not found' });
+    return res.json({ success: true, message: 'Payment completed manually', user: result.user || null });
   } catch (err) {
     console.error('[Payment] Manual completion error:', err);
     return next(err);
   }
-});
-
-// Manual payment completion for testing (remove in production)
-router.post('/zeno/complete/:orderId', async (req, res, next) => {
-  try {
-    const { orderId } = req.params;
-    console.log('[Manual] Completing payment for order:', orderId);
-    
-    const result = await applyCompletedPayment(orderId, { manual: true });
-    
-    if (result) {
-      res.json({ success: true, message: 'Payment completed manually' });
-    } else {
-      res.status(404).json({ error: 'Payment not found' });
-    }
-  } catch (err) {
-    console.error('[Manual] Completion error:', err);
-    return next(err);
-  }
-});
+};
+router.post('/complete/:orderId', manualCompleteHandler);
+router.post('/zeno/complete/:orderId', manualCompleteHandler);
 
 // Unified payment status endpoint - routes to active provider
 router.get('/status', async (req, res, next) => {
-  try {
-    const orderId = req.query.orderId;
-    if (!orderId) {
-      return res.status(400).json({ error: 'orderId parameter required' });
-    }
-
-    // First check if payment is already completed in our database
-    const dbCheck = await query(
-      'SELECT status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
-      [orderId],
-    );
-
-    if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
-      console.log(`[Backend] Payment already completed in database for ${orderId}`);
-      return res.json({
-        status: 'COMPLETED',
-        raw: { data: [{ payment_status: 'COMPLETED' }] },
-      });
-    }
-
-    // Get payment record to determine which provider was used
-    const gateway = await resolveGatewayForOrderId(orderId);
-
-    if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
-      ensureSonicPesaConfigured();
-      const statusResp = await fetch(
-        `${SONICPESA_API_BASE}/payment/order_status`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-KEY': SONICPESA_API_KEY,
-          },
-          body: JSON.stringify({ order_id: orderId }),
-        },
-      );
-
-      let statusData = {};
-      try {
-        const text = await statusResp.text();
-        if (text && text.trim()) statusData = JSON.parse(text);
-      } catch (_) {
-        // SonicPesa should return JSON; fallback to empty object on parse failure.
-      }
-      console.log(`[Backend] SonicPesa status response for ${orderId}:`, {
-        status: statusResp.status,
-        data: statusData,
-      });
-
-      const sonicMessage = String(statusData.message || statusData.error || '').toLowerCase();
-      const isOrderNotFound = !statusResp.ok && (
-        sonicMessage.includes('no order found') ||
-        sonicMessage.includes('order not found') ||
-        statusResp.status === 404
-      );
-      if (isOrderNotFound) {
-        console.log(`[Backend] SonicPesa has no order yet for ${orderId}, returning PENDING so app keeps polling`);
-        return res.json({ status: 'PENDING', raw: statusData });
-      }
-
-      if (!statusResp.ok) {
-        console.log(`[Backend] SonicPesa status check failed for ${orderId}:`, statusData);
-        return res.status(400).json({
-          error: mapPaymentGatewayUserError(
-            statusData.message || statusData.error || 'Failed to fetch order status',
-            statusData.resultcode || statusData.code,
-          ),
-        });
-      }
-
-      const rawStatus = getSonicPesaRawStatus(statusData);
-      const isCompleted = rawStatus === 'SUCCESS' || rawStatus === 'COMPLETED' || rawStatus === 'PAID';
-
-      console.log(`[Backend] SonicPesa payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
-
-      if (isCompleted) {
-        console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
-        await applyCompletedPayment(orderId, statusData.data || statusData || {});
-      }
-
-      return res.json({
-        status: isCompleted ? 'COMPLETED' : (rawStatus || 'PENDING'),
-        raw: statusData,
-      });
-    }
-
-    ensureZenoConfigured();
-    const statusResp = await fetch(
-      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(
-        orderId,
-      )}`,
-      {
-        method: 'GET',
-        headers: {
-          'x-api-key': ZENO_API_KEY,
-        },
-      },
-    );
-
-    let statusData = {};
-    try {
-      const text = await statusResp.text();
-      if (text && text.trim()) statusData = JSON.parse(text);
-    } catch (_) {
-      // ZenoPay might return non-JSON (e.g. HTML) for 404
-    }
-    console.log(`[Backend] ZenoPay status response for ${orderId}:`, {
-      status: statusResp.status,
-      data: statusData
-    });
-
-    // "Order not found" from ZenoPay is normal right after creating the order (or in sandbox) – return PENDING so app keeps polling
-    const zenoMessage = String(statusData.message || statusData.error || '').toLowerCase();
-    const isOrderNotFound = !statusResp.ok && (
-      zenoMessage.includes('no order found') ||
-      zenoMessage.includes('order not found') ||
-      (zenoMessage.includes('order_id') && zenoMessage.includes('not found')) ||
-      statusResp.status === 404
-    );
-    if (isOrderNotFound) {
-      console.log(`[Backend] ZenoPay has no order yet for ${orderId}, returning PENDING so app keeps polling`);
-      return res.json({
-        status: 'PENDING',
-        raw: statusData,
-      });
-    }
-
-    if (!statusResp.ok) {
-      console.log(`[Backend] ZenoPay status check failed for ${orderId}:`, statusData);
-      return res.status(400).json({
-        error: mapPaymentGatewayUserError(
-          statusData.message || statusData.error || 'Failed to fetch order status',
-          statusData.resultcode,
-        ),
-      });
-    }
-
-    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
-
-    console.log(`[Backend] Payment status for ${orderId}:`, { rawStatus, isCompleted, fullResponse: JSON.stringify(statusData).slice(0, 400) });
-
-    if (isCompleted) {
-      console.log(`[Backend] Payment completed via polling for ${orderId}, applying payment`);
-      await applyCompletedPayment(orderId, firstItem || statusData || {});
-    }
-
-    return res.json({
-      status: zenoClientStatusFromPoll(isCompleted, rawStatus, statusData),
-      raw: statusData,
-    });
-  } catch (err) {
-    console.error('[Payment] Status error:', err?.message || err);
-    return next(err);
-  }
+  const orderId = req.query.orderId;
+  if (!orderId) return res.status(400).json({ error: 'orderId parameter required' });
+  console.log(`[Backend] Checking status for orderId: ${orderId}`);
+  return handlePaymentStatusPoll(orderId, res, next);
 });
 
 module.exports = router;

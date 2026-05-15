@@ -1508,8 +1508,14 @@ router.get('/settings/payment-provider', async (req, res, next) => {
     const raw = result.rows.length > 0 ? result.rows[0].value : 'zeno';
     const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
     const paymentProvider = compact === 'sonicpesa' ? 'sonicpesa' : 'zeno';
+    const configured =
+      paymentProvider === 'sonicpesa'
+        ? Boolean(process.env.SONICPESA_API_KEY)
+        : Boolean(
+            process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY,
+          );
     console.log('[Admin] Current payment provider (normalized):', paymentProvider, 'raw:', raw);
-    return res.json({ paymentProvider });
+    return res.json({ paymentProvider, configured });
   } catch (err) {
     console.error('[Admin] get payment-provider error:', err?.message);
     return next(err);
@@ -1536,6 +1542,28 @@ router.put('/settings/payment-provider', async (req, res, next) => {
     const { paymentProvider } = bodySchema.parse(req.body);
     console.log('[Admin] Validated payment provider:', paymentProvider);
 
+    if (paymentProvider === 'sonicpesa') {
+      if (!process.env.SONICPESA_API_KEY) {
+        return res.status(400).json({
+          error:
+            'SonicPesa haijasanidi: weka SONICPESA_API_KEY kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
+          paymentProvider,
+          configured: false,
+        });
+      }
+    } else if (
+      !process.env.ZENO_API_KEY &&
+      !process.env.ZENOPAY_API_KEY &&
+      !process.env.ZENOURI_API_KEY
+    ) {
+      return res.status(400).json({
+        error:
+          'ZenoPay haijasanidi: weka ZENO_API_KEY (au ZENOPAY_API_KEY) kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
+        paymentProvider,
+        configured: false,
+      });
+    }
+
     const result = await query(
       `INSERT INTO app_settings (key, value)
        VALUES ('payment_provider', $1)
@@ -1552,7 +1580,7 @@ router.put('/settings/payment-provider', async (req, res, next) => {
     }
 
     console.log('[Admin] Payment provider updated successfully to:', paymentProvider);
-    return res.json({ paymentProvider });
+    return res.json({ paymentProvider, configured: true });
   } catch (err) {
     console.error('[Admin] payment-provider update error:', err?.message || err);
     console.error('[Admin] Error stack:', err?.stack);
