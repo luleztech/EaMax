@@ -12,6 +12,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   PanResponder,
+  ToastAndroid,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -20,6 +22,22 @@ import { adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 const CHANNEL_ROW_HEIGHT = 80;
+
+const logReorder = (msg, extra) => {
+  if (extra != null) {
+    console.warn('[EaAdmin:Reorder]', msg, extra);
+  } else {
+    console.warn('[EaAdmin:Reorder]', msg);
+  }
+};
+
+const toastReorder = (msg) => {
+  if (Platform.OS === 'android') {
+    ToastAndroid.show(String(msg).slice(0, 120), ToastAndroid.SHORT);
+  }
+};
+
+const channelIdEq = (a, b) => Number(a) === Number(b);
 
 const sortChannelsByOrder = (list) =>
   [...list].sort(
@@ -66,8 +84,11 @@ const isFreeChannel = hasFreeAccess;
 
 const hasPremiumAccess = (ch) => !hasFreeAccess(ch);
 
+/** Free channels in current list order (no re-sort — avoids snap-back after drag). */
+const getFreeChannelsInOrder = (channels) => (channels || []).filter(isFreeChannel);
+
 const getFreeChannels = (channels) =>
-  (channels || []).filter(isFreeChannel).sort(
+  getFreeChannelsInOrder(channels).sort(
     (a, b) => (Number(a.sort_order) || Number(a.id)) - (Number(b.sort_order) || Number(b.id)),
   );
 
@@ -115,7 +136,7 @@ const flattenGroupedChannels = (grouped, fallbackList = [], freeOrdered = []) =>
 };
 
 const flattenAllChannels = (channels) => {
-  const free = getFreeChannels(channels);
+  const free = getFreeChannelsInOrder(channels);
   const freeIds = new Set(free.map((c) => c.id));
   const nonFree = channels.filter((c) => !freeIds.has(c.id));
   const grouped = groupChannelsByCategory(nonFree);
@@ -124,10 +145,10 @@ const flattenAllChannels = (channels) => {
 
 const getListForCategoryKeyFromList = (categoryKey, prev, hideFreeInCategories) => {
   if (categoryKey === BURE_SECTION_KEY) {
-    return getFreeChannels(prev);
+    return getFreeChannelsInOrder(prev);
   }
   const freeIds = hideFreeInCategories
-    ? new Set(getFreeChannels(prev).map((c) => c.id))
+    ? new Set(getFreeChannelsInOrder(prev).map((c) => c.id))
     : new Set();
   const grouped = groupChannelsByCategory(prev);
   let list = grouped[categoryKey] || [];
@@ -140,11 +161,11 @@ const getListForCategoryKeyFromList = (categoryKey, prev, hideFreeInCategories) 
 const applyChannelMove = (prev, categoryKey, fromIndex, toIndex, hideFreeInCategories) => {
   if (fromIndex === toIndex) return prev;
 
-  let free = getFreeChannels(prev);
+  let free = getFreeChannelsInOrder(prev);
   const freeIds = new Set(free.map((c) => c.id));
 
   if (categoryKey === BURE_SECTION_KEY) {
-    const list = [...free];
+    const list = [...getFreeChannelsInOrder(prev)];
     const [item] = list.splice(fromIndex, 1);
     list.splice(toIndex, 0, item);
     free = list;
@@ -378,7 +399,7 @@ const ContentSection = () => {
 
   const channelsMatchingFilter = useCallback(() => {
     if (activeFilter === 'bure') {
-      return getFreeChannels(orderedChannels);
+      return getFreeChannelsInOrder(orderedChannels);
     }
     if (activeFilter === 'kabumbu') {
       return orderedChannels.filter((ch) => String(ch.category).toLowerCase() === 'football');
@@ -408,7 +429,7 @@ const ContentSection = () => {
       );
     }
 
-    const freeChannels = getFreeChannels(
+    const freeChannels = getFreeChannelsInOrder(
       activeFilter === 'bure' ? list : orderedChannels.filter((ch) => list.some((x) => x.id === ch.id)),
     );
     const freeIds = new Set(freeChannels.map((c) => c.id));
@@ -449,7 +470,7 @@ const ContentSection = () => {
       prev,
       meta.hideFreeInCategories,
     );
-    const fromIndex = list.findIndex((c) => c.id === meta.channelId);
+    const fromIndex = list.findIndex((c) => channelIdEq(c.id, meta.channelId));
     if (fromIndex < 0 || fromIndex === hoverIndex) return false;
 
     const next = applyChannelMove(
@@ -471,16 +492,21 @@ const ContentSection = () => {
     const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
     if (!list.length) return;
 
-    const fullOrderIds = flattenAllChannels(list).map((ch) => ch.id);
+    const fullOrderIds = list.map((ch) => Number(ch.id));
 
     persistOrderInFlightRef.current = true;
     try {
       setSavingOrder(true);
+      logReorder('Saving order…', { count: fullOrderIds.length });
       await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
       setChannels(list);
       orderedChannelsRef.current = list;
+      logReorder('Order saved');
+      toastReorder('Order saved');
     } catch (error) {
       console.error('Failed to save channel order:', error);
+      logReorder('Save failed', { err: String(error?.message || error) });
+      toastReorder('Save failed — check connection');
       const detail = error?.message ? String(error.message).slice(0, 180) : '';
       showStatusModal(
         'Reorder not saved',
@@ -513,9 +539,12 @@ const ContentSection = () => {
     (categoryKey, channelId, direction, hideFreeInCategories) => {
       const prev = orderedChannelsRef.current;
       const list = getListForCategoryKeyFromList(categoryKey, prev, hideFreeInCategories);
-      const fromIndex = list.findIndex((c) => c.id === channelId);
+      const fromIndex = list.findIndex((c) => channelIdEq(c.id, channelId));
       const toIndex = fromIndex + direction;
-      if (fromIndex < 0 || toIndex < 0 || toIndex >= list.length) return;
+      if (fromIndex < 0 || toIndex < 0 || toIndex >= list.length) {
+        logReorder('Move blocked', { channelId, fromIndex, toIndex, listLen: list.length });
+        return;
+      }
       const next = applyChannelMove(
         prev,
         categoryKey,
@@ -523,6 +552,10 @@ const ContentSection = () => {
         toIndex,
         hideFreeInCategories,
       );
+      const name = list[fromIndex]?.name || 'Channel';
+      const moveLabel = direction < 0 ? `Moved up: ${name}` : `Moved down: ${name}`;
+      logReorder(moveLabel);
+      toastReorder(moveLabel);
       schedulePersistOrder(next);
     },
     [schedulePersistOrder],
@@ -567,8 +600,9 @@ const ContentSection = () => {
             orderedChannelsRef.current,
             hideFreeInCategories,
           );
-          const start = list.findIndex((c) => c.id === channelId);
+          const start = list.findIndex((c) => channelIdEq(c.id, channelId));
           const startIndex = start >= 0 ? start : listIndex;
+          logReorder('Drag start', { channelId, startIndex, categoryKey });
 
           dragMetaRef.current = {
             categoryKey,
@@ -599,6 +633,7 @@ const ContentSection = () => {
           }
         },
         onPanResponderRelease: () => {
+          logReorder('Drag release');
           endDragSession(true);
         },
         onPanResponderTerminate: () => {
@@ -675,8 +710,9 @@ const ContentSection = () => {
             <TouchableOpacity
               style={[styles.reorderStepBtn, !canMoveUp && styles.reorderStepBtnDisabled]}
               onPress={() => moveChannelOneStep(categoryKey, channel.id, -1, hideFreeInCategories)}
-              disabled={!canMoveUp || savingOrder}
-              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              disabled={!canMoveUp || !!savingOrder}
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityLabel="Move channel up">
               <Icon name="chevron-up" size={20} color={canMoveUp ? '#c4b5fd' : '#4b5563'} />
             </TouchableOpacity>
@@ -689,8 +725,9 @@ const ContentSection = () => {
             <TouchableOpacity
               style={[styles.reorderStepBtn, !canMoveDown && styles.reorderStepBtnDisabled]}
               onPress={() => moveChannelOneStep(categoryKey, channel.id, 1, hideFreeInCategories)}
-              disabled={!canMoveDown || savingOrder}
-              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              disabled={!canMoveDown || !!savingOrder}
+              activeOpacity={0.6}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityLabel="Move channel down">
               <Icon name="chevron-down" size={20} color={canMoveDown ? '#c4b5fd' : '#4b5563'} />
             </TouchableOpacity>
@@ -815,6 +852,7 @@ const ContentSection = () => {
     <ScrollView
       style={styles.container}
       showsVerticalScrollIndicator={false}
+      nestedScrollEnabled
       scrollEnabled={!draggingChannelId}
       keyboardShouldPersistTaps="handled"
       refreshControl={
