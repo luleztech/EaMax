@@ -27,6 +27,7 @@ import ChannelUnlockModal from './ChannelUnlockModal';
 import VideoPlayer from '../player/VideoPlayer';
 import { settingsAPI, channelsAPI, userAPI, API_BASE_URL } from '../config/api';
 import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
+import { useAppFocusRefresh } from '../hooks/useAppFocusRefresh';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -125,7 +126,7 @@ const MoviesApp = ({
   };
 
   // Load channels by category
-  const loadChannels = async () => {
+  const loadChannels = useCallback(async () => {
     try {
       const categories = ['tamthilia', 'wanyama', 'katuni', 'habari', 'sayansi', 'movies'];
       const allChannels = sortChannelsByDisplayOrder(await channelsAPI.getChannels());
@@ -171,7 +172,9 @@ const MoviesApp = ({
         movies: [],
       });
     }
-  };
+  }, []);
+
+  useAppFocusRefresh(loadChannels);
 
   // Refresh user points from backend
   const refreshUserPoints = async () => {
@@ -340,7 +343,7 @@ const MoviesApp = ({
       if (id) setUserId(id);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadChannels]);
 
   // Update currentUserPoints when userPoints prop changes
   useEffect(() => {

@@ -22,6 +22,7 @@ import ImageCarousel from './ImageCarousel';
 import ShimmerPlaceholder from './ShimmerPlaceholder';
 import { settingsAPI, channelsAPI, matchesAPI, userAPI, API_BASE_URL } from '../config/api';
 import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
+import { useAppFocusRefresh } from '../hooks/useAppFocusRefresh';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -257,6 +258,8 @@ const CombinedApp = ({
     AsyncStorage.getItem('userId').then((id) => { if (id) setUserId(id); });
     return () => { cancelled = true; };
   }, [loadSlides, loadChannels, loadMatches]);
+
+  useAppFocusRefresh(loadChannels);
 
   useEffect(() => { setCurrentUserPoints(userPoints); }, [userPoints]);
 

@@ -21,6 +21,7 @@ import ImageCarousel from './ImageCarousel';
 import ShimmerPlaceholder from './ShimmerPlaceholder';
 import { settingsAPI, channelsAPI, matchesAPI, userAPI, API_BASE_URL } from '../config/api';
 import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
+import { useAppFocusRefresh } from '../hooks/useAppFocusRefresh';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -131,7 +132,7 @@ const FootballApp = ({
     }
   };
 
-  const loadFootballChannels = async () => {
+  const loadFootballChannels = useCallback(async () => {
     try {
       const data = sortChannelsByDisplayOrder(await channelsAPI.getChannels('football'));
       const mapped = (data || []).map((ch) => {
@@ -163,7 +164,9 @@ const FootballApp = ({
       console.error('Failed to load football channels:', error);
       setFootballChannels([]);
     }
-  };
+  }, []);
+
+  useAppFocusRefresh(loadFootballChannels);
 
   // Refresh user points from backend
   const refreshUserPoints = async () => {

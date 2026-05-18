@@ -492,17 +492,23 @@ const ContentSection = () => {
     const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
     if (!list.length) return;
 
-    const fullOrderIds = list.map((ch) => Number(ch.id));
+    const flat = flattenAllChannels(list);
+    const fullOrderIds = flat
+      .map((ch) => Number(ch.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
 
     persistOrderInFlightRef.current = true;
     try {
       setSavingOrder(true);
       logReorder('Saving order…', { count: fullOrderIds.length });
       await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
-      setChannels(list);
-      orderedChannelsRef.current = list;
+      const data = await adminChannelsAPI.getChannels();
+      const synced = sortChannelsByOrder(data);
+      setChannels(synced);
+      setOrderedChannels(synced);
+      orderedChannelsRef.current = synced;
       logReorder('Order saved');
-      toastReorder('Order saved');
+      toastReorder('Saved — refresh EaMax app to see order');
     } catch (error) {
       console.error('Failed to save channel order:', error);
       logReorder('Save failed', { err: String(error?.message || error) });
