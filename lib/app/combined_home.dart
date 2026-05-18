@@ -113,6 +113,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   String _channelsGridFilter = 'all';
   List<CarouselSlide> _carousel = [];
   List<ChannelUi> _football = [];
+  List<ChannelUi> _freeOrdered = [];
   Map<String, List<ChannelUi>> _byCat = {
     for (final g in _movieGenres) g.key: [],
     'habari': [],
@@ -238,23 +239,38 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     });
   }
 
+  int _channelSortKey(Map<String, dynamic> ch) {
+    final raw = ch['sort_order'] ?? ch['sortOrder'] ?? ch['id'];
+    if (raw is num) return raw.toInt();
+    return int.tryParse('$raw') ?? (ch['id'] as num?)?.toInt() ?? 0;
+  }
+
   Future<void> _loadChannels() async {
     final all = await channelsApi.getChannels();
+    final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
+      ..sort((a, b) {
+        final c = _channelSortKey(a).compareTo(_channelSortKey(b));
+        if (c != 0) return c;
+        return ((a['id'] as num?) ?? 0).compareTo((b['id'] as num?) ?? 0);
+      });
+
     final football = <ChannelUi>[];
+    final free = <ChannelUi>[];
     final cat = {
       for (final g in _movieGenres) g.key: <ChannelUi>[],
     };
     cat['habari'] = [];
 
-    for (final raw in all) {
-      final ch = Map<String, dynamic>.from(raw as Map);
-      if (ch['is_active'] != true) continue;
+    for (final ch in rows) {
+      if (ch['is_active'] == false) continue;
+      final idRaw = ch['id'];
+      if (idRaw is! num) continue;
       final category = (ch['category']?.toString() ?? '').toLowerCase();
       final pr = ch['pointsRequired'] ?? ch['points_required'];
       final points = pr is num ? pr.toInt() : int.tryParse('$pr') ?? 0;
       final unlock = ch['unlockToFree'] == true || ch['unlock_to_free'] == true;
       final mapped = ChannelUi(
-        id: (ch['id'] as num).toInt(),
+        id: idRaw.toInt(),
         name: ch['name']?.toString() ?? '',
         streamUrl: ch['stream_url']?.toString(),
         thumbnailUrl: ch['thumbnail_url']?.toString(),
@@ -263,10 +279,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         category: category,
         pointsRequired: points,
         unlockToFree: unlock,
-        isLive: ch['is_active'] == true,
+        isLive: ch['is_active'] != false,
         icon: category == 'football' ? 'soccer' : (category == 'movies' ? 'movie' : 'television'),
         apiRow: Map<String, dynamic>.from(ch),
       );
+      if (unlock) free.add(mapped);
       if (category == 'football') {
         football.add(mapped);
       } else if (cat.containsKey(category)) {
@@ -276,6 +293,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     if (!mounted) return;
     setState(() {
       _football = football;
+      _freeOrdered = free;
       _byCat = cat;
     });
   }
@@ -362,12 +380,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                 ChannelSection(key: 'habari', name: 'Habari', icon: 'newspaper', color: '#ef4444', channels: h),
               ];
       default:
-        final allChannels = [
-          ..._football,
-          ..._byCat.values.expand((list) => list),
-        ];
-
-        final freeChannels = allChannels
+        final freeChannels = _freeOrdered
             .where((ch) => ch.isFreeForCatalog(widget.channelsPremiumOnly))
             .toList();
         final freeIds = freeChannels.map((ch) => ch.id).toSet();

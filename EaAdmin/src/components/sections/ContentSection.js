@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Dimensions,
   Modal,
   TextInput,
   Switch,
@@ -13,14 +12,15 @@ import {
   RefreshControl,
   ToastAndroid,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import DraggableFlatList, { ScaleDecorator } from 'react-native-draggable-flatlist';
 import { adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
+
 const CHANNEL_ROW_HEIGHT = 80;
 
 const logReorder = (msg, extra) => {
@@ -193,11 +193,11 @@ const ContentSection = () => {
   const [addChannelModalVisible, setAddChannelModalVisible] = useState(false);
   const [channels, setChannels] = useState([]);
   const [orderedChannels, setOrderedChannels] = useState([]);
-  const [listDragging, setListDragging] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
   const orderedChannelsRef = useRef([]);
   const activeFilterRef = useRef('all');
   const persistOrderInFlightRef = useRef(false);
+  const pendingPersistRef = useRef(null);
   const persistDebounceRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -409,7 +409,7 @@ const ContentSection = () => {
     return orderedChannels;
   }, [activeFilter, orderedChannels]);
 
-  const buildDisplayModel = useCallback(() => {
+  const displayModel = useMemo(() => {
     let list = channelsMatchingFilter();
     if (searchTrimmed) {
       list = list.filter(
@@ -440,48 +440,78 @@ const ContentSection = () => {
 
   const canReorder = !searchTrimmed;
 
-  const persistChannelOrder = useCallback(async (ordered) => {
-    if (persistOrderInFlightRef.current) return;
+  const applySortOrderFromList = useCallback(
+    (list) =>
+      (list || []).map((ch, i) => ({
+        ...ch,
+        sort_order: i,
+        sortOrder: i,
+      })),
+    [],
+  );
 
-    const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
-    if (!list.length) return;
+  const persistChannelOrder = useCallback(
+    async (ordered, meta) => {
+      if (persistOrderInFlightRef.current) {
+        pendingPersistRef.current = { ordered, meta };
+        return;
+      }
 
-    const flat = flattenAllChannels(list);
-    const fullOrderIds = flat
-      .map((ch) => Number(ch.id))
-      .filter((id) => Number.isFinite(id) && id > 0);
+      const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
+      if (!list.length) return;
 
-    persistOrderInFlightRef.current = true;
-    try {
-      setSavingOrder(true);
-      logReorder('Saving order…', { count: fullOrderIds.length });
-      await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
-      const data = await adminChannelsAPI.getChannels();
-      const synced = flattenAllChannels(sortChannelsByOrder(data));
-      setChannels(synced);
-      setOrderedChannels(synced);
-      orderedChannelsRef.current = synced;
-      logReorder('Order saved');
-      toastReorder('Saved — refresh EaMax app to see order');
-    } catch (error) {
-      console.error('Failed to save channel order:', error);
-      logReorder('Save failed', { err: String(error?.message || error) });
-      toastReorder('Save failed — check connection');
-      const detail = error?.message ? String(error.message).slice(0, 180) : '';
-      showStatusModal(
-        'Reorder not saved',
-        detail
-          ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then try again.`
-          : 'Order kept on screen. Deploy backend updates, then try again.',
-      );
-    } finally {
-      setSavingOrder(false);
-      persistOrderInFlightRef.current = false;
-    }
-  }, [showStatusModal]);
+      const section = meta?.section;
+      const sectionIds = (meta?.sectionIds || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      const flat = flattenAllChannels(list);
+      const fullOrderIds = flat
+        .map((ch) => Number(ch.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
+      persistOrderInFlightRef.current = true;
+      try {
+        setSavingOrder(true);
+        if (section && sectionIds.length) {
+          logReorder('Saving section order…', { section, count: sectionIds.length });
+          await adminChannelsAPI.reorderChannels(sectionIds, { section, fullOrderIds });
+        } else {
+          logReorder('Saving order…', { count: fullOrderIds.length });
+          await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
+        }
+        const kept = applySortOrderFromList(orderedChannelsRef.current);
+        setChannels(kept);
+        setOrderedChannels(kept);
+        orderedChannelsRef.current = kept;
+        logReorder('Order saved');
+        toastReorder('Order saved');
+      } catch (error) {
+        console.error('Failed to save channel order:', error);
+        logReorder('Save failed', { err: String(error?.message || error) });
+        toastReorder('Save failed — check connection');
+        const detail = error?.message ? String(error.message).slice(0, 180) : '';
+        showStatusModal(
+          'Reorder not saved',
+          detail
+            ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then try again.`
+            : 'Order kept on screen. Deploy backend updates, then try again.',
+        );
+      } finally {
+        setSavingOrder(false);
+        persistOrderInFlightRef.current = false;
+        const pending = pendingPersistRef.current;
+        if (pending) {
+          pendingPersistRef.current = null;
+          persistChannelOrder(pending.ordered, pending.meta);
+        }
+      }
+    },
+    [applySortOrderFromList, showStatusModal],
+  );
 
   const schedulePersistOrder = useCallback(
-    (next) => {
+    (next, meta) => {
       orderedChannelsRef.current = next;
       setOrderedChannels(next);
       if (persistDebounceRef.current) {
@@ -489,7 +519,7 @@ const ContentSection = () => {
       }
       persistDebounceRef.current = setTimeout(() => {
         persistDebounceRef.current = null;
-        persistChannelOrder(next);
+        persistChannelOrder(next, meta);
       }, 450);
     },
     [persistChannelOrder],
@@ -497,18 +527,23 @@ const ContentSection = () => {
 
   const handleSectionDragEnd = useCallback(
     (categoryKey, hideFreeInCategories, from, to) => {
-      setListDragging(false);
       if (from === to) return;
 
       const prev = orderedChannelsRef.current;
       const next = applyChannelMove(prev, categoryKey, from, to, hideFreeInCategories);
-      logReorder('Buruta kupanga', { categoryKey, from, to });
-      schedulePersistOrder(next);
+      const apiSection = categoryKey === BURE_SECTION_KEY ? 'bure' : categoryKey;
+      const sectionList =
+        categoryKey === BURE_SECTION_KEY
+          ? getFreeChannelsInOrder(next)
+          : getListForCategoryKeyFromList(categoryKey, next, hideFreeInCategories);
+      const sectionIds = sectionList.map((ch) => ch.id);
+      logReorder('Reorder', { section: apiSection, from, to });
+      schedulePersistOrder(next, { section: apiSection, sectionIds });
     },
     [schedulePersistOrder],
   );
 
-  const openEditChannel = (channel) => {
+  const openEditChannel = useCallback((channel) => {
     setEditingChannel(channel);
     setChannelName(channel.name || '');
     setChannelCategory(channel.category || 'football');
@@ -532,181 +567,73 @@ const ContentSection = () => {
     setPointsRequired(String(channel.points_required ?? channel.pointsRequired ?? 0));
     setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
     setAddChannelModalVisible(true);
-  };
+  }, []);
 
-  const renderChannelRowInner = (
-    channel,
-    index,
-    categoryKey,
-    categoryList,
-    hideFreeInCategories,
-    isDraggingRow,
-    drag,
-  ) => {
-    const def =
-      categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
-    const isLast = index === categoryList.length - 1;
-    const originDef = getCategoryDef(channel.category);
+  const handleDeleteChannel = useCallback((channel) => {
+    setDeleteConfirmChannel(channel);
+  }, []);
 
-    const rowBody = (
-      <View
-        style={[
-          styles.channelRow,
-          isLast && styles.channelRowLast,
-          isDraggingRow && styles.channelRowDragging,
-        ]}>
-        {canReorder && drag ? (
-          <TouchableOpacity
-            onLongPress={drag}
-            delayLongPress={150}
-            disabled={isDraggingRow || !!savingOrder}
-            style={styles.dragHandle}
-            activeOpacity={0.7}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            accessibilityLabel="Buruta kupanga">
-            <Icon name="drag-vertical" size={22} color={isDraggingRow ? '#c4b5fd' : '#6b7280'} />
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.dragHandlePlaceholder} />
-        )}
-        <LinearGradient
-          colors={[channel.color || def.color, '#1e293b']}
-          style={styles.channelRowAccent}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 0, y: 1 }}
-        />
-        <View style={styles.channelRowMain}>
-          <View style={styles.channelRowTop}>
-            <View style={[styles.channelThumb, { backgroundColor: `${channel.color || def.color}33` }]}>
-              {channel.thumbnail_emoji ? (
-                <Text style={styles.channelThumbEmoji}>{channel.thumbnail_emoji}</Text>
-              ) : (
-                <Icon name={def.icon} size={22} color="#fff" />
-              )}
+  const handleMoveChannel = useCallback(
+    (categoryKey, hideFreeInCategories, fromIndex, direction) => {
+      const toIndex = fromIndex + direction;
+      handleSectionDragEnd(categoryKey, hideFreeInCategories, fromIndex, toIndex);
+    },
+    [handleSectionDragEnd],
+  );
+
+  const renderCategorySection = useCallback(
+    (catDef, categoryChannels, hideFreeInCategories) => {
+      if (!categoryChannels.length) return null;
+
+      const sectionHeader = (
+        <View style={styles.categorySectionHeader}>
+          <View style={styles.categorySectionHeaderLeft}>
+            <View style={[styles.categorySectionIconWrap, { backgroundColor: `${catDef.color}22` }]}>
+              <Icon name={catDef.icon} size={20} color={catDef.color} />
             </View>
-            <View style={styles.channelRowInfo}>
-              <Text style={styles.channelRowName} numberOfLines={1}>
-                {channel.name}
-              </Text>
-              <View style={styles.channelRowMeta}>
-                {categoryKey === BURE_SECTION_KEY ? (
-                  <>
-                    <Text style={styles.channelRowCategory}>{originDef.name}</Text>
-                    <Text style={styles.channelRowDot}>·</Text>
-                  </>
-                ) : null}
-                <Text
-                  style={[
-                    styles.channelRowStatus,
-                    channel.is_active ? styles.channelRowStatusActive : styles.channelRowStatusOff,
-                  ]}>
-                  {channel.is_active ? 'Active' : 'Inactive'}
-                </Text>
-                {hasFreeAccess(channel) ? (
-                  <>
-                    <Text style={styles.channelRowDot}>·</Text>
-                    <Text style={styles.channelRowBureTag}>Bure</Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.channelRowDot}>·</Text>
-                    <Text style={styles.channelRowPremiumTag}>Premium</Text>
-                  </>
-                )}
-                <Text style={styles.channelRowDot}>·</Text>
-                <Text style={styles.channelRowViews}>
-                  {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
-                </Text>
-              </View>
-            </View>
+            <Text style={styles.categorySectionTitle}>{catDef.name}</Text>
           </View>
+          <Text style={styles.categorySectionCount}>{categoryChannels.length} channels</Text>
         </View>
-        <View style={styles.channelRowActions}>
-          <TouchableOpacity
-            style={styles.channelIconBtn}
-            onPress={() => openEditChannel(channel)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Icon name="pencil" size={20} color="#60a5fa" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.channelIconBtn, styles.channelIconBtnDanger]}
-            onPress={() => setDeleteConfirmChannel(channel)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Icon name="delete" size={20} color="#f87171" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
+      );
 
-    if (canReorder && drag) {
-      return <ScaleDecorator>{rowBody}</ScaleDecorator>;
-    }
-    return rowBody;
-  };
+      const listLen = categoryChannels.length;
 
-  const renderCategorySection = (catDef, categoryChannels, hideFreeInCategories) => {
-    if (!categoryChannels.length) return null;
-
-    const sectionHeader = (
-      <View style={styles.categorySectionHeader}>
-        <View style={styles.categorySectionHeaderLeft}>
-          <View style={[styles.categorySectionIconWrap, { backgroundColor: `${catDef.color}22` }]}>
-            <Icon name={catDef.icon} size={20} color={catDef.color} />
-          </View>
-          <Text style={styles.categorySectionTitle}>{catDef.name}</Text>
-        </View>
-        <Text style={styles.categorySectionCount}>{categoryChannels.length} channels</Text>
-      </View>
-    );
-
-    return (
-      <View key={catDef.key} style={styles.categorySection}>
-        {sectionHeader}
-        {canReorder ? (
-          <DraggableFlatList
-            data={categoryChannels}
-            keyExtractor={(item) => `ch-${item.id}`}
-            scrollEnabled={false}
-            nestedScrollEnabled
-            onDragBegin={() => setListDragging(true)}
-            onDragEnd={({ from, to }) =>
-              handleSectionDragEnd(catDef.key, hideFreeInCategories, from, to)
-            }
-            containerStyle={styles.categorySectionList}
-            renderItem={({ item, drag, isActive: dragging, getIndex }) =>
-              renderChannelRowInner(
-                item,
-                getIndex() ?? 0,
-                catDef.key,
-                categoryChannels,
-                hideFreeInCategories,
-                dragging,
-                drag,
-              )
-            }
-          />
-        ) : (
+      return (
+        <View key={catDef.key} style={styles.categorySection}>
+          {sectionHeader}
           <View style={styles.categorySectionList}>
             {categoryChannels.map((channel, index) => (
-              <View key={channel.id}>
-                {renderChannelRowInner(
-                  channel,
-                  index,
-                  catDef.key,
-                  categoryChannels,
-                  hideFreeInCategories,
-                  false,
-                  null,
-                )}
-              </View>
+              <ChannelRow
+                key={channel.id}
+                channel={channel}
+                index={index}
+                categoryKey={catDef.key}
+                listLength={listLen}
+                canReorder={canReorder}
+                savingOrder={savingOrder}
+                onEdit={openEditChannel}
+                onDelete={handleDeleteChannel}
+                onMoveUp={
+                  canReorder && index > 0
+                    ? () => handleMoveChannel(catDef.key, hideFreeInCategories, index, -1)
+                    : null
+                }
+                onMoveDown={
+                  canReorder && index < listLen - 1
+                    ? () => handleMoveChannel(catDef.key, hideFreeInCategories, index, 1)
+                    : null
+                }
+              />
             ))}
           </View>
-        )}
-      </View>
-    );
-  };
+        </View>
+      );
+    },
+    [canReorder, savingOrder, openEditChannel, handleDeleteChannel, handleMoveChannel],
+  );
 
-  const { freeChannels, grouped, hideFreeInCategories } = buildDisplayModel();
+  const { freeChannels, grouped, hideFreeInCategories } = displayModel;
   const categoriesToShow = CATEGORY_DEFS.filter((def) => {
     if (activeFilter === 'bure') return false;
     if (activeFilter === 'kabumbu') return def.app === 'kabumbu';
@@ -732,11 +659,8 @@ const ContentSection = () => {
       style={styles.container}
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled
-      scrollEnabled={!listDragging}
       keyboardShouldPersistTaps="handled"
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} enabled={!listDragging} />
-      }>
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
       {savingOrder ? (
         <View style={styles.savingOrderBanner}>
           <ActivityIndicator size="small" color="#a78bfa" />
@@ -744,19 +668,11 @@ const ContentSection = () => {
         </View>
       ) : null}
 
-      {canReorder ? (
-        <Text style={styles.reorderHint}>
-          Buruta kupanga — shikilia ⋮⋮ na buruta. Mpangilio huhifadhiwa kiotomatiki.
-        </Text>
-      ) : searchTrimmed ? (
-        <Text style={styles.reorderHint}>Clear search to reorder channels.</Text>
-      ) : null}
-
       {/* Filters */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        scrollEnabled={!listDragging}
+        nestedScrollEnabled
         style={styles.filtersScrollContainer}
         contentContainerStyle={styles.filtersContainer}>
         {filters.map((filter) => (
@@ -1444,12 +1360,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     lineHeight: 17,
   },
-  dragHandle: {
+  reorderControls: {
     width: 44,
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(55, 65, 81, 0.45)',
+    gap: 2,
+    paddingVertical: 6,
+  },
+  reorderBtn: {
+    padding: 2,
+  },
+  reorderBtnDisabled: {
+    opacity: 0.35,
   },
   dragHandlePlaceholder: {
     width: 44,
@@ -1942,6 +1866,113 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+});
+
+const ChannelRow = memo(function ChannelRow({
+  channel,
+  index,
+  categoryKey,
+  listLength,
+  canReorder,
+  savingOrder,
+  onEdit,
+  onDelete,
+  onMoveUp,
+  onMoveDown,
+}) {
+  const def =
+    categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
+  const isLast = index === listLength - 1;
+  const originDef = getCategoryDef(channel.category);
+  const accentColor = channel.color || def.color;
+
+  return (
+    <View style={[styles.channelRow, isLast && styles.channelRowLast]}>
+      {canReorder ? (
+        <View style={styles.reorderControls}>
+          <TouchableOpacity
+            onPress={onMoveUp}
+            disabled={!onMoveUp || savingOrder}
+            style={[styles.reorderBtn, !onMoveUp && styles.reorderBtnDisabled]}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            accessibilityLabel="Move up">
+            <Icon name="chevron-up" size={20} color={onMoveUp ? '#9ca3af' : '#374151'} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onMoveDown}
+            disabled={!onMoveDown || savingOrder}
+            style={[styles.reorderBtn, !onMoveDown && styles.reorderBtnDisabled]}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            accessibilityLabel="Move down">
+            <Icon name="chevron-down" size={20} color={onMoveDown ? '#9ca3af' : '#374151'} />
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={styles.dragHandlePlaceholder} />
+      )}
+      <View style={[styles.channelRowAccent, { backgroundColor: accentColor }]} />
+      <View style={styles.channelRowMain}>
+        <View style={styles.channelRowTop}>
+          <View style={[styles.channelThumb, { backgroundColor: `${accentColor}33` }]}>
+            {channel.thumbnail_emoji ? (
+              <Text style={styles.channelThumbEmoji}>{channel.thumbnail_emoji}</Text>
+            ) : (
+              <Icon name={def.icon} size={22} color="#fff" />
+            )}
+          </View>
+          <View style={styles.channelRowInfo}>
+            <Text style={styles.channelRowName} numberOfLines={1}>
+              {channel.name}
+            </Text>
+            <View style={styles.channelRowMeta}>
+              {categoryKey === BURE_SECTION_KEY ? (
+                <>
+                  <Text style={styles.channelRowCategory}>{originDef.name}</Text>
+                  <Text style={styles.channelRowDot}>·</Text>
+                </>
+              ) : null}
+              <Text
+                style={[
+                  styles.channelRowStatus,
+                  channel.is_active ? styles.channelRowStatusActive : styles.channelRowStatusOff,
+                ]}>
+                {channel.is_active ? 'Active' : 'Inactive'}
+              </Text>
+              {hasFreeAccess(channel) ? (
+                <>
+                  <Text style={styles.channelRowDot}>·</Text>
+                  <Text style={styles.channelRowBureTag}>Bure</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.channelRowDot}>·</Text>
+                  <Text style={styles.channelRowPremiumTag}>Premium</Text>
+                </>
+              )}
+              <Text style={styles.channelRowDot}>·</Text>
+              <Text style={styles.channelRowViews}>
+                {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
+              </Text>
+            </View>
+          </View>
+        </View>
+      </View>
+      <View style={styles.channelRowActions}>
+        <TouchableOpacity
+          style={styles.channelIconBtn}
+          onPress={() => onEdit(channel)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Icon name="pencil" size={20} color="#60a5fa" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.channelIconBtn, styles.channelIconBtnDanger]}
+          onPress={() => onDelete(channel)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Icon name="delete" size={20} color="#f87171" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 });
 
 export default ContentSection;

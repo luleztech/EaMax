@@ -120,8 +120,9 @@ query(
     console.warn('Migration channels.sort_order (non-fatal):', err.message);
   }
 });
+// Do not reset sort_order = 0 — that is a valid position after admin drag-and-drop reorder.
 query(
-  `UPDATE channels SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0`
+  `UPDATE channels SET sort_order = id WHERE sort_order IS NULL`
 ).catch(() => {});
 query(
   `CREATE TABLE IF NOT EXISTS stream_aliases (

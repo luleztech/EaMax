@@ -107,6 +107,7 @@ const CombinedApp = ({
   const [channelFilter, setChannelFilter] = useState('zote');
   const [carouselItems, setCarouselItems] = useState([]);
   const [footballChannels, setFootballChannels] = useState([]);
+  const [freeChannelsOrdered, setFreeChannelsOrdered] = useState([]);
   const [channelsByCategory, setChannelsByCategory] = useState({
     tamthilia: [], wanyama: [], katuni: [], habari: [], sayansi: [], movies: [],
   });
@@ -185,11 +186,12 @@ const CombinedApp = ({
     try {
       const allChannels = sortChannelsByDisplayOrder(await channelsAPI.getChannels());
       const football = [];
+      const free = [];
       const categorized = { tamthilia: [], wanyama: [], katuni: [], habari: [], sayansi: [], movies: [] };
       const movieCategories = Object.keys(categorized);
 
       (allChannels || []).forEach((ch) => {
-        if (!ch.is_active) return;
+        if (ch.is_active === false) return;
         const category = ch.category?.toLowerCase();
         const raw = ch.pointsRequired ?? ch.points_required ?? 0;
         const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;
@@ -204,9 +206,10 @@ const CombinedApp = ({
           category: ch.category,
           pointsRequired,
           unlockToFree,
-          isLive: ch.is_active,
+          isLive: ch.is_active !== false,
           icon: category === 'football' ? 'soccer' : category === 'movies' ? 'movie' : 'television',
         };
+        if (unlockToFree) free.push(mapped);
         if (category === 'football') {
           football.push(mapped);
         } else if (movieCategories.includes(category)) {
@@ -215,6 +218,7 @@ const CombinedApp = ({
       });
 
       setFootballChannels(football);
+      setFreeChannelsOrdered(free);
       setChannelsByCategory(categorized);
     } catch (error) {
       console.error('Failed to load channels:', error);
@@ -412,12 +416,7 @@ const CombinedApp = ({
       }
       case 'zote':
       default: {
-        const allChannels = [
-          ...footballChannels,
-          ...Object.values(channelsByCategory).flat(),
-        ];
-
-        const freeChannels = allChannels.filter((ch) => ch.unlockToFree);
+        const freeChannels = freeChannelsOrdered;
         const freeIds = new Set(freeChannels.map((ch) => ch.id));
 
         const sections = [];
