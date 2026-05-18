@@ -187,15 +187,18 @@ export const adminChannelsAPI = {
     });
   },
 
-  // Reorder channels (array of channel ids in display order)
-  reorderChannels: async (channelIds) => {
+  // Reorder channels — pass section ('bure' | category key) when reordering one admin group
+  reorderChannels: async (channelIds, { section } = {}) => {
     const ids = (channelIds || [])
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id) && id > 0);
     if (ids.length === 0) {
       throw new Error('No valid channel ids to reorder');
     }
-    const body = JSON.stringify({ channelIds: ids });
+    const body = JSON.stringify({
+      channelIds: ids,
+      ...(section ? { section: String(section) } : {}),
+    });
     const isNotFound = (err) => {
       const msg = String(err?.message || err || '').toLowerCase();
       return msg.includes('404') || msg.includes('not found');

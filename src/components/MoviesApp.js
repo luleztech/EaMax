@@ -26,6 +26,7 @@ import InsufficientPointsModal from './InsufficientPointsModal';
 import ChannelUnlockModal from './ChannelUnlockModal';
 import VideoPlayer from '../player/VideoPlayer';
 import { settingsAPI, channelsAPI, userAPI, API_BASE_URL } from '../config/api';
+import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
@@ -127,7 +128,7 @@ const MoviesApp = ({
   const loadChannels = async () => {
     try {
       const categories = ['tamthilia', 'wanyama', 'katuni', 'habari', 'sayansi', 'movies'];
-      const allChannels = await channelsAPI.getChannels();
+      const allChannels = sortChannelsByDisplayOrder(await channelsAPI.getChannels());
 
       const categorized = {
         tamthilia: [],

@@ -29,7 +29,7 @@ const AdminApp = () => {
     const map = {
       overview: {
         title: 'Overview',
-        subtitle: 'Revenue, installs & engagement',
+        subtitle: '',
       },
       users: {
         title: 'Users Management',

@@ -21,6 +21,7 @@ import AntDesign from 'react-native-vector-icons/AntDesign';
 import ImageCarousel from './ImageCarousel';
 import ShimmerPlaceholder from './ShimmerPlaceholder';
 import { settingsAPI, channelsAPI, matchesAPI, userAPI, API_BASE_URL } from '../config/api';
+import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -181,7 +182,7 @@ const CombinedApp = ({
 
   const loadChannels = useCallback(async () => {
     try {
-      const allChannels = await channelsAPI.getChannels();
+      const allChannels = sortChannelsByDisplayOrder(await channelsAPI.getChannels());
       const football = [];
       const categorized = { tamthilia: [], wanyama: [], katuni: [], habari: [], sayansi: [], movies: [] };
       const movieCategories = Object.keys(categorized);
@@ -413,7 +414,7 @@ const CombinedApp = ({
           ...Object.values(channelsByCategory).flat(),
         ];
 
-        const freeChannels = allChannels.filter((ch) => ch.unlockToFree || ch.pointsRequired === 0);
+        const freeChannels = allChannels.filter((ch) => ch.unlockToFree);
         const freeIds = new Set(freeChannels.map((ch) => ch.id));
 
         const sections = [];

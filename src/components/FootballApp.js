@@ -20,6 +20,7 @@ import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import ImageCarousel from './ImageCarousel';
 import ShimmerPlaceholder from './ShimmerPlaceholder';
 import { settingsAPI, channelsAPI, matchesAPI, userAPI, API_BASE_URL } from '../config/api';
+import { sortChannelsByDisplayOrder } from '../utils/channelOrder';
 import PaymentsScreen from './PaymentsScreen';
 import ProfileScreen from './ProfileScreen';
 import InsufficientPointsModal from './InsufficientPointsModal';
@@ -132,7 +133,7 @@ const FootballApp = ({
 
   const loadFootballChannels = async () => {
     try {
-      const data = await channelsAPI.getChannels('football');
+      const data = sortChannelsByDisplayOrder(await channelsAPI.getChannels('football'));
       const mapped = (data || []).map((ch) => {
         const raw = ch.pointsRequired ?? ch.points_required ?? 0;
         const pointsRequired = typeof raw === 'number' && !Number.isNaN(raw) ? raw : parseInt(raw, 10) || 0;

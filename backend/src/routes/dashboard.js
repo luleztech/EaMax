@@ -3,6 +3,9 @@ const { query } = require('../db');
 
 const router = express.Router();
 
+/** DB column is named amount_cents but stores whole TZS (2000, 5000, 12000) from PLAN_CONFIG. */
+const paymentAmountTsh = (amountCents) => Math.round(Number(amountCents) || 0);
+
 // Get dashboard statistics with real-time data
 router.get('/stats', async (req, res, next) => {
   try {
@@ -102,37 +105,37 @@ router.get('/stats', async (req, res, next) => {
       ? (((premiumUsers - lastMonthPremium) / lastMonthPremium) * 100).toFixed(1)
       : premiumUsers > 0 ? '100' : '0';
 
-    // All-time revenue from completed transactions only (amount_cents / 100 = TSh)
+    // All-time revenue from completed subscription payments (TZS amounts in amount_cents)
     const totalRevenueResult = await query(
       `SELECT
-         COALESCE(SUM(amount_cents), 0) / 100.0 AS revenue,
+         COALESCE(SUM(amount_cents), 0)::bigint AS revenue,
          COUNT(*)::int AS payment_count
        FROM subscription_payments
        WHERE status = 'completed'`
     );
-    const totalRevenue = parseFloat(totalRevenueResult.rows[0].revenue) || 0;
+    const totalRevenue = paymentAmountTsh(totalRevenueResult.rows[0].revenue);
     const completedPaymentsTotal = parseInt(totalRevenueResult.rows[0].payment_count, 10) || 0;
 
     // Today's collected revenue
     const revenueResult = await query(
       `SELECT
-         COALESCE(SUM(amount_cents), 0) / 100.0 AS revenue,
+         COALESCE(SUM(amount_cents), 0)::bigint AS revenue,
          COUNT(*)::int AS payment_count
        FROM subscription_payments
        WHERE status = 'completed'
        AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE`
     );
-    const todayRevenue = parseFloat(revenueResult.rows[0].revenue) || 0;
+    const todayRevenue = paymentAmountTsh(revenueResult.rows[0].revenue);
     const completedPaymentsToday = parseInt(revenueResult.rows[0].payment_count, 10) || 0;
 
     // Yesterday for comparison
     const yesterdayRevenueResult = await query(
-      `SELECT COALESCE(SUM(amount_cents), 0) / 100.0 AS revenue
+      `SELECT COALESCE(SUM(amount_cents), 0)::bigint AS revenue
        FROM subscription_payments
        WHERE status = 'completed'
        AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE - INTERVAL '1 day'`
     );
-    const yesterdayRevenue = parseFloat(yesterdayRevenueResult.rows[0].revenue) || 0;
+    const yesterdayRevenue = paymentAmountTsh(yesterdayRevenueResult.rows[0].revenue);
 
     const revenueChange = yesterdayRevenue > 0
       ? (((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(1)
@@ -372,7 +375,7 @@ router.get('/transactions', async (req, res, next) => {
 
     const transactions = (result.rows || []).map((row) => {
       const status = normalizeStatus(row.status);
-      const amountTsh = Math.round((Number(row.amount_cents) || 0) / 100);
+      const amountTsh = paymentAmountTsh(row.amount_cents);
       const txnId = row.provider_ref ? String(row.provider_ref).trim() : `PAY-${row.id}`;
       const userNumber =
         row.buyer_phone && String(row.buyer_phone).trim()

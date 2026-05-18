@@ -533,9 +533,6 @@ const DashboardSection = ({ refreshTrigger }) => {
               <Text style={styles.livePillText}>Live</Text>
             </View>
             <Text style={styles.overviewHeroTitle}>Overview</Text>
-            <Text style={styles.overviewHeroSubtitle}>
-              Live stats from your database — refreshed every 30s
-            </Text>
           </View>
         </Animated.View>
 
@@ -604,9 +601,6 @@ const DashboardSection = ({ refreshTrigger }) => {
           <View style={styles.carouselHubHeader}>
             <View>
               <Text style={styles.carouselHubTitle}>Home Carousels</Text>
-              <Text style={styles.carouselHubSubtitle}>
-                Football & movies slides for the user app home screen
-              </Text>
             </View>
             <TouchableOpacity
               style={styles.carouselAddButton}
@@ -823,9 +817,6 @@ const DashboardSection = ({ refreshTrigger }) => {
               </View>
               <View>
                 <Text style={styles.transactionsTitle}>Caught Transactions</Text>
-                <Text style={styles.transactionsSubtitle}>
-                  Real payments from subscription_payments
-                </Text>
               </View>
             </View>
             {transactionsSummary ? (

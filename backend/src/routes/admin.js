@@ -293,30 +293,112 @@ router.post('/users/:id/special-access', async (req, res, next) => {
   }
 });
 
-// Ensure sort_order exists (idempotent; safe on every reorder request)
+const CHANNEL_SECTION_KEYS = [
+  'football',
+  'habari',
+  'tamthilia',
+  'movies',
+  'wanyama',
+  'katuni',
+  'sayansi',
+];
+
+// Ensure sort_order column exists (do not reset values on each reorder — that breaks saved order).
 const ensureChannelSortOrderColumn = async () => {
   await query(
     `ALTER TABLE channels ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
   ).catch(() => {});
-  await query(
-    `UPDATE channels SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0`,
-  ).catch(() => {});
+};
+
+const buildChannelSections = (rows) => {
+  const sorted = [...rows].sort(
+    (a, b) =>
+      (Number(a.sort_order) || Number(a.id)) - (Number(b.sort_order) || Number(b.id)) ||
+      Number(a.id) - Number(b.id),
+  );
+  const free = [];
+  const cats = {};
+  CHANNEL_SECTION_KEYS.forEach((k) => {
+    cats[k] = [];
+  });
+  const other = [];
+
+  sorted.forEach((r) => {
+    if (r.unlock_to_free) {
+      free.push(r.id);
+      return;
+    }
+    const k = String(r.category || 'football').toLowerCase();
+    if (cats[k]) cats[k].push(r.id);
+    else other.push(r.id);
+  });
+
+  return { free, cats, other };
+};
+
+const flattenChannelSections = ({ free, cats, other }) => {
+  const out = [...free];
+  CHANNEL_SECTION_KEYS.forEach((k) => {
+    if (cats[k]?.length) out.push(...cats[k]);
+  });
+  if (other.length) out.push(...other);
+  return out;
 };
 
 const handleChannelsReorder = async (req, res, next) => {
   try {
     const bodySchema = z.object({
       channelIds: z.array(z.coerce.number().int().positive()).min(1),
+      section: z
+        .enum(['bure', ...CHANNEL_SECTION_KEYS])
+        .optional(),
     });
-    const { channelIds } = bodySchema.parse(req.body);
+    const { channelIds, section } = bodySchema.parse(req.body);
 
     await ensureChannelSortOrderColumn();
 
-    for (let i = 0; i < channelIds.length; i += 1) {
-      await query('UPDATE channels SET sort_order = $1 WHERE id = $2', [i, channelIds[i]]);
+    const rowsResult = await query(
+      `SELECT id, category, COALESCE(unlock_to_free, false) AS unlock_to_free,
+              COALESCE(sort_order, id) AS sort_order
+         FROM channels`,
+    );
+    const rows = rowsResult.rows || [];
+    const knownIds = new Set(rows.map((r) => r.id));
+
+    let globalIds;
+    if (section) {
+      const sections = buildChannelSections(rows);
+      if (section === 'bure') {
+        sections.free = channelIds.filter((id) => knownIds.has(id));
+      } else if (sections.cats[section] !== undefined) {
+        sections.cats[section] = channelIds.filter((id) => knownIds.has(id));
+      } else {
+        return res.status(400).json({ error: 'Unknown section' });
+      }
+      globalIds = flattenChannelSections(sections);
+    } else {
+      globalIds = channelIds.filter((id) => knownIds.has(id));
     }
 
-    return res.json({ ok: true, count: channelIds.length });
+    rows.forEach((r) => {
+      if (!globalIds.includes(r.id)) globalIds.push(r.id);
+    });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (let i = 0; i < globalIds.length; i += 1) {
+        await client.query('UPDATE channels SET sort_order = $1 WHERE id = $2', [i, globalIds[i]]);
+      }
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    return res.json({ ok: true, count: globalIds.length, section: section || 'all' });
   } catch (err) {
     return next(err);
   }

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
-  Dimensions,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,75 +14,68 @@ import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminNotificationsAPI } from '../config/api';
 
-const { width, height } = Dimensions.get('window');
-
-const formatDisplayDate = (yyyyMmDd) => {
-  if (!yyyyMmDd || yyyyMmDd.length < 10) return null;
-  const [y, m, d] = yyyyMmDd.split('-').map(Number);
-  const d2 = new Date(y, m - 1, d);
-  return d2.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-};
-
-// Normalize 24h time to HH:MM (e.g. "9:30" -> "09:30")
-const normalizeTime24 = (raw) => {
-  if (!raw || typeof raw !== 'string') return '';
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return trimmed;
-  const h = Math.min(23, Math.max(0, parseInt(match[1], 10)));
-  const m = Math.min(59, Math.max(0, parseInt(match[2], 10)));
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-};
-
-// Validate 24h time string (HH:MM or H:MM)
-const isValidTime24 = (value) => {
-  if (!value || typeof value !== 'string') return false;
-  const normalized = normalizeTime24(value);
-  if (normalized.length !== 5) return false;
-  const [h, m] = normalized.split(':').map(Number);
-  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
-};
-
-// Build calendar grid for a month: { value: 'YYYY-MM-DD', label: day number, isPast }
-const getCalendarDays = (year, month) => {
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const days = [];
-  const startPad = first.getDay();
-  for (let i = 0; i < startPad; i++) days.push(null);
-  for (let d = 1; d <= last.getDate(); d++) {
-    const date = new Date(year, month, d);
-    const value = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    days.push({ value, label: d, isPast: date < today });
-  }
-  return days;
-};
-
 /** Server requires a category for routing; we default to general (habari). */
 const DEFAULT_NOTIFICATION_CATEGORY = 'habari';
 
+const formatSentAt = (iso) => {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('sw-TZ', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '—';
+  }
+};
+
 const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
-  const [notificationType, setNotificationType] = useState('normal'); // 'normal' or 'scheduled'
+  const [activeTab, setActiveTab] = useState('compose');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
-  const [scheduledDate, setScheduledDate] = useState('');
-  const [scheduledTime, setScheduledTime] = useState('');
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
-  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState({ type: null, text: '' });
+  const [composeHint, setComposeHint] = useState('');
 
-  const calendarDays = useMemo(
-    () => getCalendarDays(calendarYear, calendarMonth),
-    [calendarYear, calendarMonth],
-  );
-  const monthLabel = useMemo(
-    () => new Date(calendarYear, calendarMonth, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
-    [calendarYear, calendarMonth],
-  );
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const rows = await adminNotificationsAPI.getNotifications(80);
+      const sent = (Array.isArray(rows) ? rows : [])
+        .filter((n) => n.sent_at)
+        .sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
+      setHistory(sent);
+    } catch (error) {
+      console.error('Failed to load notification history:', error);
+      setHistoryError(error?.message || 'Could not load history');
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visible) {
+      loadHistory();
+    }
+  }, [visible, loadHistory]);
+
+  const handleResendToCompose = useCallback((item) => {
+    setTitle(item.title || '');
+    setMessage(item.message || '');
+    setActiveTab('compose');
+    setComposeHint('Loaded from history — review and tap Send Now when ready');
+    setStatusMessage({ type: null, text: '' });
+    setTimeout(() => setComposeHint(''), 5000);
+  }, []);
 
   const handleSend = async () => {
     if (!title.trim() || !message.trim()) {
@@ -91,59 +83,21 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
       return;
     }
-    if (notificationType === 'scheduled' && (!scheduledDate || !scheduledTime)) {
-      setStatusMessage({ type: 'error', text: 'Please select date and enter time (24h, e.g. 20:15)' });
-      setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
-      return;
-    }
-    if (notificationType === 'scheduled' && scheduledTime && !isValidTime24(scheduledTime)) {
-      setStatusMessage({ type: 'error', text: 'Invalid time. Use 24h format, e.g. 20:15' });
-      setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
-      return;
-    }
-
-    if (notificationType === 'scheduled' && scheduledDate && scheduledTime) {
-      const [y, mo, d] = scheduledDate.split('-').map(Number);
-      const timeNorm = normalizeTime24(scheduledTime);
-      const [h, min] = timeNorm.split(':').map(Number);
-      const scheduledAt = new Date(y, mo - 1, d, h, min, 0);
-      if (scheduledAt <= new Date()) {
-        setStatusMessage({ type: 'error', text: 'Please select a future date and time' });
-        setTimeout(() => setStatusMessage({ type: null, text: '' }), 3000);
-        return;
-      }
-    }
 
     setLoading(true);
     setStatusMessage({ type: null, text: '' });
 
     try {
-      // Format scheduled date/time if scheduled (24h, with device timezone so stored time matches what admin entered)
-      let scheduledFor = null;
-      if (notificationType === 'scheduled' && scheduledDate && scheduledTime) {
-        const timeNorm = normalizeTime24(scheduledTime);
-        const [year, month, day] = scheduledDate.split('-');
-        const [hour, minute] = timeNorm.split(':');
-        const offsetMin = -new Date().getTimezoneOffset();
-        const sign = offsetMin >= 0 ? '+' : '-';
-        const absMin = Math.abs(offsetMin);
-        const offsetStr = `${sign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`;
-        scheduledFor = `${year}-${month}-${day}T${hour}:${minute}:00${offsetStr}`;
-      }
-
       const notificationData = {
         title: title.trim(),
         message: message.trim(),
         category: DEFAULT_NOTIFICATION_CATEGORY,
-        type: notificationType,
-        ...(scheduledFor && { scheduledFor }),
+        type: 'normal',
       };
 
       const result = await adminNotificationsAPI.createNotification(notificationData);
 
-      // Check if Firebase failed (pushError returned in response)
       if (result?.pushError) {
-        // Notification saved but push failed - show error to admin
         setStatusMessage({
           type: 'error',
           text: `⚠️ Notification saved but NOT sent to users!\n\nReason: ${result.pushError}\n\nFix: Set FIREBASE_SERVICE_ACCOUNT_KEY on Railway.`,
@@ -152,12 +106,9 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         return;
       }
 
-      // Success - show sent count
       const sentCount = result?.sent_count || result?.total_devices || 0;
-      const successText = notificationType === 'scheduled'
-        ? 'Notification scheduled successfully!'
-        : result?.sent_via_topic
-          ? `✅ Broadcast sent to all installs (topic: ${result?.topic || 'all_users'})`
+      const successText = result?.sent_via_topic
+        ? `✅ Broadcast sent to all installs (topic: ${result?.topic || 'all_users'})`
         : sentCount > 0
           ? `✅ Sent to ${sentCount.toLocaleString()} devices!`
           : 'Notification sent successfully!';
@@ -165,14 +116,12 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       setStatusMessage({ type: 'success', text: successText });
 
       if (onNotificationSent) onNotificationSent();
+      loadHistory();
 
       setTimeout(() => {
         setTitle('');
         setMessage('');
-        setScheduledDate('');
-        setScheduledTime('');
-        setShowDatePicker(false);
-        setNotificationType('normal');
+        setComposeHint('');
         setStatusMessage({ type: null, text: '' });
         onClose();
       }, 2500);
@@ -198,14 +147,15 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   };
 
   const handleClose = () => {
-    // Reset form when closing
     setTitle('');
     setMessage('');
-    setScheduledDate('');
-    setScheduledTime('');
-    setNotificationType('normal');
+    setActiveTab('compose');
+    setComposeHint('');
+    setStatusMessage({ type: null, text: '' });
     onClose();
   };
+
+  const historyEmpty = !historyLoading && history.length === 0 && !historyError;
 
   return (
     <Modal
@@ -220,211 +170,168 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         />
-        
-        {/* Header */}
+
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <Icon name="bell" size={24} color="#a855f7" />
-            <Text style={styles.headerTitle}>Send Notifications</Text>
+            <Text style={styles.headerTitle}>Notifications</Text>
           </View>
           <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
             <Icon name="close" size={24} color="#9ca3af" />
           </TouchableOpacity>
         </View>
 
+        <View style={styles.tabRow}>
+          <TouchableOpacity
+            style={[styles.tabPill, activeTab === 'compose' && styles.tabPillActive]}
+            onPress={() => setActiveTab('compose')}
+            activeOpacity={0.85}>
+            <Icon
+              name="pencil-outline"
+              size={18}
+              color={activeTab === 'compose' ? '#fff' : '#9ca3af'}
+            />
+            <Text style={[styles.tabPillText, activeTab === 'compose' && styles.tabPillTextActive]}>
+              Send Now
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabPill, activeTab === 'history' && styles.tabPillActive]}
+            onPress={() => {
+              setActiveTab('history');
+              loadHistory();
+            }}
+            activeOpacity={0.85}>
+            <Icon
+              name="history"
+              size={18}
+              color={activeTab === 'history' ? '#fff' : '#9ca3af'}
+            />
+            <Text style={[styles.tabPillText, activeTab === 'history' && styles.tabPillTextActive]}>
+              History
+            </Text>
+            {history.length > 0 ? (
+              <View style={styles.tabBadge}>
+                <Text style={styles.tabBadgeText}>{history.length > 99 ? '99+' : history.length}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+        </View>
+
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-          {/* Notification Type Toggle */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Notification Type</Text>
-            <View style={styles.typeToggle}>
-              <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  notificationType === 'normal' && styles.typeButtonActive,
-                ]}
-                onPress={() => setNotificationType('normal')}>
-                <Icon
-                  name="send"
-                  size={20}
-                  color={notificationType === 'normal' ? '#fff' : '#9ca3af'}
-                />
-                <Text
-                  style={[
-                    styles.typeButtonText,
-                    notificationType === 'normal' && styles.typeButtonTextActive,
-                  ]}>
-                  Send Now
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.typeButton,
-                  notificationType === 'scheduled' && styles.typeButtonActive,
-                ]}
-                onPress={() => setNotificationType('scheduled')}>
-                <Icon
-                  name="clock-outline"
-                  size={20}
-                  color={notificationType === 'scheduled' ? '#fff' : '#9ca3af'}
-                />
-                <Text
-                  style={[
-                    styles.typeButtonText,
-                    notificationType === 'scheduled' && styles.typeButtonTextActive,
-                  ]}>
-                  Schedule
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Title Input */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Title *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter notification title"
-              placeholderTextColor="#6b7280"
-              value={title}
-              onChangeText={setTitle}
-            />
-          </View>
-
-          {/* Message Input */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Message *</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              placeholder="Enter notification message"
-              placeholderTextColor="#6b7280"
-              value={message}
-              onChangeText={setMessage}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
-          </View>
-
-          {/* Schedule: calendar date + time picker (no native deps) */}
-          {notificationType === 'scheduled' && (
-            <View style={styles.section}>
-              <Text style={styles.scheduleSectionTitle}>Schedule for</Text>
-              <Text style={styles.scheduleSectionSubtitle}>Pick date from calendar; enter time in 24h (e.g. 20:15)</Text>
-              <View style={styles.scheduleCard}>
-                <TouchableOpacity
-                  style={styles.scheduleRow}
-                  onPress={() => {
-                    const now = new Date();
-                    setCalendarMonth(now.getMonth());
-                    setCalendarYear(now.getFullYear());
-                    setShowDatePicker(true);
-                  }}
-                  activeOpacity={0.7}>
-                  <View style={styles.scheduleIconWrap}>
-                    <Icon name="calendar-month" size={24} color="#a855f7" />
-                  </View>
-                  <View style={styles.scheduleRowTextWrap}>
-                    <Text style={styles.scheduleRowLabel}>Date</Text>
-                    <Text style={scheduledDate ? styles.scheduleRowValue : styles.scheduleRowPlaceholder}>
-                      {formatDisplayDate(scheduledDate) || 'Tap to open calendar'}
-                    </Text>
-                  </View>
-                  <Icon name="chevron-right" size={24} color="#6b7280" />
-                </TouchableOpacity>
-                <View style={styles.scheduleDivider} />
-                <View style={styles.scheduleRow}>
-                  <View style={styles.scheduleIconWrap}>
-                    <Icon name="clock-outline" size={24} color="#a855f7" />
-                  </View>
-                  <View style={[styles.scheduleRowTextWrap, styles.scheduleTimeInputWrap]}>
-                    <Text style={styles.scheduleRowLabel}>Time (24h)</Text>
-                    <TextInput
-                      style={styles.scheduleTimeInput}
-                      placeholder="e.g. 20:15"
-                      placeholderTextColor="#6b7280"
-                      value={scheduledTime}
-                      onChangeText={setScheduledTime}
-                      keyboardType="numbers-and-punctuation"
-                      maxLength={5}
-                    />
-                  </View>
+          {activeTab === 'compose' ? (
+            <>
+              {composeHint ? (
+                <View style={styles.composeHintBanner}>
+                  <Icon name="information-outline" size={20} color="#a78bfa" />
+                  <Text style={styles.composeHintText}>{composeHint}</Text>
                 </View>
+              ) : null}
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Title *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter notification title"
+                  placeholderTextColor="#6b7280"
+                  value={title}
+                  onChangeText={setTitle}
+                />
               </View>
 
-              <Modal visible={showDatePicker} transparent animationType="fade">
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Message *</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  placeholder="Enter notification message"
+                  placeholderTextColor="#6b7280"
+                  value={message}
+                  onChangeText={setMessage}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </>
+          ) : (
+            <View style={styles.historySection}>
+              <View style={styles.historyHeaderRow}>
+                <Text style={styles.historyTitle}>Notifications history</Text>
                 <TouchableOpacity
-                  style={styles.pickerOverlay}
-                  activeOpacity={1}
-                  onPress={() => setShowDatePicker(false)}>
-                  <View style={styles.pickerCard} onStartShouldSetResponder={() => true}>
-                    <Text style={styles.pickerTitle}>{monthLabel}</Text>
-                    <View style={styles.calendarNav}>
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (calendarMonth === 0) {
-                            setCalendarYear((y) => y - 1);
-                            setCalendarMonth(11);
-                          } else setCalendarMonth((m) => m - 1);
-                        }}>
-                        <Icon name="chevron-left" size={28} color="#a855f7" />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => {
-                          if (calendarMonth === 11) {
-                            setCalendarYear((y) => y + 1);
-                            setCalendarMonth(0);
-                          } else setCalendarMonth((m) => m + 1);
-                        }}>
-                        <Icon name="chevron-right" size={28} color="#a855f7" />
-                      </TouchableOpacity>
-                    </View>
-                    <View style={styles.calendarWeekdays}>
-                      {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((wd) => (
-                        <Text key={wd} style={styles.calendarWeekdayText}>{wd}</Text>
-                      ))}
-                    </View>
-                    <View style={styles.calendarGrid}>
-                      {calendarDays.map((day, idx) =>
-                        day === null ? (
-                          <View key={`e-${idx}`} style={styles.calendarDayCell} />
-                        ) : (
-                          <TouchableOpacity
-                            key={day.value}
-                            style={[
-                              styles.calendarDayCell,
-                              day.isPast && styles.calendarDayPast,
-                              scheduledDate === day.value && styles.calendarDaySelected,
-                            ]}
-                            onPress={() => {
-                              if (!day.isPast) {
-                                setScheduledDate(day.value);
-                                setShowDatePicker(false);
-                              }
-                            }}
-                            disabled={day.isPast}>
-                            <Text
-                              style={[
-                                styles.calendarDayText,
-                                day.isPast && styles.calendarDayTextPast,
-                                scheduledDate === day.value && styles.calendarDayTextSelected,
-                              ]}>
-                              {day.label}
-                            </Text>
-                          </TouchableOpacity>
-                        ),
-                      )}
-                    </View>
-                    <TouchableOpacity style={styles.pickerCancel} onPress={() => setShowDatePicker(false)}>
-                      <Text style={styles.pickerCancelText}>Close</Text>
-                    </TouchableOpacity>
-                  </View>
+                  style={styles.refreshBtn}
+                  onPress={loadHistory}
+                  disabled={historyLoading}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  {historyLoading ? (
+                    <ActivityIndicator size="small" color="#a78bfa" />
+                  ) : (
+                    <Icon name="refresh" size={20} color="#a78bfa" />
+                  )}
                 </TouchableOpacity>
-              </Modal>
+              </View>
+              <Text style={styles.historySubtitle}>
+                Bonyeza resend kutuma tena mwaisa
+              </Text>
+
+              {historyError ? (
+                <View style={styles.historyEmptyCard}>
+                  <Icon name="alert-circle-outline" size={40} color="#f87171" />
+                  <Text style={styles.historyEmptyText}>{historyError}</Text>
+                </View>
+              ) : historyLoading && history.length === 0 ? (
+                <View style={styles.historyEmptyCard}>
+                  <ActivityIndicator size="large" color="#a855f7" />
+                  <Text style={styles.historyEmptySub}>Loading sent notifications…</Text>
+                </View>
+              ) : historyEmpty ? (
+                <View style={styles.historyEmptyCard}>
+                  <Icon name="bell-off-outline" size={40} color="#6b7280" />
+                  <Text style={styles.historyEmptyText}>No sent notifications yet</Text>
+                  <Text style={styles.historyEmptySub}>Send your first notification from the Send Now tab</Text>
+                </View>
+              ) : (
+                history.map((item) => {
+                  const delivered = Number(item.delivered_count || 0);
+                  const sent = Number(item.sent_count || 0);
+                  const clicks = Number(item.clicks || 0);
+                  const ctr = delivered > 0 ? ((clicks / delivered) * 100).toFixed(1) : '0.0';
+
+                  return (
+                    <View key={String(item.id)} style={styles.historyCard}>
+                      <View style={styles.historyCardTop}>
+                        <View style={styles.historyCardIcon}>
+                          <Icon name="bell-check" size={22} color="#34d399" />
+                        </View>
+                        <View style={styles.historyCardBody}>
+                          <Text style={styles.historyCardTitle} numberOfLines={2}>
+                            {item.title}
+                          </Text>
+                          <Text style={styles.historyCardMessage} numberOfLines={3}>
+                            {item.message}
+                          </Text>
+                          <Text style={styles.historyCardMeta}>{formatSentAt(item.sent_at)}</Text>
+                          <Text style={styles.historyCardStats}>
+                            {delivered}/{sent} delivered · {clicks} clicks · CTR {ctr}%
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.resendBtn}
+                          onPress={() => handleResendToCompose(item)}
+                          activeOpacity={0.8}
+                          accessibilityLabel="Resend to editor"
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                          <Icon name="backup-restore" size={22} color="#fff" />
+                          <Text style={styles.resendBtnLabel}>Resend</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
             </View>
           )}
 
-          {/* Status Message */}
-          {statusMessage.type && (
+          {activeTab === 'compose' && statusMessage.type ? (
             <View
               style={[
                 styles.statusMessage,
@@ -445,31 +352,37 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                 {statusMessage.text}
               </Text>
             </View>
-          )}
+          ) : null}
 
-          {/* Action Buttons */}
           <View style={styles.actionButtons}>
-            <TouchableOpacity 
-              style={styles.cancelButton} 
-              onPress={handleClose}
-              disabled={loading}>
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.sendButton, loading && styles.sendButtonDisabled]} 
-              onPress={handleSend}
-              disabled={loading}>
-              {loading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Icon name="send" size={20} color="#fff" />
-                  <Text style={styles.sendButtonText}>
-                    {notificationType === 'scheduled' ? 'Schedule' : 'Send Now'}
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {activeTab === 'history' ? (
+              <TouchableOpacity
+                style={styles.composeNewButton}
+                onPress={() => setActiveTab('compose')}
+                activeOpacity={0.85}>
+                <Icon name="plus" size={20} color="#fff" />
+                <Text style={styles.composeNewButtonText}>Compose new notification</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity style={styles.cancelButton} onPress={handleClose} disabled={loading}>
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sendButton, loading && styles.sendButtonDisabled]}
+                  onPress={handleSend}
+                  disabled={loading}>
+                  {loading ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Icon name="send" size={20} color="#fff" />
+                      <Text style={styles.sendButtonText}>Send Now</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -504,6 +417,51 @@ const styles = StyleSheet.create({
   closeButton: {
     padding: 4,
   },
+  tabRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  tabPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(31, 41, 55, 0.85)',
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  tabPillActive: {
+    backgroundColor: '#7c3aed',
+    borderColor: '#a855f7',
+  },
+  tabPillText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#9ca3af',
+  },
+  tabPillTextActive: {
+    color: '#fff',
+  },
+  tabBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  tabBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+  },
   content: {
     flex: 1,
     padding: 16,
@@ -517,61 +475,22 @@ const styles = StyleSheet.create({
     color: '#fff',
     marginBottom: 12,
   },
-  typeToggle: {
+  composeHintBanner: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+    marginBottom: 16,
     borderRadius: 12,
-    padding: 4,
-    gap: 4,
+    backgroundColor: 'rgba(124, 58, 237, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
   },
-  typeButton: {
+  composeHintText: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  typeButtonActive: {
-    backgroundColor: '#7c3aed',
-  },
-  typeButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#9ca3af',
-  },
-  typeButtonTextActive: {
-    color: '#fff',
-  },
-  categoryContainer: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  categoryCard: {
-    flex: 1,
-    borderRadius: 16,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  categoryCardActive: {
-    borderColor: '#a855f7',
-  },
-  categoryGradient: {
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 120,
-  },
-  categoryText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#10b981',
-    marginTop: 8,
-  },
-  categoryTextActive: {
-    color: '#fff',
+    fontSize: 13,
+    color: '#c4b5fd',
+    lineHeight: 18,
   },
   input: {
     backgroundColor: 'rgba(31, 41, 55, 0.8)',
@@ -587,187 +506,143 @@ const styles = StyleSheet.create({
     minHeight: 100,
     paddingTop: 12,
   },
-  scheduleSectionTitle: {
+  historySection: {
+    marginBottom: 16,
+  },
+  historyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  historyTitle: {
     fontSize: 18,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  historySubtitle: {
+    fontSize: 13,
+    color: '#9ca3af',
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  refreshBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(124, 58, 237, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.3)',
+  },
+  historyEmptyCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  historyEmptyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#e5e7eb',
+    textAlign: 'center',
+  },
+  historyEmptySub: {
+    fontSize: 13,
+    color: '#9ca3af',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  historyCard: {
+    backgroundColor: 'rgba(31, 41, 55, 0.75)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#374151',
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  historyCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    padding: 14,
+    gap: 12,
+  },
+  historyCardIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyCardBody: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  historyCardTitle: {
+    fontSize: 15,
     fontWeight: '700',
     color: '#fff',
     marginBottom: 4,
   },
-  scheduleSectionSubtitle: {
+  historyCardMessage: {
     fontSize: 13,
+    color: '#d1d5db',
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  historyCardMeta: {
+    fontSize: 11,
     color: '#9ca3af',
-    marginBottom: 16,
+    marginBottom: 4,
   },
-  scheduleCard: {
-    backgroundColor: 'rgba(31, 41, 55, 0.9)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#374151',
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
+  historyCardStats: {
+    fontSize: 11,
+    color: '#6ee7b7',
+    fontWeight: '600',
   },
-  scheduleRow: {
-    flexDirection: 'row',
+  resendBtn: {
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 14,
-  },
-  scheduleIconWrap: {
-    width: 44,
-    height: 44,
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: 'rgba(168, 85, 247, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scheduleRowTextWrap: {
-    flex: 1,
-  },
-  scheduleRowLabel: {
-    fontSize: 12,
-    color: '#9ca3af',
-    marginBottom: 2,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  scheduleRowValue: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: '600',
-  },
-  scheduleRowPlaceholder: {
-    fontSize: 15,
-    color: '#6b7280',
-  },
-  scheduleDivider: {
-    height: 1,
-    backgroundColor: '#374151',
-    marginLeft: 74,
-  },
-  scheduleTimeInputWrap: {
-    flex: 1,
-  },
-  scheduleTimeInput: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-    paddingVertical: 4,
-    paddingHorizontal: 0,
-    marginTop: 2,
-    minHeight: 28,
-  },
-  pickerOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  pickerCard: {
-    backgroundColor: '#1f2937',
-    borderRadius: 16,
+    backgroundColor: 'rgba(124, 58, 237, 0.35)',
     borderWidth: 1,
-    borderColor: '#374151',
-    maxHeight: height * 0.6,
+    borderColor: 'rgba(168, 85, 247, 0.5)',
+    minWidth: 64,
   },
-  pickerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#fff',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#374151',
-  },
-  pickerScroll: {
-    maxHeight: 280,
-  },
-  pickerOption: {
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-  },
-  pickerOptionActive: {
-    backgroundColor: 'rgba(168, 85, 247, 0.2)',
-  },
-  pickerOptionText: {
-    fontSize: 16,
-    color: '#e5e7eb',
-  },
-  pickerOptionTextActive: {
-    color: '#a855f7',
-    fontWeight: '600',
-  },
-  pickerCancel: {
-    paddingVertical: 16,
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: '#374151',
-  },
-  pickerCancelText: {
-    fontSize: 16,
-    color: '#9ca3af',
-    fontWeight: '500',
-  },
-  calendarNav: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    alignItems: 'center',
-  },
-  calendarWeekdays: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-  },
-  calendarWeekdayText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#9ca3af',
-    textAlign: 'center',
-  },
-  calendarGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 12,
-    paddingBottom: 16,
-  },
-  calendarDayCell: {
-    width: '14.28%',
-    aspectRatio: 1,
-    maxWidth: 44,
-    maxHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 22,
-    marginVertical: 2,
-  },
-  calendarDayPast: {
-    opacity: 0.4,
-  },
-  calendarDaySelected: {
-    backgroundColor: '#a855f7',
-  },
-  calendarDayText: {
-    fontSize: 15,
-    color: '#e5e7eb',
-    fontWeight: '500',
-  },
-  calendarDayTextPast: {
-    color: '#6b7280',
-  },
-  calendarDayTextSelected: {
-    color: '#fff',
+  resendBtnLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#e9d5ff',
+    marginTop: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   actionButtons: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 8,
     marginBottom: 32,
+  },
+  composeNewButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    backgroundColor: '#7c3aed',
+    borderRadius: 12,
+  },
+  composeNewButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
   cancelButton: {
     flex: 1,

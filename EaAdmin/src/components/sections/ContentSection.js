@@ -11,7 +11,6 @@ import {
   Switch,
   ActivityIndicator,
   RefreshControl,
-  PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -19,7 +18,16 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
-const CHANNEL_ROW_HEIGHT = 78;
+const CHANNEL_ROW_HEIGHT = 80;
+const DRAG_ACTIVATION_PX = 6;
+
+const getTouchPageY = (evt, fallbackY = 0) => {
+  const ne = evt?.nativeEvent;
+  if (typeof ne?.pageY === 'number') return ne.pageY;
+  const touch = ne?.touches?.[0] ?? ne?.changedTouches?.[0];
+  if (touch && typeof touch.pageY === 'number') return touch.pageY;
+  return fallbackY;
+};
 
 const sortChannelsByOrder = (list) =>
   [...list].sort(
@@ -58,11 +66,13 @@ const APP_GROUPS = [
   { id: 'moviesapp', label: 'Movies app', icon: 'movie', color: '#a855f7' },
 ];
 
-const isFreeChannel = (ch) => {
-  const pts = Number(ch.points_required ?? ch.pointsRequired ?? 0);
-  const unlockFree = !!(ch.unlock_to_free === true || ch.unlockToFree === true);
-  return unlockFree || (!Number.isNaN(pts) && pts <= 0);
-};
+/** Za bure = admin set Access → Free (`unlock_to_free`). Points alone do not make a channel free. */
+const hasFreeAccess = (ch) =>
+  !!(ch?.unlock_to_free === true || ch?.unlockToFree === true);
+
+const isFreeChannel = hasFreeAccess;
+
+const hasPremiumAccess = (ch) => !hasFreeAccess(ch);
 
 const getFreeChannels = (channels) =>
   (channels || []).filter(isFreeChannel).sort(
@@ -120,15 +130,64 @@ const flattenAllChannels = (channels) => {
   return flattenGroupedChannels(grouped, channels, free);
 };
 
+const getListForCategoryKeyFromList = (categoryKey, prev, hideFreeInCategories) => {
+  if (categoryKey === BURE_SECTION_KEY) {
+    return getFreeChannels(prev);
+  }
+  const freeIds = hideFreeInCategories
+    ? new Set(getFreeChannels(prev).map((c) => c.id))
+    : new Set();
+  const grouped = groupChannelsByCategory(prev);
+  let list = grouped[categoryKey] || [];
+  if (hideFreeInCategories) {
+    list = list.filter((ch) => !freeIds.has(ch.id));
+  }
+  return list;
+};
+
+const applyChannelMove = (prev, categoryKey, fromIndex, toIndex, hideFreeInCategories) => {
+  if (fromIndex === toIndex) return prev;
+
+  let free = getFreeChannels(prev);
+  const freeIds = new Set(free.map((c) => c.id));
+
+  if (categoryKey === BURE_SECTION_KEY) {
+    const list = [...free];
+    const [item] = list.splice(fromIndex, 1);
+    list.splice(toIndex, 0, item);
+    free = list;
+    const nonFree = prev.filter((c) => !freeIds.has(c.id));
+    const grouped = groupChannelsByCategory(nonFree);
+    return flattenGroupedChannels(grouped, prev, free);
+  }
+
+  let list = getListForCategoryKeyFromList(categoryKey, prev, hideFreeInCategories);
+  const [item] = list.splice(fromIndex, 1);
+  list.splice(toIndex, 0, item);
+
+  if (hideFreeInCategories) {
+    const nonFree = prev.filter((c) => !freeIds.has(c.id));
+    const grouped = groupChannelsByCategory(nonFree);
+    grouped[categoryKey] = list;
+    return flattenGroupedChannels(grouped, prev, free);
+  }
+
+  const grouped = groupChannelsByCategory(prev);
+  grouped[categoryKey] = list;
+  return flattenGroupedChannels(grouped, prev, free);
+};
+
 const ContentSection = () => {
   const [activeFilter, setActiveFilter] = useState('all');
   const [addChannelModalVisible, setAddChannelModalVisible] = useState(false);
   const [channels, setChannels] = useState([]);
   const [orderedChannels, setOrderedChannels] = useState([]);
-  const [draggingChannelId, setDraggingChannelId] = useState(null);
+  const [dragOffset, setDragOffset] = useState(null);
   const [savingOrder, setSavingOrder] = useState(false);
-  const dragStartIndexRef = useRef(0);
   const orderedChannelsRef = useRef([]);
+  const activeFilterRef = useRef('all');
+  const isDraggingRef = useRef(false);
+  const dragTouchStartYRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
@@ -182,6 +241,10 @@ const ContentSection = () => {
   useEffect(() => {
     orderedChannelsRef.current = orderedChannels;
   }, [orderedChannels]);
+
+  useEffect(() => {
+    activeFilterRef.current = activeFilter;
+  }, [activeFilter]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -342,8 +405,9 @@ const ContentSection = () => {
         (ch) =>
           (ch.name && String(ch.name).toLowerCase().includes(searchTrimmed)) ||
           (ch.category && String(ch.category).toLowerCase().includes(searchTrimmed)) ||
-          (isFreeChannel(ch) &&
-            (searchTrimmed.includes('bure') || searchTrimmed.includes('free'))),
+          (hasFreeAccess(ch) &&
+            (searchTrimmed.includes('bure') || searchTrimmed.includes('free'))) ||
+          (hasPremiumAccess(ch) && searchTrimmed.includes('premium')),
       );
     }
 
@@ -365,71 +429,22 @@ const ContentSection = () => {
 
   const canReorder = !searchTrimmed;
 
-  const getListForCategoryKey = useCallback((categoryKey, prev, hideFreeInCategories) => {
-    if (categoryKey === BURE_SECTION_KEY) {
-      return getFreeChannels(prev);
-    }
-    const freeIds = hideFreeInCategories
-      ? new Set(getFreeChannels(prev).map((c) => c.id))
-      : new Set();
-    const grouped = groupChannelsByCategory(prev);
-    let list = grouped[categoryKey] || [];
-    if (hideFreeInCategories) {
-      list = list.filter((ch) => !freeIds.has(ch.id));
-    }
-    return list;
-  }, []);
-
-  const moveChannelInCategory = useCallback(
-    (categoryKey, fromIndex, toIndex, hideFreeInCategories) => {
-      if (fromIndex === toIndex) return;
-      setOrderedChannels((prev) => {
-        let free = getFreeChannels(prev);
-        const freeIds = new Set(free.map((c) => c.id));
-
-        if (categoryKey === BURE_SECTION_KEY) {
-          const list = [...free];
-          const [item] = list.splice(fromIndex, 1);
-          list.splice(toIndex, 0, item);
-          free = list;
-        } else {
-          let list = getListForCategoryKey(categoryKey, prev, hideFreeInCategories);
-          const [item] = list.splice(fromIndex, 1);
-          list.splice(toIndex, 0, item);
-
-          if (hideFreeInCategories) {
-            const nonFree = prev.filter((c) => !freeIds.has(c.id));
-            const grouped = groupChannelsByCategory(nonFree);
-            grouped[categoryKey] = list;
-            const next = flattenGroupedChannels(grouped, prev, free);
-            orderedChannelsRef.current = next;
-            return next;
-          }
-
-          const grouped = groupChannelsByCategory(prev);
-          grouped[categoryKey] = list;
-          const next = flattenGroupedChannels(grouped, prev, free);
-          orderedChannelsRef.current = next;
-          return next;
-        }
-
-        const nonFree = prev.filter((c) => !freeIds.has(c.id));
-        const grouped = groupChannelsByCategory(nonFree);
-        const next = flattenGroupedChannels(grouped, prev, free);
-        orderedChannelsRef.current = next;
-        return next;
-      });
-    },
-    [],
-  );
-
-  const persistChannelOrder = useCallback(async (ordered) => {
+  const persistChannelOrder = useCallback(async (ordered, categoryKey) => {
     const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
     if (!list.length) return;
 
+    const hideFreeInCategories = activeFilterRef.current === 'all';
+    const sectionKey =
+      categoryKey === BURE_SECTION_KEY ? 'bure' : String(categoryKey || '').toLowerCase();
+    const sectionIds = getListForCategoryKeyFromList(
+      categoryKey || BURE_SECTION_KEY,
+      list,
+      hideFreeInCategories,
+    ).map((ch) => ch.id);
+
     try {
       setSavingOrder(true);
-      await adminChannelsAPI.reorderChannels(list.map((ch) => ch.id));
+      await adminChannelsAPI.reorderChannels(sectionIds, { section: sectionKey });
       setChannels(list);
       orderedChannelsRef.current = list;
     } catch (error) {
@@ -447,53 +462,73 @@ const ContentSection = () => {
     }
   }, [fetchChannels, showStatusModal]);
 
-  const createDragResponder = useCallback(
-    (categoryKey, channelId, listIndex, hideFreeInCategories) =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => canReorder,
-        onMoveShouldSetPanResponder: () => canReorder,
-        onPanResponderGrant: () => {
-          const catList = getListForCategoryKey(
-            categoryKey,
-            orderedChannelsRef.current,
-            hideFreeInCategories,
-          );
-          const start = catList.findIndex((c) => c.id === channelId);
-          dragStartIndexRef.current = start >= 0 ? start : listIndex;
-          setDraggingChannelId(channelId);
+  const finishDrag = useCallback(
+    (categoryKey, channelId, listIndex, hideFreeInCategories, dyRaw) => {
+      isDraggingRef.current = false;
+      setDragOffset(null);
+
+      const dy = Number.isFinite(dyRaw) ? dyRaw : 0;
+
+      const list = getListForCategoryKeyFromList(
+        categoryKey,
+        orderedChannelsRef.current,
+        hideFreeInCategories,
+      );
+      const start = list.findIndex((c) => c.id === channelId);
+      const startIndex = start >= 0 ? start : listIndex;
+      const shift = Math.round(dy / CHANNEL_ROW_HEIGHT);
+      const toIndex = Math.max(0, Math.min(list.length - 1, startIndex + shift));
+
+      if (toIndex === startIndex) return;
+
+      setOrderedChannels((prev) => {
+        const next = applyChannelMove(
+          prev,
+          categoryKey,
+          startIndex,
+          toIndex,
+          hideFreeInCategories,
+        );
+        orderedChannelsRef.current = next;
+        persistChannelOrder(next, categoryKey);
+        return next;
+      });
+    },
+    [persistChannelOrder],
+  );
+
+  const getDragHandlers = useCallback(
+    (categoryKey, channelId, listIndex, hideFreeInCategories) => {
+      if (!canReorder) return {};
+
+      return {
+        onStartShouldSetResponder: () => true,
+        onMoveShouldSetResponder: (evt) => {
+          const y = getTouchPageY(evt, dragTouchStartYRef.current);
+          return Math.abs(y - dragTouchStartYRef.current) > DRAG_ACTIVATION_PX;
         },
-        onPanResponderMove: (_, gesture) => {
-          const catList = getListForCategoryKey(
-            categoryKey,
-            orderedChannelsRef.current,
-            hideFreeInCategories,
-          );
-          const targetIndex = Math.max(
-            0,
-            Math.min(
-              catList.length - 1,
-              dragStartIndexRef.current + Math.round(gesture.dy / CHANNEL_ROW_HEIGHT),
-            ),
-          );
-          const currentIndex = catList.findIndex((c) => c.id === channelId);
-          if (currentIndex >= 0 && targetIndex !== currentIndex) {
-            moveChannelInCategory(categoryKey, currentIndex, targetIndex, hideFreeInCategories);
-            dragStartIndexRef.current = targetIndex;
-          }
+        onResponderTerminationRequest: () => false,
+        onResponderGrant: (evt) => {
+          dragTouchStartYRef.current = getTouchPageY(evt, dragTouchStartYRef.current);
+          isDraggingRef.current = true;
+          setDragOffset({ channelId, dy: 0 });
         },
-        onPanResponderRelease: () => {
-          setDraggingChannelId(null);
-          setOrderedChannels((latest) => {
-            orderedChannelsRef.current = latest;
-            persistChannelOrder(latest);
-            return latest;
-          });
+        onResponderMove: (evt) => {
+          if (!isDraggingRef.current) return;
+          const dy = getTouchPageY(evt, dragTouchStartYRef.current) - dragTouchStartYRef.current;
+          setDragOffset({ channelId, dy });
         },
-        onPanResponderTerminate: () => {
-          setDraggingChannelId(null);
+        onResponderRelease: (evt) => {
+          const dy = getTouchPageY(evt, dragTouchStartYRef.current) - dragTouchStartYRef.current;
+          finishDrag(categoryKey, channelId, listIndex, hideFreeInCategories, dy);
         },
-      }),
-    [canReorder, getListForCategoryKey, moveChannelInCategory, persistChannelOrder],
+        onResponderTerminate: () => {
+          isDraggingRef.current = false;
+          setDragOffset(null);
+        },
+      };
+    },
+    [canReorder, finishDrag],
   );
 
   const openEditChannel = (channel) => {
@@ -523,13 +558,14 @@ const ContentSection = () => {
   };
 
   const renderChannelRow = (channel, index, categoryKey, categoryList, hideFreeInCategories) => {
-    const dragResponder = createDragResponder(
+    const dragHandlers = getDragHandlers(
       categoryKey,
       channel.id,
       index,
       hideFreeInCategories,
     );
-    const isDragging = draggingChannelId === channel.id;
+    const isDragging = dragOffset?.channelId === channel.id;
+    const translateY = isDragging ? (dragOffset?.dy ?? 0) : 0;
     const def =
       categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
     const isLast = index === categoryList.length - 1;
@@ -538,10 +574,23 @@ const ContentSection = () => {
     return (
       <View
         key={channel.id}
-        style={[styles.channelRow, isLast && styles.channelRowLast, isDragging && styles.channelRowDragging]}>
+        style={[
+          styles.channelRow,
+          isLast && styles.channelRowLast,
+          isDragging && styles.channelRowDragging,
+          isDragging && {
+            transform: [{ translateY }],
+            zIndex: 20,
+            elevation: 12,
+          },
+        ]}>
         {canReorder ? (
-          <View style={styles.dragHandle} {...dragResponder.panHandlers} accessibilityLabel="Drag to reorder">
-            <Icon name="drag-vertical" size={22} color="#6b7280" />
+          <View
+            style={styles.dragHandle}
+            {...dragHandlers}
+            accessibilityLabel="Drag to reorder"
+            accessibilityRole="adjustable">
+            <Icon name="drag-vertical" size={22} color={isDragging ? '#c4b5fd' : '#6b7280'} />
           </View>
         ) : (
           <View style={styles.dragHandlePlaceholder} />
@@ -579,12 +628,17 @@ const ContentSection = () => {
                   ]}>
                   {channel.is_active ? 'Active' : 'Inactive'}
                 </Text>
-                {isFreeChannel(channel) ? (
+                {hasFreeAccess(channel) ? (
                   <>
                     <Text style={styles.channelRowDot}>·</Text>
                     <Text style={styles.channelRowBureTag}>Bure</Text>
                   </>
-                ) : null}
+                ) : (
+                  <>
+                    <Text style={styles.channelRowDot}>·</Text>
+                    <Text style={styles.channelRowPremiumTag}>Premium</Text>
+                  </>
+                )}
                 <Text style={styles.channelRowDot}>·</Text>
                 <Text style={styles.channelRowViews}>
                   {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
@@ -658,13 +712,23 @@ const ContentSection = () => {
     <ScrollView
       style={styles.container}
       showsVerticalScrollIndicator={false}
+      scrollEnabled={!dragOffset}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} enabled={!dragOffset} />
       }>
+      {savingOrder ? (
+        <View style={styles.savingOrderBanner}>
+          <ActivityIndicator size="small" color="#a78bfa" />
+          <Text style={styles.savingOrderText}>Saving order…</Text>
+        </View>
+      ) : null}
+
       {/* Filters */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
+        scrollEnabled={!dragOffset}
         style={styles.filtersScrollContainer}
         contentContainerStyle={styles.filtersContainer}>
         {filters.map((filter) => (
@@ -932,7 +996,7 @@ const ContentSection = () => {
                   <Text style={styles.inputLabel}>Points required to unlock</Text>
                   <TextInput
                     style={styles.input}
-                    placeholder="0 = free, or number of points"
+                    placeholder="e.g. 15 (for points unlock — separate from Access)"
                     placeholderTextColor="#6b7280"
                     value={pointsRequired}
                     onChangeText={setPointsRequired}
@@ -946,22 +1010,27 @@ const ContentSection = () => {
                       <Text
                         style={[
                           styles.accessPill,
-                          !unlockToFree && styles.accessPillActive,
+                          !unlockToFree && styles.accessPillActivePremium,
                         ]}>
                         Premium
                       </Text>
                       <Text
                         style={[
                           styles.accessPill,
-                          unlockToFree && styles.accessPillActive,
+                          unlockToFree && styles.accessPillActiveFree,
                         ]}>
                         Free
                       </Text>
                     </View>
+                    <Text style={styles.accessHint}>
+                      {unlockToFree
+                        ? 'Listed under Chaneli za bure — all users can watch without premium'
+                        : 'Premium only — not shown in Za bure, even if points are 0'}
+                    </Text>
                   </View>
                   <Switch
                     value={unlockToFree}
-                    onValueChange={setUnlockToFree}
+                    onValueChange={(next) => setUnlockToFree(!!next)}
                     trackColor={{ false: '#7c3aed', true: '#22c55e' }}
                     thumbColor="#fff"
                   />
@@ -1293,7 +1362,7 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
   },
   categorySectionList: {
-    overflow: 'hidden',
+    overflow: 'visible',
   },
   channelListCard: {
     backgroundColor: 'rgba(17, 24, 39, 0.85)',
@@ -1318,8 +1387,26 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(124, 58, 237, 0.18)',
     borderColor: 'rgba(168, 85, 247, 0.45)',
   },
+  savingOrderBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(124, 58, 237, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
+  },
+  savingOrderText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#c4b5fd',
+  },
   dragHandle: {
-    width: 40,
+    width: 44,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
@@ -1375,6 +1462,11 @@ const styles = StyleSheet.create({
   channelRowBureTag: {
     fontSize: 12,
     color: '#4ade80',
+    fontWeight: '700',
+  },
+  channelRowPremiumTag: {
+    fontSize: 12,
+    color: '#c4b5fd',
     fontWeight: '700',
   },
   channelRowDot: {
@@ -1626,10 +1718,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(17, 24, 39, 0.6)',
     overflow: 'hidden',
   },
-  accessPillActive: {
-    color: '#e5e7eb',
-    borderColor: 'rgba(124, 58, 237, 0.5)',
-    backgroundColor: 'rgba(124, 58, 237, 0.2)',
+  accessPillActivePremium: {
+    color: '#e9d5ff',
+    borderColor: 'rgba(124, 58, 237, 0.55)',
+    backgroundColor: 'rgba(124, 58, 237, 0.28)',
+  },
+  accessPillActiveFree: {
+    color: '#bbf7d0',
+    borderColor: 'rgba(34, 197, 94, 0.55)',
+    backgroundColor: 'rgba(34, 197, 94, 0.22)',
+  },
+  accessHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#9ca3af',
+    lineHeight: 17,
+    maxWidth: width - 120,
   },
   toggleInfo: {
     flex: 1,
