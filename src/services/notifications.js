@@ -341,6 +341,13 @@ export const setupNotificationHandlers = (onNotificationReceived, externalId = n
             data || {},
             _cachedExternalId
           );
+        } else if (data && (data.title || data.body || data.message)) {
+          await displayNotification(
+            data.title || 'EaMax',
+            data.body || data.message || '',
+            data,
+            _cachedExternalId
+          );
         }
         if (onNotificationReceived) onNotificationReceived(remoteMessage);
       } catch (e) {

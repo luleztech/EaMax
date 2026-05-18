@@ -21,6 +21,7 @@ const carouselRouter = require('./routes/carousel');
 const paymentsRouter = require('./routes/payments');
 const matchesRouter = require('./routes/matches');
 const dashboardRouter = require('./routes/dashboard');
+const partnerRouter = require('./routes/partner');
 const { initializeRealtimeServer } = require('./services/realtimeServer');
 
 const app = express();
@@ -203,6 +204,7 @@ app.use('/api/matches', matchesRouter);
 // Admin API (for EaAdmin)
 app.use('/api/admin', adminRouter);
 app.use('/api/dashboard', dashboardRouter);
+app.use('/api/partner', partnerRouter);
 
 // 404 handler
 app.use((req, res) => {

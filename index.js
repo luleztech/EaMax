@@ -22,18 +22,24 @@ try {
       const notifee = require('@notifee/react-native').default;
       const { AndroidImportance } = require('@notifee/react-native');
       const { notification, data } = remoteMessage || {};
-      if (notification) {
+      const title =
+        notification?.title || (data && data.title) || 'EaMax';
+      const body =
+        notification?.body ||
+        (data && (data.body || data.message)) ||
+        '';
+      if (title || body) {
         await notifee.createChannel({
-          id: 'default',
-          name: 'Default Channel',
+          id: 'eamax_high_priority',
+          name: 'EaMax Arifa',
           importance: AndroidImportance.HIGH,
           sound: 'default',
         });
         await notifee.displayNotification({
-          title: notification.title || 'EaMax',
-          body: notification.body || '',
+          title,
+          body,
           android: {
-            channelId: 'default',
+            channelId: 'eamax_high_priority',
             importance: AndroidImportance.HIGH,
             pressAction: { id: 'default' },
             sound: 'default',
