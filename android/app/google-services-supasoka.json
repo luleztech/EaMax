@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "88812273490",
+    "project_id": "supasokatv-d238c",
+    "storage_bucket": "supasokatv-d238c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:88812273490:android:b73045c5800cb02a43048b",
+        "android_client_info": {
+          "package_name": "com.eamax"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2TKmWfzwCBTVOkfjl8t3DTjobEnaHIFw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

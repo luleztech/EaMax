@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -14,6 +13,7 @@ import '../services/fcm_notifications.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ad_reward_modal.dart';
+import '../widgets/notification_permission_modal.dart';
 import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 import 'main_shell.dart';
@@ -43,6 +43,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _offlineModalVisible = false;
   bool _retryingConnection = false;
   bool _splashDone = false;
+  bool _notifPermissionVisible = false;
 
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
   bool _adOverlayVisible = false;
@@ -100,6 +101,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         _premium = premium;
         _premiumExpiresAt = premium ? expires : null;
       });
+      unawaited(_syncFcmIfAllowed());
       if (premium) {
         final prefs = await SharedPreferences.getInstance();
         final shown = prefs.getString('${_congratsKey}_$uid');
@@ -132,7 +134,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshUser());
-      unawaited(_syncFcm());
+      unawaited(_syncFcmIfAllowed());
+      unawaited(_maybePromptNotificationPermission());
       final home = _homeKey.currentState;
       if (home != null) unawaited(home.reloadRemoteData());
     }
@@ -168,7 +171,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   Future<void> _onConnectivityRestored() async {
     await _homeKey.currentState?.reloadRemoteData();
     await _refreshUser();
-    await _syncFcm();
+    await _syncFcmIfAllowed();
     await _checkPendingPayment();
   }
 
@@ -199,9 +202,37 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
     await setupFcmLocalNotifications();
-    await _syncFcm();
     await _checkPendingPayment();
     _startPendingPaymentWatcher();
+  }
+
+  Future<void> _maybePromptNotificationPermission() async {
+    if (kIsWeb || !_splashDone || _notifPermissionVisible) return;
+    if (await isEamaxNotificationPermissionGranted()) {
+      await _syncFcmIfAllowed();
+      return;
+    }
+    if (mounted) setState(() => _notifPermissionVisible = true);
+  }
+
+  Future<void> _onNotifAllow() async {
+    setState(() => _notifPermissionVisible = false);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (await requestEamaxNotificationPermission()) {
+      await _syncFcmIfAllowed();
+    }
+  }
+
+  void _onNotifSkip() {
+    setState(() => _notifPermissionVisible = false);
+  }
+
+  Future<void> _syncFcmIfAllowed() async {
+    if (kIsWeb) return;
+    final uid = await getStoredUserId();
+    if (uid == null) return;
+    if (!await isEamaxNotificationPermissionGranted()) return;
+    await ensureEamaxPushReady(uid, isPremium: _premium);
   }
 
   void _startPendingPaymentWatcher() {
@@ -211,13 +242,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     });
   }
 
-  Future<void> _syncFcm() async {
-    if (kIsWeb) return;
-    final uid = await getStoredUserId();
-    if (uid == null) return;
-    bindEamaxFcmTokenRefresh(uid);
-    await syncEamaxFcmDelivery(uid);
-  }
 
   Future<void> _checkPendingPayment() async {
     if (_checkingPendingPayment) return;
@@ -348,7 +372,14 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   @override
   Widget build(BuildContext context) {
     if (!_splashDone) {
-      return LoaderScreen(onDone: () => setState(() => _splashDone = true));
+      return LoaderScreen(
+        onDone: () {
+          setState(() => _splashDone = true);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            unawaited(_maybePromptNotificationPermission());
+          });
+        },
+      );
     }
 
     return Stack(
@@ -429,6 +460,11 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               onRetry: _retryConnectionTap,
             ),
           ),
+        NotificationPermissionModal(
+          visible: _notifPermissionVisible,
+          onAllow: () => unawaited(_onNotifAllow()),
+          onSkip: _onNotifSkip,
+        ),
       ],
     );
   }

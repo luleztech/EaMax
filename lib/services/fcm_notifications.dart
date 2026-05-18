@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api.dart';
 import '../firebase_options.dart';
+import 'supasoka_fcm_sync.dart';
 import 'user_id.dart' as user_id;
 
 /// Must match [AndroidManifest] `com.google.firebase.messaging.default_notification_channel_id`.
@@ -21,6 +22,7 @@ const _prefsLegacyUserIdKey = '@eamax:userId';
 const _prefsDirectTopicKey = 'eamax_direct_user_topic_v1';
 
 StreamSubscription<String>? _tokenRefreshSub;
+bool _eamaxListenersBound = false;
 
 final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
 
@@ -64,7 +66,7 @@ Future<void> _trackRemoteMessage(RemoteMessage message, {required bool openedFro
   } catch (_) {}
 }
 
-/// Background isolate — avoid MethodChannel / full identity chain.
+/// Background isolate — EaMax Firebase project (EaAdmin pushes).
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (kIsWeb) return;
@@ -85,25 +87,18 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   await ensureAndroidNotificationChannel();
 
-  if (message.notification == null) {
-    final title = message.data['title'] ?? 'EaMax';
-    final body = message.data['body'] ?? message.data['message'] ?? '';
-    if (body.isEmpty) return;
-    await _showLocal(
-      _notifId(message),
-      title,
-      body,
-      notificationId: nid,
-    );
-  }
-}
-
-int _notifId(RemoteMessage message) {
-  final mid = message.messageId;
-  if (mid != null && mid.isNotEmpty) {
-    return mid.hashCode & 0x7fffffff;
-  }
-  return DateTime.now().millisecondsSinceEpoch & 0x7fffffff;
+  final title = message.notification?.title ?? message.data['title'] ?? 'EaMax';
+  final body = message.notification?.body ??
+      message.data['body'] ??
+      message.data['message'] ??
+      '';
+  if (body.isEmpty) return;
+  await showEamaxLocalNotification(
+    title: title,
+    body: body,
+    notificationId: nid,
+    messageId: message.messageId,
+  );
 }
 
 Future<void> _ensureLocalNotificationsPlugin() async {
@@ -143,7 +138,45 @@ String _directUserTopic(String publicId) {
   return 'user_$clean';
 }
 
-/// Subscribe broadcast + per-user topics and register token (call on launch / resume).
+/// True when the OS allows showing notifications (Android 13+ POST_NOTIFICATIONS + FCM auth).
+Future<bool> isEamaxNotificationPermissionGranted() async {
+  if (kIsWeb) return false;
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await _ensureLocalNotificationsPlugin();
+    final android = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final enabled = await android?.areNotificationsEnabled();
+    if (enabled == false) return false;
+  }
+  final settings = await FirebaseMessaging.instance.getNotificationSettings();
+  return settings.authorizationStatus == AuthorizationStatus.authorized ||
+      settings.authorizationStatus == AuthorizationStatus.provisional;
+}
+
+/// Request OS notification permission (call after user taps Allow on our modal).
+Future<bool> requestEamaxNotificationPermission() async {
+  if (kIsWeb) return false;
+  await ensureAndroidNotificationChannel();
+
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    final android = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final granted = await android?.requestNotificationsPermission();
+    if (granted == false) return false;
+  }
+
+  final settings = await FirebaseMessaging.instance.requestPermission(
+    alert: true,
+    badge: true,
+    sound: true,
+    provisional: false,
+  );
+  if (kDebugMode) {
+    debugPrint('[FCM] Permission result: ${settings.authorizationStatus}');
+  }
+  return settings.authorizationStatus == AuthorizationStatus.authorized ||
+      settings.authorizationStatus == AuthorizationStatus.provisional;
+}
+
+/// Subscribe EaMax Firebase topics + register token with EaMax backend (EaAdmin pushes).
 Future<void> syncEamaxFcmDelivery(String publicId) async {
   if (kIsWeb || publicId.trim().isEmpty) return;
   final uid = publicId.trim();
@@ -174,14 +207,13 @@ Future<void> syncEamaxFcmDelivery(String publicId) async {
   } catch (_) {}
 }
 
-/// Keep token + topics fresh after FCM rotation.
 void bindEamaxFcmTokenRefresh(String publicId) {
   if (kIsWeb || publicId.trim().isEmpty) return;
   _tokenRefreshSub?.cancel();
   _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((tok) {
     if (tok.isEmpty) return;
     unawaited(userApi.registerFcmToken(publicId.trim(), tok));
-    unawaited(syncEamaxFcmDelivery(publicId));
+    unawaited(ensureEamaxPushReady(publicId.trim()));
   });
 }
 
@@ -204,14 +236,17 @@ Future<void> ensureAndroidNotificationChannel() async {
   _channelReady = true;
 }
 
-Future<void> _showLocal(
-  int id,
-  String title,
-  String body, {
+Future<void> showEamaxLocalNotification({
+  required String title,
+  required String body,
   int? notificationId,
+  String? messageId,
 }) async {
   await ensureAndroidNotificationChannel();
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  final id = messageId != null && messageId.isNotEmpty
+      ? messageId.hashCode & 0x7fffffff
+      : DateTime.now().millisecondsSinceEpoch & 0x7fffffff;
   await _local.show(
     id: id,
     title: title,
@@ -232,24 +267,10 @@ Future<void> _showLocal(
   );
 }
 
-/// Call after [Firebase.initializeApp]. Registers channel, permission, foreground listener, and opens.
-Future<void> setupFcmLocalNotifications() async {
-  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
-
-  await ensureAndroidNotificationChannel();
-
-  final settings = await FirebaseMessaging.instance.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
-    provisional: false,
-  );
-  if (kDebugMode) {
-    debugPrint('FCM permission: ${settings.authorizationStatus}');
-  }
-
-  final androidPlugin = _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
-  await androidPlugin?.requestNotificationsPermission();
+/// EaMax Firebase foreground listener (EaAdmin + bridge pushes on eamax project).
+Future<void> bindEamaxFcmForegroundListener() async {
+  if (kIsWeb || _eamaxListenersBound) return;
+  _eamaxListenersBound = true;
 
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
     alert: true,
@@ -261,21 +282,16 @@ Future<void> setupFcmLocalNotifications() async {
     unawaited(_trackRemoteMessage(message, openedFromTray: false));
 
     final n = message.notification;
-    if (n != null) {
-      final nid = int.tryParse(message.data['notificationId'] ?? '');
-      await _showLocal(
-        _notifId(message),
-        n.title ?? 'EaMax',
-        n.body ?? '',
-        notificationId: nid,
-      );
-      return;
-    }
-    final title = message.data['title'] ?? 'EaMax';
-    final body = message.data['body'] ?? message.data['message'] ?? '';
+    final title = n?.title ?? message.data['title'] ?? 'EaMax';
+    final body = n?.body ?? message.data['body'] ?? message.data['message'] ?? '';
     if (body.isEmpty) return;
     final nid = int.tryParse(message.data['notificationId'] ?? '');
-    await _showLocal(_notifId(message), title, body, notificationId: nid);
+    await showEamaxLocalNotification(
+      title: title,
+      body: body,
+      notificationId: nid,
+      messageId: message.messageId,
+    );
   });
 
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
@@ -286,4 +302,26 @@ Future<void> setupFcmLocalNotifications() async {
   if (initial != null) {
     await _trackRemoteMessage(initial, openedFromTray: true);
   }
+}
+
+/// Register both Firebase projects after permission is granted.
+Future<void> ensureEamaxPushReady(
+  String publicId, {
+  bool isPremium = false,
+}) async {
+  if (kIsWeb || publicId.trim().isEmpty) return;
+  final granted = await isEamaxNotificationPermissionGranted();
+  if (!granted) return;
+
+  await bindEamaxFcmForegroundListener();
+  bindEamaxFcmTokenRefresh(publicId);
+  await syncEamaxFcmDelivery(publicId);
+  await ensureSupasokaPushReady(publicId, isPremium: isPremium);
+}
+
+/// Channel + listeners only (no permission dialog).
+Future<void> setupFcmLocalNotifications() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  await ensureAndroidNotificationChannel();
+  await bindEamaxFcmForegroundListener();
 }
