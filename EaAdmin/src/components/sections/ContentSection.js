@@ -11,6 +11,7 @@ import {
   Switch,
   ActivityIndicator,
   RefreshControl,
+  PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -19,15 +20,6 @@ import { adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 const CHANNEL_ROW_HEIGHT = 80;
-const DRAG_ACTIVATION_PX = 6;
-
-const getTouchPageY = (evt, fallbackY = 0) => {
-  const ne = evt?.nativeEvent;
-  if (typeof ne?.pageY === 'number') return ne.pageY;
-  const touch = ne?.touches?.[0] ?? ne?.changedTouches?.[0];
-  if (touch && typeof touch.pageY === 'number') return touch.pageY;
-  return fallbackY;
-};
 
 const sortChannelsByOrder = (list) =>
   [...list].sort(
@@ -188,10 +180,11 @@ const ContentSection = () => {
   const orderedChannelsRef = useRef([]);
   const activeFilterRef = useRef('all');
   const isDraggingRef = useRef(false);
-  const dragTouchStartYRef = useRef(0);
   const dragMetaRef = useRef(null);
   const rowHeightRef = useRef(CHANNEL_ROW_HEIGHT);
   const persistOrderInFlightRef = useRef(false);
+  const persistDebounceRef = useRef(null);
+  const panRespondersRef = useRef({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
@@ -433,6 +426,10 @@ const ContentSection = () => {
 
   const canReorder = !searchTrimmed;
 
+  useEffect(() => {
+    panRespondersRef.current = {};
+  }, [canReorder, activeFilter, channelSearchQuery]);
+
   const indexFromDragDy = useCallback((startIndex, dy, listLength) => {
     const rowH = rowHeightRef.current || CHANNEL_ROW_HEIGHT;
     let idx = startIndex + Math.round(dy / rowH);
@@ -488,14 +485,48 @@ const ContentSection = () => {
       showStatusModal(
         'Reorder not saved',
         detail
-          ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then drag again.`
-          : 'Order kept on screen. Deploy backend updates, then try saving again.',
+          ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then try again.`
+          : 'Order kept on screen. Deploy backend updates, then try again.',
       );
     } finally {
       setSavingOrder(false);
       persistOrderInFlightRef.current = false;
     }
   }, [showStatusModal]);
+
+  const schedulePersistOrder = useCallback(
+    (next) => {
+      orderedChannelsRef.current = next;
+      setOrderedChannels(next);
+      if (persistDebounceRef.current) {
+        clearTimeout(persistDebounceRef.current);
+      }
+      persistDebounceRef.current = setTimeout(() => {
+        persistDebounceRef.current = null;
+        persistChannelOrder(next);
+      }, 450);
+    },
+    [persistChannelOrder],
+  );
+
+  const moveChannelOneStep = useCallback(
+    (categoryKey, channelId, direction, hideFreeInCategories) => {
+      const prev = orderedChannelsRef.current;
+      const list = getListForCategoryKeyFromList(categoryKey, prev, hideFreeInCategories);
+      const fromIndex = list.findIndex((c) => c.id === channelId);
+      const toIndex = fromIndex + direction;
+      if (fromIndex < 0 || toIndex < 0 || toIndex >= list.length) return;
+      const next = applyChannelMove(
+        prev,
+        categoryKey,
+        fromIndex,
+        toIndex,
+        hideFreeInCategories,
+      );
+      schedulePersistOrder(next);
+    },
+    [schedulePersistOrder],
+  );
 
   const endDragSession = useCallback(
     (shouldSave) => {
@@ -505,24 +536,32 @@ const ContentSection = () => {
       setDragHoverIndex(null);
 
       if (shouldSave) {
+        if (persistDebounceRef.current) {
+          clearTimeout(persistDebounceRef.current);
+          persistDebounceRef.current = null;
+        }
         persistChannelOrder(orderedChannelsRef.current);
       }
     },
     [persistChannelOrder],
   );
 
-  const getDragHandlers = useCallback(
+  const getRowPanResponder = useCallback(
     (categoryKey, channelId, listIndex, hideFreeInCategories) => {
-      if (!canReorder) return {};
+      if (!canReorder) return null;
 
-      return {
-        onStartShouldSetResponder: () => true,
-        onMoveShouldSetResponder: (evt) => {
-          const y = getTouchPageY(evt, dragTouchStartYRef.current);
-          return Math.abs(y - dragTouchStartYRef.current) > DRAG_ACTIVATION_PX;
-        },
-        onResponderTerminationRequest: () => false,
-        onResponderGrant: (evt) => {
+      const cacheKey = `${categoryKey}:${channelId}:${hideFreeInCategories ? 1 : 0}`;
+      if (panRespondersRef.current[cacheKey]) {
+        return panRespondersRef.current[cacheKey];
+      }
+
+      const responder = PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponderCapture: (_, gestureState) => Math.abs(gestureState.dy) > 4,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
           const list = getListForCategoryKeyFromList(
             categoryKey,
             orderedChannelsRef.current,
@@ -531,41 +570,44 @@ const ContentSection = () => {
           const start = list.findIndex((c) => c.id === channelId);
           const startIndex = start >= 0 ? start : listIndex;
 
-          dragTouchStartYRef.current = getTouchPageY(evt, dragTouchStartYRef.current);
           dragMetaRef.current = {
             categoryKey,
             channelId,
             hideFreeInCategories,
             startIndex,
+            gestureBaseline: 0,
           };
           isDraggingRef.current = true;
           setDraggingChannelId(channelId);
           setDragHoverIndex(startIndex);
         },
-        onResponderMove: (evt) => {
+        onPanResponderMove: (_, gestureState) => {
           if (!isDraggingRef.current || !dragMetaRef.current) return;
 
-          const dy = getTouchPageY(evt, dragTouchStartYRef.current) - dragTouchStartYRef.current;
           const meta = dragMetaRef.current;
           const list = getListForCategoryKeyFromList(
             meta.categoryKey,
             orderedChannelsRef.current,
             meta.hideFreeInCategories,
           );
-          const hover = indexFromDragDy(meta.startIndex, dy, list.length);
+          const relativeDy = gestureState.dy - (meta.gestureBaseline || 0);
+          const hover = indexFromDragDy(meta.startIndex, relativeDy, list.length);
           setDragHoverIndex(hover);
 
           if (moveDraggedRowToIndex(hover)) {
-            dragTouchStartYRef.current = getTouchPageY(evt, dragTouchStartYRef.current);
+            meta.gestureBaseline = gestureState.dy;
           }
         },
-        onResponderRelease: () => {
+        onPanResponderRelease: () => {
           endDragSession(true);
         },
-        onResponderTerminate: () => {
+        onPanResponderTerminate: () => {
           endDragSession(false);
         },
-      };
+      });
+
+      panRespondersRef.current[cacheKey] = responder;
+      return responder;
     },
     [canReorder, endDragSession, indexFromDragDy, moveDraggedRowToIndex],
   );
@@ -597,13 +639,15 @@ const ContentSection = () => {
   };
 
   const renderChannelRow = (channel, index, categoryKey, categoryList, hideFreeInCategories) => {
-    const dragHandlers = getDragHandlers(
+    const panResponder = getRowPanResponder(
       categoryKey,
       channel.id,
       index,
       hideFreeInCategories,
     );
     const isDragging = draggingChannelId === channel.id;
+    const canMoveUp = index > 0;
+    const canMoveDown = index < categoryList.length - 1;
     const isDropTarget =
       dragHoverIndex != null &&
       draggingChannelId !== channel.id &&
@@ -627,12 +671,29 @@ const ContentSection = () => {
           isDropTarget && styles.channelRowDropTarget,
         ]}>
         {canReorder ? (
-          <View
-            style={styles.dragHandle}
-            {...dragHandlers}
-            accessibilityLabel="Drag to reorder"
-            accessibilityRole="adjustable">
-            <Icon name="drag-vertical" size={22} color={isDragging ? '#c4b5fd' : '#6b7280'} />
+          <View style={styles.reorderColumn}>
+            <TouchableOpacity
+              style={[styles.reorderStepBtn, !canMoveUp && styles.reorderStepBtnDisabled]}
+              onPress={() => moveChannelOneStep(categoryKey, channel.id, -1, hideFreeInCategories)}
+              disabled={!canMoveUp || savingOrder}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              accessibilityLabel="Move channel up">
+              <Icon name="chevron-up" size={20} color={canMoveUp ? '#c4b5fd' : '#4b5563'} />
+            </TouchableOpacity>
+            <View
+              style={styles.dragHandle}
+              {...(panResponder ? panResponder.panHandlers : {})}
+              accessibilityLabel="Drag to reorder">
+              <Icon name="drag-vertical" size={20} color={isDragging ? '#c4b5fd' : '#6b7280'} />
+            </View>
+            <TouchableOpacity
+              style={[styles.reorderStepBtn, !canMoveDown && styles.reorderStepBtnDisabled]}
+              onPress={() => moveChannelOneStep(categoryKey, channel.id, 1, hideFreeInCategories)}
+              disabled={!canMoveDown || savingOrder}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              accessibilityLabel="Move channel down">
+              <Icon name="chevron-down" size={20} color={canMoveDown ? '#c4b5fd' : '#4b5563'} />
+            </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.dragHandlePlaceholder} />
@@ -764,6 +825,14 @@ const ContentSection = () => {
           <ActivityIndicator size="small" color="#a78bfa" />
           <Text style={styles.savingOrderText}>Saving order…</Text>
         </View>
+      ) : null}
+
+      {canReorder ? (
+        <Text style={styles.reorderHint}>
+          Use ↑ ↓ to move channels, or drag the ⋮⋮ handle. Order saves automatically.
+        </Text>
+      ) : searchTrimmed ? (
+        <Text style={styles.reorderHint}>Clear search to reorder channels.</Text>
       ) : null}
 
       {/* Filters */}
@@ -1452,14 +1521,41 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#c4b5fd',
   },
-  dragHandle: {
+  reorderHint: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    lineHeight: 17,
+  },
+  reorderColumn: {
     width: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
+    paddingVertical: 6,
+    gap: 2,
+  },
+  reorderStepBtn: {
+    width: 36,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: 'rgba(124, 58, 237, 0.12)',
+  },
+  reorderStepBtnDisabled: {
+    backgroundColor: 'rgba(31, 41, 55, 0.5)',
+  },
+  dragHandle: {
+    width: 40,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: 'rgba(55, 65, 81, 0.6)',
   },
   dragHandlePlaceholder: {
-    width: 12,
+    width: 44,
   },
   channelRowAccent: {
     width: 4,
