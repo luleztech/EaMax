@@ -1,17 +1,12 @@
-import 'dart:async';
-
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_messaging_platform_interface/firebase_messaging_platform_interface.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../firebase_supasoka_options.dart';
-import 'fcm_notifications.dart';
 
 const _supasokaAppName = 'supasoka';
 const _prefsSupasokaTopicKey = 'eamax_supasoka_direct_topic_v1';
-
-bool _listenersBound = false;
 
 Future<bool> ensureSupasokaFirebaseApp() async {
   if (kIsWeb || !SupasokaFirebaseOptions.isConfigured) return false;
@@ -33,9 +28,12 @@ Future<bool> ensureSupasokaFirebaseApp() async {
   }
 }
 
-FirebaseMessaging? _supasokaMessaging() {
+FirebaseMessagingPlatform? _supasokaMessagingPlatform() {
   if (!Firebase.apps.any((a) => a.name == _supasokaAppName)) return null;
-  return FirebaseMessaging.instanceFor(app: Firebase.app(_supasokaAppName));
+  return FirebaseMessagingPlatform.instanceFor(
+    app: Firebase.app(_supasokaAppName),
+    pluginConstants: {},
+  );
 }
 
 String _directUserTopic(String publicId) {
@@ -43,7 +41,7 @@ String _directUserTopic(String publicId) {
   return 'user_$clean';
 }
 
-/// Subscribe to SupaAdmin FCM topics on the Supasoka Firebase project (instant delivery).
+/// Subscribe to SupaAdmin FCM topics on the Supasoka Firebase project.
 Future<void> syncSupasokaFcmTopics(
   String publicId, {
   bool isPremium = false,
@@ -51,7 +49,7 @@ Future<void> syncSupasokaFcmTopics(
   if (kIsWeb || publicId.trim().isEmpty) return;
   if (!await ensureSupasokaFirebaseApp()) return;
 
-  final messaging = _supasokaMessaging();
+  final messaging = _supasokaMessagingPlatform();
   if (messaging == null) return;
 
   try {
@@ -81,32 +79,11 @@ Future<void> syncSupasokaFcmTopics(
   }
 }
 
-/// Show SupaAdmin pushes in foreground (secondary Firebase app).
-Future<void> bindSupasokaFcmForegroundListener() async {
-  if (kIsWeb || _listenersBound) return;
-  if (!await ensureSupasokaFirebaseApp()) return;
-  final messaging = _supasokaMessaging();
-  if (messaging == null) return;
-
-  _listenersBound = true;
-  messaging.onMessage.listen((RemoteMessage message) async {
-    final n = message.notification;
-    final title = n?.title ?? message.data['title'] ?? 'EaMax';
-    final body = n?.body ?? message.data['body'] ?? message.data['message'] ?? '';
-    if (body.isEmpty) return;
-    await showEamaxLocalNotification(
-      title: title,
-      body: body,
-      notificationId: null,
-    );
-  });
-}
-
-/// Full Supasoka-side setup after notification permission is granted.
+/// Supasoka FCM setup (topics only). Foreground tray alerts for SupaAdmin also
+/// arrive via the EaMax HTTP bridge on the default Firebase app.
 Future<void> ensureSupasokaPushReady(
   String publicId, {
   bool isPremium = false,
 }) async {
-  await bindSupasokaFcmForegroundListener();
   await syncSupasokaFcmTopics(publicId, isPremium: isPremium);
 }

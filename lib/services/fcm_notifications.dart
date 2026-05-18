@@ -316,6 +316,7 @@ Future<void> ensureEamaxPushReady(
   await bindEamaxFcmForegroundListener();
   bindEamaxFcmTokenRefresh(publicId);
   await syncEamaxFcmDelivery(publicId);
+  // Supasoka Firebase topics (SupaAdmin direct); bridge covers foreground on EaMax FCM.
   await ensureSupasokaPushReady(publicId, isPremium: isPremium);
 }
 
