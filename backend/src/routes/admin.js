@@ -293,6 +293,39 @@ router.post('/users/:id/special-access', async (req, res, next) => {
   }
 });
 
+// Ensure sort_order exists (idempotent; safe on every reorder request)
+const ensureChannelSortOrderColumn = async () => {
+  await query(
+    `ALTER TABLE channels ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
+  ).catch(() => {});
+  await query(
+    `UPDATE channels SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0`,
+  ).catch(() => {});
+};
+
+const handleChannelsReorder = async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      channelIds: z.array(z.coerce.number().int().positive()).min(1),
+    });
+    const { channelIds } = bodySchema.parse(req.body);
+
+    await ensureChannelSortOrderColumn();
+
+    for (let i = 0; i < channelIds.length; i += 1) {
+      await query('UPDATE channels SET sort_order = $1 WHERE id = $2', [i, channelIds[i]]);
+    }
+
+    return res.json({ ok: true, count: channelIds.length });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+// Admin: reorder channels (drag-and-drop positions) — PATCH and POST for compatibility
+router.patch('/channels/reorder', handleChannelsReorder);
+router.post('/channels/reorder', handleChannelsReorder);
+
 // Admin: list channels (with view counts for Most Watched)
 router.get('/channels', async (req, res, next) => {
   try {
@@ -303,6 +336,7 @@ router.get('/channels', async (req, res, next) => {
                c.color, c.points_required, c.is_active, c.drm_protected, c.drm_clear_key,
                COALESCE(c.drm_type, 'NONE') AS drm_type,
                c.owner_user_id, c.created_at,
+               COALESCE(c.sort_order, c.id) AS sort_order,
                COALESCE(c.unlock_to_free, false) AS unlock_to_free,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
@@ -311,7 +345,7 @@ router.get('/channels', async (req, res, next) => {
           FROM channel_watch_events
           GROUP BY channel_id
         ) v ON c.id = v.channel_id
-        ORDER BY c.created_at DESC
+        ORDER BY COALESCE(c.sort_order, c.id) ASC, c.id ASC
         LIMIT 500
       `);
     } catch (e) {
@@ -321,10 +355,11 @@ router.get('/channels', async (req, res, next) => {
                  color, points_required, is_active, drm_protected, drm_clear_key,
                  COALESCE(drm_type, 'NONE') AS drm_type,
                  owner_user_id, created_at,
+                 COALESCE(sort_order, id) AS sort_order,
                  COALESCE(unlock_to_free, false) AS unlock_to_free,
                  0 AS view_count
           FROM channels
-          ORDER BY created_at DESC
+          ORDER BY COALESCE(sort_order, id) ASC, id ASC
           LIMIT 500
         `);
       } else {
@@ -356,7 +391,7 @@ router.post('/channels', async (req, res, next) => {
   try {
     const bodySchema = z.object({
       name: z.string().min(1),
-      category: z.enum(['football', 'movies', 'habari']),
+      category: z.enum(['football', 'movies', 'habari', 'tamthilia', 'wanyama', 'katuni', 'sayansi']),
       streamUrl: z.string().url().optional(),
       streamAlias: z.string().min(1).max(128).optional(),
       thumbnailUrl: z.string().url().optional(),
@@ -456,7 +491,7 @@ router.put('/channels/:id', async (req, res, next) => {
     });
     const bodySchema = z.object({
       name: z.string().min(1).optional(),
-      category: z.enum(['football', 'movies', 'habari']).optional(),
+      category: z.enum(['football', 'movies', 'habari', 'tamthilia', 'wanyama', 'katuni', 'sayansi']).optional(),
       streamUrl: z.string().url().optional(),
       streamAlias: z.string().min(1).max(128).optional().nullable(),
       thumbnailUrl: z.string().url().optional().nullable(),
@@ -467,6 +502,7 @@ router.put('/channels/:id', async (req, res, next) => {
       drmClearKey: z.string().max(2048).optional().nullable(),
       pointsRequired: z.coerce.number().int().min(0).optional(),
       unlockToFree: z.boolean().optional(),
+      sortOrder: z.coerce.number().int().min(0).optional(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -525,7 +561,12 @@ router.put('/channels/:id', async (req, res, next) => {
         drm_clear_key: drmType === 'CLEARKEY' ? (drmClearKeyValue ?? null) : null,
       }),
       ...(data.unlockToFree !== undefined && { unlock_to_free: !!data.unlockToFree }),
+      ...(data.sortOrder !== undefined && { sort_order: data.sortOrder }),
     };
+
+    if (data.sortOrder !== undefined) {
+      await ensureChannelSortOrderColumn();
+    }
 
     Object.entries(updates).forEach(([key, value]) => {
       if (value !== undefined) {
@@ -740,7 +781,7 @@ router.post('/carousel', async (req, res, next) => {
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
-      category: z.enum(['football', 'movies', 'habari']).default('football'),
+      category: z.enum(['football', 'movies', 'habari', 'tamthilia', 'wanyama', 'katuni', 'sayansi']).default('football'),
       videoUrl: z.string().optional(),
       isActive: z.boolean().optional().default(true),
       sortOrder: z.number().int().optional().default(0),
@@ -794,7 +835,7 @@ router.put('/carousel/:id', async (req, res, next) => {
       gradientEnd: z.string().optional(),
       infoIcon: z.string().optional(),
       infoText: z.string().optional(),
-      category: z.enum(['football', 'movies', 'habari']).optional(),
+      category: z.enum(['football', 'movies', 'habari', 'tamthilia', 'wanyama', 'katuni', 'sayansi']).optional(),
       videoUrl: z.string().optional(),
       isActive: z.boolean().optional(),
       sortOrder: z.number().int().optional(),

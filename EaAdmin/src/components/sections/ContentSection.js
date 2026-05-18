@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   Switch,
   ActivityIndicator,
   RefreshControl,
-  ImageBackground,
+  PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -19,11 +19,116 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
+const CHANNEL_ROW_HEIGHT = 78;
+
+const sortChannelsByOrder = (list) =>
+  [...list].sort(
+    (a, b) =>
+      (Number(a.sort_order) || Number(a.id)) - (Number(b.sort_order) || Number(b.id)),
+  );
+
+/** Virtual section — same as user app “Chaneli za bure”. */
+const BURE_SECTION_KEY = '__bure__';
+
+const BURE_DEF = {
+  key: BURE_SECTION_KEY,
+  name: 'Chaneli za bure',
+  icon: 'gift',
+  color: '#22c55e',
+  app: 'bure',
+};
+
+/** Category order aligned with user app: Bure, Kabumbu, Habari, then Movies sub-categories. */
+const CATEGORY_DEFS = [
+  { key: 'football', name: 'Mpira / Football', icon: 'soccer', color: '#10b981', app: 'kabumbu' },
+  { key: 'habari', name: 'Habari', icon: 'newspaper-variant', color: '#ef4444', app: 'habari' },
+  { key: 'tamthilia', name: 'Tamthilia', icon: 'drama-masks', color: '#ec4899', app: 'moviesapp' },
+  { key: 'movies', name: 'Filamu', icon: 'movie', color: '#3b82f6', app: 'moviesapp' },
+  { key: 'wanyama', name: 'Wanyama', icon: 'paw', color: '#22c55e', app: 'moviesapp' },
+  { key: 'katuni', name: 'Katuni', icon: 'animation', color: '#f59e0b', app: 'moviesapp' },
+  { key: 'sayansi', name: 'Sayansi', icon: 'atom', color: '#8b5cf6', app: 'moviesapp' },
+];
+
+const CATEGORY_KEYS = CATEGORY_DEFS.map((c) => c.key);
+
+const APP_GROUPS = [
+  { id: 'bure', label: 'Chaneli za bure', icon: 'gift', color: '#22c55e' },
+  { id: 'kabumbu', label: 'Kabumbu app', icon: 'soccer', color: '#10b981' },
+  { id: 'habari', label: 'Habari app', icon: 'newspaper-variant', color: '#ef4444' },
+  { id: 'moviesapp', label: 'Movies app', icon: 'movie', color: '#a855f7' },
+];
+
+const isFreeChannel = (ch) => {
+  const pts = Number(ch.points_required ?? ch.pointsRequired ?? 0);
+  const unlockFree = !!(ch.unlock_to_free === true || ch.unlockToFree === true);
+  return unlockFree || (!Number.isNaN(pts) && pts <= 0);
+};
+
+const getFreeChannels = (channels) =>
+  (channels || []).filter(isFreeChannel).sort(
+    (a, b) => (Number(a.sort_order) || Number(a.id)) - (Number(b.sort_order) || Number(b.id)),
+  );
+
+const getCategoryDef = (key) =>
+  CATEGORY_DEFS.find((c) => c.key === key) || {
+    key,
+    name: key,
+    icon: 'television',
+    color: '#7c3aed',
+    app: 'moviesapp',
+  };
+
+const groupChannelsByCategory = (channels) => {
+  const map = {};
+  CATEGORY_KEYS.forEach((k) => {
+    map[k] = [];
+  });
+  (channels || []).forEach((ch) => {
+    const key = String(ch.category || 'football').toLowerCase();
+    if (!map[key]) map[key] = [];
+    map[key].push(ch);
+  });
+  return map;
+};
+
+const flattenGroupedChannels = (grouped, fallbackList = [], freeOrdered = []) => {
+  const out = [];
+  const seen = new Set();
+  (freeOrdered || []).forEach((ch) => {
+    out.push(ch);
+    seen.add(ch.id);
+  });
+  CATEGORY_KEYS.forEach((key) => {
+    (grouped[key] || []).forEach((ch) => {
+      if (!seen.has(ch.id)) {
+        out.push(ch);
+        seen.add(ch.id);
+      }
+    });
+  });
+  fallbackList.forEach((ch) => {
+    if (!seen.has(ch.id)) out.push(ch);
+  });
+  return out;
+};
+
+const flattenAllChannels = (channels) => {
+  const free = getFreeChannels(channels);
+  const freeIds = new Set(free.map((c) => c.id));
+  const nonFree = channels.filter((c) => !freeIds.has(c.id));
+  const grouped = groupChannelsByCategory(nonFree);
+  return flattenGroupedChannels(grouped, channels, free);
+};
 
 const ContentSection = () => {
   const [activeFilter, setActiveFilter] = useState('all');
   const [addChannelModalVisible, setAddChannelModalVisible] = useState(false);
   const [channels, setChannels] = useState([]);
+  const [orderedChannels, setOrderedChannels] = useState([]);
+  const [draggingChannelId, setDraggingChannelId] = useState(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+  const dragStartIndexRef = useRef(0);
+  const orderedChannelsRef = useRef([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
@@ -58,7 +163,9 @@ const ContentSection = () => {
   const fetchChannels = useCallback(async () => {
     try {
       const data = await adminChannelsAPI.getChannels();
-      setChannels(data);
+      const sorted = sortChannelsByOrder(data);
+      setChannels(sorted);
+      setOrderedChannels(sorted);
     } catch (error) {
       console.error('Failed to load channels:', error);
       showStatusModal('Failed to load channels', 'Please try again.');
@@ -71,6 +178,10 @@ const ContentSection = () => {
   useEffect(() => {
     fetchChannels();
   }, [fetchChannels]);
+
+  useEffect(() => {
+    orderedChannelsRef.current = orderedChannels;
+  }, [orderedChannels]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -166,19 +277,23 @@ const ContentSection = () => {
         const updated = await adminChannelsAPI.updateChannel(editingChannel.id, payload);
         showStatusModal('Channel updated', 'Channel updated successfully.');
         setChannels((prev) =>
-          prev.map((ch) =>
-            ch.id === updated.id
-              ? { ...ch, ...updated, drm_type: updated.drm_type ?? updated.drmType, drmType: updated.drmType ?? updated.drm_type, drm_clear_key: updated.drm_clear_key ?? updated.drmClearKey, drmClearKey: updated.drmClearKey ?? updated.drm_clear_key }
-              : ch
-          )
+          sortChannelsByOrder(
+            prev.map((ch) =>
+              ch.id === updated.id
+                ? { ...ch, ...updated, drm_type: updated.drm_type ?? updated.drmType, drmType: updated.drmType ?? updated.drm_type, drm_clear_key: updated.drm_clear_key ?? updated.drmClearKey, drmClearKey: updated.drmClearKey ?? updated.drm_clear_key }
+                : ch
+            ),
+          ),
         );
       } else {
         const created = await adminChannelsAPI.createChannel(payload);
         showStatusModal('Channel added', 'Channel added successfully.');
-        setChannels((prev) => [
-          { ...created, drm_type: created.drm_type ?? created.drmType, drmType: created.drmType ?? created.drm_type, drm_clear_key: created.drm_clear_key ?? created.drmClearKey, drmClearKey: created.drmClearKey ?? created.drm_clear_key },
-          ...prev,
-        ]);
+        setChannels((prev) =>
+          sortChannelsByOrder([
+            { ...created, drm_type: created.drm_type ?? created.drmType, drmType: created.drmType ?? created.drm_type, drm_clear_key: created.drm_clear_key ?? created.drmClearKey, drmClearKey: created.drmClearKey ?? created.drm_clear_key },
+            ...prev,
+          ]),
+        );
       }
       setAddChannelModalVisible(false);
       resetForm();
@@ -192,24 +307,343 @@ const ContentSection = () => {
   };
 
   const filters = [
-    { id: 'all', label: 'All Channels' },
-    { id: 'football', label: 'Football' },
-    { id: 'movies', label: 'Movies' },
+    { id: 'all', label: 'All' },
+    { id: 'bure', label: 'Za bure' },
+    { id: 'kabumbu', label: 'Kabumbu' },
     { id: 'habari', label: 'Habari' },
+    { id: 'moviesapp', label: 'Movies' },
   ];
 
-  const filteredChannels = activeFilter === 'all'
-    ? channels
-    : channels.filter(channel => channel.category === activeFilter);
-
   const searchTrimmed = (channelSearchQuery || '').trim().toLowerCase();
-  const searchedChannels = searchTrimmed
-    ? filteredChannels.filter(
+
+  const channelsMatchingFilter = useCallback(() => {
+    if (activeFilter === 'bure') {
+      return getFreeChannels(orderedChannels);
+    }
+    if (activeFilter === 'kabumbu') {
+      return orderedChannels.filter((ch) => String(ch.category).toLowerCase() === 'football');
+    }
+    if (activeFilter === 'habari') {
+      return orderedChannels.filter((ch) => String(ch.category).toLowerCase() === 'habari');
+    }
+    if (activeFilter === 'moviesapp') {
+      return orderedChannels.filter((ch) => {
+        const cat = String(ch.category).toLowerCase();
+        return cat !== 'football' && cat !== 'habari';
+      });
+    }
+    return orderedChannels;
+  }, [activeFilter, orderedChannels]);
+
+  const buildDisplayModel = useCallback(() => {
+    let list = channelsMatchingFilter();
+    if (searchTrimmed) {
+      list = list.filter(
         (ch) =>
           (ch.name && String(ch.name).toLowerCase().includes(searchTrimmed)) ||
-          (ch.category && String(ch.category).toLowerCase().includes(searchTrimmed))
-      )
-    : filteredChannels;
+          (ch.category && String(ch.category).toLowerCase().includes(searchTrimmed)) ||
+          (isFreeChannel(ch) &&
+            (searchTrimmed.includes('bure') || searchTrimmed.includes('free'))),
+      );
+    }
+
+    const freeChannels = getFreeChannels(
+      activeFilter === 'bure' ? list : orderedChannels.filter((ch) => list.some((x) => x.id === ch.id)),
+    );
+    const freeIds = new Set(freeChannels.map((c) => c.id));
+    const hideFreeInCategories = activeFilter === 'all';
+
+    const grouped = groupChannelsByCategory(list);
+    if (hideFreeInCategories) {
+      CATEGORY_KEYS.forEach((key) => {
+        grouped[key] = (grouped[key] || []).filter((ch) => !freeIds.has(ch.id));
+      });
+    }
+
+    return { freeChannels, grouped, freeIds, hideFreeInCategories };
+  }, [channelsMatchingFilter, searchTrimmed, activeFilter, orderedChannels]);
+
+  const canReorder = !searchTrimmed;
+
+  const getListForCategoryKey = useCallback((categoryKey, prev, hideFreeInCategories) => {
+    if (categoryKey === BURE_SECTION_KEY) {
+      return getFreeChannels(prev);
+    }
+    const freeIds = hideFreeInCategories
+      ? new Set(getFreeChannels(prev).map((c) => c.id))
+      : new Set();
+    const grouped = groupChannelsByCategory(prev);
+    let list = grouped[categoryKey] || [];
+    if (hideFreeInCategories) {
+      list = list.filter((ch) => !freeIds.has(ch.id));
+    }
+    return list;
+  }, []);
+
+  const moveChannelInCategory = useCallback(
+    (categoryKey, fromIndex, toIndex, hideFreeInCategories) => {
+      if (fromIndex === toIndex) return;
+      setOrderedChannels((prev) => {
+        let free = getFreeChannels(prev);
+        const freeIds = new Set(free.map((c) => c.id));
+
+        if (categoryKey === BURE_SECTION_KEY) {
+          const list = [...free];
+          const [item] = list.splice(fromIndex, 1);
+          list.splice(toIndex, 0, item);
+          free = list;
+        } else {
+          let list = getListForCategoryKey(categoryKey, prev, hideFreeInCategories);
+          const [item] = list.splice(fromIndex, 1);
+          list.splice(toIndex, 0, item);
+
+          if (hideFreeInCategories) {
+            const nonFree = prev.filter((c) => !freeIds.has(c.id));
+            const grouped = groupChannelsByCategory(nonFree);
+            grouped[categoryKey] = list;
+            const next = flattenGroupedChannels(grouped, prev, free);
+            orderedChannelsRef.current = next;
+            return next;
+          }
+
+          const grouped = groupChannelsByCategory(prev);
+          grouped[categoryKey] = list;
+          const next = flattenGroupedChannels(grouped, prev, free);
+          orderedChannelsRef.current = next;
+          return next;
+        }
+
+        const nonFree = prev.filter((c) => !freeIds.has(c.id));
+        const grouped = groupChannelsByCategory(nonFree);
+        const next = flattenGroupedChannels(grouped, prev, free);
+        orderedChannelsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const persistChannelOrder = useCallback(async (ordered) => {
+    const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
+    if (!list.length) return;
+
+    try {
+      setSavingOrder(true);
+      await adminChannelsAPI.reorderChannels(list.map((ch) => ch.id));
+      setChannels(list);
+      orderedChannelsRef.current = list;
+    } catch (error) {
+      console.error('Failed to save channel order:', error);
+      const detail = error?.message ? String(error.message).slice(0, 180) : '';
+      showStatusModal(
+        'Reorder failed',
+        detail
+          ? `${detail}\n\nDeploy the latest backend to Railway if this persists.`
+          : 'Could not save channel positions. Deploy backend updates, then pull to refresh.',
+      );
+      fetchChannels();
+    } finally {
+      setSavingOrder(false);
+    }
+  }, [fetchChannels, showStatusModal]);
+
+  const createDragResponder = useCallback(
+    (categoryKey, channelId, listIndex, hideFreeInCategories) =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => canReorder,
+        onMoveShouldSetPanResponder: () => canReorder,
+        onPanResponderGrant: () => {
+          const catList = getListForCategoryKey(
+            categoryKey,
+            orderedChannelsRef.current,
+            hideFreeInCategories,
+          );
+          const start = catList.findIndex((c) => c.id === channelId);
+          dragStartIndexRef.current = start >= 0 ? start : listIndex;
+          setDraggingChannelId(channelId);
+        },
+        onPanResponderMove: (_, gesture) => {
+          const catList = getListForCategoryKey(
+            categoryKey,
+            orderedChannelsRef.current,
+            hideFreeInCategories,
+          );
+          const targetIndex = Math.max(
+            0,
+            Math.min(
+              catList.length - 1,
+              dragStartIndexRef.current + Math.round(gesture.dy / CHANNEL_ROW_HEIGHT),
+            ),
+          );
+          const currentIndex = catList.findIndex((c) => c.id === channelId);
+          if (currentIndex >= 0 && targetIndex !== currentIndex) {
+            moveChannelInCategory(categoryKey, currentIndex, targetIndex, hideFreeInCategories);
+            dragStartIndexRef.current = targetIndex;
+          }
+        },
+        onPanResponderRelease: () => {
+          setDraggingChannelId(null);
+          setOrderedChannels((latest) => {
+            orderedChannelsRef.current = latest;
+            persistChannelOrder(latest);
+            return latest;
+          });
+        },
+        onPanResponderTerminate: () => {
+          setDraggingChannelId(null);
+        },
+      }),
+    [canReorder, getListForCategoryKey, moveChannelInCategory, persistChannelOrder],
+  );
+
+  const openEditChannel = (channel) => {
+    setEditingChannel(channel);
+    setChannelName(channel.name || '');
+    setChannelCategory(channel.category || 'football');
+    setThumbnailUrl(channel.thumbnail_url || '');
+    setThumbnailEmoji(channel.thumbnail_emoji || '');
+    setUseEmoji(!!channel.thumbnail_emoji);
+    setVideoUrl(channel.stream_url || '');
+    setSelectedColor(channel.color || '#7c3aed');
+    setIsActive(typeof channel.is_active === 'boolean' ? channel.is_active : true);
+    const savedDrmType = (
+      channel.drm_type ?? channel.drmType ?? (channel.drm_protected ? 'CLEARKEY' : 'NONE')
+    ).toUpperCase();
+    setDrmType(
+      savedDrmType === 'CLEARKEY' || savedDrmType === 'WIDEVINE' || savedDrmType === 'PLAYREADY'
+        ? savedDrmType
+        : 'NONE',
+    );
+    const savedClearKey = channel.drm_clear_key ?? channel.drmClearKey;
+    setClearKey(savedClearKey != null ? String(savedClearKey) : '');
+    setUserId(channel.owner_user_id ? String(channel.owner_user_id) : '');
+    setPointsRequired(String(channel.points_required ?? channel.pointsRequired ?? 0));
+    setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
+    setAddChannelModalVisible(true);
+  };
+
+  const renderChannelRow = (channel, index, categoryKey, categoryList, hideFreeInCategories) => {
+    const dragResponder = createDragResponder(
+      categoryKey,
+      channel.id,
+      index,
+      hideFreeInCategories,
+    );
+    const isDragging = draggingChannelId === channel.id;
+    const def =
+      categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
+    const isLast = index === categoryList.length - 1;
+    const originDef = getCategoryDef(channel.category);
+
+    return (
+      <View
+        key={channel.id}
+        style={[styles.channelRow, isLast && styles.channelRowLast, isDragging && styles.channelRowDragging]}>
+        {canReorder ? (
+          <View style={styles.dragHandle} {...dragResponder.panHandlers} accessibilityLabel="Drag to reorder">
+            <Icon name="drag-vertical" size={22} color="#6b7280" />
+          </View>
+        ) : (
+          <View style={styles.dragHandlePlaceholder} />
+        )}
+        <LinearGradient
+          colors={[channel.color || def.color, '#1e293b']}
+          style={styles.channelRowAccent}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+        />
+        <View style={styles.channelRowMain}>
+          <View style={styles.channelRowTop}>
+            <View style={[styles.channelThumb, { backgroundColor: `${channel.color || def.color}33` }]}>
+              {channel.thumbnail_emoji ? (
+                <Text style={styles.channelThumbEmoji}>{channel.thumbnail_emoji}</Text>
+              ) : (
+                <Icon name={def.icon} size={22} color="#fff" />
+              )}
+            </View>
+            <View style={styles.channelRowInfo}>
+              <Text style={styles.channelRowName} numberOfLines={1}>
+                {channel.name}
+              </Text>
+              <View style={styles.channelRowMeta}>
+                {categoryKey === BURE_SECTION_KEY ? (
+                  <>
+                    <Text style={styles.channelRowCategory}>{originDef.name}</Text>
+                    <Text style={styles.channelRowDot}>·</Text>
+                  </>
+                ) : null}
+                <Text
+                  style={[
+                    styles.channelRowStatus,
+                    channel.is_active ? styles.channelRowStatusActive : styles.channelRowStatusOff,
+                  ]}>
+                  {channel.is_active ? 'Active' : 'Inactive'}
+                </Text>
+                {isFreeChannel(channel) ? (
+                  <>
+                    <Text style={styles.channelRowDot}>·</Text>
+                    <Text style={styles.channelRowBureTag}>Bure</Text>
+                  </>
+                ) : null}
+                <Text style={styles.channelRowDot}>·</Text>
+                <Text style={styles.channelRowViews}>
+                  {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
+        <View style={styles.channelRowActions}>
+          <TouchableOpacity
+            style={styles.channelIconBtn}
+            onPress={() => openEditChannel(channel)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Icon name="pencil" size={20} color="#60a5fa" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.channelIconBtn, styles.channelIconBtnDanger]}
+            onPress={() => setDeleteConfirmChannel(channel)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Icon name="delete" size={20} color="#f87171" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderCategorySection = (catDef, categoryChannels, hideFreeInCategories) => {
+    if (!categoryChannels.length) return null;
+    return (
+      <View key={catDef.key} style={styles.categorySection}>
+        <View style={styles.categorySectionHeader}>
+          <View style={styles.categorySectionHeaderLeft}>
+            <View style={[styles.categorySectionIconWrap, { backgroundColor: `${catDef.color}22` }]}>
+              <Icon name={catDef.icon} size={20} color={catDef.color} />
+            </View>
+            <Text style={styles.categorySectionTitle}>{catDef.name}</Text>
+          </View>
+          <Text style={styles.categorySectionCount}>{categoryChannels.length} channels</Text>
+        </View>
+        <View style={styles.categorySectionList}>
+          {categoryChannels.map((channel, index) =>
+            renderChannelRow(channel, index, catDef.key, categoryChannels, hideFreeInCategories),
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const { freeChannels, grouped, hideFreeInCategories } = buildDisplayModel();
+  const categoriesToShow = CATEGORY_DEFS.filter((def) => {
+    if (activeFilter === 'bure') return false;
+    if (activeFilter === 'kabumbu') return def.app === 'kabumbu';
+    if (activeFilter === 'habari') return def.app === 'habari';
+    if (activeFilter === 'moviesapp') return def.app === 'moviesapp';
+    return true;
+  });
+  const hasAnyChannel =
+    (activeFilter === 'all' || activeFilter === 'bure' ? freeChannels.length > 0 : false) ||
+    categoriesToShow.some((def) => (grouped[def.key] || []).length > 0);
 
   if (loading) {
     return (
@@ -252,7 +686,17 @@ const ContentSection = () => {
         ))}
         <TouchableOpacity
           style={styles.addIconButton}
-          onPress={() => setAddChannelModalVisible(true)}>
+          onPress={() => {
+            resetForm();
+            if (activeFilter === 'bure') {
+              setChannelCategory('football');
+              setUnlockToFree(true);
+              setPointsRequired('0');
+            } else if (activeFilter === 'kabumbu') setChannelCategory('football');
+            else if (activeFilter === 'habari') setChannelCategory('habari');
+            else if (activeFilter === 'moviesapp') setChannelCategory('movies');
+            setAddChannelModalVisible(true);
+          }}>
           <Icon name="plus" size={24} color="#fff" />
         </TouchableOpacity>
       </ScrollView>
@@ -278,121 +722,58 @@ const ContentSection = () => {
         ) : null}
       </View>
 
-      {/* Channels Grid */}
-      <View style={styles.contentGrid}>
-        {searchedChannels.length === 0 ? (
+      {!hasAnyChannel ? (
+        <View style={styles.channelListCard}>
           <View style={styles.emptyState}>
             <Icon name="television-off" size={48} color="#6b7280" />
             <Text style={styles.emptyStateText}>
-              {searchTrimmed
-                ? 'No channels match your search'
-                : activeFilter === 'all'
-                ? 'No channels yet'
-                : 'No channels in this category'}
+              {searchTrimmed ? 'No channels match your search' : 'No channels in this view'}
             </Text>
             <Text style={styles.emptyStateSubtext}>
               {searchTrimmed
                 ? 'Try a different search or clear the search box'
-                : 'Add a new channel using the + button above'}
+                : 'Add a channel with the + button above'}
             </Text>
           </View>
-        ) : (
-          searchedChannels.map((channel) => (
-            <View key={channel.id} style={styles.contentCard}>
-              <ImageBackground
-                source={
-                  channel.thumbnail_url ? { uri: channel.thumbnail_url } : undefined
+        </View>
+      ) : (
+        <View style={styles.groupedChannelsWrap}>
+          {activeFilter === 'all'
+            ? APP_GROUPS.map((appGroup) => {
+                if (appGroup.id === 'bure') {
+                  if (!freeChannels.length) return null;
+                  return (
+                    <View key="bure" style={styles.appGroupBlock}>
+                      <View style={styles.appGroupHeader}>
+                        <Icon name={appGroup.icon} size={22} color={appGroup.color} />
+                        <Text style={styles.appGroupTitle}>{appGroup.label}</Text>
+                      </View>
+                      {renderCategorySection(BURE_DEF, freeChannels, hideFreeInCategories)}
+                    </View>
+                  );
                 }
-                style={styles.contentImage}
-                imageStyle={styles.contentImageBackground}>
-                <LinearGradient
-                  colors={[channel.color || '#7c3aed', '#030712']}
-                  style={styles.contentOverlay}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <View style={styles.channelIconContainer}>
-                    {channel.thumbnail_emoji ? (
-                      <Text style={styles.channelEmoji}>{channel.thumbnail_emoji}</Text>
-                    ) : (
-                      <Icon
-                        name={
-                          channel.category === 'football'
-                            ? 'soccer'
-                            : channel.category === 'movies'
-                            ? 'movie'
-                            : 'newspaper-variant'
-                        }
-                        size={40}
-                        color="#fff"
-                      />
+                const defs = CATEGORY_DEFS.filter((d) => d.app === appGroup.id);
+                const groupHasChannels = defs.some((d) => (grouped[d.key] || []).length > 0);
+                if (!groupHasChannels) return null;
+                return (
+                  <View key={appGroup.id} style={styles.appGroupBlock}>
+                    <View style={styles.appGroupHeader}>
+                      <Icon name={appGroup.icon} size={22} color={appGroup.color} />
+                      <Text style={styles.appGroupTitle}>{appGroup.label}</Text>
+                    </View>
+                    {defs.map((def) =>
+                      renderCategorySection(def, grouped[def.key] || [], hideFreeInCategories),
                     )}
                   </View>
-                  <Text style={styles.channelName}>{channel.name}</Text>
-                  <Text style={styles.channelShow}>
-                    {channel.category === 'football'
-                      ? 'Football Channel'
-                      : channel.category === 'movies'
-                      ? 'Movies Channel'
-                      : 'Habari Channel'}
-                  </Text>
-                </LinearGradient>
-              </ImageBackground>
-              <View style={styles.contentCardBody}>
-                <View style={styles.contentCardInfo}>
-                  <Text style={styles.contentCardSubtitle}>
-                    {channel.category === 'football'
-                      ? 'Football'
-                      : channel.category === 'movies'
-                      ? 'Movies'
-                      : 'Habari'}
-                  </Text>
-                  <Text style={styles.contentCardViews}>
-                    {channel.is_active ? 'Active' : 'Inactive'}
-                  </Text>
-                </View>
-                <View style={styles.contentCardActions}>
-                  <TouchableOpacity
-                    style={styles.editButton}
-                    onPress={() => {
-                      setEditingChannel(channel);
-                      setChannelName(channel.name || '');
-                      setChannelCategory(channel.category || 'football');
-                      setThumbnailUrl(channel.thumbnail_url || '');
-                      setThumbnailEmoji(channel.thumbnail_emoji || '');
-                      setUseEmoji(!!channel.thumbnail_emoji);
-                      setVideoUrl(channel.stream_url || '');
-                      setSelectedColor(channel.color || '#7c3aed');
-                      setIsActive(
-                        typeof channel.is_active === 'boolean'
-                          ? channel.is_active
-                          : true,
-                      );
-                      const savedDrmType = (channel.drm_type ?? channel.drmType ?? (channel.drm_protected ? 'CLEARKEY' : 'NONE')).toUpperCase();
-                      setDrmType(savedDrmType === 'CLEARKEY' || savedDrmType === 'WIDEVINE' || savedDrmType === 'PLAYREADY' ? savedDrmType : 'NONE');
-                      const savedClearKey = channel.drm_clear_key ?? channel.drmClearKey;
-                      setClearKey(savedClearKey != null ? String(savedClearKey) : '');
-                      setUserId(
-                        channel.owner_user_id ? String(channel.owner_user_id) : '',
-                      );
-                      setPointsRequired(
-                        String(channel.points_required ?? channel.pointsRequired ?? 0),
-                      );
-                      setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
-                      setAddChannelModalVisible(true);
-                    }}>
-                    <Text style={styles.editButtonText}>Edit</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.deleteButton}
-                    onPress={() => setDeleteConfirmChannel(channel)}>
-                    <Text style={styles.deleteButtonText}>Delete</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          ))
-        )}
-      </View>
+                );
+              })
+            : activeFilter === 'bure'
+              ? renderCategorySection(BURE_DEF, freeChannels, false)
+              : categoriesToShow.map((def) =>
+                  renderCategorySection(def, grouped[def.key] || [], hideFreeInCategories),
+                )}
+        </View>
+      )}
 
       {/* Add Channel Modal */}
       <Modal
@@ -465,19 +846,15 @@ const ContentSection = () => {
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Category *</Text>
                   <View style={styles.categoryRow}>
-                    {[
-                      { id: 'football', label: 'Kabumbu (Football)' },
-                      { id: 'movies', label: 'Movies' },
-                      { id: 'habari', label: 'Habari' },
-                    ].map((opt) => {
-                      const active = channelCategory === opt.id;
+                    {CATEGORY_DEFS.map((opt) => {
+                      const active = channelCategory === opt.key;
                       return (
                         <TouchableOpacity
-                          key={opt.id}
+                          key={opt.key}
                           style={[styles.categoryChip, active && styles.categoryChipActive]}
-                          onPress={() => setChannelCategory(opt.id)}>
+                          onPress={() => setChannelCategory(opt.key)}>
                           <Text style={[styles.categoryChipText, active && styles.categoryChipTextActive]}>
-                            {opt.label}
+                            {opt.name}
                           </Text>
                         </TouchableOpacity>
                       );
@@ -737,6 +1114,7 @@ const ContentSection = () => {
                     await adminChannelsAPI.deleteChannel(channelToDelete.id);
                     setDeleteConfirmChannel(null);
                     setChannels((prev) => prev.filter((ch) => ch.id !== channelToDelete.id));
+                    setOrderedChannels((prev) => prev.filter((ch) => ch.id !== channelToDelete.id));
                     showStatusModal(
                       'Channel deleted',
                       'The channel has been deleted successfully.',
@@ -855,124 +1233,184 @@ const styles = StyleSheet.create({
   searchClearButton: {
     padding: 4,
   },
-  contentGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+  groupedChannelsWrap: {
+    gap: 16,
+    marginBottom: 16,
   },
-  contentCard: {
-    width: (width - 44) / 2,
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+  appGroupBlock: {
+    gap: 12,
+  },
+  appGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
+  appGroupTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#e5e7eb',
+    letterSpacing: 0.3,
+  },
+  categorySection: {
+    backgroundColor: 'rgba(17, 24, 39, 0.85)',
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#1f2937',
     overflow: 'hidden',
-    marginBottom: 12,
   },
-  contentImage: {
-    height: 160,
-    position: 'relative',
-  },
-  contentImageBackground: {
-    borderRadius: 16,
-  },
-  contentOverlay: {
-    flex: 1,
-    padding: 16,
-    justifyContent: 'flex-end',
-  },
-  statusBadge: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  liveBadge: {
-    backgroundColor: '#dc2626',
-  },
-  newBadge: {
-    backgroundColor: '#7c3aed',
-  },
-  upcomingBadge: {
-    backgroundColor: '#6b7280',
-  },
-  statusText: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  channelIconContainer: {
-    marginBottom: 12,
-    alignSelf: 'flex-start',
-  },
-  channelEmoji: {
-    fontSize: 32,
-  },
-  channelName: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  channelShow: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.9)',
-    textAlign: 'center',
-    paddingHorizontal: 16,
-  },
-  contentCardBody: {
-    padding: 12,
-  },
-  contentCardInfo: {
+  categorySectionHeader: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(31, 41, 55, 0.55)',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
   },
-  contentCardSubtitle: {
-    fontSize: 12,
-    color: '#9ca3af',
-  },
-  contentCardViews: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#10b981',
-  },
-  contentCardViewsInactive: {
-    color: '#9ca3af',
-  },
-  contentCardActions: {
+  categorySectionHeaderLeft: {
     flexDirection: 'row',
-    gap: 8,
-  },
-  editButton: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderRadius: 8,
     alignItems: 'center',
+    gap: 10,
   },
-  editButtonText: {
+  categorySectionIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categorySectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  categorySectionCount: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#fff',
+    color: '#9ca3af',
   },
-  deleteButton: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(220, 38, 38, 0.2)',
-    borderRadius: 8,
+  categorySectionList: {
+    overflow: 'hidden',
+  },
+  channelListCard: {
+    backgroundColor: 'rgba(17, 24, 39, 0.85)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  channelRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    minHeight: CHANNEL_ROW_HEIGHT,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
   },
-  deleteButtonText: {
+  channelRowLast: {
+    borderBottomWidth: 0,
+  },
+  channelRowDragging: {
+    backgroundColor: 'rgba(124, 58, 237, 0.18)',
+    borderColor: 'rgba(168, 85, 247, 0.45)',
+  },
+  dragHandle: {
+    width: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  dragHandlePlaceholder: {
+    width: 12,
+  },
+  channelRowAccent: {
+    width: 4,
+    alignSelf: 'stretch',
+  },
+  channelRowMain: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingRight: 8,
+  },
+  channelRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  channelThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  channelThumbEmoji: {
+    fontSize: 22,
+  },
+  channelRowInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  channelRowName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#f8fafc',
+    marginBottom: 4,
+  },
+  channelRowMeta: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 4,
+  },
+  channelRowCategory: {
+    fontSize: 12,
+    color: '#94a3b8',
+    fontWeight: '600',
+  },
+  channelRowBureTag: {
+    fontSize: 12,
+    color: '#4ade80',
+    fontWeight: '700',
+  },
+  channelRowDot: {
+    fontSize: 12,
+    color: '#4b5563',
+  },
+  channelRowStatus: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#f87171',
+  },
+  channelRowStatusActive: {
+    color: '#34d399',
+  },
+  channelRowStatusOff: {
+    color: '#9ca3af',
+  },
+  channelRowViews: {
+    fontSize: 12,
+    color: '#6b7280',
+  },
+  channelRowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingRight: 10,
+  },
+  channelIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  channelIconBtnDanger: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
   },
   modalContainer: {
     flex: 1,

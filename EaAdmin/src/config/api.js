@@ -1,5 +1,8 @@
 // API Configuration for EaAdmin App
-const API_BASE_URL = 'https://eamax-production.up.railway.app';
+// Optional: set EAMAX_API_URL when testing against a local backend (e.g. http://10.0.2.2:3000)
+const API_BASE_URL =
+  (typeof process !== 'undefined' && process.env && process.env.EAMAX_API_URL) ||
+  'https://eamax-production.up.railway.app';
 /** Prefer injecting via Metro/babel `ADMIN_API_KEY` or patch before release; never commit production secrets. */
 const ADMIN_API_KEY =
   (typeof process !== 'undefined' && process.env && process.env.ADMIN_API_KEY) ||
@@ -182,6 +185,48 @@ export const adminChannelsAPI = {
     return apiRequest(`/api/admin/channels/${channelId}`, {
       method: 'DELETE',
     });
+  },
+
+  // Reorder channels (array of channel ids in display order)
+  reorderChannels: async (channelIds) => {
+    const ids = (channelIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (ids.length === 0) {
+      throw new Error('No valid channel ids to reorder');
+    }
+    const body = JSON.stringify({ channelIds: ids });
+    const isNotFound = (err) => {
+      const msg = String(err?.message || err || '').toLowerCase();
+      return msg.includes('404') || msg.includes('not found');
+    };
+
+    try {
+      return await apiRequest('/api/admin/channels/reorder', {
+        method: 'PATCH',
+        body,
+      });
+    } catch (patchErr) {
+      if (!isNotFound(patchErr)) throw patchErr;
+    }
+
+    try {
+      return await apiRequest('/api/admin/channels/reorder', {
+        method: 'POST',
+        body,
+      });
+    } catch (postErr) {
+      if (!isNotFound(postErr)) throw postErr;
+    }
+
+    // Fallback for older backends: update sortOrder per channel
+    for (let i = 0; i < ids.length; i += 1) {
+      await apiRequest(`/api/admin/channels/${ids[i]}`, {
+        method: 'PUT',
+        body: JSON.stringify({ sortOrder: i }),
+      });
+    }
+    return { ok: true, count: ids.length, fallback: true };
   },
 };
 
@@ -466,6 +511,11 @@ export const dashboardAPI = {
     return apiRequest(`/api/dashboard/users?${params.toString()}`, {
       timeoutMs: 120000,
     });
+  },
+
+  // Recent subscription payments (all statuses)
+  getTransactions: async (limit = 40) => {
+    return apiRequest(`/api/dashboard/transactions?limit=${limit}`);
   },
 };
 

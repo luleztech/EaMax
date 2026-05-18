@@ -53,9 +53,9 @@ const buildPlatforms = (channels) => {
 const buildStats = (data) => [
   {
     title: 'Premium Payments',
-    value: formatTsh(data.revenue ?? 0),
+    value: formatTsh(data.totalRevenue ?? data.revenue ?? 0),
     change: data.revenueChange || '+0%',
-    subtitle: 'today',
+    subtitle: `${data.completedPaymentsTotal ?? 0} completed`,
     gradient: ['#7c3aed', '#6d28d9'],
     icon: 'currency-usd',
   },

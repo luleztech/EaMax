@@ -114,6 +114,16 @@ query(
   `ALTER TABLE channels ALTER COLUMN stream_url DROP NOT NULL`
 ).catch(() => {});
 query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration channels.sort_order (non-fatal):', err.message);
+  }
+});
+query(
+  `UPDATE channels SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0`
+).catch(() => {});
+query(
   `CREATE TABLE IF NOT EXISTS stream_aliases (
      alias TEXT PRIMARY KEY,
      stream_url TEXT NOT NULL,

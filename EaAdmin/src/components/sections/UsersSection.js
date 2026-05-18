@@ -353,33 +353,56 @@ const UsersSection = ({ isActive }) => {
     }
   };
 
-  const statTotal = dashboardStats?.totalUsers ?? totalUsers;
+  const formatStat = (n) => {
+    if (n == null || n === '') return '—';
+    const v = Number(n);
+    if (!Number.isFinite(v)) return '—';
+    return v.toLocaleString('en-US');
+  };
+
+  const statTotal = dashboardStats?.totalUsers;
   const statPremium = dashboardStats?.premiumUsers;
   const statFree = dashboardStats?.freeUsers;
   const statExpired = dashboardStats?.expiredSubscriptions;
   const statBlocked = dashboardStats?.blockedUsers;
+  const statsLoading = !dashboardStats && fetchInProgress;
 
   const listHeader = (
     <>
       <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue}>{statTotal}</Text>
-          <Text style={styles.statLabel}>Total</Text>
+        <View style={[styles.statCard, styles.statCardTotal]}>
+          <Icon name="account-group" size={16} color="#38bdf8" style={styles.statIcon} />
+          <Text style={styles.statValue}>
+            {statsLoading ? '…' : formatStat(statTotal)}
+          </Text>
+          <Text style={styles.statLabel}>Registered</Text>
         </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statValue}>{statPremium ?? '—'}</Text>
+        <View style={[styles.statCard, styles.statCardPremium]}>
+          <Icon name="star" size={16} color="#fbbf24" style={styles.statIcon} />
+          <Text style={[styles.statValue, styles.statValuePremium]}>
+            {statsLoading ? '…' : formatStat(statPremium)}
+          </Text>
           <Text style={styles.statLabel}>Premium</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{statFree ?? '—'}</Text>
+          <Icon name="account" size={16} color="#9ca3af" style={styles.statIcon} />
+          <Text style={styles.statValue}>
+            {statsLoading ? '…' : formatStat(statFree)}
+          </Text>
           <Text style={styles.statLabel}>Free</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{statExpired ?? '—'}</Text>
+          <Icon name="clock-alert" size={16} color="#f87171" style={styles.statIcon} />
+          <Text style={[styles.statValue, styles.statValueExpired]}>
+            {statsLoading ? '…' : formatStat(statExpired)}
+          </Text>
           <Text style={styles.statLabel}>Expired</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statValue}>{statBlocked ?? '—'}</Text>
+          <Icon name="block-helper" size={16} color="#fca5a5" style={styles.statIcon} />
+          <Text style={[styles.statValue, styles.statValueBlocked]}>
+            {statsLoading ? '…' : formatStat(statBlocked)}
+          </Text>
           <Text style={styles.statLabel}>Blocked</Text>
         </View>
       </View>
@@ -1091,22 +1114,44 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
+    minWidth: 68,
     backgroundColor: 'rgba(17, 24, 39, 0.8)',
     borderRadius: 12,
-    padding: 12,
+    padding: 10,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#1f2937',
   },
+  statCardTotal: {
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  statCardPremium: {
+    borderColor: 'rgba(251, 191, 36, 0.35)',
+  },
+  statIcon: {
+    marginBottom: 4,
+  },
   statValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '800',
     color: '#fff',
   },
+  statValuePremium: {
+    color: '#fbbf24',
+  },
+  statValueExpired: {
+    color: '#f87171',
+  },
+  statValueBlocked: {
+    color: '#fca5a5',
+  },
   statLabel: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#9ca3af',
     marginTop: 4,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   filterContainer: {
     marginBottom: 16,

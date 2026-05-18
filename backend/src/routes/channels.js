@@ -30,7 +30,7 @@ router.get('/', async (req, res, next) => {
       params.push(parsed.data.category);
     }
 
-    sql += ' ORDER BY c.created_at DESC';
+    sql += ' ORDER BY COALESCE(c.sort_order, c.id) ASC, c.id ASC';
 
     const result = await query(sql, params);
     const rows = (result.rows || []).map((row) => {

@@ -43,7 +43,7 @@ const DashboardSection = ({ refreshTrigger }) => {
       title: 'Revenue',
       value: 'TSh 0',
       change: '+0%',
-      subtitle: 'Today (TZS)',
+      subtitle: '0 completed payments',
       gradient: ['#7c3aed', '#5b21b6'],
       icon: 'cash-multiple',
     },
@@ -63,11 +63,14 @@ const DashboardSection = ({ refreshTrigger }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [mostWatchedChannels, setMostWatchedChannels] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [transactionsSummary, setTransactionsSummary] = useState(null);
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [allNotifications, setAllNotifications] = useState([]);
   const [notificationsHistoryVisible, setNotificationsHistoryVisible] = useState(false);
   const [footballCarouselSlides, setFootballCarouselSlides] = useState([]);
   const [moviesCarouselSlides, setMoviesCarouselSlides] = useState([]);
+  const [carouselTab, setCarouselTab] = useState('football');
   const [upcomingMatches, setUpcomingMatches] = useState([]);
   const [slideModalVisible, setSlideModalVisible] = useState(false);
   const [slideCategory, setSlideCategory] = useState('football'); // Track which carousel we're editing
@@ -151,9 +154,9 @@ const DashboardSection = ({ refreshTrigger }) => {
         },
         {
           title: 'Revenue',
-          value: formatTsh(data.revenue || 0),
+          value: formatTsh(data.totalRevenue ?? data.revenue ?? 0),
           change: data.revenueChange || '+0%',
-          subtitle: 'Today (TZS)',
+          subtitle: `${data.completedPaymentsTotal ?? 0} completed · ${formatTsh(data.todayRevenue ?? 0)} today`,
           gradient: ['#7c3aed', '#5b21b6'],
           icon: 'cash-multiple',
         },
@@ -174,13 +177,15 @@ const DashboardSection = ({ refreshTrigger }) => {
   // Fetch top channels, recent notifications, carousels, and matches
   const fetchExtraData = async () => {
     try {
-      const [channels, notifications, footballSlides, moviesSlides, matches] = await Promise.all([
-        adminChannelsAPI.getChannels(),
-        adminNotificationsAPI.getNotifications(100),
-        adminCarouselAPI.getSlides('football'),
-        adminCarouselAPI.getSlides('movies'),
-        adminMatchesAPI.getMatches(),
-      ]);
+      const [channels, notifications, footballSlides, moviesSlides, matches, txRes] =
+        await Promise.all([
+          adminChannelsAPI.getChannels(),
+          adminNotificationsAPI.getNotifications(100),
+          adminCarouselAPI.getSlides('football'),
+          adminCarouselAPI.getSlides('movies'),
+          adminMatchesAPI.getMatches(),
+          dashboardAPI.getTransactions(40).catch(() => ({ transactions: [], summary: null })),
+        ]);
 
       const top = channels
         .filter((ch) => ch.is_active)
@@ -205,6 +210,8 @@ const DashboardSection = ({ refreshTrigger }) => {
         }));
 
       setMostWatchedChannels(top);
+      setTransactions(Array.isArray(txRes?.transactions) ? txRes.transactions : []);
+      setTransactionsSummary(txRes?.summary || null);
 
       const formatDateTime = (iso) =>
         iso
@@ -436,6 +443,13 @@ const DashboardSection = ({ refreshTrigger }) => {
 
     const interval = setInterval(() => {
       fetchDashboardStats();
+      dashboardAPI
+        .getTransactions(40)
+        .then((txRes) => {
+          setTransactions(Array.isArray(txRes?.transactions) ? txRes.transactions : []);
+          setTransactionsSummary(txRes?.summary || null);
+        })
+        .catch(() => {});
     }, 30000);
 
     return () => clearInterval(interval);
@@ -520,7 +534,7 @@ const DashboardSection = ({ refreshTrigger }) => {
             </View>
             <Text style={styles.overviewHeroTitle}>Overview</Text>
             <Text style={styles.overviewHeroSubtitle}>
-              Installs, revenue & ads — refreshed every 30s
+              Live stats from your database — refreshed every 30s
             </Text>
           </View>
         </Animated.View>
@@ -580,156 +594,135 @@ const DashboardSection = ({ refreshTrigger }) => {
         </View>
       </LinearGradient>
 
-      {/* Football Carousel */}
-      <View style={styles.chartCard}>
-        <View style={styles.carouselHeader}>
-          <View style={styles.carouselTitleRow}>
-            <Icon name="soccer" size={20} color="#10b981" />
-            <Text style={styles.chartTitle}>Football Carousel</Text>
+      {/* Home Carousels — Football + Movies grouped */}
+      <View style={styles.carouselHubCard}>
+        <LinearGradient
+          colors={['rgba(124, 58, 237, 0.14)', 'rgba(17, 24, 39, 0.95)']}
+          style={styles.carouselHubGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}>
+          <View style={styles.carouselHubHeader}>
+            <View>
+              <Text style={styles.carouselHubTitle}>Home Carousels</Text>
+              <Text style={styles.carouselHubSubtitle}>
+                Football & movies slides for the user app home screen
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.carouselAddButton}
+              onPress={() => openNewSlideModal(carouselTab)}
+              activeOpacity={0.8}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <AntDesign name="plus" size={16} color="#fff" />
+              <Text style={styles.carouselAddButtonText}>Add slide</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={styles.carouselAddButton}
-            onPress={() => openNewSlideModal('football')}
-            activeOpacity={0.8}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <AntDesign name="plus" size={16} color="#fff" />
-            <Text style={styles.carouselAddButtonText}>Add Slide</Text>
-          </TouchableOpacity>
-        </View>
-        {footballCarouselSlides.length === 0 ? (
-          <Text style={styles.emptyCarouselText}>
-            No football slides yet. Tap "Add Slide" to create your first one.
-          </Text>
-        ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.slideCardScrollContent}>
-            {footballCarouselSlides.map((slide) => (
-              <View key={slide.id} style={styles.slideCard}>
-                <ImageBackground
-                  source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
-                  style={styles.slideCardImage}
-                  imageStyle={styles.slideCardImageBg}>
-                  <LinearGradient
-                    colors={slide.gradient || ['#14532d', '#111827', '#000000']}
-                    style={styles.slideCardOverlay}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}>
-                    {slide.badge ? (
-                      <View style={styles.slideCardBadge}>
-                        <Text style={styles.slideCardBadgeText}>{slide.badge}</Text>
-                      </View>
-                    ) : null}
-                    <View style={styles.slideCardTextWrap}>
-                      {slide.title ? (
-                        <Text style={styles.slideCardTitle} numberOfLines={2}>{slide.title}</Text>
-                      ) : null}
-                      {slide.subtitle ? (
-                        <Text style={styles.slideCardSubtitle} numberOfLines={1}>{slide.subtitle}</Text>
-                      ) : null}
-                    </View>
-                  </LinearGradient>
-                </ImageBackground>
-                <View style={styles.slideCardBody}>
-                  <Text style={styles.slideCardCategory}>Football</Text>
-                  <View style={styles.slideCardActions}>
-                    <TouchableOpacity
-                      style={styles.slideCardEditBtn}
-                      onPress={() => openEditSlideModal(slide)}
-                      activeOpacity={0.7}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                      <Icon name="pencil" size={18} color="#3b82f6" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.slideCardDeleteBtn}
-                      onPress={() => setDeleteConfirmSlide(slide)}
-                      activeOpacity={0.7}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                      <Icon name="delete" size={18} color="#ef4444" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-        )}
-      </View>
 
-      {/* Movies Carousel */}
-      <View style={styles.chartCard}>
-        <View style={styles.carouselHeader}>
-          <View style={styles.carouselTitleRow}>
-            <Icon name="movie" size={20} color="#7c3aed" />
-            <Text style={styles.chartTitle}>Movies Carousel</Text>
-          </View>
-          <TouchableOpacity
-            style={styles.carouselAddButton}
-            onPress={() => openNewSlideModal('movies')}
-            activeOpacity={0.8}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <AntDesign name="plus" size={16} color="#fff" />
-            <Text style={styles.carouselAddButtonText}>Add Slide</Text>
-          </TouchableOpacity>
-        </View>
-        {moviesCarouselSlides.length === 0 ? (
-          <Text style={styles.emptyCarouselText}>
-            No movies slides yet. Tap "Add Slide" to create your first one.
-          </Text>
-        ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.slideCardScrollContent}>
-            {moviesCarouselSlides.map((slide) => (
-              <View key={slide.id} style={styles.slideCard}>
-                <ImageBackground
-                  source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
-                  style={styles.slideCardImage}
-                  imageStyle={styles.slideCardImageBg}>
-                  <LinearGradient
-                    colors={slide.gradient || ['#4c1d95', '#111827', '#000000']}
-                    style={styles.slideCardOverlay}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}>
-                    {slide.badge ? (
-                      <View style={styles.slideCardBadge}>
-                        <Text style={styles.slideCardBadgeText}>{slide.badge}</Text>
-                      </View>
-                    ) : null}
-                    <View style={styles.slideCardTextWrap}>
-                      {slide.title ? (
-                        <Text style={styles.slideCardTitle} numberOfLines={2}>{slide.title}</Text>
-                      ) : null}
-                      {slide.subtitle ? (
-                        <Text style={styles.slideCardSubtitle} numberOfLines={1}>{slide.subtitle}</Text>
-                      ) : null}
-                    </View>
-                  </LinearGradient>
-                </ImageBackground>
-                <View style={styles.slideCardBody}>
-                  <Text style={styles.slideCardCategory}>Movies</Text>
-                  <View style={styles.slideCardActions}>
-                    <TouchableOpacity
-                      style={styles.slideCardEditBtn}
-                      onPress={() => openEditSlideModal(slide)}
-                      activeOpacity={0.7}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                      <Icon name="pencil" size={18} color="#3b82f6" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.slideCardDeleteBtn}
-                      onPress={() => setDeleteConfirmSlide(slide)}
-                      activeOpacity={0.7}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                      <Icon name="delete" size={18} color="#ef4444" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+          <View style={styles.carouselTabRow}>
+            <TouchableOpacity
+              style={[styles.carouselTab, carouselTab === 'football' && styles.carouselTabActiveFootball]}
+              onPress={() => setCarouselTab('football')}
+              activeOpacity={0.85}>
+              <Icon name="soccer" size={18} color={carouselTab === 'football' ? '#fff' : '#6ee7b7'} />
+              <Text style={[styles.carouselTabText, carouselTab === 'football' && styles.carouselTabTextActive]}>
+                Football
+              </Text>
+              <View style={styles.carouselTabCount}>
+                <Text style={styles.carouselTabCountText}>{footballCarouselSlides.length}</Text>
               </View>
-            ))}
-          </ScrollView>
-        )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.carouselTab, carouselTab === 'movies' && styles.carouselTabActiveMovies]}
+              onPress={() => setCarouselTab('movies')}
+              activeOpacity={0.85}>
+              <Icon name="movie" size={18} color={carouselTab === 'movies' ? '#fff' : '#c4b5fd'} />
+              <Text style={[styles.carouselTabText, carouselTab === 'movies' && styles.carouselTabTextActive]}>
+                Movies
+              </Text>
+              <View style={[styles.carouselTabCount, styles.carouselTabCountMovies]}>
+                <Text style={styles.carouselTabCountText}>{moviesCarouselSlides.length}</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {(() => {
+            const activeSlides = carouselTab === 'football' ? footballCarouselSlides : moviesCarouselSlides;
+            const emptyLabel =
+              carouselTab === 'football'
+                ? 'No football slides yet. Tap "Add slide" to create one.'
+                : 'No movies slides yet. Tap "Add slide" to create one.';
+            const defaultGradient =
+              carouselTab === 'football'
+                ? ['#14532d', '#111827', '#000000']
+                : ['#4c1d95', '#111827', '#000000'];
+
+            if (activeSlides.length === 0) {
+              return <Text style={styles.emptyCarouselText}>{emptyLabel}</Text>;
+            }
+
+            return (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.slideCardScrollContent}>
+                {activeSlides.map((slide) => (
+                  <View key={slide.id} style={styles.slideCardPro}>
+                    <ImageBackground
+                      source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
+                      style={styles.slideCardImagePro}
+                      imageStyle={styles.slideCardImageBg}>
+                      <LinearGradient
+                        colors={slide.gradient || defaultGradient}
+                        style={styles.slideCardOverlay}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}>
+                        <View style={styles.slideCardTopRow}>
+                          <View style={styles.slideCardCategoryPill}>
+                            <Icon
+                              name={carouselTab === 'football' ? 'soccer' : 'movie'}
+                              size={12}
+                              color="#fff"
+                            />
+                            <Text style={styles.slideCardCategoryPillText}>
+                              {carouselTab === 'football' ? 'Football' : 'Movies'}
+                            </Text>
+                          </View>
+                          {slide.badge ? (
+                            <View style={styles.slideCardBadge}>
+                              <Text style={styles.slideCardBadgeText}>{slide.badge}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <View style={styles.slideCardTextWrap}>
+                          {slide.title ? (
+                            <Text style={styles.slideCardTitle} numberOfLines={2}>{slide.title}</Text>
+                          ) : null}
+                          {slide.subtitle ? (
+                            <Text style={styles.slideCardSubtitle} numberOfLines={1}>{slide.subtitle}</Text>
+                          ) : null}
+                        </View>
+                      </LinearGradient>
+                    </ImageBackground>
+                    <View style={styles.slideCardBodyPro}>
+                      <TouchableOpacity
+                        style={styles.slideCardEditBtn}
+                        onPress={() => openEditSlideModal(slide)}
+                        activeOpacity={0.7}>
+                        <Icon name="pencil" size={18} color="#3b82f6" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.slideCardDeleteBtn}
+                        onPress={() => setDeleteConfirmSlide(slide)}
+                        activeOpacity={0.7}>
+                        <Icon name="delete" size={18} color="#ef4444" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            );
+          })()}
+        </LinearGradient>
       </View>
 
       {/* Upcoming Matches */}
@@ -819,6 +812,119 @@ const DashboardSection = ({ refreshTrigger }) => {
               </View>
             ))}
           </View>
+        </View>
+
+        {/* Caught transactions — live from database */}
+        <View style={styles.transactionsCard}>
+          <View style={styles.transactionsHeader}>
+            <View style={styles.transactionsTitleRow}>
+              <View style={styles.transactionsIconWrap}>
+                <Icon name="receipt-text-check" size={22} color="#34d399" />
+              </View>
+              <View>
+                <Text style={styles.transactionsTitle}>Caught Transactions</Text>
+                <Text style={styles.transactionsSubtitle}>
+                  Real payments from subscription_payments
+                </Text>
+              </View>
+            </View>
+            {transactionsSummary ? (
+              <View style={styles.txSummaryPills}>
+                <View style={[styles.txSummaryPill, styles.txPillSuccess]}>
+                  <Text style={styles.txSummaryPillText}>{transactionsSummary.completed} ok</Text>
+                </View>
+                <View style={[styles.txSummaryPill, styles.txPillPending]}>
+                  <Text style={styles.txSummaryPillText}>{transactionsSummary.pending} pend</Text>
+                </View>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.txTableHead}>
+            <Text style={[styles.txHeadCell, styles.txColUser]}>User</Text>
+            <Text style={[styles.txHeadCell, styles.txColPhone]}>Number</Text>
+            <Text style={[styles.txHeadCell, styles.txColTxn]}>Txn ID</Text>
+            <Text style={[styles.txHeadCell, styles.txColAmount]}>Amount</Text>
+            <Text style={[styles.txHeadCell, styles.txColStatus]}>Status</Text>
+          </View>
+
+          {transactions.length === 0 ? (
+            <View style={styles.txEmpty}>
+              <Icon name="cash-remove" size={36} color="#4b5563" />
+              <Text style={styles.txEmptyText}>No transactions yet</Text>
+            </View>
+          ) : (
+            <View style={styles.txList}>
+              {transactions.map((tx, index) => {
+                const statusKey = tx.status || 'pending';
+                const statusStyle =
+                  statusKey === 'completed'
+                    ? styles.txStatusSuccess
+                    : statusKey === 'failed'
+                      ? styles.txStatusFailed
+                      : statusKey === 'cancelled'
+                        ? styles.txStatusCancelled
+                        : styles.txStatusPending;
+                const statusIcon =
+                  statusKey === 'completed'
+                    ? 'check-circle'
+                    : statusKey === 'failed'
+                      ? 'close-circle'
+                      : statusKey === 'cancelled'
+                        ? 'minus-circle'
+                        : 'clock-outline';
+                const when = tx.completedAt || tx.createdAt;
+                const timeLabel = when
+                  ? new Date(when).toLocaleString('sw-TZ', {
+                      day: '2-digit',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : '';
+
+                return (
+                  <View
+                    key={`${tx.id}-${index}`}
+                    style={[
+                      styles.txRow,
+                      index === transactions.length - 1 && styles.txRowLast,
+                    ]}>
+                    <View style={styles.txColUser}>
+                      <Text style={styles.txUserId} numberOfLines={1}>
+                        #{tx.userId}
+                      </Text>
+                      <Text style={styles.txUserExt} numberOfLines={1}>
+                        {tx.userExternalId || '—'}
+                      </Text>
+                    </View>
+                    <Text style={[styles.txCell, styles.txColPhone]} numberOfLines={1}>
+                      {tx.userNumber || '—'}
+                    </Text>
+                    <Text style={[styles.txCell, styles.txColTxn]} numberOfLines={1}>
+                      {tx.transactionId || '—'}
+                    </Text>
+                    <Text style={[styles.txAmount, styles.txColAmount]} numberOfLines={1}>
+                      {tx.amountFormatted || `TSh ${tx.amountTsh ?? 0}`}
+                    </Text>
+                    <View style={styles.txColStatus}>
+                      <View style={[styles.txStatusBadge, statusStyle]}>
+                        <Icon name={statusIcon} size={12} color="#fff" />
+                        <Text style={styles.txStatusText}>
+                          {tx.statusLabel || statusKey}
+                        </Text>
+                      </View>
+                      {timeLabel ? (
+                        <Text style={styles.txTime} numberOfLines={1}>
+                          {timeLabel}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </View>
       </View>
 
@@ -1502,6 +1608,128 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#e5e7eb',
   },
+  carouselHubCard: {
+    marginBottom: 16,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(124, 58, 237, 0.35)',
+  },
+  carouselHubGradient: {
+    padding: 16,
+  },
+  carouselHubHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+  carouselHubTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#f8fafc',
+    letterSpacing: -0.3,
+  },
+  carouselHubSubtitle: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginTop: 4,
+    lineHeight: 17,
+    maxWidth: width * 0.55,
+  },
+  carouselTabRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  carouselTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#374151',
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+  },
+  carouselTabActiveFootball: {
+    borderColor: 'rgba(16, 185, 129, 0.55)',
+    backgroundColor: 'rgba(6, 78, 59, 0.45)',
+  },
+  carouselTabActiveMovies: {
+    borderColor: 'rgba(168, 85, 247, 0.55)',
+    backgroundColor: 'rgba(76, 29, 149, 0.4)',
+  },
+  carouselTabText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#9ca3af',
+  },
+  carouselTabTextActive: {
+    color: '#fff',
+  },
+  carouselTabCount: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(16, 185, 129, 0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  carouselTabCountMovies: {
+    backgroundColor: 'rgba(124, 58, 237, 0.45)',
+  },
+  carouselTabCountText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  slideCardPro: {
+    width: 196,
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(55, 65, 81, 0.8)',
+    overflow: 'hidden',
+  },
+  slideCardImagePro: {
+    height: 148,
+  },
+  slideCardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  slideCardCategoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  slideCardCategoryPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#e5e7eb',
+    textTransform: 'uppercase',
+  },
+  slideCardBodyPro: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(31, 41, 55, 0.75)',
+  },
   carouselHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1834,6 +2062,184 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: 'bold',
     color: '#10b981',
+  },
+  transactionsCard: {
+    backgroundColor: 'rgba(17, 24, 39, 0.9)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+    overflow: 'hidden',
+    marginTop: 0,
+  },
+  transactionsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    padding: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+    gap: 10,
+  },
+  transactionsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  transactionsIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transactionsTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#f8fafc',
+    letterSpacing: -0.2,
+  },
+  transactionsSubtitle: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginTop: 2,
+  },
+  txSummaryPills: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  txSummaryPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  txPillSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+  },
+  txPillPending: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  txSummaryPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#e5e7eb',
+  },
+  txTableHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(31, 41, 55, 0.65)',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1f2937',
+  },
+  txHeadCell: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9ca3af',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  txColUser: {
+    width: '18%',
+    minWidth: 52,
+  },
+  txColPhone: {
+    width: '22%',
+    minWidth: 64,
+  },
+  txColTxn: {
+    flex: 1,
+    minWidth: 56,
+  },
+  txColAmount: {
+    width: '20%',
+    minWidth: 72,
+    textAlign: 'right',
+  },
+  txColStatus: {
+    width: '22%',
+    minWidth: 76,
+    alignItems: 'flex-end',
+  },
+  txList: {},
+  txRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.8)',
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+  },
+  txRowLast: {
+    borderBottomWidth: 0,
+  },
+  txCell: {
+    fontSize: 11,
+    color: '#d1d5db',
+  },
+  txUserId: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  txUserExt: {
+    fontSize: 9,
+    color: '#6b7280',
+    marginTop: 2,
+  },
+  txAmount: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#a78bfa',
+    textAlign: 'right',
+  },
+  txStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    alignSelf: 'flex-end',
+  },
+  txStatusSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.85)',
+  },
+  txStatusPending: {
+    backgroundColor: 'rgba(245, 158, 11, 0.85)',
+  },
+  txStatusFailed: {
+    backgroundColor: 'rgba(239, 68, 68, 0.85)',
+  },
+  txStatusCancelled: {
+    backgroundColor: 'rgba(107, 114, 128, 0.85)',
+  },
+  txStatusText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+    textTransform: 'capitalize',
+  },
+  txTime: {
+    fontSize: 9,
+    color: '#6b7280',
+    marginTop: 4,
+    textAlign: 'right',
+  },
+  txEmpty: {
+    padding: 32,
+    alignItems: 'center',
+    gap: 10,
+  },
+  txEmptyText: {
+    fontSize: 14,
+    color: '#9ca3af',
   },
   activityCard: {
     backgroundColor: 'rgba(17, 24, 39, 0.8)',
