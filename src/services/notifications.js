@@ -155,6 +155,24 @@ export const refreshAndRegisterFCMToken = async (externalId) => {
   }
 };
 
+const directUserTopic = (publicId) => {
+  const clean = String(publicId || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9\-_.~%]/g, '_');
+  return `user_${clean}`;
+};
+
+const syncEamaxFcmTopics = async (externalId) => {
+  if (!externalId) return;
+  try {
+    const messaging = getMessagingInstance();
+    await messaging.subscribeToTopic('all_users');
+    await messaging.subscribeToTopic(directUserTopic(externalId));
+  } catch (e) {
+    console.warn('[FCM] Topic sync failed (non-fatal):', e?.message || e);
+  }
+};
+
 // Register FCM token with backend
 export const registerFCMToken = async (externalId, fcmToken) => {
   try {
@@ -168,6 +186,7 @@ export const registerFCMToken = async (externalId, fcmToken) => {
     }
 
     await userAPI.registerFCMToken(externalId, fcmToken);
+    await syncEamaxFcmTopics(externalId);
     console.log('[FCM] Token registered successfully with backend');
     return true;
   } catch (error) {
@@ -287,13 +306,7 @@ export const initializeNotifications = async (externalId) => {
 
     // STEP 5: Register token with backend
     await registerFCMToken(externalId, fcmToken);
-    // STEP 5b: Subscribe device to broadcast topic so one backend send reaches all installs.
-    try {
-      await messaging.subscribeToTopic('all_users');
-      console.log('[FCM] Subscribed to topic all_users');
-    } catch (e) {
-      console.warn('[FCM] Topic subscribe failed (non-fatal):', e?.message || e);
-    }
+    await syncEamaxFcmTopics(externalId);
     console.log('[FCM] Initialization complete for user:', externalId);
 
     // STEP 6: Listen for token refresh
@@ -302,9 +315,7 @@ export const initializeNotifications = async (externalId) => {
       console.log('[FCM] Token refreshed, re-registering...');
       if (externalId) {
         await registerFCMToken(externalId, token);
-        try {
-          await messaging.subscribeToTopic('all_users');
-        } catch (_) {}
+        await syncEamaxFcmTopics(externalId);
       }
     });
 

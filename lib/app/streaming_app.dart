@@ -132,6 +132,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshUser());
+      unawaited(_syncFcm());
       final home = _homeKey.currentState;
       if (home != null) unawaited(home.reloadRemoteData());
     }
@@ -214,15 +215,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     if (kIsWeb) return;
     final uid = await getStoredUserId();
     if (uid == null) return;
-    try {
-      await FirebaseMessaging.instance.subscribeToTopic('all_users');
-    } catch (_) {}
-    try {
-      final tok = await FirebaseMessaging.instance.getToken();
-      if (tok != null && tok.isNotEmpty) {
-        await userApi.registerFcmToken(uid, tok);
-      }
-    } catch (_) {}
+    bindEamaxFcmTokenRefresh(uid);
+    await syncEamaxFcmDelivery(uid);
   }
 
   Future<void> _checkPendingPayment() async {

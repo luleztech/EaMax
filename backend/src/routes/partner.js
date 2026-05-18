@@ -2,8 +2,8 @@ const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
 const {
-  sendPushNotification,
-  sendPushNotificationToTopic,
+  sendReliablePushNotification,
+  sendReliablePushNotificationToTopic,
   isInitialized,
 } = require('../services/firebase');
 
@@ -19,6 +19,13 @@ function verifyPartnerSecret(req, res, next) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
   return next();
+}
+
+function topicForUser(publicId) {
+  const clean = String(publicId || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9\-_.~%]/g, '_');
+  return `user_${clean}`;
 }
 
 /**
@@ -49,7 +56,7 @@ router.post('/supa-push', verifyPartnerSecret, async (req, res, next) => {
     };
 
     if (data.scope === 'broadcast') {
-      const result = await sendPushNotificationToTopic(
+      const result = await sendReliablePushNotificationToTopic(
         'all_users',
         data.title,
         data.message,
@@ -59,6 +66,7 @@ router.post('/supa-push', verifyPartnerSecret, async (req, res, next) => {
         ok: true,
         scope: 'broadcast',
         topic: 'all_users',
+        delivery: 'reliable',
         messageId: result.messageId,
       });
     }
@@ -78,20 +86,36 @@ router.post('/supa-push', verifyPartnerSecret, async (req, res, next) => {
       [externalId],
     );
     const token = String(userResult.rows[0]?.fcm_token || '').trim();
-    if (!token) {
+
+    if (token) {
+      const result = await sendReliablePushNotification(
+        token,
+        data.title,
+        data.message,
+        pushData,
+      );
       return res.json({
         ok: true,
         scope: 'user',
-        delivered: false,
-        reason: 'no_fcm_token',
+        delivered: true,
+        delivery: 'token',
+        messageId: result.messageId,
       });
     }
 
-    const result = await sendPushNotification(token, data.title, data.message, pushData);
+    const userTopic = topicForUser(externalId);
+    const result = await sendReliablePushNotificationToTopic(
+      userTopic,
+      data.title,
+      data.message,
+      { ...pushData, target: `user:${externalId}` },
+    );
     return res.json({
       ok: true,
       scope: 'user',
       delivered: true,
+      delivery: 'topic',
+      topic: userTopic,
       messageId: result.messageId,
     });
   } catch (err) {
