@@ -503,7 +503,7 @@ const ContentSection = () => {
       logReorder('Saving order…', { count: fullOrderIds.length });
       await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
       const data = await adminChannelsAPI.getChannels();
-      const synced = sortChannelsByOrder(data);
+      const synced = flattenAllChannels(sortChannelsByOrder(data));
       setChannels(synced);
       setOrderedChannels(synced);
       orderedChannelsRef.current = synced;
