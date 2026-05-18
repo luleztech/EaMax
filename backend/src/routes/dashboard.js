@@ -3,6 +3,12 @@ const { query } = require('../db');
 
 const router = express.Router();
 
+/** App "today" uses East Africa Time so the day resets at local midnight. */
+const APP_TZ = 'Africa/Dar_es_Salaam';
+const paymentAtSql = 'COALESCE(completed_at, created_at)';
+const paymentDaySql = `(timezone('${APP_TZ}', ${paymentAtSql}))::date`;
+const todayDaySql = `timezone('${APP_TZ}', now())::date`;
+
 /** DB column is named amount_cents but stores whole TZS (2000, 5000, 12000) from PLAN_CONFIG. */
 const paymentAmountTsh = (amountCents) => Math.round(Number(amountCents) || 0);
 
@@ -105,35 +111,35 @@ router.get('/stats', async (req, res, next) => {
       ? (((premiumUsers - lastMonthPremium) / lastMonthPremium) * 100).toFixed(1)
       : premiumUsers > 0 ? '100' : '0';
 
-    // All-time revenue from completed subscription payments (TZS amounts in amount_cents)
-    const totalRevenueResult = await query(
+    // All-time revenue (analytics only — dashboard KPI uses today)
+    const allTimeRevenueResult = await query(
       `SELECT
          COALESCE(SUM(amount_cents), 0)::bigint AS revenue,
          COUNT(*)::int AS payment_count
        FROM subscription_payments
        WHERE status = 'completed'`
     );
-    const totalRevenue = paymentAmountTsh(totalRevenueResult.rows[0].revenue);
-    const completedPaymentsTotal = parseInt(totalRevenueResult.rows[0].payment_count, 10) || 0;
+    const allTimeRevenue = paymentAmountTsh(allTimeRevenueResult.rows[0].revenue);
+    const completedPaymentsAllTime = parseInt(allTimeRevenueResult.rows[0].payment_count, 10) || 0;
 
-    // Today's collected revenue
+    // Today's collected revenue (EAT calendar day)
     const revenueResult = await query(
       `SELECT
          COALESCE(SUM(amount_cents), 0)::bigint AS revenue,
          COUNT(*)::int AS payment_count
        FROM subscription_payments
        WHERE status = 'completed'
-       AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE`
+       AND ${paymentDaySql} = ${todayDaySql}`
     );
     const todayRevenue = paymentAmountTsh(revenueResult.rows[0].revenue);
     const completedPaymentsToday = parseInt(revenueResult.rows[0].payment_count, 10) || 0;
 
-    // Yesterday for comparison
+    // Yesterday for comparison (EAT)
     const yesterdayRevenueResult = await query(
       `SELECT COALESCE(SUM(amount_cents), 0)::bigint AS revenue
        FROM subscription_payments
        WHERE status = 'completed'
-       AND DATE(COALESCE(completed_at, created_at)) = CURRENT_DATE - INTERVAL '1 day'`
+       AND ${paymentDaySql} = (${todayDaySql} - 1)`
     );
     const yesterdayRevenue = paymentAmountTsh(yesterdayRevenueResult.rows[0].revenue);
 
@@ -198,6 +204,9 @@ router.get('/stats', async (req, res, next) => {
       return n >= 0 ? `+${n.toFixed(1)}%` : `${n.toFixed(1)}%`;
     };
 
+    const todayDateRow = await query(`SELECT to_char(${todayDaySql}, 'YYYY-MM-DD') AS d`);
+    const todayDate = todayDateRow.rows[0]?.d || null;
+
     return res.json({
       totalUsers,
       activeUsers,
@@ -209,12 +218,16 @@ router.get('/stats', async (req, res, next) => {
       blockedUsers,
       premiumPercentage: `${premiumPercentage}%`,
       premiumChange: fmtChange(premiumChange),
-      revenue: totalRevenue,
-      totalRevenue,
+      revenue: todayRevenue,
+      totalRevenue: todayRevenue,
       todayRevenue,
-      completedPaymentsTotal,
+      allTimeRevenue,
+      completedPaymentsTotal: completedPaymentsToday,
       completedPaymentsToday,
+      completedPaymentsAllTime,
       revenueChange: fmtChange(revenueChange),
+      revenueScope: 'today',
+      todayDate,
       adsWatched,
       adsChange: fmtChange(adsChange),
       notifications: {
@@ -338,6 +351,8 @@ router.get('/transactions', async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 40, 1), 100);
 
+    const spPaymentDaySql = `(timezone('${APP_TZ}', COALESCE(sp.completed_at, sp.created_at)))::date`;
+
     const result = await query(
       `SELECT
          sp.id,
@@ -354,6 +369,7 @@ router.get('/transactions', async (req, res, next) => {
          sp.completed_at
        FROM subscription_payments sp
        INNER JOIN users u ON u.id = sp.user_id
+       WHERE ${spPaymentDaySql} = ${todayDaySql}
        ORDER BY COALESCE(sp.completed_at, sp.created_at) DESC
        LIMIT $1`,
       [limit],
@@ -413,9 +429,15 @@ router.get('/transactions', async (req, res, next) => {
       pending: transactions.filter((t) => t.status === 'pending').length,
       failed: transactions.filter((t) => t.status === 'failed').length,
       cancelled: transactions.filter((t) => t.status === 'cancelled').length,
+      revenueToday: transactions
+        .filter((t) => t.status === 'completed')
+        .reduce((sum, t) => sum + (t.amountTsh || 0), 0),
     };
 
-    return res.json({ transactions, summary, limit });
+    const todayRow = await query(`SELECT to_char(${todayDaySql}, 'YYYY-MM-DD') AS d`);
+    const todayDate = todayRow.rows[0]?.d || null;
+
+    return res.json({ transactions, summary, limit, todayDate, scope: 'today' });
   } catch (err) {
     console.error('Dashboard transactions error:', err);
     return next(err);

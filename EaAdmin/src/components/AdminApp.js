@@ -37,7 +37,7 @@ const AdminApp = () => {
       },
       channels: {
         title: 'Channels Management',
-        subtitle: 'Manage stream channels, access rules, and DRM',
+        subtitle: 'Buruta kupanga · Premium · Active — gusa kuhariri',
       },
       ads: {
         title: 'Ads & Points',

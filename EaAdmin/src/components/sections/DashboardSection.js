@@ -27,6 +27,11 @@ import {
 
 const KPI_COUNT = 3;
 
+const formatTsh = (n) => {
+  const v = Math.round(Number(n) || 0);
+  return `TSh ${v.toLocaleString('en-US')}`;
+};
+
 const { width } = Dimensions.get('window');
 
 const DashboardSection = ({ refreshTrigger }) => {
@@ -43,7 +48,7 @@ const DashboardSection = ({ refreshTrigger }) => {
       title: 'Revenue',
       value: 'TSh 0',
       change: '+0%',
-      subtitle: '0 completed payments',
+      subtitle: '0 completed leo',
       gradient: ['#7c3aed', '#5b21b6'],
       icon: 'cash-multiple',
     },
@@ -65,6 +70,7 @@ const DashboardSection = ({ refreshTrigger }) => {
   const [mostWatchedChannels, setMostWatchedChannels] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [transactionsSummary, setTransactionsSummary] = useState(null);
+  const [transactionsTodayDate, setTransactionsTodayDate] = useState(null);
   const [recentNotifications, setRecentNotifications] = useState([]);
   const [allNotifications, setAllNotifications] = useState([]);
   const [notificationsHistoryVisible, setNotificationsHistoryVisible] = useState(false);
@@ -138,11 +144,6 @@ const DashboardSection = ({ refreshTrigger }) => {
       };
 
       const formatNumber = (num) => compact(num);
-      const formatTsh = (n) => {
-        const v = Math.round(Number(n) || 0);
-        return `TSh ${v.toLocaleString('en-US')}`;
-      };
-
       setStats([
         {
           title: 'Daily installs',
@@ -154,9 +155,9 @@ const DashboardSection = ({ refreshTrigger }) => {
         },
         {
           title: 'Revenue',
-          value: formatTsh(data.totalRevenue ?? data.revenue ?? 0),
+          value: formatTsh(data.todayRevenue ?? data.revenue ?? 0),
           change: data.revenueChange || '+0%',
-          subtitle: `${data.completedPaymentsTotal ?? 0} completed · ${formatTsh(data.todayRevenue ?? 0)} today`,
+          subtitle: `${data.completedPaymentsToday ?? data.completedPaymentsTotal ?? 0} completed leo`,
           gradient: ['#7c3aed', '#5b21b6'],
           icon: 'cash-multiple',
         },
@@ -212,6 +213,7 @@ const DashboardSection = ({ refreshTrigger }) => {
       setMostWatchedChannels(top);
       setTransactions(Array.isArray(txRes?.transactions) ? txRes.transactions : []);
       setTransactionsSummary(txRes?.summary || null);
+      setTransactionsTodayDate(txRes?.todayDate || null);
 
       const formatDateTime = (iso) =>
         iso
@@ -448,6 +450,7 @@ const DashboardSection = ({ refreshTrigger }) => {
         .then((txRes) => {
           setTransactions(Array.isArray(txRes?.transactions) ? txRes.transactions : []);
           setTransactionsSummary(txRes?.summary || null);
+          setTransactionsTodayDate(txRes?.todayDate || null);
         })
         .catch(() => {});
     }, 30000);
@@ -817,6 +820,13 @@ const DashboardSection = ({ refreshTrigger }) => {
               </View>
               <View>
                 <Text style={styles.transactionsTitle}>Caught Transactions</Text>
+                <Text style={styles.transactionsSubtitle}>
+                  Leo pekee
+                  {transactionsTodayDate ? ` · ${transactionsTodayDate}` : ''}
+                  {transactionsSummary?.revenueToday != null
+                    ? ` · ${formatTsh(transactionsSummary.revenueToday)}`
+                    : ''}
+                </Text>
               </View>
             </View>
             {transactionsSummary ? (
@@ -842,7 +852,7 @@ const DashboardSection = ({ refreshTrigger }) => {
           {transactions.length === 0 ? (
             <View style={styles.txEmpty}>
               <Icon name="cash-remove" size={36} color="#4b5563" />
-              <Text style={styles.txEmptyText}>No transactions yet</Text>
+              <Text style={styles.txEmptyText}>Hakuna miamala leo</Text>
             </View>
           ) : (
             <View style={styles.txList}>

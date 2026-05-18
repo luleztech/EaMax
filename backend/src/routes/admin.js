@@ -68,7 +68,7 @@ router.get('/dashboard', async (req, res, next) => {
       query('SELECT COALESCE(SUM(points), 0)::int AS total_points FROM users'),
       payments_exists
         ? query(
-          "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND date_trunc('day', COALESCE(completed_at, created_at)) = date_trunc('day', now())",
+          "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM subscription_payments WHERE status = 'completed' AND (timezone('Africa/Dar_es_Salaam', COALESCE(completed_at, created_at)))::date = timezone('Africa/Dar_es_Salaam', now())::date",
         )
         : Promise.resolve({ rows: [{ total: 0 }] }),
     ]);
