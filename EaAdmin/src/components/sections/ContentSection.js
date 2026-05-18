@@ -182,12 +182,16 @@ const ContentSection = () => {
   const [addChannelModalVisible, setAddChannelModalVisible] = useState(false);
   const [channels, setChannels] = useState([]);
   const [orderedChannels, setOrderedChannels] = useState([]);
-  const [dragOffset, setDragOffset] = useState(null);
+  const [draggingChannelId, setDraggingChannelId] = useState(null);
+  const [dragHoverIndex, setDragHoverIndex] = useState(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const orderedChannelsRef = useRef([]);
   const activeFilterRef = useRef('all');
   const isDraggingRef = useRef(false);
   const dragTouchStartYRef = useRef(0);
+  const dragMetaRef = useRef(null);
+  const rowHeightRef = useRef(CHANNEL_ROW_HEIGHT);
+  const persistOrderInFlightRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editingChannel, setEditingChannel] = useState(null);
@@ -429,70 +433,80 @@ const ContentSection = () => {
 
   const canReorder = !searchTrimmed;
 
-  const persistChannelOrder = useCallback(async (ordered, categoryKey) => {
+  const indexFromDragDy = useCallback((startIndex, dy, listLength) => {
+    const rowH = rowHeightRef.current || CHANNEL_ROW_HEIGHT;
+    let idx = startIndex + Math.round(dy / rowH);
+    if (idx === startIndex && Math.abs(dy) >= rowH * 0.4) {
+      idx = startIndex + (dy > 0 ? 1 : -1);
+    }
+    return Math.max(0, Math.min(listLength - 1, idx));
+  }, []);
+
+  const moveDraggedRowToIndex = useCallback((hoverIndex) => {
+    const meta = dragMetaRef.current;
+    if (!meta) return false;
+
+    const prev = orderedChannelsRef.current;
+    const list = getListForCategoryKeyFromList(
+      meta.categoryKey,
+      prev,
+      meta.hideFreeInCategories,
+    );
+    const fromIndex = list.findIndex((c) => c.id === meta.channelId);
+    if (fromIndex < 0 || fromIndex === hoverIndex) return false;
+
+    const next = applyChannelMove(
+      prev,
+      meta.categoryKey,
+      fromIndex,
+      hoverIndex,
+      meta.hideFreeInCategories,
+    );
+    orderedChannelsRef.current = next;
+    setOrderedChannels(next);
+    meta.startIndex = hoverIndex;
+    return true;
+  }, []);
+
+  const persistChannelOrder = useCallback(async (ordered) => {
+    if (persistOrderInFlightRef.current) return;
+
     const list = Array.isArray(ordered) ? ordered : orderedChannelsRef.current;
     if (!list.length) return;
 
-    const hideFreeInCategories = activeFilterRef.current === 'all';
-    const sectionKey =
-      categoryKey === BURE_SECTION_KEY ? 'bure' : String(categoryKey || '').toLowerCase();
-    const sectionIds = getListForCategoryKeyFromList(
-      categoryKey || BURE_SECTION_KEY,
-      list,
-      hideFreeInCategories,
-    ).map((ch) => ch.id);
+    const fullOrderIds = flattenAllChannels(list).map((ch) => ch.id);
 
+    persistOrderInFlightRef.current = true;
     try {
       setSavingOrder(true);
-      await adminChannelsAPI.reorderChannels(sectionIds, { section: sectionKey });
+      await adminChannelsAPI.reorderChannels(fullOrderIds, { fullOrderIds });
       setChannels(list);
       orderedChannelsRef.current = list;
     } catch (error) {
       console.error('Failed to save channel order:', error);
       const detail = error?.message ? String(error.message).slice(0, 180) : '';
       showStatusModal(
-        'Reorder failed',
+        'Reorder not saved',
         detail
-          ? `${detail}\n\nDeploy the latest backend to Railway if this persists.`
-          : 'Could not save channel positions. Deploy backend updates, then pull to refresh.',
+          ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then drag again.`
+          : 'Order kept on screen. Deploy backend updates, then try saving again.',
       );
-      fetchChannels();
     } finally {
       setSavingOrder(false);
+      persistOrderInFlightRef.current = false;
     }
-  }, [fetchChannels, showStatusModal]);
+  }, [showStatusModal]);
 
-  const finishDrag = useCallback(
-    (categoryKey, channelId, listIndex, hideFreeInCategories, dyRaw) => {
+  const endDragSession = useCallback(
+    (shouldSave) => {
       isDraggingRef.current = false;
-      setDragOffset(null);
+      dragMetaRef.current = null;
+      setDraggingChannelId(null);
+      setDragHoverIndex(null);
 
-      const dy = Number.isFinite(dyRaw) ? dyRaw : 0;
-
-      const list = getListForCategoryKeyFromList(
-        categoryKey,
-        orderedChannelsRef.current,
-        hideFreeInCategories,
-      );
-      const start = list.findIndex((c) => c.id === channelId);
-      const startIndex = start >= 0 ? start : listIndex;
-      const shift = Math.round(dy / CHANNEL_ROW_HEIGHT);
-      const toIndex = Math.max(0, Math.min(list.length - 1, startIndex + shift));
-
-      if (toIndex === startIndex) return;
-
-      setOrderedChannels((prev) => {
-        const next = applyChannelMove(
-          prev,
-          categoryKey,
-          startIndex,
-          toIndex,
-          hideFreeInCategories,
-        );
-        orderedChannelsRef.current = next;
-        persistChannelOrder(next, categoryKey);
-        return next;
-      });
+      if (shouldSave) {
+        persistChannelOrder(orderedChannelsRef.current);
+      }
     },
     [persistChannelOrder],
   );
@@ -509,26 +523,51 @@ const ContentSection = () => {
         },
         onResponderTerminationRequest: () => false,
         onResponderGrant: (evt) => {
+          const list = getListForCategoryKeyFromList(
+            categoryKey,
+            orderedChannelsRef.current,
+            hideFreeInCategories,
+          );
+          const start = list.findIndex((c) => c.id === channelId);
+          const startIndex = start >= 0 ? start : listIndex;
+
           dragTouchStartYRef.current = getTouchPageY(evt, dragTouchStartYRef.current);
+          dragMetaRef.current = {
+            categoryKey,
+            channelId,
+            hideFreeInCategories,
+            startIndex,
+          };
           isDraggingRef.current = true;
-          setDragOffset({ channelId, dy: 0 });
+          setDraggingChannelId(channelId);
+          setDragHoverIndex(startIndex);
         },
         onResponderMove: (evt) => {
-          if (!isDraggingRef.current) return;
+          if (!isDraggingRef.current || !dragMetaRef.current) return;
+
           const dy = getTouchPageY(evt, dragTouchStartYRef.current) - dragTouchStartYRef.current;
-          setDragOffset({ channelId, dy });
+          const meta = dragMetaRef.current;
+          const list = getListForCategoryKeyFromList(
+            meta.categoryKey,
+            orderedChannelsRef.current,
+            meta.hideFreeInCategories,
+          );
+          const hover = indexFromDragDy(meta.startIndex, dy, list.length);
+          setDragHoverIndex(hover);
+
+          if (moveDraggedRowToIndex(hover)) {
+            dragTouchStartYRef.current = getTouchPageY(evt, dragTouchStartYRef.current);
+          }
         },
-        onResponderRelease: (evt) => {
-          const dy = getTouchPageY(evt, dragTouchStartYRef.current) - dragTouchStartYRef.current;
-          finishDrag(categoryKey, channelId, listIndex, hideFreeInCategories, dy);
+        onResponderRelease: () => {
+          endDragSession(true);
         },
         onResponderTerminate: () => {
-          isDraggingRef.current = false;
-          setDragOffset(null);
+          endDragSession(false);
         },
       };
     },
-    [canReorder, finishDrag],
+    [canReorder, endDragSession, indexFromDragDy, moveDraggedRowToIndex],
   );
 
   const openEditChannel = (channel) => {
@@ -564,8 +603,11 @@ const ContentSection = () => {
       index,
       hideFreeInCategories,
     );
-    const isDragging = dragOffset?.channelId === channel.id;
-    const translateY = isDragging ? (dragOffset?.dy ?? 0) : 0;
+    const isDragging = draggingChannelId === channel.id;
+    const isDropTarget =
+      dragHoverIndex != null &&
+      draggingChannelId !== channel.id &&
+      index === dragHoverIndex;
     const def =
       categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
     const isLast = index === categoryList.length - 1;
@@ -574,15 +616,15 @@ const ContentSection = () => {
     return (
       <View
         key={channel.id}
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 40) rowHeightRef.current = h;
+        }}
         style={[
           styles.channelRow,
           isLast && styles.channelRowLast,
           isDragging && styles.channelRowDragging,
-          isDragging && {
-            transform: [{ translateY }],
-            zIndex: 20,
-            elevation: 12,
-          },
+          isDropTarget && styles.channelRowDropTarget,
         ]}>
         {canReorder ? (
           <View
@@ -712,10 +754,10 @@ const ContentSection = () => {
     <ScrollView
       style={styles.container}
       showsVerticalScrollIndicator={false}
-      scrollEnabled={!dragOffset}
+      scrollEnabled={!draggingChannelId}
       keyboardShouldPersistTaps="handled"
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} enabled={!dragOffset} />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} enabled={!draggingChannelId} />
       }>
       {savingOrder ? (
         <View style={styles.savingOrderBanner}>
@@ -728,7 +770,7 @@ const ContentSection = () => {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        scrollEnabled={!dragOffset}
+        scrollEnabled={!draggingChannelId}
         style={styles.filtersScrollContainer}
         contentContainerStyle={styles.filtersContainer}>
         {filters.map((filter) => (
@@ -1386,6 +1428,11 @@ const styles = StyleSheet.create({
   channelRowDragging: {
     backgroundColor: 'rgba(124, 58, 237, 0.18)',
     borderColor: 'rgba(168, 85, 247, 0.45)',
+  },
+  channelRowDropTarget: {
+    borderTopWidth: 2,
+    borderTopColor: '#a855f7',
+    backgroundColor: 'rgba(124, 58, 237, 0.08)',
   },
   savingOrderBanner: {
     flexDirection: 'row',

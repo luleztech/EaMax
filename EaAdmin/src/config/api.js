@@ -187,14 +187,17 @@ export const adminChannelsAPI = {
     });
   },
 
-  // Reorder channels — pass section ('bure' | category key) when reordering one admin group
-  reorderChannels: async (channelIds, { section } = {}) => {
+  // Reorder channels — pass section when reordering one admin group; fullOrderIds for legacy fallback
+  reorderChannels: async (channelIds, { section, fullOrderIds } = {}) => {
     const ids = (channelIds || [])
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id) && id > 0);
     if (ids.length === 0) {
       throw new Error('No valid channel ids to reorder');
     }
+    const fullIds = (fullOrderIds || ids)
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
     const body = JSON.stringify({
       channelIds: ids,
       ...(section ? { section: String(section) } : {}),
@@ -222,14 +225,15 @@ export const adminChannelsAPI = {
       if (!isNotFound(postErr)) throw postErr;
     }
 
-    // Fallback for older backends: update sortOrder per channel
-    for (let i = 0; i < ids.length; i += 1) {
-      await apiRequest(`/api/admin/channels/${ids[i]}`, {
+    // Fallback for older backends: write global sort_order for every channel
+    const orderIds = fullIds.length ? fullIds : ids;
+    for (let i = 0; i < orderIds.length; i += 1) {
+      await apiRequest(`/api/admin/channels/${orderIds[i]}`, {
         method: 'PUT',
         body: JSON.stringify({ sortOrder: i }),
       });
     }
-    return { ok: true, count: ids.length, fallback: true };
+    return { ok: true, count: orderIds.length, fallback: true };
   },
 };
 
