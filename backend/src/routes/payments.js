@@ -43,16 +43,22 @@ const getAppSettingValue = async (key, defaultValue = null) => {
   return result.rows[0].value;
 };
 
+const normalizeStoredPaymentProvider = (raw) => {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const compact = raw.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
+  if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.ZENO;
+  return null;
+};
+
 const getSelectedPaymentProvider = async () => {
   const rawValue = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.ZENO);
-  if (typeof rawValue !== 'string') return PAYMENT_PROVIDERS.ZENO;
-  const trimmed = rawValue.toLowerCase().trim();
-  const compact = trimmed.replace(/[^a-z0-9]/g, '');
-  if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
-  if (compact === 'zenopay' || compact === 'zeno') return PAYMENT_PROVIDERS.ZENO;
-  if (Object.values(PAYMENT_PROVIDERS).includes(trimmed)) return trimmed;
-  return PAYMENT_PROVIDERS.ZENO;
+  return normalizeStoredPaymentProvider(rawValue) || PAYMENT_PROVIDERS.ZENO;
 };
+
+/** Off by default — when SonicPesa is admin-active, money must not silently go to Zeno. */
+const isSonicZenoFallbackAllowed = () =>
+  String(process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1';
 
 const getPaymentProviderForOrder = async (orderId) => {
   const result = await query(
@@ -78,20 +84,17 @@ const isLikelyInternalZenoOrderRef = (orderId) => {
  *   shape; otherwise fall back to the current admin default.
  */
 const resolveGatewayForOrderId = async (orderId) => {
-  const raw = await getPaymentProviderForOrder(orderId);
-  if (typeof raw === 'string') {
-    const compact = raw.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
-    if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.ZENO;
-    if (compact.length > 0) {
-      console.warn('[Payment] Unknown payment_provider on row; treating as zeno', { orderId, raw });
-      return PAYMENT_PROVIDERS.ZENO;
-    }
+  const selected = await getSelectedPaymentProvider();
+  const fromRow = normalizeStoredPaymentProvider(await getPaymentProviderForOrder(orderId));
+  if (fromRow) return fromRow;
+  // SonicPesa order ids are often UUIDs — do not treat them as Zeno when Sonic is active.
+  if (selected === PAYMENT_PROVIDERS.SONICPESA) {
+    return PAYMENT_PROVIDERS.SONICPESA;
   }
   if (isLikelyInternalZenoOrderRef(orderId)) {
     return PAYMENT_PROVIDERS.ZENO;
   }
-  return getSelectedPaymentProvider();
+  return selected;
 };
 
 const TZ_VALID_PREFIXES = [
@@ -576,8 +579,9 @@ const isActivePaymentProviderConfigured = (provider) => {
   return Boolean(ZENO_API_KEY);
 };
 
-/** When Sonic is admin default but cannot push STK, attempt Zeno if keys exist. */
+/** Optional legacy escape hatch — disabled unless ALLOW_SONIC_ZENO_FALLBACK=1 on Railway. */
 const shouldFallbackSonicToZeno = (rawMessage, rawCode) =>
+  isSonicZenoFallbackAllowed() &&
   isSonicPaymentSendFailure(rawMessage, rawCode) &&
   isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO);
 
@@ -879,18 +883,28 @@ async function handlePaymentStart(req, res, next) {
     let usedZenoFallbackFromSonic = false;
     let sonicFailureForClient = null;
 
-    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && zenoReady) {
-      console.warn('[Payment] SonicPesa not configured — using ZenoPay for all networks');
-      paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady) {
+      if (zenoReady && isSonicZenoFallbackAllowed()) {
+        console.warn('[Payment] SonicPesa not configured — using ZenoPay (ALLOW_SONIC_ZENO_FALLBACK=1)');
+        paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+      } else {
+        return res.status(503).json({
+          error:
+            'SonicPesa imewashwa kwenye admin lakini SONICPESA_API_KEY haipo kwenye seva. Weka funguo kwenye Railway.',
+          activeProvider: provider,
+          configured: false,
+        });
+      }
     }
 
     const skipSonicForHalotel =
+      isSonicZenoFallbackAllowed() &&
       paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
       isHalotelLocalPhone(normalizedPhone) &&
       zenoReady;
 
     if (skipSonicForHalotel) {
-      console.log('[Payment] Halotel MSISDN — using ZenoPay directly (SonicPesa Halopesa often returns 9012)');
+      console.log('[Payment] Halotel MSISDN — using ZenoPay (ALLOW_SONIC_ZENO_FALLBACK=1 only)');
       paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
       usedZenoFallbackFromSonic = true;
     } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
