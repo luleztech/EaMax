@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:ionicons/ionicons.dart';
+import '../theme/ionicons_compat.dart';
 import 'package:provider/provider.dart';
 
 import '../theme/app_theme.dart';

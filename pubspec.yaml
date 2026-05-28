@@ -36,7 +36,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   provider: ^6.1.2
   google_fonts: ^6.2.1
-  ionicons: ^0.2.2
   share_plus: ^10.1.4
   http: ^1.6.0
   connectivity_plus: ^7.1.1
