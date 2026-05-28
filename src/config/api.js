@@ -239,7 +239,8 @@ const startPayment = async ({ externalId, bundle, amount, phone, email, name }) 
   return apiRequest('/api/payments/start', {
     method: 'POST',
     body: JSON.stringify({ externalId, bundle, amount, phone, email, name }),
-    maxAttempts: 3,
+    // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
+    maxAttempts: 1,
   });
 };
 

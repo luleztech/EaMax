@@ -228,7 +228,8 @@ class PaymentsApi {
         'email': email,
         'name': name,
       },
-      enableRetries: true,
+      // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
+      enableRetries: false,
       timeout: const Duration(seconds: 50),
     );
     return Map<String, dynamic>.from(r as Map);
