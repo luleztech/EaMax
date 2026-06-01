@@ -73,6 +73,11 @@ function detectStreamFormat(url) {
   if (STREAM_PATTERNS.HLS.some(p  => u.includes(p))) return 'HLS';
   if (STREAM_PATTERNS.PROGRESSIVE.some(p => u.includes(p))) return 'PROGRESSIVE';
   if (u.includes('/relay/stream') || u.includes('/relay/m3u8') || u.includes('/api/relay/')) return 'DASH';
+  // Common IPTV live stream URL patterns (no file extension)
+  // Port-based /live/ or /stream/ paths — Xtream Codes, MediaCP, Wowza, Nimble, etc.
+  if (/^https?:\/\/[^/]+:\d{2,5}\/(live|stream|play|hls|iptv|channel|ch)\//.test(u)) return 'HLS';
+  // Xtream Codes: host:port/user/pass/streamid  (exactly 3 path segments)
+  if (/^https?:\/\/[^/]+:\d{2,5}\/[^/]+\/[^/]+\/[^/?#]+$/.test(u.split('#')[0])) return 'HLS';
   return 'UNKNOWN';
 }
 
@@ -309,8 +314,11 @@ export default function VideoPlayer({
   const isPlayReadyChannel = drmType === 'PLAYREADY';
   const isDrm              = isClearKeyChannel || isWidevineChannel || isPlayReadyChannel;
 
-  // FIX: isWebPage = anything that isn't a known adaptive/progressive stream
-  const isWebPage = !isMpd && !isHls && !isProgressive && url.startsWith('http');
+  // FIX: isWebPage ONLY for real HTML pages (.php/.html/.htm).
+  // Unknown-format HTTP URLs (IPTV streams without extensions) must go to ExoPlayer first,
+  // NOT a plain WebView — WebView cannot play raw video streams without MSE/HLS.js.
+  const isWebPage = !isMpd && !isHls && !isProgressive && format === 'UNKNOWN' &&
+    url.startsWith('http') && /\.(php|html|htm)(\?|$|#)/i.test(url);
 
   // FIX: startWithWebView only for .php/.html pages (NOT mpd — MPDPlayer handles those separately)
   const startWithWebView = !!(url && WebView && isWebPage);
@@ -333,6 +341,11 @@ export default function VideoPlayer({
     const source = { uri: url, headers };
     if (isMpd)      { source.type = 'dash'; source.contentType = 'application/dash+xml'; }
     else if (isHls) { source.type = 'm3u8'; source.contentType = 'application/vnd.apple.mpegurl'; }
+    else if (!isWebPage && !isProgressive && format === 'UNKNOWN') {
+      // Default unknown-format streams to HLS — most IPTV live streams are HLS without a file extension.
+      // ExoPlayer will attempt HLS; on failure the existing retry/WebView fallback chain runs.
+      source.type = 'm3u8'; source.contentType = 'application/vnd.apple.mpegurl';
+    }
     if (isClearKeyChannel && (effectiveDrmClearKey || effectiveDrmData?.keys?.length || drmLicenseUrl)) {
       const jwkKeys = normalizeClearKeyKeys(effectiveDrmClearKey, effectiveDrmData);
       if (jwkKeys?.length) {

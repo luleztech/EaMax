@@ -89,6 +89,10 @@ function analyzeStream(url, options = {}) {
   else if (urlLower.includes('/relay/stream') || urlLower.includes('/relay/m3u8') || urlLower.includes('/api/relay/')) format = 'DASH';
   else if (FORMAT_PATTERNS.HLS.some(p => urlLower.includes(p))) format = 'HLS';
   else if (FORMAT_PATTERNS.PROGRESSIVE.some(p => urlLower.includes(p))) format = 'PROGRESSIVE';
+  // IPTV live stream patterns — port-based /live|stream/ paths (Xtream Codes, Wowza, Nimble, MediaCP)
+  else if (/^https?:\/\/[^/]+:\d{2,5}\/(live|stream|play|hls|iptv|channel|ch)\//.test(urlLower)) format = 'HLS';
+  // Xtream Codes standard: host:port/user/pass/streamid (3 path segments, no extension)
+  else if (/^https?:\/\/[^/]+:\d{2,5}\/[^/]+\/[^/]+\/[^/?#]+$/.test(urlLower.split('#')[0])) format = 'HLS';
 
   const hasToken = /[?&](token|auth|key|session)=/i.test(url);
   const isDRM    = options.drmType ? String(options.drmType).toUpperCase() !== 'NONE' : false;
@@ -620,8 +624,14 @@ async function prepareStream(streamData) {
     }
   }
 
-  const type        = analysis.format === 'DASH' ? 'dash' : analysis.format === 'HLS' ? 'm3u8' : undefined;
-  const contentType = analysis.format === 'DASH' ? 'application/dash+xml' : analysis.format === 'HLS' ? 'application/vnd.apple.mpegurl' : undefined;
+  const type        = analysis.format === 'DASH' ? 'dash' :
+                      analysis.format === 'HLS'  ? 'm3u8' :
+                      analysis.format === 'PROGRESSIVE' ? undefined :
+                      'm3u8'; // UNKNOWN — default to HLS; most IPTV streams have no extension
+  const contentType = analysis.format === 'DASH' ? 'application/dash+xml' :
+                      analysis.format === 'HLS'  ? 'application/vnd.apple.mpegurl' :
+                      analysis.format === 'PROGRESSIVE' ? undefined :
+                      'application/vnd.apple.mpegurl';
 
   // Kick off speed detection in background but don't block on it
   detectNetworkSpeed().catch(() => {});

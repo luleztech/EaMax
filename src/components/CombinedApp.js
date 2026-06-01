@@ -329,7 +329,7 @@ const CombinedApp = ({
       setLoadingChannelId(channel.id);
       try {
         const data = await channelsAPI.getChannel(channel.id);
-        const url = data.streamUrl || data.stream_url;
+        const url = data.streamUrl || data.stream_url || channel.streamUrl;
         if (url) {
           setPlayingChannel({ ...channel, ...data, streamUrl: url });
           setVideoPlayerVisible(true);
@@ -338,7 +338,12 @@ const CombinedApp = ({
         }
       } catch (err) {
         console.error('Failed to load stream URL:', err);
-        Alert.alert('Could not load stream', 'Check your connection and try again.');
+        if (channel.streamUrl) {
+          setPlayingChannel(channel);
+          setVideoPlayerVisible(true);
+        } else {
+          Alert.alert('Could not load stream', 'Check your connection and try again.');
+        }
       } finally {
         setLoadingChannelId(null);
       }
