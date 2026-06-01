@@ -140,7 +140,7 @@ const normalizePhoneToLocal0 = (rawPhone) => {
   if (!isValidFormat || !hasValidPrefix) {
     return {
       error:
-        'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/071 (Yas), 067/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
+        'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/067/071/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
     };
   }
   return { local: normalizedPhone };
@@ -410,7 +410,14 @@ const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
     }
     return;
   }
-  if (p.startsWith('065') || p.startsWith('067') || p.startsWith('071') || p.startsWith('077')) {
+  if (p.startsWith('071')) {
+    // 071 (Tigo) — ZenoPay does not always map 071 to TIGOPESA internally;
+    // omit provider to let ZenoPay auto-detect. Override with ZENO_TIGO_071_WALLET_PROVIDER if needed.
+    const v = process.env.ZENO_TIGO_071_WALLET_PROVIDER;
+    if (typeof v === 'string' && v.trim()) payload.provider = v.trim();
+    return;
+  }
+  if (p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) {
     const v = process.env.ZENO_TIGO_WALLET_PROVIDER;
     payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'TIGOPESA';
     return;
@@ -428,11 +435,8 @@ const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
 const resolveZenoMobileWalletProviderHint = (localPhone0) => {
   const p = String(localPhone0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
-  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
-    return 'M-PESA';
-  }
-  if (p.startsWith('065') || p.startsWith('071')) return 'TIGOPESA';
-  if (p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
+  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'M-PESA';
+  if (p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
   if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL MONEY';
   return null;
 };

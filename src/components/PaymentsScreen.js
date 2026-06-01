@@ -447,7 +447,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           <View style={styles.trustDivider} />
           <View style={styles.trustItem}>
             <Icon name="cellphone-check" size={18} color="#10b981" />
-            <Text style={styles.trustText}>M-Pesa, Airtel,Tigo na Halopesa</Text>
+            <Text style={styles.trustText}>M-Pesa, Airtel, Tigo na Halopesa</Text>
           </View>
         </View>
 
@@ -506,9 +506,19 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
               Halotel: Hakikisha Halopesa iko active. Piga 150*88# kukagua.
             </Text>
           )}
-          {(phoneNumber.startsWith('067') || phoneNumber.startsWith('077')) && (
+          {(phoneNumber.startsWith('065') || phoneNumber.startsWith('067') || phoneNumber.startsWith('071') || phoneNumber.startsWith('077')) && (
             <Text style={[styles.inputHint, styles.halotelHint]}>
               Tigo: Hakikisha akaunti ya Tigo Pesa iko tayari kupokea ombi la malipo.
+            </Text>
+          )}
+          {(phoneNumber.startsWith('074') || phoneNumber.startsWith('075') || phoneNumber.startsWith('076') || phoneNumber.startsWith('079')) && (
+            <Text style={[styles.inputHint, styles.halotelHint]}>
+              Vodacom: Hakikisha akaunti ya M-Pesa iko tayari kupokea ombi la malipo.
+            </Text>
+          )}
+          {(phoneNumber.startsWith('068') || phoneNumber.startsWith('069') || phoneNumber.startsWith('078')) && (
+            <Text style={[styles.inputHint, styles.halotelHint]}>
+              Airtel: Hakikisha akaunti ya Airtel Money iko tayari kupokea ombi la malipo.
             </Text>
           )}
         </View>
