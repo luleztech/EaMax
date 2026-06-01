@@ -580,22 +580,19 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final canPlay = widget.isPremium ||
         (widget.channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired == 0);
     if (canPlay) {
-      final quickUrl = ch.streamUrl?.trim();
-      if (quickUrl != null && quickUrl.isNotEmpty && mounted) {
-        await _openVideoPlayback(
-          url: quickUrl,
-          channelName: ch.name,
-          channelData: ch.apiRow,
-        );
-        return;
-      }
+      // Always fetch complete channel data: getChannel returns DRM keys, custom headers,
+      // licenseUrl, and token that the list API omits. Using stale apiRow causes 403s on
+      // streams that need those extra fields.
       setState(() => _loadingChannelId = ch.id);
       try {
         final data = await channelsApi.getChannel(ch.id);
-        final url = data['streamUrl'] ?? data['stream_url'];
-        if (url != null && '$url'.isNotEmpty && mounted) {
+        final rawUrl = data['streamUrl'] ?? data['stream_url'];
+        final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
+            ? '$rawUrl'.trim()
+            : ch.streamUrl?.trim();
+        if (url != null && url.isNotEmpty && mounted) {
           await _openVideoPlayback(
-            url: '$url',
+            url: url,
             channelName: ch.name,
             channelData: Map<String, dynamic>.from(data),
           );
@@ -603,7 +600,17 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
           await showChannelUnavailableModal(context);
         }
       } catch (_) {
-        if (mounted) await showChannelUnavailableModal(context);
+        // Network issue: fall back to cached stream URL from list API.
+        final quickUrl = ch.streamUrl?.trim();
+        if (quickUrl != null && quickUrl.isNotEmpty && mounted) {
+          await _openVideoPlayback(
+            url: quickUrl,
+            channelName: ch.name,
+            channelData: ch.apiRow,
+          );
+        } else if (mounted) {
+          await showChannelUnavailableModal(context);
+        }
       } finally {
         if (mounted) setState(() => _loadingChannelId = null);
       }
@@ -632,24 +639,27 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         _unlockOpen = false;
         _selectedChannel = null;
       });
-      final fastUrl = ch.streamUrl?.trim();
-      if (fastUrl != null && fastUrl.isNotEmpty && mounted) {
-        await _openVideoPlayback(
-          url: fastUrl,
-          channelName: ch.name,
-          channelData: ch.apiRow,
-        );
-        return;
-      }
       setState(() => _loadingChannelId = ch.id);
       try {
         final data = await channelsApi.getChannel(ch.id);
-        final url = data['streamUrl'] ?? data['stream_url'];
-        if (url != null && mounted) {
+        final rawUrl = data['streamUrl'] ?? data['stream_url'];
+        final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
+            ? '$rawUrl'.trim()
+            : ch.streamUrl?.trim();
+        if (url != null && url.isNotEmpty && mounted) {
           await _openVideoPlayback(
-            url: '$url',
+            url: url,
             channelName: ch.name,
             channelData: Map<String, dynamic>.from(data),
+          );
+        }
+      } catch (_) {
+        final fastUrl = ch.streamUrl?.trim();
+        if (fastUrl != null && fastUrl.isNotEmpty && mounted) {
+          await _openVideoPlayback(
+            url: fastUrl,
+            channelName: ch.name,
+            channelData: ch.apiRow,
           );
         }
       } finally {

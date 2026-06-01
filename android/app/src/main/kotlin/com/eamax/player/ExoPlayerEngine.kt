@@ -318,18 +318,12 @@ class ExoPlayerEngine(
             // Priority 6: Referer + Origin — gateways, DRM, auth, and typical .mpd/.m3u8 hosts that 403 bare clients.
             try {
                 val raw = streamSession.mpdUrl.trim()
-                val rl = raw.lowercase()
-                val manifestLikely =
-                    rl.contains(".mpd") ||
-                    rl.contains(".m3u8") ||
-                    rl.contains(".m3u")
+                // Send Referer + Origin for ALL HTTP/HTTPS streams — most IPTV panels and CDNs
+                // require or benefit from a self-Referer. maybeRecoverFromBlockedHeaders will
+                // strip them if they trigger a 401/403 block on the server side.
                 val shouldAttachReferrerOrigin =
-                    streamSession.drmType != DrmType.NONE ||
-                    StreamUrlClassifier.isLikelyGatewayUrl(raw) ||
-                    StreamUrlClassifier.isPhpLikeUrl(raw) ||
-                    StreamUrlClassifier.isYcnRedirectHost(raw) ||
-                    containsKey("Authorization") ||
-                    manifestLikely
+                    raw.startsWith("http://", ignoreCase = true) ||
+                    raw.startsWith("https://", ignoreCase = true)
                 if (raw.isNotEmpty() && shouldAttachReferrerOrigin) {
                     val u = Uri.parse(raw)
                     if (u.scheme != null && u.host != null) {

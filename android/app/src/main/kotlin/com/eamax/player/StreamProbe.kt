@@ -1,5 +1,6 @@
 package com.eamax.player
 
+import android.net.Uri
 import android.util.Log
 import com.eamax.domain.model.StreamSession
 import java.io.ByteArrayOutputStream
@@ -110,6 +111,23 @@ object StreamProbe {
                 h["User-Agent"] = PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
             else ->
                 h.putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
+        }
+        // Always include a self-Referer + Origin so CDN/IPTV panels don’t 403 the probe.
+        // This gives us the real content-type and final URL rather than an error page.
+        if (!h.keys.any { it.equals("Referer", ignoreCase = true) }) {
+            try {
+                val u = Uri.parse(session.mpdUrl.trim())
+                if (u.scheme != null && u.host != null) {
+                    val portPart = when {
+                        u.port <= 0 || u.port == 80 || u.port == 443 -> ""
+                        else -> ":${u.port}"
+                    }
+                    h["Referer"] = "${u.scheme}://${u.host}$portPart/"
+                    if (!h.keys.any { it.equals("Origin", ignoreCase = true) }) {
+                        h["Origin"] = "${u.scheme}://${u.host}$portPart"
+                    }
+                }
+            } catch (_: Exception) {}
         }
         return h
     }
