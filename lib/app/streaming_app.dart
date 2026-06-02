@@ -15,14 +15,12 @@ import '../screens/maintenance_screen.dart';
 import '../services/app_config_service.dart';
 import '../services/fcm_notifications.dart';
 import '../services/user_id.dart';
-import '../theme/app_theme.dart';
 import '../widgets/ad_reward_modal.dart';
 import '../widgets/notification_permission_modal.dart';
 import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 import 'main_shell.dart';
 import '../screens/loader_screen.dart';
-import 'package:provider/provider.dart';
 
 class StreamingApp extends StatefulWidget {
   const StreamingApp({super.key});
@@ -48,7 +46,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _retryingConnection = false;
   bool _splashDone = false;
   bool _notifPermissionVisible = false;
-  bool _configLoaded = false;
   bool _maintenanceRetrying = false;
   AppConfig? _appConfig;
 
@@ -208,14 +205,13 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   Future<void> _fetchAppConfig({bool forceRefresh = false}) async {
     try {
       final config = await AppConfigService.fetch(forceRefresh: forceRefresh);
-      if (mounted) setState(() {
-        _appConfig = config;
-        _configLoaded = true;
-        if (_maintenanceRetrying) _maintenanceRetrying = false;
-      });
-    } catch (_) {
-      if (mounted) setState(() => _configLoaded = true);
-    }
+      if (mounted) {
+        setState(() {
+          _appConfig = config;
+          if (_maintenanceRetrying) _maintenanceRetrying = false;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _retryAfterMaintenance() async {
