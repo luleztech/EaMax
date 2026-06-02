@@ -75,6 +75,21 @@ Future<String?> _resolveExistingUserViaFcm() async {
   }
 }
 
+Future<void> _registerWithRetry(String id) async {
+  const maxAttempts = 4;
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await userApi.register(id);
+      return;
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      final rateLimited = msg.contains('429') || msg.contains('maombi mengi');
+      if (!rateLimited || attempt == maxAttempts) return;
+      await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
+    }
+  }
+}
+
 Future<String?> _resolveIdentityChain() async {
   final prefs = await SharedPreferences.getInstance();
   var id = prefs.getString(_storageKey)?.trim();
@@ -87,53 +102,41 @@ Future<String?> _resolveIdentityChain() async {
   id = prefs.getString(_legacyKey)?.trim();
   if (id != null && id.isNotEmpty) {
     await _persistUserIdEverywhere(id);
-    try {
-      await userApi.register(id);
-    } catch (_) {}
+    await _registerWithRetry(id);
     return id;
   }
 
   id = await _readStableUserIdNative();
   if (id != null && id.isNotEmpty) {
     await _persistUserIdEverywhere(id);
-    try {
-      await userApi.register(id);
-    } catch (_) {}
+    await _registerWithRetry(id);
     return id;
   }
 
   id = await backup.readUserIdFromFileBackup();
   if (id != null && id.isNotEmpty) {
     await _persistUserIdEverywhere(id);
-    try {
-      await userApi.register(id);
-    } catch (_) {}
+    await _registerWithRetry(id);
     return id;
   }
 
   id = await _readLegacyRnUserIdNative();
   if (id != null && id.isNotEmpty) {
     await _persistUserIdEverywhere(id);
-    try {
-      await userApi.register(id);
-    } catch (_) {}
+    await _registerWithRetry(id);
     return id;
   }
 
   id = await _resolveExistingUserViaFcm();
   if (id != null && id.isNotEmpty) {
     await _persistUserIdEverywhere(id);
-    try {
-      await userApi.register(id);
-    } catch (_) {}
+    await _registerWithRetry(id);
     return id;
   }
 
   id = generateUserId();
   await _persistUserIdEverywhere(id);
-  try {
-    await userApi.register(id);
-  } catch (_) {}
+  await _registerWithRetry(id);
   return id;
 }
 

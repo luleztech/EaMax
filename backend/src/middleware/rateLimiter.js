@@ -86,7 +86,7 @@ const paymentLimiter = rateLimit({
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: Number(process.env.RATE_LIMIT_REGISTER_MAX || 120),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Maombi mengi ya usajili. Subiri kidogo.' },

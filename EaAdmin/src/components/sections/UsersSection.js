@@ -19,6 +19,10 @@ import { adminUsersAPI, dashboardAPI } from '../../config/api';
 
 /** Smaller pages = faster first response; list fills in progressively. */
 const USERS_PAGE_SIZE = 500;
+/** Default list shows newest installs only (full 50k+ scan is slow and misses users created mid-fetch). */
+const RECENT_USERS_MAX = 2500;
+/** Quick poll for new User-XXXXX rows without re-downloading the whole table. */
+const LIVE_REFRESH_LIMIT = 120;
 /** Safety cap so a broken offset/total cannot spin forever. */
 const MAX_USER_FETCH_PAGES = 500;
 /** Wait until typing pauses before hitting the API (stops list jitter). */
@@ -53,8 +57,27 @@ const parseReportedTotal = (raw) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const userCreatedAtMs = (user) => {
+  const raw = user?.created_at ?? user?.createdAt;
+  if (!raw) return 0;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : 0;
+};
+
+const mergeUsersById = (existing, incoming) => {
+  const byId = new Map();
+  for (const row of existing) {
+    if (row?.id != null) byId.set(row.id, row);
+  }
+  for (const row of incoming) {
+    if (row?.id != null) byId.set(row.id, row);
+  }
+  return Array.from(byId.values()).sort((a, b) => userCreatedAtMs(b) - userCreatedAtMs(a));
+};
+
 const formatUsersForList = (data) => {
   return data.map((user, index) => {
+    const externalId = user.external_id || user.externalId;
     const now = new Date();
     const exp = user.premium_expires_at ? new Date(user.premium_expires_at) : null;
     const expiredByDate = !!(exp && exp <= now);
@@ -72,8 +95,8 @@ const formatUsersForList = (data) => {
     const uid = Number(user.id);
     return {
       id: user.id,
-      name: user.external_id || `User-${user.id}`,
-      initials: getInitials(user.external_id),
+      name: externalId || `User-${user.id}`,
+      initials: getInitials(externalId),
       status: statusText,
       gradient: getGradientColors(Number.isFinite(uid) ? uid : index),
       blocked: !!(user.blocked === true || user.blocked === 't' || user.blocked === 1),
@@ -137,12 +160,33 @@ const UsersSection = ({ isActive }) => {
     }
   }, []);
 
-  // Fetch users from backend with filters (paginate until all rows are loaded)
+  /** Pull newest rows only (for 15s live refresh without a 100+ page full scan). */
+  const refreshNewestUsers = useCallback(async () => {
+    try {
+      const res = await dashboardAPI.getUsers(
+        LIVE_REFRESH_LIMIT,
+        0,
+        filter,
+        debouncedSearch,
+      );
+      const chunk = Array.isArray(res.users) ? res.users : [];
+      if (chunk.length === 0) return;
+      setUsers((prev) => formatUsersForList(mergeUsersById(prev.map((u) => u.rawData), chunk)));
+      const reportedTotal = parseReportedTotal(res.total);
+      if (reportedTotal != null) setTotalUsers(reportedTotal);
+    } catch (e) {
+      console.warn('Newest users refresh:', e);
+    }
+  }, [filter, debouncedSearch]);
+
+  // Fetch users: recent window by default; full scan only when searching by external ID.
   const fetchUsers = useCallback(async () => {
     const filterKey = `${filter}|${debouncedSearch}`;
     const filterOrSearchChanged =
       prevFilterKeyRef.current !== null && prevFilterKeyRef.current !== filterKey;
     prevFilterKeyRef.current = filterKey;
+    const searchActive = debouncedSearch.trim().length > 0;
+    const fetchCap = searchActive ? Number.MAX_SAFE_INTEGER : RECENT_USERS_MAX;
 
     const gen = ++fetchGenRef.current;
     setFetchInProgress(true);
@@ -154,7 +198,7 @@ const UsersSection = ({ isActive }) => {
     try {
       let offset = 0;
       let lastReportedTotal = null;
-      const data = [];
+      let data = [];
       let lastPageIndex = 0;
 
       for (let page = 0; page < MAX_USER_FETCH_PAGES; page += 1) {
@@ -176,13 +220,31 @@ const UsersSection = ({ isActive }) => {
         }
 
         if (chunk.length === 0) break;
+        if (data.length >= fetchCap) break;
         if (reportedTotal != null && data.length >= reportedTotal) break;
         if (chunk.length < USERS_PAGE_SIZE) break;
       }
 
       if (gen !== fetchGenRef.current) return;
 
-      if (lastPageIndex >= 1) {
+      // Users created while we paginated won't appear in page 0 — re-fetch newest slice and merge.
+      try {
+        const freshRes = await dashboardAPI.getUsers(
+          Math.min(LIVE_REFRESH_LIMIT, USERS_PAGE_SIZE),
+          0,
+          filter,
+          debouncedSearch,
+        );
+        if (gen !== fetchGenRef.current) return;
+        const freshChunk = Array.isArray(freshRes.users) ? freshRes.users : [];
+        if (freshChunk.length > 0) {
+          data = mergeUsersById(data, freshChunk).slice(0, fetchCap);
+        }
+      } catch (mergeErr) {
+        console.warn('Newest users merge after fetch:', mergeErr);
+      }
+
+      if (lastPageIndex >= 1 || data.length > 0) {
         setUsers(formatUsersForList(data));
         setTotalUsers(lastReportedTotal != null ? lastReportedTotal : data.length);
       }
@@ -222,15 +284,15 @@ const UsersSection = ({ isActive }) => {
     wasActiveRef.current = !!isActive;
   }, [isActive, fetchUsers, fetchDashboardStats]);
 
-  // Auto-refresh every 15s while Users tab is active so premium status updates when payment succeeds
+  // Light poll for new installs + premium changes (avoid re-scanning 50k+ rows every 15s).
   useEffect(() => {
     if (!isActive) return;
     const id = setInterval(() => {
-      fetchUsers();
+      refreshNewestUsers();
       fetchDashboardStats();
     }, 15000);
     return () => clearInterval(id);
-  }, [isActive, filter, debouncedSearch, fetchUsers, fetchDashboardStats]);
+  }, [isActive, refreshNewestUsers, fetchDashboardStats]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -518,7 +580,11 @@ const UsersSection = ({ isActive }) => {
               ? 'Blocked Users'
               : 'Expired'}{' '}
             ({users.length}
-            {totalUsers > 0 ? ` / ${totalUsers}` : ''})
+            {totalUsers > 0 ? ` / ${totalUsers}` : ''}
+            {!debouncedSearch && users.length < totalUsers
+              ? ` · showing newest ${RECENT_USERS_MAX.toLocaleString()}`
+              : ''}
+            )
           </Text>
           {isActive ? (
             <View style={styles.autoRefreshIndicator}>
