@@ -9,6 +9,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ads.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
+import '../models/app_config.dart';
+import '../screens/force_update_screen.dart';
+import '../screens/maintenance_screen.dart';
+import '../services/app_config_service.dart';
 import '../services/fcm_notifications.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
@@ -18,7 +22,6 @@ import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 import 'main_shell.dart';
 import '../screens/loader_screen.dart';
-import '../theme/app_theme.dart';
 import 'package:provider/provider.dart';
 
 class StreamingApp extends StatefulWidget {
@@ -39,11 +42,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   Timer? _pendingPaymentWatcher;
+  Timer? _configRefreshTimer;
   bool _checkingPendingPayment = false;
   bool _offlineModalVisible = false;
   bool _retryingConnection = false;
   bool _splashDone = false;
   bool _notifPermissionVisible = false;
+  bool _configLoaded = false;
+  bool _maintenanceRetrying = false;
+  AppConfig? _appConfig;
 
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
   bool _adOverlayVisible = false;
@@ -127,6 +134,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     _pendingPaymentWatcher?.cancel();
+    _configRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -197,13 +205,38 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _fetchAppConfig({bool forceRefresh = false}) async {
+    try {
+      final config = await AppConfigService.fetch(forceRefresh: forceRefresh);
+      if (mounted) setState(() {
+        _appConfig = config;
+        _configLoaded = true;
+        if (_maintenanceRetrying) _maintenanceRetrying = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _configLoaded = true);
+    }
+  }
+
+  Future<void> _retryAfterMaintenance() async {
+    if (_maintenanceRetrying) return;
+    setState(() => _maintenanceRetrying = true);
+    AppConfigService.invalidateCache();
+    await _fetchAppConfig(forceRefresh: true);
+  }
+
   Future<void> _bootstrap() async {
+    unawaited(_fetchAppConfig());
     await getOrCreateUserId();
     await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
     await setupFcmLocalNotifications();
     await _checkPendingPayment();
     _startPendingPaymentWatcher();
+    _configRefreshTimer?.cancel();
+    _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
+      unawaited(_fetchAppConfig(forceRefresh: true));
+    });
   }
 
   Future<void> _maybePromptNotificationPermission() async {
@@ -380,6 +413,20 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           });
         },
       );
+    }
+
+    // ── Maintenance mode ──────────────────────────────────────────────────
+    if (_appConfig?.maintenanceMode == true) {
+      return MaintenanceScreen(
+        config: _appConfig!,
+        onRetry: _retryAfterMaintenance,
+        isRetrying: _maintenanceRetrying,
+      );
+    }
+
+    // ── Force update / version gate ───────────────────────────────────────
+    if (_appConfig != null && _appConfig!.shouldBlockAccess) {
+      return ForceUpdateScreen(config: _appConfig!);
     }
 
     return Stack(

@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'app_version.dart';
+
 const String apiBaseUrl = 'https://eamax-production.up.railway.app';
 
 Future<void> _sleep(int ms) => Future<void>.delayed(Duration(milliseconds: ms));
@@ -23,7 +25,11 @@ Future<dynamic> _apiRequestOnce(
   Duration timeout = const Duration(seconds: 45),
 }) async {
   final url = Uri.parse('$apiBaseUrl$endpoint');
-  final headers = <String, String>{'Content-Type': 'application/json'};
+  final headers = <String, String>{
+    'Content-Type': 'application/json',
+    'X-App-Version': kAppVersion,
+    'X-App-Bundle': kAppBundleId,
+  };
   final http.Response response;
   switch (method.toUpperCase()) {
     case 'POST':
@@ -43,6 +49,26 @@ Future<dynamic> _apiRequestOnce(
     } catch (_) {
       decoded = null;
     }
+  }
+  if (response.statusCode == 426) {
+    throw AppUpgradeRequiredException(
+      message: (decoded is Map ? decoded['message']?.toString() : null) ??
+          'App update required',
+      minimumVersion: (decoded is Map
+              ? decoded['minimumSupportedVersion']?.toString()
+              : null) ??
+          '',
+      playStoreUrl: (decoded is Map
+              ? decoded['playStoreUrl']?.toString()
+              : null) ??
+          '',
+    );
+  }
+  if (response.statusCode == 503 &&
+      decoded is Map &&
+      decoded['error'] == 'maintenance') {
+    throw AppMaintenanceException(
+        message: decoded['message']?.toString() ?? 'Under maintenance');
   }
   if (response.statusCode < 200 || response.statusCode >= 300) {
     if (decoded is Map) {
@@ -314,3 +340,25 @@ final settingsApi = SettingsApi();
 final matchesApi = MatchesApi();
 final paymentsApi = PaymentsApi();
 final notificationsApi = NotificationsApi();
+
+/// Thrown when the backend returns HTTP 426 — the installed app is too old.
+class AppUpgradeRequiredException implements Exception {
+  const AppUpgradeRequiredException({
+    required this.message,
+    required this.minimumVersion,
+    required this.playStoreUrl,
+  });
+  final String message;
+  final String minimumVersion;
+  final String playStoreUrl;
+  @override
+  String toString() => 'AppUpgradeRequiredException: $message';
+}
+
+/// Thrown when the backend returns HTTP 503 with error=="maintenance".
+class AppMaintenanceException implements Exception {
+  const AppMaintenanceException({required this.message});
+  final String message;
+  @override
+  String toString() => 'AppMaintenanceException: $message';
+}

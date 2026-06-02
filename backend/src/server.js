@@ -2,10 +2,14 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const morgan = require('morgan');
 const http = require('http');
 
 const { query } = require('./db');
+const { generalLimiter, paymentLimiter, authLimiter } = require('./middleware/rateLimiter');
+const { requireAppVersion, attachVersionInfo } = require('./middleware/appVersion');
+const appConfigRouter = require('./routes/appConfig');
 const usersRouter = require('./routes/users');
 const channelsRouter = require('./routes/channels');
 
@@ -26,13 +30,37 @@ const { initializeRealtimeServer } = require('./services/realtimeServer');
 
 const app = express();
 
-app.use(
-  cors({
-    origin: '*', // you can restrict this to your app bundle IDs / domains later
-  }),
-);
+// ── Security headers (helmet) ──────────────────────────────────────────────
+// Sets X-Content-Type-Options, X-Frame-Options, HSTS, etc.
+// contentSecurityPolicy is disabled because this is a JSON API, not a website.
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// ── CORS ──────────────────────────────────────────────────────────────────
+// Mobile clients do not send an Origin header so broad CORS is acceptable
+// here.  The real protection is the X-App-Version / rate-limit / auth layer.
+app.use(cors({ origin: '*' }));
+
+// ── Body parsing ──────────────────────────────────────────────────────────
 app.use(express.json({ verify: getRawBody }));
 app.use(morgan('dev'));
+
+// ── Attach parsed version info to every request ───────────────────────────
+app.use(attachVersionInfo);
+
+// ── Public config endpoint (no rate-limit, no version check) ─────────────
+// Must be mounted before the general limiter and version middleware so that
+// even an outdated client can discover it needs to update.
+app.use('/app-config', appConfigRouter);
+
+// ── Rate limiting (mobile API routes only; skips /api/admin, /api/dashboard) ─
+app.use('/api/', generalLimiter);
+app.use('/api/payments', paymentLimiter);
+app.use('/api/users/register', authLimiter);
+
+// ── Version enforcement (opt-in via REQUIRE_APP_VERSION=true) ─────────────
+// Skips admin / dashboard / partner routes automatically (no X-App-Version
+// header on those requests).
+app.use('/api/', requireAppVersion);
 
 // Ensure drm_clear_key column exists on channels (run once on startup)
 query(
