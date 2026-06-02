@@ -42,6 +42,16 @@ class AppConfig {
   bool get isCurrentVersionTooOld =>
       compareSemver(kAppVersion, minimumSupportedVersion) < 0;
 
-  /// True when the app must be blocked (either explicit flag or version too old).
-  bool get shouldBlockAccess => forceUpdate || isCurrentVersionTooOld;
+  /// True when the installed build is older than the current published version.
+  bool get isCurrentVersionBelowLatest =>
+      compareSemver(kAppVersion, latestVersion) < 0;
+
+  /// True when the app must be blocked.
+  ///
+  /// This matches server-side semantics:
+  /// - Always block builds below the minimum supported version.
+  /// - Block additional builds only when forceUpdate is enabled and the build
+  ///   is below the current latest version.
+  bool get shouldBlockAccess =>
+      isCurrentVersionTooOld || (forceUpdate && isCurrentVersionBelowLatest);
 }

@@ -225,7 +225,7 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    'Unahitaji Google Play Store kusasisha.',
+                    'Unahitaji Google Play Store kuUpdate.',
                     textAlign: TextAlign.center,
                     style: rajdhani(11).copyWith(
                       color: Colors.white38,

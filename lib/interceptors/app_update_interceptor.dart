@@ -5,10 +5,15 @@ import '../models/api_exceptions.dart';
 import '../services/update_state.dart';
 
 class AppUpdateInterceptor extends Interceptor {
+  static bool _isAppConfigRequest(RequestOptions options) {
+    final path = options.uri.path;
+    return path.endsWith('/app-config');
+  }
+
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     final config = appUpdateState.config;
-    if (config != null && config.shouldBlockAccess) {
+    if (config != null && config.shouldBlockAccess && !_isAppConfigRequest(options)) {
       return handler.reject(
         DioError(
           requestOptions: options,
