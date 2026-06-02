@@ -127,6 +127,29 @@ router.get('/users', async (req, res, next) => {
   }
 });
 
+// Admin: notification history for the dashboard
+router.get('/notifications', async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const result = await query(
+      `SELECT id, title, message, category, type, sent_at, scheduled_for,
+              COALESCE(clicks, 0) AS clicks,
+              COALESCE(sent_count, 0) AS sent_count,
+              COALESCE(delivered_count, 0) AS delivered_count
+         FROM notifications
+        WHERE sent_at IS NOT NULL OR scheduled_for IS NOT NULL
+        ORDER BY (CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) ASC,
+                 (CASE WHEN sent_at IS NULL THEN scheduled_for END) ASC NULLS LAST,
+                 (CASE WHEN sent_at IS NOT NULL THEN sent_at END) DESC NULLS LAST
+        LIMIT $1`,
+      [limit],
+    );
+    return res.json(result.rows);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: block / unblock user
 router.patch('/users/:id/block', async (req, res, next) => {
   try {
@@ -1627,17 +1650,8 @@ router.put('/settings/channels-premium-only', async (req, res, next) => {
 // Admin: get active payment provider selection
 router.get('/settings/payment-provider', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     res.set('Cache-Control', 'private, no-store, max-age=0');
-    // Ensure table exists
-    await query(`
-      CREATE TABLE IF NOT EXISTS app_settings (
-        id SERIAL PRIMARY KEY,
-        key TEXT UNIQUE NOT NULL,
-        value TEXT NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `).catch(() => {});
-    
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
     );
@@ -1661,17 +1675,7 @@ router.get('/settings/payment-provider', async (req, res, next) => {
 router.put('/settings/payment-provider', async (req, res, next) => {
   try {
     console.log('[Admin] Payment provider update request:', req.body);
-    
-    // Ensure table exists
-    await query(`
-      CREATE TABLE IF NOT EXISTS app_settings (
-        id SERIAL PRIMARY KEY,
-        key TEXT UNIQUE NOT NULL,
-        value TEXT NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `).catch(() => {});
-    
+    await ensureAppSettingsTable();
     const bodySchema = z.object({
       paymentProvider: z.enum(['zeno', 'sonicpesa']),
     });
