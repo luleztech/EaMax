@@ -26,6 +26,12 @@ bool _eamaxListenersBound = false;
 
 final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
 
+void _logFcm(String message) {
+  if (kDebugMode) {
+    debugPrint('[EaMaxFCM] $message');
+  }
+}
+
 bool _channelReady = false;
 bool _pluginInitialized = false;
 
@@ -63,7 +69,9 @@ Future<void> _trackRemoteMessage(RemoteMessage message, {required bool openedFro
     if (openedFromTray) {
       await notificationsApi.reportClick(nid, uid);
     }
-  } catch (_) {}
+  } catch (e, st) {
+    _logFcm('Failed to report remote message event nid=$nid uid=$uid opened=$openedFromTray: $e\n$st');
+  }
 }
 
 /// Background isolate — EaMax Firebase project (EaAdmin pushes).
@@ -79,10 +87,16 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     String? tok;
     try {
       tok = await FirebaseMessaging.instance.getToken();
-    } catch (_) {}
+      _logFcm('Background handler token fetched for nid=$nid');
+    } catch (e, st) {
+      _logFcm('Background handler failed to fetch token: $e\n$st');
+    }
     try {
       await notificationsApi.reportDelivered(nid, uid, fcmToken: tok);
-    } catch (_) {}
+      _logFcm('Background handler reported delivery nid=$nid uid=$uid');
+    } catch (e, st) {
+      _logFcm('Background handler failed to report delivered nid=$nid uid=$uid: $e\n$st');
+    }
   }
 
   await ensureAndroidNotificationChannel();
@@ -116,18 +130,28 @@ Future<void> _ensureLocalNotificationsPlugin() async {
 void _onLocalNotificationTapped(NotificationResponse response) {
   final payload = response.payload;
   final nid = int.tryParse(payload ?? '');
+  _logFcm('Local notification tapped payload=$payload nid=$nid');
   if (nid == null) return;
   Future<void> run() async {
     final uid = await user_id.getStoredUserId();
-    if (uid == null || uid.isEmpty) return;
+    if (uid == null || uid.isEmpty) {
+      _logFcm('Local notification tapped but no stored user id found');
+      return;
+    }
     String? tok;
     try {
       tok = await FirebaseMessaging.instance.getToken();
-    } catch (_) {}
+      _logFcm('Local notification tapped token fetched');
+    } catch (e, st) {
+      _logFcm('Local notification tapped token fetch failed: $e\n$st');
+    }
     try {
       await notificationsApi.reportDelivered(nid, uid, fcmToken: tok);
       await notificationsApi.reportClick(nid, uid);
-    } catch (_) {}
+      _logFcm('Local notification tapped reported delivered/click nid=$nid uid=$uid');
+    } catch (e, st) {
+      _logFcm('Local notification tapped failed report nid=$nid uid=$uid: $e\n$st');
+    }
   }
 
   unawaited(run());
@@ -169,9 +193,7 @@ Future<bool> requestEamaxNotificationPermission() async {
     sound: true,
     provisional: false,
   );
-  if (kDebugMode) {
-    debugPrint('[FCM] Permission result: ${settings.authorizationStatus}');
-  }
+  _logFcm('Notification permission result: ${settings.authorizationStatus}');
   return settings.authorizationStatus == AuthorizationStatus.authorized ||
       settings.authorizationStatus == AuthorizationStatus.provisional;
 }
@@ -184,7 +206,10 @@ Future<void> syncEamaxFcmDelivery(String publicId) async {
 
   try {
     await messaging.subscribeToTopic('all_users');
-  } catch (_) {}
+    _logFcm('Subscribed to all_users topic');
+  } catch (e, st) {
+    _logFcm('Failed to subscribe to all_users: $e\n$st');
+  }
 
   try {
     final topic = _directUserTopic(uid);
@@ -193,18 +218,27 @@ Future<void> syncEamaxFcmDelivery(String publicId) async {
     if (old != null && old.isNotEmpty && old != topic) {
       try {
         await messaging.unsubscribeFromTopic(old);
-      } catch (_) {}
+        _logFcm('Unsubscribed from legacy topic $old');
+      } catch (e, st) {
+        _logFcm('Failed to unsubscribe from legacy topic $old: $e\n$st');
+      }
     }
     await messaging.subscribeToTopic(topic);
+    _logFcm('Subscribed to direct user topic $topic');
     await prefs.setString(_prefsDirectTopicKey, topic);
-  } catch (_) {}
+  } catch (e, st) {
+    _logFcm('Failed to sync direct user topic: $e\n$st');
+  }
 
   try {
     final tok = await messaging.getToken();
     if (tok != null && tok.isNotEmpty) {
       await userApi.registerFcmToken(uid, tok);
+      _logFcm('Registered FCM token for uid=$uid');
     }
-  } catch (_) {}
+  } catch (e, st) {
+    _logFcm('Failed to register FCM token for uid=$uid: $e\n$st');
+  }
 }
 
 void bindEamaxFcmTokenRefresh(String publicId) {
@@ -279,6 +313,7 @@ Future<void> bindEamaxFcmForegroundListener() async {
   );
 
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+    _logFcm('Foreground message received id=${message.messageId} data=${message.data}');
     unawaited(_trackRemoteMessage(message, openedFromTray: false));
 
     final n = message.notification;
@@ -295,6 +330,7 @@ Future<void> bindEamaxFcmForegroundListener() async {
   });
 
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+    _logFcm('Foreground message opened from tray id=${message.messageId} data=${message.data}');
     unawaited(_trackRemoteMessage(message, openedFromTray: true));
   });
 
