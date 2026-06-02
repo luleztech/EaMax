@@ -1,7 +1,7 @@
 /// App version constants — keep in sync with `version:` in pubspec.yaml.
 /// The semver string is sent as  `X-App-Version`  on every API request.
 /// The backend uses it for version enforcement and the /app-config response.
-const String kAppVersion = '1.3.5';
+const String kAppVersion = '1.3.6';
 const String kAppBundleId = 'com.eamax';
 
 /// Compare two semver strings.  Returns negative if [a] < [b].
