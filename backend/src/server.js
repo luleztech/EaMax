@@ -7,7 +7,7 @@ const morgan = require('morgan');
 const http = require('http');
 
 const { query } = require('./db');
-const { generalLimiter, paymentLimiter, authLimiter } = require('./middleware/rateLimiter');
+const { generalLimiter, catalogLimiter, paymentLimiter, authLimiter } = require('./middleware/rateLimiter');
 const { requireAppVersion, attachVersionInfo } = require('./middleware/appVersion');
 const appConfigRouter = require('./routes/appConfig');
 const usersRouter = require('./routes/users');
@@ -29,6 +29,9 @@ const partnerRouter = require('./routes/partner');
 const { initializeRealtimeServer } = require('./services/realtimeServer');
 
 const app = express();
+
+// Railway / reverse proxies: use X-Forwarded-For so rate limits are per client, not one shared IP.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 
 // ── Security headers (helmet) ──────────────────────────────────────────────
 // Sets X-Content-Type-Options, X-Frame-Options, HSTS, etc.
@@ -52,7 +55,11 @@ app.use(attachVersionInfo);
 // even an outdated client can discover it needs to update.
 app.use('/app-config', appConfigRouter);
 
-// ── Rate limiting (mobile API routes only; skips /api/admin, /api/dashboard) ─
+// ── Rate limiting (mobile API; admin/dashboard/partner + X-Admin-Key skipped) ─
+app.use('/api/channels', catalogLimiter);
+app.use('/api/carousel', catalogLimiter);
+app.use('/api/settings', catalogLimiter);
+app.use('/api/matches', catalogLimiter);
 app.use('/api/', generalLimiter);
 app.use('/api/payments', paymentLimiter);
 app.use('/api/users/register', authLimiter);

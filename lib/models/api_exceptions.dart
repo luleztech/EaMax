@@ -24,3 +24,13 @@ class AppMaintenanceException implements Exception {
   @override
   String toString() => 'AppMaintenanceException: $message';
 }
+
+/// HTTP 429 — server rate limit; distinct from offline errors.
+class ApiRateLimitedException implements Exception {
+  const ApiRateLimitedException({this.retryAfterSeconds});
+
+  final int? retryAfterSeconds;
+
+  @override
+  String toString() => 'ApiRateLimitedException';
+}

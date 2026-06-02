@@ -68,6 +68,13 @@ Future<dynamic> _apiRequestOnce(
       );
     }
 
+    if (statusCode == 429) {
+      final retryAfter = int.tryParse(
+        response.headers.value('retry-after')?.trim() ?? '',
+      );
+      throw ApiRateLimitedException(retryAfterSeconds: retryAfter);
+    }
+
     if (statusCode < 200 || statusCode >= 300) {
       final err = bodyData['error']?.toString().trim();
       final detail = bodyData['detail']?.toString().trim();
@@ -79,7 +86,7 @@ Future<dynamic> _apiRequestOnce(
 
     return data ?? <String, dynamic>{};
   } on DioError catch (e) {
-    if (e.error is AppUpgradeRequiredException) {
+    if (e.error is AppUpgradeRequiredException || e.error is ApiRateLimitedException) {
       rethrow;
     }
     if (e.type == DioErrorType.connectionTimeout ||
@@ -112,6 +119,14 @@ Future<dynamic> apiRequest(
         body: body,
         timeout: effectiveTimeout,
       );
+    } on ApiRateLimitedException catch (e) {
+      lastErr = e;
+      if (enableRetries && attempt < maxAttempts) {
+        final waitSec = e.retryAfterSeconds ?? (2 * attempt);
+        await _sleep((waitSec.clamp(1, 30)) * 1000);
+        continue;
+      }
+      rethrow;
     } catch (e) {
       lastErr = e;
       if (enableRetries && attempt < maxAttempts && _isTransientNetworkError(e)) {

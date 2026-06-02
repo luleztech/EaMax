@@ -202,10 +202,13 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   Future<void> _loadAll() async {
     try {
       await widget.syncPremiumSetting();
-      await Future.wait([_loadSlides(), _loadChannels(), _loadMatches()]);
-    } finally {
-      if (mounted) setState(() => _initialLoading = false);
-    }
+    } catch (_) {}
+    await Future.wait([
+      _loadSlides().catchError((_) {}),
+      _loadChannels().catchError((_) {}),
+      _loadMatches().catchError((_) {}),
+    ]);
+    if (mounted) setState(() => _initialLoading = false);
   }
 
   List<CarouselSlide> _mapSlides(List<dynamic> data, List<Color> defGrad) {
@@ -251,6 +254,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   Future<void> _loadChannels() async {
     final all = await channelsApi.getChannels();
+    if (all.isEmpty) return;
     final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
       ..sort((a, b) {
         final c = _channelSortKey(a).compareTo(_channelSortKey(b));
@@ -315,10 +319,13 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     _channelDataCacheTime.clear();
     try {
       await widget.syncPremiumSetting();
-      await Future.wait([_loadSlides(), _loadChannels(), _loadMatches()]);
-    } finally {
-      if (mounted) setState(() => _refreshing = false);
-    }
+    } catch (_) {}
+    await Future.wait([
+      _loadSlides().catchError((_) {}),
+      _loadChannels().catchError((_) {}),
+      _loadMatches().catchError((_) {}),
+    ]);
+    if (mounted) setState(() => _refreshing = false);
   }
 
   Future<void> _onRefresh() => reloadRemoteData();
