@@ -11,8 +11,12 @@ const generalLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Maombi mengi sana. Jaribu tena baadaye.' },
   skip: (req) => {
-    const path = req.path || '';
-    return path.startsWith('/api/admin') || path.startsWith('/api/dashboard');
+    const path = String(req.originalUrl || req.url || '').toLowerCase();
+    return (
+      path.startsWith('/api/admin') ||
+      path.startsWith('/api/dashboard') ||
+      path.startsWith('/api/partner')
+    );
   },
 });
 
