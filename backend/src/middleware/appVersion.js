@@ -73,12 +73,18 @@ function requireAppVersion(req, res, next) {
   }
 
   const tooOld = compareSemver(version, config.minimumSupportedVersion) < 0;
+  const belowLatest = compareSemver(version, config.latestVersion) < 0;
+
+  if (config.requireAppVersion && (tooOld || (config.forceUpdate && belowLatest))) {
+    if (tooOld) {
+      console.warn(`[VersionCheck] Outdated: ${version} < ${config.minimumSupportedVersion}`);
+    } else {
+      console.warn(`[VersionCheck] Forced update required: ${version} < ${config.latestVersion}`);
+    }
+    return res.status(426).json(_upgradeBody());
+  }
 
   if (tooOld) {
-    if (config.requireAppVersion) {
-      console.warn(`[VersionCheck] Outdated: ${version} < ${config.minimumSupportedVersion}`);
-      return res.status(426).json(_upgradeBody());
-    }
     console.warn(`[VersionCheck] Soft-warn: ${version} < ${config.minimumSupportedVersion} (enforcement off)`);
   }
 

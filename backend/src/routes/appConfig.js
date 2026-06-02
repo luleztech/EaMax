@@ -16,15 +16,18 @@ const router = express.Router();
  * to gate access without needing a 426 response.
  */
 router.get('/', (req, res) => {
-  const clientVersion = req.headers['x-app-version'] || null;
-  const needsUpdate =
+    const clientVersion = req.headers['x-app-version'] || null;
+  const belowMinimum =
     clientVersion !== null &&
     compareSemver(clientVersion, config.minimumSupportedVersion) < 0;
+  const belowLatest =
+    clientVersion !== null &&
+    compareSemver(clientVersion, config.latestVersion) < 0;
 
   return res.json({
     minimumSupportedVersion: config.minimumSupportedVersion,
     latestVersion: config.latestVersion,
-    forceUpdate: config.forceUpdate || needsUpdate,
+    forceUpdate: (config.forceUpdate && belowLatest) || belowMinimum,
     maintenanceMode: config.maintenanceMode,
     maintenanceMessage: config.maintenanceMessage,
     playStoreUrl: config.playStoreUrl,

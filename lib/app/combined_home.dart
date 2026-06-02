@@ -451,8 +451,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }) async {
     if (url.isEmpty) return;
     if (kIsWeb) {
-      // In-app playback (media_kit + WebView fallback). Opening the raw stream URL in a new
-      // tab often triggers a file download instead of playback, especially for .mpd/.m3u8.
       if (!mounted) return;
       final token = _extractPlaybackToken(channelData);
       final playbackHeaders = _extractPlaybackHeaders(channelData);
@@ -478,19 +476,14 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
       final token = _extractPlaybackToken(channelData);
       final playbackHeaders = _extractPlaybackHeaders(channelData);
-      try {
-        await NativeAndroidPlayer.open(
-          url: url,
-          licenseUrl: license != null ? '$license' : '',
-          token: token,
-          drmType: drm,
-          clearKeyHex: ck,
-          headers: playbackHeaders.isEmpty ? null : playbackHeaders,
-        );
-      } catch (e, st) {
-        debugPrint('Native player open failed: $e\n$st');
-        if (mounted) await showChannelUnavailableModal(context);
-      }
+      await NativeAndroidPlayer.open(
+        url: url,
+        licenseUrl: license != null ? '$license' : '',
+        token: token,
+        drmType: drm,
+        clearKeyHex: ck,
+        headers: playbackHeaders.isEmpty ? null : playbackHeaders,
+      );
       return;
     }
     if (!mounted) return;
@@ -499,6 +492,26 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         builder: (_) => FullscreenVideoPage(videoUrl: url, channelName: channelName),
       ),
     );
+  }
+
+  bool _canOpenFromCachedData(Map<String, dynamic>? data) {
+    if (data == null) return false;
+    final url = (data['streamUrl'] ?? data['stream_url'])?.toString().trim();
+    if (url == null || url.isEmpty) return false;
+    final drmType = (data['drmType'] ?? data['drm_type'])?.toString().toUpperCase();
+    if (drmType == null || drmType == 'NONE' || drmType.isEmpty) return true;
+    final token = _extractPlaybackToken(data);
+    final headers = _extractPlaybackHeaders(data);
+    final clearKey = _extractClearKeyPayload(data);
+    return token.isNotEmpty || headers.isNotEmpty || clearKey.isNotEmpty;
+  }
+
+  String _channelExternalUrl(ChannelUi ch, Map<String, dynamic>? channelData) {
+    final rawUrl = channelData?['streamUrl'] ?? channelData?['stream_url'];
+    final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
+        ? '$rawUrl'.trim()
+        : ch.streamUrl?.trim();
+    return url ?? '';
   }
 
   String _extractPlaybackToken(Map<String, dynamic>? channelData) {
@@ -595,31 +608,44 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     if (canPlay) {
       setState(() => _loadingChannelId = ch.id);
       try {
+        final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
+        final quickData = cachedData ?? ch.apiRow;
+        final quickUrl = _channelExternalUrl(ch, quickData);
+
+        if (quickData != null && quickUrl.isNotEmpty && _canOpenFromCachedData(quickData)) {
+          try {
+            await _openVideoPlayback(
+              url: quickUrl,
+              channelName: ch.name,
+              channelData: Map<String, dynamic>.from(quickData),
+            );
+            return;
+          } catch (_) {
+            // Fast path failed. Continue to fetch full details.
+          }
+        }
+
         Map<String, dynamic> data;
-        if (_isCacheValid(ch.id)) {
-          // Cache hit: instant playback, no network round-trip.
-          data = _channelDataCache[ch.id]!;
+        if (cachedData != null) {
+          data = cachedData;
         } else {
-          // Fetch complete channel data (DRM keys, custom headers, licenseUrl, token).
           data = await channelsApi.getChannel(ch.id);
           _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
           _channelDataCacheTime[ch.id] = DateTime.now();
         }
-        final rawUrl = data['streamUrl'] ?? data['stream_url'];
-        final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
-            ? '$rawUrl'.trim()
-            : ch.streamUrl?.trim();
-        if (url != null && url.isNotEmpty && mounted) {
+
+        final url = _channelExternalUrl(ch, data);
+        if (url.isNotEmpty && mounted) {
           await _openVideoPlayback(
             url: url,
             channelName: ch.name,
             channelData: Map<String, dynamic>.from(data),
           );
-        } else if (mounted) {
-          await showChannelUnavailableModal(context);
+          return;
         }
+
+        if (mounted) await showChannelUnavailableModal(context);
       } catch (_) {
-        // Network issue: fall back to cached stream URL from list API.
         final quickUrl = ch.streamUrl?.trim();
         if (quickUrl != null && quickUrl.isNotEmpty && mounted) {
           await _openVideoPlayback(
