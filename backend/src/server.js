@@ -185,6 +185,14 @@ query(
   `ALTER TABLE stream_aliases ALTER COLUMN stream_url DROP NOT NULL`
 ).catch(() => {});
 
+// Notification push job status (async broadcast from admin panel)
+query(
+  `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS push_status VARCHAR(16) DEFAULT 'completed'`
+).catch(() => {});
+query(
+  `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS push_error TEXT`
+).catch(() => {});
+
 // notification_deliveries: allow NULL fcm_token (topic / client-reported delivery)
 query(
   `ALTER TABLE notification_deliveries

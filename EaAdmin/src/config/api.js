@@ -287,8 +287,8 @@ export const adminNotificationsAPI = {
     return apiRequest('/api/admin/notifications', {
       method: 'POST',
       body: JSON.stringify(notificationData),
-      // Large audiences: server sends FCM in batches (can take several minutes).
-      timeoutMs: 300000,
+      // Server queues FCM in background and responds immediately.
+      timeoutMs: 25000,
     });
   },
 

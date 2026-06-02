@@ -6,7 +6,7 @@
 
 const { query } = require('./src/db');
 const { isInitialized } = require('./src/services/firebase');
-const { broadcastNotificationToAllUsers } = require('./src/services/notificationBroadcast');
+const { scheduleNotificationBroadcast } = require('./src/services/notificationBroadcast');
 
 async function processScheduledNotifications() {
   try {
@@ -33,7 +33,19 @@ async function processScheduledNotifications() {
 
     for (const notification of result.rows) {
       try {
-        const broadcast = await broadcastNotificationToAllUsers(
+        await query(
+          `UPDATE notifications
+              SET sent_at = NOW(),
+                  push_status = 'sending',
+                  sent_count = 0,
+                  delivered_count = 0,
+                  clicks = 0
+            WHERE id = $1`,
+          [notification.id],
+        );
+
+        scheduleNotificationBroadcast(
+          notification.id,
           notification.title,
           notification.message,
           {
@@ -43,25 +55,9 @@ async function processScheduledNotifications() {
           },
         );
 
-        await query(
-          `UPDATE notifications
-              SET sent_count = $1,
-                  sent_at = NOW(),
-                  delivered_count = 0,
-                  clicks = 0
-            WHERE id = $2`,
-          [broadcast.tokensSent, notification.id],
-        ).catch(() => {});
-
-        console.log(
-          `[FCM Service] Sent notification ${notification.id}: ${broadcast.tokensSent}/${broadcast.tokensAttempted} tokens, topic=${broadcast.topicSent}`,
-        );
+        console.log(`[FCM Service] Queued scheduled notification ${notification.id}`);
       } catch (err) {
         console.error(`[FCM Service] Error processing notification ${notification.id}:`, err.message);
-        await query(
-          `UPDATE notifications SET sent_at = NOW(), sent_count = 0 WHERE id = $1`,
-          [notification.id],
-        ).catch(() => {});
       }
     }
   } catch (error) {

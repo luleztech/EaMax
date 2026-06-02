@@ -106,23 +106,28 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         return;
       }
 
-      const sentCount = Number(result?.sent_count || 0);
       const withToken = Number(result?.users_with_token || 0);
-      const failed = Number(result?.failed_count || 0);
-      const topicLine = result?.sent_via_topic ? ' + topic all_users' : '';
-      const successText =
-        sentCount > 0
-          ? `✅ FCM accepted ${sentCount.toLocaleString()} push(es) (${withToken.toLocaleString()} devices with token${topicLine}). Delivered/clicks update as users open the app.`
-          : withToken > 0
-            ? `⚠️ Saved but FCM accepted 0 pushes (${failed} failed). Check Firebase key and tokens.`
-            : result?.sent_via_topic
-              ? `✅ Topic broadcast only (no FCM tokens in DB yet) — users need to allow notifications in the app.`
-              : 'Notification saved. No devices with FCM tokens yet.';
+      const isQueued = result?.push_status === 'sending';
+      const successText = isQueued
+        ? `✅ ${result?.message || 'Broadcast started.'}\n(${withToken.toLocaleString()} devices with token · topic all_users)`
+        : `✅ Sent to ${Number(result?.sent_count || 0).toLocaleString()} device(s).`;
 
       setStatusMessage({ type: 'success', text: successText });
 
       if (onNotificationSent) onNotificationSent();
       loadHistory();
+
+      if (isQueued && result?.id) {
+        const notificationId = result.id;
+        let polls = 0;
+        const pollId = setInterval(async () => {
+          polls += 1;
+          try {
+            await loadHistory();
+          } catch (_) {}
+          if (polls >= 15) clearInterval(pollId);
+        }, 2000);
+      }
 
       setTimeout(() => {
         setTitle('');
@@ -300,7 +305,14 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                   const delivered = Number(item.delivered_count || 0);
                   const sent = Number(item.sent_count || 0);
                   const clicks = Number(item.clicks || 0);
+                  const pushStatus = item.push_status || 'completed';
                   const ctr = delivered > 0 ? ((clicks / delivered) * 100).toFixed(1) : '0.0';
+                  const statsLine =
+                    pushStatus === 'sending'
+                      ? 'Sending… (refreshing)'
+                      : pushStatus === 'failed'
+                        ? `Failed: ${item.push_error || 'see server logs'}`
+                        : `${delivered}/${sent} delivered · ${clicks} clicks · CTR ${ctr}%`;
 
                   return (
                     <View key={String(item.id)} style={styles.historyCard}>
@@ -316,9 +328,7 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                             {item.message}
                           </Text>
                           <Text style={styles.historyCardMeta}>{formatSentAt(item.sent_at)}</Text>
-                          <Text style={styles.historyCardStats}>
-                            {delivered}/{sent} delivered · {clicks} clicks · CTR {ctr}%
-                          </Text>
+                          <Text style={styles.historyCardStats}>{statsLine}</Text>
                         </View>
                         <TouchableOpacity
                           style={styles.resendBtn}

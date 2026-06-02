@@ -149,7 +149,9 @@ router.get('/notifications', async (req, res, next) => {
       `SELECT id, title, message, category, type, sent_at, scheduled_for,
               COALESCE(clicks, 0) AS clicks,
               COALESCE(sent_count, 0) AS sent_count,
-              COALESCE(delivered_count, 0) AS delivered_count
+              COALESCE(delivered_count, 0) AS delivered_count,
+              COALESCE(push_status, 'completed') AS push_status,
+              push_error
          FROM notifications
         WHERE sent_at IS NOT NULL OR scheduled_for IS NOT NULL
         ORDER BY (CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) ASC,
@@ -1236,9 +1238,12 @@ router.post('/notifications', async (req, res, next) => {
       return res.status(500).json({ error: 'Failed to save notification' });
     }
 
-    // Send push notifications to every device with a token + topic all_users (real FCM counts).
+    // Queue FCM in background — admin UI returns in ~1s (no multi-minute wait).
     if (data.type === 'normal') {
-      const { broadcastNotificationToAllUsers } = require('../services/notificationBroadcast');
+      const {
+        scheduleNotificationBroadcast,
+        countUsersWithFcmToken,
+      } = require('../services/notificationBroadcast');
       const firebase = require('../services/firebase');
 
       if (!firebase.isInitialized()) {
@@ -1247,46 +1252,48 @@ router.post('/notifications', async (req, res, next) => {
           ...notification,
           pushError: 'Firebase not initialized. Set FIREBASE_SERVICE_ACCOUNT_KEY on Railway.',
           sent_count: 0,
+          push_status: 'failed',
         });
       }
 
-      try {
-        const pushData = {
-          notificationId: String(notification.id),
-          category: data.category,
-          type: 'notification',
-        };
-        const broadcast = await broadcastNotificationToAllUsers(
-          data.title,
-          data.message,
-          pushData,
-        );
+      const pushData = {
+        notificationId: String(notification.id),
+        category: data.category,
+        type: 'notification',
+      };
 
-        const sentCount = broadcast.tokensSent;
-        await query(
-          `UPDATE notifications SET sent_count = $1, delivered_count = 0, clicks = 0 WHERE id = $2`,
-          [sentCount, notification.id],
-        ).catch(() => {});
+      const usersWithToken = await countUsersWithFcmToken().catch(() => 0);
 
-        return res.status(201).json({
-          ...notification,
-          sent_count: sentCount,
-          failed_count: broadcast.tokensFailed,
-          tokens_attempted: broadcast.tokensAttempted,
-          users_with_token: broadcast.usersWithToken,
-          registered_users: broadcast.registeredUsers,
-          sent_via_topic: broadcast.topicSent,
-          topic: broadcast.topicSent ? 'all_users' : null,
-          invalid_tokens_cleared: broadcast.invalidTokensCleared,
-        });
-      } catch (pushErr) {
-        console.error('[FCM] Push send error:', pushErr.message || pushErr);
-        return res.status(201).json({
-          ...notification,
-          pushError: `Push failed: ${pushErr.message || pushErr}`,
-          sent_count: 0,
-        });
-      }
+      await query(
+        `UPDATE notifications
+            SET sent_count = 0,
+                delivered_count = 0,
+                clicks = 0,
+                push_status = 'sending',
+                push_error = NULL
+          WHERE id = $1`,
+        [notification.id],
+      ).catch(() => {});
+
+      scheduleNotificationBroadcast(
+        notification.id,
+        data.title,
+        data.message,
+        pushData,
+      );
+
+      return res.status(201).json({
+        ...notification,
+        push_status: 'sending',
+        sent_count: 0,
+        users_with_token: usersWithToken,
+        sent_via_topic: true,
+        topic: 'all_users',
+        message:
+          usersWithToken >= 800
+            ? 'Broadcast started via topic all_users (large audience). Stats update in History.'
+            : 'Broadcast started in background. Stats update in History shortly.',
+      });
     }
 
     return res.status(201).json(notification);
