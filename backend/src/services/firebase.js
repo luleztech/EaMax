@@ -51,6 +51,41 @@ const stringifyData = (data) => {
   return out;
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isRetryableFirebaseError = (error) => {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    code === 'messaging/server-unavailable' ||
+    code === 'messaging/internal-error' ||
+    code === 'messaging/quota-exceeded' ||
+    code === 'messaging/too-many-requests' ||
+    code === 'messaging/unknown' ||
+    message.includes('429') ||
+    message.includes('too many requests') ||
+    message.includes('quota exceeded') ||
+    message.includes('server unavailable') ||
+    message.includes('internal error')
+  );
+};
+
+const retryFirebaseSend = async (fn, attempts = 3, baseDelay = 300) => {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1 || !isRetryableFirebaseError(error)) {
+        throw error;
+      }
+      await sleep(baseDelay * Math.pow(2, attempt));
+    }
+  }
+  throw lastError;
+};
+
 /**
  * Data-only FCM (no top-level `notification` key) so Android delivers to
  * firebaseMessagingBackgroundHandler — apps show a local notification and can
@@ -92,7 +127,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
       },
     };
 
-    const response = await admin.messaging().send(message);
+    const response = await retryFirebaseSend(async () => admin.messaging().send(message));
     return { success: true, messageId: response };
   } catch (error) {
     console.error('Error sending push notification:', error);
@@ -153,7 +188,7 @@ const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {})
     }));
 
     // Prefer sendEach (firebase-admin v11+) — same payloads as sendEachForMulticast, fewer HTTP/2 edge cases.
-    const response = await admin.messaging().sendEach(messages);
+    const response = await retryFirebaseSend(async () => admin.messaging().sendEach(messages));
 
     return {
       success: true,
@@ -218,7 +253,7 @@ const sendReliablePushNotificationToTopic = async (topic, title, body, data = {}
     apns: buildReliableApnsConfig(),
   };
 
-  const messageId = await admin.messaging().send(message);
+  const messageId = await retryFirebaseSend(async () => admin.messaging().send(message));
   return { success: true, messageId };
 };
 
@@ -279,7 +314,7 @@ const sendPushNotificationToTopic = async (topic, title, body, data = {}) => {
     },
   };
 
-  const messageId = await admin.messaging().send(message);
+  const messageId = await retryFirebaseSend(async () => admin.messaging().send(message));
   return { success: true, messageId };
 };
 

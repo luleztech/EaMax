@@ -11,7 +11,10 @@ const generalLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Maombi mengi sana. Jaribu tena baadaye.' },
   skip: (req) => {
-    const path = String(req.originalUrl || req.url || '').toLowerCase();
+    const path = String(
+      req.originalUrl ||
+      (req.baseUrl ? `${req.baseUrl}${req.path || ''}` : req.url || '')
+    ).toLowerCase();
     return (
       path.startsWith('/api/admin') ||
       path.startsWith('/api/dashboard') ||
