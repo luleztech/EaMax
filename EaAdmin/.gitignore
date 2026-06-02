@@ -71,6 +71,13 @@ yarn-error.log
 .packages
 build/
 
+# Accidental Flutter stubs — EaAdmin Android/iOS builds are React Native only
+android/app/src/main/java/io/flutter/
+ios/Runner/GeneratedPluginRegistrant.*
+ios/Flutter/ephemeral/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+
 # Yarn
 .yarn/*
 !.yarn/patches
