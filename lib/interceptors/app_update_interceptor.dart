@@ -33,6 +33,21 @@ class AppUpdateInterceptor extends Interceptor {
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) {
+    if (_isAppConfigRequest(response.requestOptions) && response.statusCode == 200) {
+      try {
+        final config = AppConfig.fromJson(
+          Map<String, dynamic>.from(response.data as Map<String, dynamic>),
+        );
+        if (!config.shouldBlockAccess) {
+          appUpdateState.clear();
+        } else {
+          appUpdateState.activate(config);
+        }
+      } catch (_) {
+        // Ignore parse issues; the update screen will be governed by other paths.
+      }
+    }
+
     if (response.statusCode == 426) {
       final data = response.data;
       final updateTitle = _readString(data, 'updateTitle', 'Update Required');
