@@ -294,7 +294,7 @@ export const adminNotificationsAPI = {
   // Get all notifications
   getNotifications: async (limit = 20) => {
     // Scheduled (pinned) + sent notifications for recent list
-    return apiRequest(`/api/notifications?limit=${limit}`);
+    return apiRequest(`/api/admin/notifications?limit=${limit}`);
   },
 
   /** Aggregate notification analytics (GET /api/admin/notifications/metrics). */

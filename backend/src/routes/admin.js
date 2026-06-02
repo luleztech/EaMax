@@ -5,6 +5,17 @@ const { sendPushNotification } = require('../services/firebase');
 
 const router = express.Router();
 
+const ensureAppSettingsTable = async () => {
+  await query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id SERIAL PRIMARY KEY,
+      key TEXT UNIQUE NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+};
+
 // Simple API-key auth for admin routes
 router.use((req, res, next) => {
   const adminKey = process.env.ADMIN_API_KEY || 'super-secret-admin-key';
@@ -1575,6 +1586,7 @@ router.get('/ads/stats', async (req, res, next) => {
 // Admin: get channels premium-only setting (same as public, for admin UI consistency)
 router.get('/settings/channels-premium-only', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",
     );
@@ -1591,6 +1603,7 @@ router.get('/settings/channels-premium-only', async (req, res, next) => {
 // Admin: update channels premium-only (ON = pay only, no ads/points; OFF = points or 0 for free)
 router.put('/settings/channels-premium-only', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const channelsPremiumOnly = body.channelsPremiumOnly === true ||
       body.channelsPremiumOnly === 'true' || body.channelsPremiumOnly === 1;

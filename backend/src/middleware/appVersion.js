@@ -30,11 +30,16 @@ function compareSemver(a, b) {
 // req.path here is relative to the /api/ prefix, e.g. "/admin/...", "/dashboard/..."
 function _isAdminRoute(req) {
   const p = req.path || '';
-  return (
-    p.startsWith('/admin') ||
-    p.startsWith('/dashboard') ||
-    p.startsWith('/partner')
-  );
+  if (p.startsWith('/admin') || p.startsWith('/dashboard') || p.startsWith('/partner')) {
+    return true;
+  }
+
+  const adminKey = String(req.headers['x-admin-key'] || '').trim();
+  if (adminKey && adminKey === process.env.ADMIN_API_KEY) {
+    return true;
+  }
+
+  return false;
 }
 
 const _upgradeBody = () => ({

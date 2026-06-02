@@ -6,6 +6,17 @@ const router = express.Router();
 
 const SECTION_LABELS_KEY = 'section_labels';
 
+const ensureAppSettingsTable = async () => {
+  await query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id SERIAL PRIMARY KEY,
+      key TEXT UNIQUE NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+};
+
 const defaultSectionLabels = () => ({
   football: {
     channelsTitle: 'Football Channels',
@@ -29,6 +40,7 @@ const defaultSectionLabels = () => ({
 // Public: get WhatsApp support number
 router.get('/whatsapp', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'whatsapp_number' LIMIT 1",
     );
@@ -44,6 +56,7 @@ router.get('/whatsapp', async (req, res, next) => {
 // Admin: update WhatsApp number (protected via ADMIN_API_KEY in admin routes)
 router.put('/whatsapp', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const bodySchema = z.object({
       number: z.string().min(5),
     });
@@ -68,6 +81,7 @@ router.put('/whatsapp', async (req, res, next) => {
 // Public: get channels premium-only mode (when true, all channels require payment; no points/ads)
 router.get('/channels-premium-only', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",
     );
@@ -84,6 +98,7 @@ router.get('/channels-premium-only', async (req, res, next) => {
 // Public: get payment provider in use (zeno or sonicpesa)
 router.get('/payment-provider', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     res.set('Cache-Control', 'private, no-store, max-age=0');
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
@@ -110,6 +125,7 @@ router.get('/payment-provider', async (req, res, next) => {
 // Public: get section labels for app (Football/Movies section titles)
 router.get('/section-labels', async (req, res, next) => {
   try {
+    await ensureAppSettingsTable();
     const result = await query(
       "SELECT value FROM app_settings WHERE key = $1 LIMIT 1",
       [SECTION_LABELS_KEY],
