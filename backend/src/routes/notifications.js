@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const { syncNotificationStats } = require('../services/notificationBroadcast');
 
 const router = express.Router();
 
@@ -55,43 +56,28 @@ router.post('/:id/click', async (req, res, next) => {
       }
     }
 
-    if (userId) {
-      // Count one click per user per notification (real unique-click analytics).
-      await query(
-        `INSERT INTO notification_clicks (notification_id, user_id)
-         VALUES ($1, $2)
-         ON CONFLICT (notification_id, user_id) DO NOTHING`,
-        [notificationId, userId],
-      ).catch(() => {});
-
-      const updated = await query(
-        `UPDATE notifications
-            SET clicks = (
-              SELECT COUNT(*) FROM notification_clicks WHERE notification_id = $1
-            )
-          WHERE id = $1
-          RETURNING id, clicks`,
-        [notificationId],
-      );
-      if (updated.rows.length === 0) {
-        return res.status(404).json({ error: 'Notification not found' });
-      }
-      return res.json(updated.rows[0]);
+    if (!userId) {
+      return res.status(400).json({
+        error: 'externalId or userId required for click tracking',
+      });
     }
 
-    // Fallback for legacy clients that don't send user identity yet.
+    await query(
+      `INSERT INTO notification_clicks (notification_id, user_id)
+       VALUES ($1, $2)
+       ON CONFLICT (notification_id, user_id) DO NOTHING`,
+      [notificationId, userId],
+    ).catch(() => {});
+
+    await syncNotificationStats(notificationId);
+
     const updated = await query(
-      `UPDATE notifications
-          SET clicks = clicks + 1
-        WHERE id = $1
-        RETURNING id, clicks`,
+      `SELECT id, clicks FROM notifications WHERE id = $1`,
       [notificationId],
     );
-
     if (updated.rows.length === 0) {
       return res.status(404).json({ error: 'Notification not found' });
     }
-
     return res.json(updated.rows[0]);
   } catch (err) {
     return next(err);
@@ -117,11 +103,10 @@ router.post('/:id/delivered', async (req, res, next) => {
     let userId = body.userId;
     const fcmTokenBody = body.fcmToken && String(body.fcmToken).trim() !== '' ? String(body.fcmToken).trim() : null;
 
-    // If externalId provided, look up userId
     if (!userId && body.externalId) {
       const userResult = await query(
         `SELECT id FROM users WHERE external_id = $1`,
-        [body.externalId]
+        [body.externalId],
       );
       if (userResult.rows.length > 0) {
         userId = userResult.rows[0].id;
@@ -129,21 +114,11 @@ router.post('/:id/delivered', async (req, res, next) => {
     }
 
     if (!userId) {
-      // Fallback for clients that cannot resolve user yet: still count delivery.
-      const updatedFallback = await query(
-        `UPDATE notifications
-            SET delivered_count = COALESCE(delivered_count, 0) + 1
-          WHERE id = $1
-          RETURNING id, delivered_count`,
-        [notificationId]
-      );
-      if (updatedFallback.rows.length === 0) {
-        return res.status(404).json({ error: 'Notification not found' });
-      }
-      return res.json(updatedFallback.rows[0]);
+      return res.status(400).json({
+        error: 'externalId or userId required for delivery tracking',
+      });
     }
 
-    // Upsert delivery row so topic-based sends are tracked too.
     await query(
       `INSERT INTO notification_deliveries (notification_id, user_id, fcm_token, delivered_at)
        VALUES ($1, $2, $3, now())
@@ -151,27 +126,21 @@ router.post('/:id/delivered', async (req, res, next) => {
        DO UPDATE SET
          delivered_at = COALESCE(notification_deliveries.delivered_at, now()),
          fcm_token = COALESCE(EXCLUDED.fcm_token, notification_deliveries.fcm_token)`,
-      [notificationId, userId, fcmTokenBody]
+      [notificationId, userId, fcmTokenBody],
     ).catch(async () => {
-      // Fallback for older schema where delivered_at may be missing
       await query(
         `UPDATE notification_deliveries
             SET delivered_at = now()
           WHERE notification_id = $1 AND user_id = $2 AND delivered_at IS NULL`,
-        [notificationId, userId]
+        [notificationId, userId],
       ).catch(() => {});
     });
 
-    // Increment delivered_count on notifications table
+    await syncNotificationStats(notificationId);
+
     const updated = await query(
-      `UPDATE notifications
-          SET delivered_count = (
-            SELECT COUNT(*) FROM notification_deliveries
-            WHERE notification_id = $1 AND delivered_at IS NOT NULL
-          )
-        WHERE id = $1
-        RETURNING id, delivered_count`,
-      [notificationId]
+      `SELECT id, delivered_count FROM notifications WHERE id = $1`,
+      [notificationId],
     );
 
     if (updated.rows.length === 0) {
@@ -185,4 +154,3 @@ router.post('/:id/delivered', async (req, res, next) => {
 });
 
 module.exports = router;
-

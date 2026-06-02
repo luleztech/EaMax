@@ -135,73 +135,6 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
   }
 };
 
-// Send push notification to multiple FCM tokens.
-// Offline: FCM stores each message (no collapseKey); when user has internet again,
-// all pending messages are delivered (app can be minimized or in background).
-const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {}) => {
-  if (!firebaseInitialized) {
-    throw new Error('Firebase Admin not initialized');
-  }
-
-  if (!fcmTokens || fcmTokens.length === 0) {
-    return { success: true, sent: 0, failed: 0 };
-  }
-
-  try {
-    const baseMessage = {
-      notification: {
-        title,
-        body,
-      },
-      data: stringifyData({
-        ...data,
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-      }),
-      android: {
-        priority: 'high',
-        ttl: FCM_TTL_MS,
-        notification: {
-          channelId: FCM_ANDROID_CHANNEL_ID,
-          sound: 'default',
-          priority: 'high',
-        },
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
-            'content-available': 1,
-          },
-        },
-        headers: {
-          'apns-priority': '10',
-          'apns-push-type': 'alert',
-        },
-      },
-    };
-
-    const tokens = fcmTokens.map((t) => String(t || '').trim()).filter(Boolean);
-    const messages = tokens.map((token) => ({
-      ...baseMessage,
-      token,
-    }));
-
-    // Prefer sendEach (firebase-admin v11+) — same payloads as sendEachForMulticast, fewer HTTP/2 edge cases.
-    const response = await retryFirebaseSend(async () => admin.messaging().sendEach(messages));
-
-    return {
-      success: true,
-      sent: response.successCount,
-      failed: response.failureCount,
-      responses: response.responses,
-    };
-  } catch (error) {
-    console.error('Error sending multicast push notification:', error);
-    throw error;
-  }
-};
-
 const buildReliableAndroidConfig = () => ({
   priority: 'high',
   ttl: FCM_TTL_MS,
@@ -227,6 +160,54 @@ const buildReliableApnsConfig = () => ({
     'apns-push-type': 'alert',
   },
 });
+
+const buildReliableMulticastBase = (title, body, data = {}) => ({
+  notification: { title, body },
+  data: stringifyData({
+    title,
+    body,
+    ...data,
+    click_action: 'FLUTTER_NOTIFICATION_CLICK',
+  }),
+  android: buildReliableAndroidConfig(),
+  apns: buildReliableApnsConfig(),
+});
+
+// Send push notification to multiple FCM tokens (notification + data for OS display).
+const sendPushNotificationToMultiple = async (fcmTokens, title, body, data = {}) => {
+  return sendReliablePushNotificationToMultiple(fcmTokens, title, body, data);
+};
+
+const sendReliablePushNotificationToMultiple = async (fcmTokens, title, body, data = {}) => {
+  if (!firebaseInitialized) {
+    throw new Error('Firebase Admin not initialized');
+  }
+
+  if (!fcmTokens || fcmTokens.length === 0) {
+    return { success: true, sent: 0, failed: 0, responses: [] };
+  }
+
+  try {
+    const baseMessage = buildReliableMulticastBase(title, body, data);
+    const tokens = fcmTokens.map((t) => String(t || '').trim()).filter(Boolean);
+    const messages = tokens.map((token) => ({
+      ...baseMessage,
+      token,
+    }));
+
+    const response = await retryFirebaseSend(async () => admin.messaging().sendEach(messages));
+
+    return {
+      success: true,
+      sent: response.successCount,
+      failed: response.failureCount,
+      responses: response.responses,
+    };
+  } catch (error) {
+    console.error('Error sending multicast push notification:', error);
+    throw error;
+  }
+};
 
 /**
  * Notification + data (best for Android when app is killed / idle).
@@ -325,6 +306,7 @@ module.exports = {
   initializeFirebase,
   sendPushNotification,
   sendPushNotificationToMultiple,
+  sendReliablePushNotificationToMultiple,
   sendPushNotificationToTopic,
   sendReliablePushNotification,
   sendReliablePushNotificationToTopic,

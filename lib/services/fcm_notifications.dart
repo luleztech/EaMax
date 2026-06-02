@@ -107,6 +107,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       message.data['message'] ??
       '';
   if (body.isEmpty) return;
+  // OS may already show notification payload; still show local for consistent channel + tap payload.
+  if (message.notification != null) {
+    _logFcm('Background handler: notification payload present nid=$nid');
+  }
   await showEamaxLocalNotification(
     title: title,
     body: body,

@@ -130,6 +130,20 @@ router.get('/users', async (req, res, next) => {
 // Admin: notification history for the dashboard
 router.get('/notifications', async (req, res, next) => {
   try {
+    // Keep delivered/clicks aligned with per-user tracking tables.
+    await query(
+      `UPDATE notifications n
+          SET delivered_count = COALESCE((
+                SELECT COUNT(*)::int FROM notification_deliveries nd
+                 WHERE nd.notification_id = n.id AND nd.delivered_at IS NOT NULL
+              ), 0),
+              clicks = COALESCE((
+                SELECT COUNT(*)::int FROM notification_clicks nc
+                 WHERE nc.notification_id = n.id
+              ), 0)
+        WHERE n.sent_at IS NOT NULL`,
+    ).catch(() => {});
+
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const result = await query(
       `SELECT id, title, message, category, type, sent_at, scheduled_for,
@@ -1222,13 +1236,12 @@ router.post('/notifications', async (req, res, next) => {
       return res.status(500).json({ error: 'Failed to save notification' });
     }
 
-    // Send push notifications
+    // Send push notifications to every device with a token + topic all_users (real FCM counts).
     if (data.type === 'normal') {
+      const { broadcastNotificationToAllUsers } = require('../services/notificationBroadcast');
       const firebase = require('../services/firebase');
-      const sendTopicPush = firebase.sendPushNotificationToTopic;
-      const isInit = firebase.isInitialized;
 
-      if (typeof isInit !== 'function' || !isInit()) {
+      if (!firebase.isInitialized()) {
         console.error('[FCM] Firebase not initialized - FIREBASE_SERVICE_ACCOUNT_KEY missing or invalid');
         return res.status(201).json({
           ...notification,
@@ -1238,38 +1251,33 @@ router.post('/notifications', async (req, res, next) => {
       }
 
       try {
-        // Topic broadcast reaches all installs that subscribed to all_users.
-        await sendTopicPush(
-          'all_users',
+        const pushData = {
+          notificationId: String(notification.id),
+          category: data.category,
+          type: 'notification',
+        };
+        const broadcast = await broadcastNotificationToAllUsers(
           data.title,
           data.message,
-          {
-            notificationId: String(notification.id),
-            category: data.category,
-            type: 'notification',
-          }
+          pushData,
         );
 
-        // Approximate audience size from active users for dashboard "sent" metric.
-        const audienceResult = await query(
-          `SELECT COUNT(*)::int AS count
-           FROM users
-           WHERE blocked = FALSE
-             AND uninstalled_at IS NULL`
-        ).catch(() => ({ rows: [{ count: 0 }] }));
-        const audienceCount = Number(audienceResult.rows?.[0]?.count || 0);
-
+        const sentCount = broadcast.tokensSent;
         await query(
-          `UPDATE notifications SET sent_count = $1 WHERE id = $2`,
-          [audienceCount, notification.id],
+          `UPDATE notifications SET sent_count = $1, delivered_count = 0, clicks = 0 WHERE id = $2`,
+          [sentCount, notification.id],
         ).catch(() => {});
 
         return res.status(201).json({
           ...notification,
-          sent_count: audienceCount,
-          failed_count: 0,
-          sent_via_topic: true,
-          topic: 'all_users',
+          sent_count: sentCount,
+          failed_count: broadcast.tokensFailed,
+          tokens_attempted: broadcast.tokensAttempted,
+          users_with_token: broadcast.usersWithToken,
+          registered_users: broadcast.registeredUsers,
+          sent_via_topic: broadcast.topicSent,
+          topic: broadcast.topicSent ? 'all_users' : null,
+          invalid_tokens_cleared: broadcast.invalidTokensCleared,
         });
       } catch (pushErr) {
         console.error('[FCM] Push send error:', pushErr.message || pushErr);

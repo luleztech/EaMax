@@ -106,12 +106,18 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         return;
       }
 
-      const sentCount = result?.sent_count || result?.total_devices || 0;
-      const successText = result?.sent_via_topic
-        ? `✅ Broadcast sent to all installs (topic: ${result?.topic || 'all_users'})`
-        : sentCount > 0
-          ? `✅ Sent to ${sentCount.toLocaleString()} devices!`
-          : 'Notification sent successfully!';
+      const sentCount = Number(result?.sent_count || 0);
+      const withToken = Number(result?.users_with_token || 0);
+      const failed = Number(result?.failed_count || 0);
+      const topicLine = result?.sent_via_topic ? ' + topic all_users' : '';
+      const successText =
+        sentCount > 0
+          ? `✅ FCM accepted ${sentCount.toLocaleString()} push(es) (${withToken.toLocaleString()} devices with token${topicLine}). Delivered/clicks update as users open the app.`
+          : withToken > 0
+            ? `⚠️ Saved but FCM accepted 0 pushes (${failed} failed). Check Firebase key and tokens.`
+            : result?.sent_via_topic
+              ? `✅ Topic broadcast only (no FCM tokens in DB yet) — users need to allow notifications in the app.`
+              : 'Notification saved. No devices with FCM tokens yet.';
 
       setStatusMessage({ type: 'success', text: successText });
 
