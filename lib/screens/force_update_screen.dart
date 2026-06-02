@@ -208,7 +208,7 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
                                             color: Colors.white, size: 20),
                                         const SizedBox(width: 10),
                                         Text(
-                                          'SASISHA SASA',
+                                          'UPDATE',
                                           style: orbitron(14,
                                                   weight: FontWeight.w900)
                                               .copyWith(
