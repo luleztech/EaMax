@@ -26,13 +26,30 @@ function compareSemver(a, b) {
  * While that var is absent / false, the middleware only logs — safe to deploy
  * before the new APK reaches all users.
  */
+// Routes that should never be version-checked (admin panel, webhooks).
+// req.path here is relative to the /api/ prefix, e.g. "/admin/...", "/dashboard/..."
+function _isAdminRoute(req) {
+  const p = req.path || '';
+  return (
+    p.startsWith('/admin') ||
+    p.startsWith('/dashboard') ||
+    p.startsWith('/partner')
+  );
+}
+
+const _upgradeBody = () => ({
+  error: 'upgrade_required',
+  message: 'Tafadhali sasisha app yako ili uendelee.',
+  minimumSupportedVersion: config.minimumSupportedVersion,
+  latestVersion: config.latestVersion,
+  playStoreUrl: config.playStoreUrl,
+});
+
 function requireAppVersion(req, res, next) {
-  const version = req.headers['x-app-version'];
+  // Always skip admin-panel routes.
+  if (_isAdminRoute(req)) return next();
 
-  if (!version) {
-    return next();
-  }
-
+  // Maintenance mode overrides everything — even valid versions get blocked.
   if (config.maintenanceMode) {
     return res.status(503).json({
       error: 'maintenance',
@@ -40,21 +57,27 @@ function requireAppVersion(req, res, next) {
     });
   }
 
+  const version = req.headers['x-app-version'];
+
+  if (!version) {
+    // No version header = old build that pre-dates our changes.
+    // When enforcement is ON, stop these builds so users are forced to update.
+    // When enforcement is OFF, allow them through (safe rollout period).
+    if (config.requireAppVersion) {
+      console.warn(`[VersionCheck] No X-App-Version header — blocking old client (${req.method} ${req.originalUrl})`);
+      return res.status(426).json(_upgradeBody());
+    }
+    return next();
+  }
+
   const tooOld = compareSemver(version, config.minimumSupportedVersion) < 0;
 
   if (tooOld) {
     if (config.requireAppVersion) {
-      return res.status(426).json({
-        error: 'upgrade_required',
-        message: 'Tafadhali sasisha app yako ili uendelee.',
-        minimumSupportedVersion: config.minimumSupportedVersion,
-        latestVersion: config.latestVersion,
-        playStoreUrl: config.playStoreUrl,
-      });
+      console.warn(`[VersionCheck] Outdated: ${version} < ${config.minimumSupportedVersion}`);
+      return res.status(426).json(_upgradeBody());
     }
-    console.warn(
-      `[VersionCheck] Outdated client: ${version} < ${config.minimumSupportedVersion} — enforcement is off`
-    );
+    console.warn(`[VersionCheck] Soft-warn: ${version} < ${config.minimumSupportedVersion} (enforcement off)`);
   }
 
   next();
