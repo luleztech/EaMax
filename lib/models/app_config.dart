@@ -8,6 +8,8 @@ class AppConfig {
     required this.maintenanceMode,
     required this.maintenanceMessage,
     required this.playStoreUrl,
+    required this.updateTitle,
+    required this.updateMessage,
   });
 
   final String minimumSupportedVersion;
@@ -16,6 +18,8 @@ class AppConfig {
   final bool maintenanceMode;
   final String maintenanceMessage;
   final String playStoreUrl;
+  final String updateTitle;
+  final String updateMessage;
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
     return AppConfig(
@@ -28,6 +32,9 @@ class AppConfig {
           'App iko chini ya matengenezo. Jaribu tena baadaye.',
       playStoreUrl: json['playStoreUrl']?.toString() ??
           'https://play.google.com/store/apps/details?id=com.eamax',
+      updateTitle: json['updateTitle']?.toString() ?? 'Update Required',
+      updateMessage: json['updateMessage']?.toString() ??
+          'A new version is available. Please update to continue using the app.',
     );
   }
 

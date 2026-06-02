@@ -1,13 +1,12 @@
 import 'dart:async';
-import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 
-import '../config/app_version.dart';
+import '../config/api.dart';
 import '../models/app_config.dart';
 
-/// Fetches and caches the remote app configuration from  GET /app-config.
+/// Fetches and caches the remote app configuration from GET /app-config.
 ///
 /// The config drives:
 ///   - Force-update blocking screen
@@ -19,8 +18,6 @@ import '../models/app_config.dart';
 ///   - A failed fetch returns the last known-good cache (if any), otherwise
 ///     `null` — meaning the app proceeds normally (never blocks on network error).
 class AppConfigService {
-  static const String _configUrl =
-      'https://eamax-production.up.railway.app/app-config';
   static const Duration _fetchTimeout = Duration(seconds: 10);
   static const Duration _cacheTtl = Duration(minutes: 30);
 
@@ -38,24 +35,18 @@ class AppConfigService {
     if (!forceRefresh && _cacheValid) return _cached;
 
     try {
-      final response = await http.get(
-        Uri.parse(_configUrl),
-        headers: {
-          'X-App-Version': kAppVersion,
-          'X-App-Bundle': kAppBundleId,
-          'Content-Type': 'application/json',
-        },
-      ).timeout(_fetchTimeout);
+      final response = await apiClient
+          .get('/app-config')
+          .timeout(_fetchTimeout);
 
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body);
-        if (json is Map<String, dynamic>) {
-          final config = AppConfig.fromJson(json);
-          _cached = config;
-          _cachedAt = DateTime.now();
-          return config;
-        }
+      if (response.statusCode == 200 && response.data is Map<String, dynamic>) {
+        final config = AppConfig.fromJson(Map<String, dynamic>.from(response.data));
+        _cached = config;
+        _cachedAt = DateTime.now();
+        return config;
       }
+    } on DioError catch (e) {
+      debugPrint('[AppConfigService] fetch error: ${e.message}');
     } catch (e, st) {
       debugPrint('[AppConfigService] fetch error: $e\n$st');
     }

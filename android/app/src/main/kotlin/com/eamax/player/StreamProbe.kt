@@ -5,6 +5,7 @@ import android.util.Log
 import com.eamax.domain.model.StreamSession
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 import okhttp3.Request
 
@@ -16,7 +17,15 @@ import okhttp3.Request
 object StreamProbe {
 
     private const val TAG = "StreamProbe"
-    private const val RANGE_BYTES = 65535
+    /** Only need the first ~2 KB to detect #EXTM3U / <?xml / <MPD / HTML signatures. */
+    private const val RANGE_BYTES = 2047
+    /** Max bytes we ever read from the response body — 4 KB is more than enough. */
+    private const val MAX_READ_BYTES = 4096
+    /** Probe results cached for this many ms — avoids re-probing the same URL. */
+    private const val CACHE_TTL_MS = 10 * 60 * 1000L
+
+    private data class CacheEntry(val result: Result, val expiresAt: Long)
+    private val probeCache = ConcurrentHashMap<String, CacheEntry>()
 
     enum class ResolvedKind {
         EXO_HLS,
@@ -38,43 +47,73 @@ object StreamProbe {
 
     fun resolveForSession(session: StreamSession): Result {
         val original = session.mpdUrl.trim()
+
+        // ── Cache check ───────────────────────────────────────────────────────
+        // Skip all network probing if we resolved this URL recently.
+        val now = System.currentTimeMillis()
+        probeCache[original]?.let { entry ->
+            if (now < entry.expiresAt) {
+                Log.d(TAG, "cache hit for ${original.take(80)}")
+                return entry.result
+            } else {
+                probeCache.remove(original)
+            }
+        }
+
         val headers = buildRequestHeaders(session)
 
-        // PHP gateways build or gate playback in the page (JS, redirects, cookies). WebView matches browser behavior.
+        fun cache(r: Result): Result {
+            probeCache[original] = CacheEntry(r, now + CACHE_TTL_MS)
+            return r
+        }
+
+        // ── PHP gateways: always WebView ──────────────────────────────────────
         if (StreamUrlClassifier.isPhpLikeUrl(original)) {
-            return Result(ResolvedKind.WEB_VIEW_PAGE, original, original, refererOverlay(original, headers))
+            return cache(Result(ResolvedKind.WEB_VIEW_PAGE, original, original, refererOverlay(original, headers)))
         }
 
+        // ── Obvious .m3u8 → HLS, no network probe needed ─────────────────────
+        // If ExoPlayer fails (e.g. login page disguised as .m3u8), the existing
+        // malformed-manifest recovery falls through to SNIFFING automatically.
         if (StreamUrlClassifier.hasObviousM3u8(original)) {
-            // Still probe once: some providers return HTML/login pages even for .m3u8 URLs.
-            return safeProbeFirst(
-                original = original,
-                headers = headers,
-                expectedKind = ResolvedKind.EXO_HLS,
-            )
-        }
-        if (StreamUrlClassifier.hasObviousMpd(original)) {
-            // Still probe once: many DRM gateways redirect .mpd requests to non-manifest content.
-            return safeProbeFirst(
-                original = original,
-                headers = headers,
-                expectedKind = ResolvedKind.EXO_DASH,
-            )
-        }
-        if (StreamUrlClassifier.hasObviousProgressiveExtension(original)) {
-            return Result(ResolvedKind.EXO_PROGRESSIVE, original, original, refererOverlay(original, headers))
+            Log.d(TAG, "fast-path HLS (m3u8 extension): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
         }
 
+        // ── Obvious .mpd → DASH, no network probe needed ──────────────────────
+        if (StreamUrlClassifier.hasObviousMpd(original) && !StreamUrlClassifier.isLikelyGatewayUrl(original)) {
+            Log.d(TAG, "fast-path DASH (mpd extension): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_DASH, original, original, refererOverlay(original, headers)))
+        }
+
+        // ── Obvious progressive media ─────────────────────────────────────────
+        if (StreamUrlClassifier.hasObviousProgressiveExtension(original)) {
+            return cache(Result(ResolvedKind.EXO_PROGRESSIVE, original, original, refererOverlay(original, headers)))
+        }
+
+        // ── IPTV / Xtream Codes port-based URLs → HLS fast-path ──────────────
+        // Pattern: host:port/live/... or host:port/user/pass/id (no extension)
+        // These are always HLS; probing them costs 500ms+ for no benefit.
+        val lowerOriginal = original.lowercase()
+        val isIptvPortUrl = Regex("""^https?://[^/]+:\d{2,5}/(live|stream|play|hls|iptv|channel|ch)/""").containsMatchIn(lowerOriginal) ||
+            Regex("""^https?://[^/]+:\d{2,5}/[^/]+/[^/]+/[^/?#]+$""").containsMatchIn(lowerOriginal.split("#")[0])
+        if (isIptvPortUrl) {
+            Log.d(TAG, "fast-path HLS (IPTV/Xtream port URL): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
+        }
+
+        // ── Ambiguous URLs: probe HTTP to determine format ────────────────────
         val useBrowserAccept = StreamUrlClassifier.isLikelyGatewayUrl(original)
         return try {
-            probeHttp(original, headers, useBrowserAccept)
+            cache(probeHttp(original, headers, useBrowserAccept))
         } catch (e: Exception) {
             Log.w(TAG, "probe failed, gateway fallback: ${e.message}")
-            if (StreamUrlClassifier.isLikelyGatewayUrl(original) || StreamUrlClassifier.isPhpLikeUrl(original)) {
+            val fallback = if (StreamUrlClassifier.isLikelyGatewayUrl(original) || StreamUrlClassifier.isPhpLikeUrl(original)) {
                 Result(ResolvedKind.WEB_VIEW_PAGE, original, original, refererOverlay(original, headers))
             } else {
                 Result(ResolvedKind.EXO_SNIFF, original, original, refererOverlay(original, headers))
             }
+            cache(fallback)
         }
     }
 
@@ -149,7 +188,8 @@ object StreamProbe {
             "application/dash+xml,application/vnd.apple.mpegurl,application/x-mpegURL,application/xml,text/xml,*/*;q=0.8"
         }
         val reqHeaders = HashMap(headers).apply { putIfAbsent("Accept", accept) }
-        val client = EamaxHttpDataSource.probeClient()
+        // Use the fast probe client (short timeouts) so dead streams fail quickly.
+        val client = EamaxHttpDataSource.fastProbeClient()
 
         fun buildRequest(withRange: Boolean): Request {
             val b = Request.Builder().url(url)
@@ -182,15 +222,14 @@ object StreamProbe {
             } catch (_: Exception) {
                 throw IllegalStateException("HTTP $status")
             }
-            val bodyText = readLimited(stream, 720896)
+            val bodyText = readLimited(stream, MAX_READ_BYTES)
             ctv to bodyText
         }
 
-        val headSample = if (body.length <= 32768) body else body.substring(0, 32768)
+        val headSample = body
         val headTrim = headSample.trim()
         val headLower = headTrim.lowercase()
-        // MPD/XML can start after whitespace; peek more than the UI sample for classification.
-        val manifestPeek = body.take(262144).trim()
+        val manifestPeek = headTrim
 
         val okStatus = status in 200..299 || status == 206
         if (!okStatus) {
@@ -308,9 +347,9 @@ object StreamProbe {
 
     private fun readLimited(stream: InputStream?, maxBytes: Int): String {
         if (stream == null) return ""
-        val buf = ByteArray(8192)
+        val buf = ByteArray(minOf(maxBytes, 4096))
         var total = 0
-        val out = ByteArrayOutputStream()
+        val out = ByteArrayOutputStream(maxBytes)
         while (total < maxBytes) {
             val n = stream.read(buf, 0, min(buf.size, maxBytes - total))
             if (n <= 0) break
@@ -319,4 +358,7 @@ object StreamProbe {
         }
         return out.toByteArray().decodeToString()
     }
+
+    /** Clear probe cache (e.g. on network change). */
+    fun clearCache() = probeCache.clear()
 }

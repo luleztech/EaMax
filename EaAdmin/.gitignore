@@ -66,6 +66,11 @@ yarn-error.log
 # testing
 /coverage
 
+# Flutter guard (stops parent EaMax from launching)
+.dart_tool/
+.packages
+build/
+
 # Yarn
 .yarn/*
 !.yarn/patches

@@ -117,6 +117,7 @@ class ChannelCard extends StatefulWidget {
     required this.channel,
     required this.onPress,
     this.locked = false,
+    this.isLoading = false,
     this.width,
     this.compactGrid = false,
     this.railPosterHeightDelta = 0,
@@ -125,6 +126,7 @@ class ChannelCard extends StatefulWidget {
   final ChannelUi channel;
   final VoidCallback onPress;
   final bool locked;
+  final bool isLoading;
   final double? width;
   final bool compactGrid;
   final double railPosterHeightDelta;

@@ -67,6 +67,20 @@ object EamaxHttpDataSource {
     /** Same sockets/DNS/TLS as playback — probe and Exo stay consistent. */
     fun probeClient(): OkHttpClient = sharedClient
 
+    /**
+     * Short-timeout client used only by [StreamProbe] for format detection.
+     * Falls back fast so users see playback (or error) without waiting 60s.
+     * 8s connect / 10s read is generous enough for high-latency mobile networks.
+     */
+    val fastProbeClient: OkHttpClient by lazy {
+        sharedClient.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
+    fun fastProbeClient(): OkHttpClient = fastProbeClient
+
     @Suppress("UNUSED_PARAMETER")
     fun factory(
         headers: Map<String, String>,

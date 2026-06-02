@@ -128,6 +128,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   ChannelUi? _selectedChannel;
   int _localPoints = 0;
   int? _loadingChannelId;
+  // Cache getChannel() results for 5 minutes so repeated taps on the same channel
+  // are instant without a network round-trip.
+  final Map<int, Map<String, dynamic>> _channelDataCache = {};
+  final Map<int, DateTime> _channelDataCacheTime = {};
 
   bool _searchOpen = false;
   String _searchQuery = '';
@@ -307,6 +311,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   /// Syncs admin channel mode + carousel + channels + matches (same as pull-to-refresh).
   Future<void> reloadRemoteData() async {
     setState(() => _refreshing = true);
+    _channelDataCache.clear();
+    _channelDataCacheTime.clear();
     try {
       await widget.syncPremiumSetting();
       await Future.wait([_loadSlides(), _loadChannels(), _loadMatches()]);
@@ -576,16 +582,29 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     return const {};
   }
 
+  static const Duration _channelCacheTtl = Duration(minutes: 5);
+
+  bool _isCacheValid(int channelId) {
+    final t = _channelDataCacheTime[channelId];
+    return t != null && DateTime.now().difference(t) < _channelCacheTtl;
+  }
+
   Future<void> _openChannel(ChannelUi ch) async {
     final canPlay = widget.isPremium ||
         (widget.channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired == 0);
     if (canPlay) {
-      // Always fetch complete channel data: getChannel returns DRM keys, custom headers,
-      // licenseUrl, and token that the list API omits. Using stale apiRow causes 403s on
-      // streams that need those extra fields.
       setState(() => _loadingChannelId = ch.id);
       try {
-        final data = await channelsApi.getChannel(ch.id);
+        Map<String, dynamic> data;
+        if (_isCacheValid(ch.id)) {
+          // Cache hit: instant playback, no network round-trip.
+          data = _channelDataCache[ch.id]!;
+        } else {
+          // Fetch complete channel data (DRM keys, custom headers, licenseUrl, token).
+          data = await channelsApi.getChannel(ch.id);
+          _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
+          _channelDataCacheTime[ch.id] = DateTime.now();
+        }
         final rawUrl = data['streamUrl'] ?? data['stream_url'];
         final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
             ? '$rawUrl'.trim()

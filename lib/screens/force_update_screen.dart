@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/app_config.dart';
+import '../services/app_config_service.dart';
+import '../services/update_state.dart';
 import '../theme/app_typography.dart';
 
 /// Full-screen mandatory update wall.
@@ -23,6 +27,7 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
   late final Animation<double> _scale;
+  Timer? _refreshTimer;
   bool _launching = false;
 
   @override
@@ -39,10 +44,14 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
     _scale = Tween<double>(begin: 1.0, end: 1.06).animate(
       CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
     );
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _recheckUpdateStatus();
+    });
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _pulse.dispose();
     super.dispose();
   }
@@ -57,6 +66,18 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
       }
     } finally {
       if (mounted) setState(() => _launching = false);
+    }
+  }
+
+  Future<void> _recheckUpdateStatus() async {
+    try {
+      final config = await AppConfigService.fetch(forceRefresh: true);
+      if (!mounted || config == null) return;
+      if (!config.shouldBlockAccess) {
+        appUpdateState.clear();
+      }
+    } catch (_) {
+      // Ignore refresh failures; the server update screen remains visible.
     }
   }
 
@@ -105,7 +126,7 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
                   ),
                   const SizedBox(height: 32),
                   Text(
-                    'Sasisha App Yako',
+                    'Update App Yako',
                     textAlign: TextAlign.center,
                     style: orbitron(26, weight: FontWeight.w900).copyWith(
                       color: Colors.white,
@@ -114,8 +135,7 @@ class _ForceUpdateScreenState extends State<ForceUpdateScreen>
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Toleo unalotumia halisaidiwi tena.\n'
-                    'Tafadhali sasisha EaMax ili uendelee kutazama.',
+                    'Toleo hili halifanyi kazi kwa sasa. Tafadhali hakikisha umeupdate app yako ya EaMax ili ufurahie vipindi bora.',
                     textAlign: TextAlign.center,
                     style: rajdhani(15, weight: FontWeight.w500)
                         .copyWith(color: Colors.white70, height: 1.6),

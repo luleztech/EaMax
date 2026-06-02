@@ -24,6 +24,12 @@ module.exports = {
   get playStoreUrl() {
     return process.env.PLAY_STORE_URL || 'https://play.google.com/store/apps/details?id=com.eamax';
   },
+  get updateTitle() {
+    return process.env.UPDATE_TITLE || 'Update Required';
+  },
+  get updateMessage() {
+    return process.env.UPDATE_MESSAGE || 'A new version is available. Please update to continue using the app.';
+  },
   get requireAppVersion() { return process.env.REQUIRE_APP_VERSION === 'true'; },
   get playIntegrityEnabled() { return process.env.PLAY_INTEGRITY_ENABLED === 'true'; },
   get playIntegrityProjectNumber() { return process.env.PLAY_INTEGRITY_PROJECT_NUMBER || ''; },

@@ -38,8 +38,10 @@ function _isAdminRoute(req) {
 }
 
 const _upgradeBody = () => ({
-  error: 'upgrade_required',
-  message: 'Tafadhali sasisha app yako ili uendelee.',
+  error: 'UPDATE_REQUIRED',
+  message: config.updateMessage,
+  updateTitle: config.updateTitle,
+  updateMessage: config.updateMessage,
   minimumSupportedVersion: config.minimumSupportedVersion,
   latestVersion: config.latestVersion,
   playStoreUrl: config.playStoreUrl,

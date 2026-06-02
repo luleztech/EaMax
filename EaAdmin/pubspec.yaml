@@ -1,0 +1,16 @@
+name: eaadmin_guard
+description: >-
+  Guard project only — stops `flutter run` from launching parent EaMax.
+  Real admin app is React Native; use ./run-admin.sh or npm run android.
+publish_to: 'none'
+version: 0.0.1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -28,6 +28,8 @@ router.get('/', (req, res) => {
     maintenanceMode: config.maintenanceMode,
     maintenanceMessage: config.maintenanceMessage,
     playStoreUrl: config.playStoreUrl,
+    updateTitle: config.updateTitle,
+    updateMessage: config.updateMessage,
   });
 });
 

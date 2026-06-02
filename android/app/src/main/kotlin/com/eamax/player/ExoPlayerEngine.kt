@@ -111,16 +111,15 @@ class ExoPlayerEngine(
     companion object {
         private const val TAG = "ExoPlayerEngine"
         
-        // Buffer configuration — slightly more tolerant on flaky Wi‑Fi / high latency
-        private const val MIN_BUFFER_MS = 15000
-        private const val MAX_BUFFER_MS = 50000
-        /// Faster start on tap (still enough headroom for bursty mobile networks).
-        private const val BUFFER_FOR_PLAYBACK_MS = 1200
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5000
+        // Buffer configuration tuned for live IPTV on mobile networks.
+        private const val MIN_BUFFER_MS = 10000       // maintain 10s buffer
+        private const val MAX_BUFFER_MS = 30000       // cap at 30s to save memory
+        private const val BUFFER_FOR_PLAYBACK_MS = 1000        // start after 1s
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 1500 // resume after 1.5s (was 5s)
 
-        // Passed through to [EamaxHttpDataSource] (shared client uses 60s internally).
-        private const val CONNECT_TIMEOUT_MS = 30000
-        private const val READ_TIMEOUT_MS = 30000
+        // Timeouts: fail fast → surface error → retry rather than hanging silently.
+        private const val CONNECT_TIMEOUT_MS = 10000  // 10s connect (was 30s)
+        private const val READ_TIMEOUT_MS = 20000     // 20s read (was 30s)
     }
 
     /**

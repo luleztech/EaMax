@@ -13,6 +13,7 @@ import '../models/app_config.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/maintenance_screen.dart';
 import '../services/app_config_service.dart';
+import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
 import '../services/user_id.dart';
 import '../widgets/ad_reward_modal.dart';
@@ -47,6 +48,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _splashDone = false;
   bool _notifPermissionVisible = false;
   bool _maintenanceRetrying = false;
+  bool _appConfigChecked = false;
   AppConfig? _appConfig;
 
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
@@ -121,6 +123,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    appUpdateState.addListener(_onGlobalUpdateStateChanged);
     unawaited(_hydrateChannelsPremiumOnlyFromCache());
     _bootstrap();
     unawaited(_initConnectivity());
@@ -128,6 +131,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   @override
   void dispose() {
+    appUpdateState.removeListener(_onGlobalUpdateStateChanged);
     WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     _pendingPaymentWatcher?.cancel();
@@ -221,8 +225,27 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await _fetchAppConfig(forceRefresh: true);
   }
 
+  void _onGlobalUpdateStateChanged() {
+    if (!mounted) return;
+    setState(() {
+      _appConfig = appUpdateState.config;
+      if (_appConfig?.shouldBlockAccess == true) {
+        _points = 0;
+        _premium = false;
+        _congratsOpen = false;
+        _offlineModalVisible = false;
+      }
+    });
+  }
+
   Future<void> _bootstrap() async {
-    unawaited(_fetchAppConfig());
+    await _fetchAppConfig(forceRefresh: true);
+    if (!mounted) return;
+    setState(() => _appConfigChecked = true);
+    if (_appConfig?.shouldBlockAccess == true) {
+      return;
+    }
+
     await getOrCreateUserId();
     await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
@@ -400,13 +423,17 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    if (!_splashDone) {
+    if (!_splashDone || !_appConfigChecked) {
       return LoaderScreen(
         onDone: () {
-          setState(() => _splashDone = true);
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            unawaited(_maybePromptNotificationPermission());
-          });
+          if (!_splashDone) {
+            setState(() => _splashDone = true);
+          }
+          if (_appConfigChecked) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              unawaited(_maybePromptNotificationPermission());
+            });
+          }
         },
       );
     }

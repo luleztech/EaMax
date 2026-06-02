@@ -1,10 +1,26 @@
-import 'dart:convert';
+import 'package:dio/dio.dart';
 
-import 'package:http/http.dart' as http;
-
+import '../interceptors/app_update_interceptor.dart';
+import '../models/api_exceptions.dart';
 import 'app_version.dart';
 
 const String apiBaseUrl = 'https://eamax-production.up.railway.app';
+
+final Dio _dio = Dio(BaseOptions(
+  baseUrl: apiBaseUrl,
+  connectTimeout: const Duration(seconds: 45),
+  receiveTimeout: const Duration(seconds: 45),
+  sendTimeout: const Duration(seconds: 45),
+  responseType: ResponseType.json,
+  validateStatus: (status) => status != null,
+  headers: <String, String>{
+    'Content-Type': 'application/json',
+    'X-App-Version': kAppVersion,
+    'X-App-Bundle': kAppBundleId,
+  },
+))..interceptors.add(AppUpdateInterceptor());
+
+Dio get apiClient => _dio;
 
 Future<void> _sleep(int ms) => Future<void>.delayed(Duration(milliseconds: ms));
 
@@ -24,63 +40,58 @@ Future<dynamic> _apiRequestOnce(
   Map<String, dynamic>? body,
   Duration timeout = const Duration(seconds: 45),
 }) async {
-  final url = Uri.parse('$apiBaseUrl$endpoint');
-  final headers = <String, String>{
-    'Content-Type': 'application/json',
-    'X-App-Version': kAppVersion,
-    'X-App-Bundle': kAppBundleId,
-  };
-  final http.Response response;
-  switch (method.toUpperCase()) {
-    case 'POST':
-      response = await http
-          .post(url, headers: headers, body: body != null ? jsonEncode(body) : null)
-          .timeout(timeout);
-    case 'GET':
-    default:
-      response = await http.get(url, headers: headers).timeout(timeout);
-  }
+  try {
+    final response = await _dio.request(
+      endpoint,
+      data: body,
+      options: Options(method: method),
+    ).timeout(timeout);
 
-  dynamic decoded;
-  final text = response.body;
-  if (text.trim().isNotEmpty) {
-    try {
-      decoded = jsonDecode(text);
-    } catch (_) {
-      decoded = null;
+    final data = response.data;
+    final statusCode = response.statusCode ?? 500;
+    final bodyData = data is Map<String, dynamic> ? data : <String, dynamic>{};
+
+    if (statusCode == 426) {
+      throw AppUpgradeRequiredException(
+        message: bodyData['message']?.toString() ?? 'Please update your application.',
+        minimumVersion: bodyData['minimumSupportedVersion']?.toString() ?? '',
+        playStoreUrl: bodyData['playStoreUrl']?.toString() ?? '',
+        updateTitle: bodyData['updateTitle']?.toString() ?? 'Update Required',
+        updateMessage: bodyData['updateMessage']?.toString() ??
+            bodyData['message']?.toString() ?? 'Please update your application.',
+      );
     }
-  }
-  if (response.statusCode == 426) {
-    throw AppUpgradeRequiredException(
-      message: (decoded is Map ? decoded['message']?.toString() : null) ??
-          'App update required',
-      minimumVersion: (decoded is Map
-              ? decoded['minimumSupportedVersion']?.toString()
-              : null) ??
-          '',
-      playStoreUrl: (decoded is Map
-              ? decoded['playStoreUrl']?.toString()
-              : null) ??
-          '',
-    );
-  }
-  if (response.statusCode == 503 &&
-      decoded is Map &&
-      decoded['error'] == 'maintenance') {
-    throw AppMaintenanceException(
-        message: decoded['message']?.toString() ?? 'Under maintenance');
-  }
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    if (decoded is Map) {
-      final err = decoded['error']?.toString().trim();
-      final detail = decoded['detail']?.toString().trim();
+
+    if (statusCode == 503 && bodyData['error'] == 'maintenance') {
+      throw AppMaintenanceException(
+        message: bodyData['message']?.toString() ?? 'Under maintenance',
+      );
+    }
+
+    if (statusCode < 200 || statusCode >= 300) {
+      final err = bodyData['error']?.toString().trim();
+      final detail = bodyData['detail']?.toString().trim();
       if (err != null && err.isNotEmpty) {
-        throw Exception(detail != null && detail.isNotEmpty && detail != err ? '$err ($detail)' : err);
+        throw Exception(detail.isNotEmpty && detail != err ? '$err ($detail)' : err);
       }
+      throw Exception('HTTP $statusCode');
     }
-    throw Exception('HTTP ${response.statusCode}');
+
+    return data ?? <String, dynamic>{};
+  } on DioError catch (e) {
+    if (e.error is AppUpgradeRequiredException) {
+      rethrow;
+    }
+    if (e.type == DioErrorType.connectionTimeout ||
+        e.type == DioErrorType.receiveTimeout ||
+        e.type == DioErrorType.sendTimeout) {
+      throw Exception('Network timeout');
+    }
+    if (e.error is Exception) {
+      rethrow;
+    }
+    throw Exception(e.message);
   }
-  return decoded ?? <String, dynamic>{};
 }
 
 Future<dynamic> apiRequest(
@@ -340,25 +351,3 @@ final settingsApi = SettingsApi();
 final matchesApi = MatchesApi();
 final paymentsApi = PaymentsApi();
 final notificationsApi = NotificationsApi();
-
-/// Thrown when the backend returns HTTP 426 — the installed app is too old.
-class AppUpgradeRequiredException implements Exception {
-  const AppUpgradeRequiredException({
-    required this.message,
-    required this.minimumVersion,
-    required this.playStoreUrl,
-  });
-  final String message;
-  final String minimumVersion;
-  final String playStoreUrl;
-  @override
-  String toString() => 'AppUpgradeRequiredException: $message';
-}
-
-/// Thrown when the backend returns HTTP 503 with error=="maintenance".
-class AppMaintenanceException implements Exception {
-  const AppMaintenanceException({required this.message});
-  final String message;
-  @override
-  String toString() => 'AppMaintenanceException: $message';
-}
