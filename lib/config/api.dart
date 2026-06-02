@@ -72,7 +72,7 @@ Future<dynamic> _apiRequestOnce(
       final err = bodyData['error']?.toString().trim();
       final detail = bodyData['detail']?.toString().trim();
       if (err != null && err.isNotEmpty) {
-        throw Exception(detail.isNotEmpty && detail != err ? '$err ($detail)' : err);
+        throw Exception((detail?.isNotEmpty ?? false) && detail != err ? '$err ($detail)' : err);
       }
       throw Exception('HTTP $statusCode');
     }
