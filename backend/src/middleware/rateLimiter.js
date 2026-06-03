@@ -59,7 +59,8 @@ const generalLimiter = rateLimit({
       path.startsWith('/api/channels') ||
       path.startsWith('/api/carousel') ||
       path.startsWith('/api/settings') ||
-      path.startsWith('/api/matches')
+      path.startsWith('/api/matches') ||
+      path.startsWith('/api/promotions')
     )) {
       return true;
     }

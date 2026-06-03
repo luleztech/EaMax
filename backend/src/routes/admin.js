@@ -3,7 +3,11 @@ const { z } = require('zod');
 const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
 
+const promotionsAdminRouter = require('./promotionsAdmin');
+
 const router = express.Router();
+
+router.use('/promotions', promotionsAdminRouter);
 
 const ensureAppSettingsTable = async () => {
   await query(`

@@ -5,6 +5,7 @@ import ContentSection from './sections/ContentSection';
 import AdsSection from './sections/AdsSection';
 import AnalyticsSection from './sections/AnalyticsSection';
 import SettingsSection from './sections/SettingsSection';
+import PromotionSection from './sections/PromotionSection';
 import NotificationsPanel from './NotificationsPanel';
 import AppShell from './ui/AppShell';
 
@@ -18,6 +19,7 @@ const AdminApp = () => {
       { id: 'overview', label: 'Overview', shortLabel: 'Home', icon: 'view-dashboard' },
       { id: 'users', label: 'Users', shortLabel: 'Users', icon: 'account-group' },
       { id: 'channels', label: 'Channels', shortLabel: 'Channels', icon: 'movie-open' },
+      { id: 'promotions', label: 'Promotion Center', shortLabel: 'Promo', icon: 'bullhorn-variant' },
       { id: 'ads', label: 'Ads & Points', shortLabel: 'Ads', icon: 'bullhorn' },
       { id: 'analytics', label: 'Analytics', shortLabel: 'Stats', icon: 'chart-bar' },
       { id: 'settings', label: 'Settings', shortLabel: 'Settings', icon: 'cog' },
@@ -38,6 +40,10 @@ const AdminApp = () => {
       channels: {
         title: 'Channels Management',
         subtitle: 'Drag to reorder · Premium · Active — tap to edit',
+      },
+      promotions: {
+        title: 'Promotion Center',
+        subtitle: 'Launch popups · schedule · target users · track CTR',
       },
       ads: {
         title: 'Ads & Points',
@@ -65,6 +71,8 @@ const AdminApp = () => {
         return <UsersSection isActive={activeTab === 'users'} />;
       case 'channels':
         return <ContentSection />;
+      case 'promotions':
+        return <PromotionSection />;
       case 'ads':
         return <AdsSection />;
       case 'analytics':

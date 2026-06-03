@@ -527,6 +527,36 @@ export const dashboardAPI = {
   },
 };
 
+/**
+ * Promotion Center API
+ */
+export const adminPromotionsAPI = {
+  getStats: async () => apiRequest('/api/admin/promotions/stats'),
+
+  list: async () => apiRequest('/api/admin/promotions'),
+
+  create: async (payload) =>
+    apiRequest('/api/admin/promotions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  update: async (id, payload) =>
+    apiRequest(`/api/admin/promotions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  toggle: async (id, isActive) =>
+    apiRequest(`/api/admin/promotions/${id}/toggle`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive }),
+    }),
+
+  remove: async (id) =>
+    apiRequest(`/api/admin/promotions/${id}`, { method: 'DELETE' }),
+};
+
 export default {
   API_BASE_URL,
   ADMIN_API_KEY,
@@ -538,4 +568,5 @@ export default {
   adminSettingsAPI,
   adminMatchesAPI,
   adminAdsAPI,
+  adminPromotionsAPI,
 };

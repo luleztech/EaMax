@@ -10,8 +10,12 @@ import '../config/ads.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../models/app_config.dart';
+import '../models/promotion.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/maintenance_screen.dart';
+import '../screens/promotion_force_update_screen.dart';
+import '../services/promotion_service.dart';
+import '../widgets/promotion_popup.dart';
 import '../services/app_config_service.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
@@ -50,6 +54,11 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _maintenanceRetrying = false;
   bool _appConfigChecked = false;
   AppConfig? _appConfig;
+
+  List<Promotion> _promotionQueue = [];
+  int _promotionIndex = 0;
+  bool _promotionsLoaded = false;
+  Promotion? _blockingPromotion;
 
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
   bool _adOverlayVisible = false;
@@ -249,6 +258,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await getOrCreateUserId();
     await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
+    await _loadPromotions();
     await setupFcmLocalNotifications();
     await _checkPendingPayment();
     _startPendingPaymentWatcher();
@@ -277,6 +287,41 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _onNotifSkip() {
     setState(() => _notifPermissionVisible = false);
+  }
+
+  Future<void> _loadPromotions() async {
+    try {
+      final all = await promotionService.fetchEligible(forceRefresh: true);
+      final blocking = promotionService.findBlockingForceUpdate(all);
+      final popups = await promotionService.fetchForLaunch(forceRefresh: false);
+      if (!mounted) return;
+      setState(() {
+        _blockingPromotion = blocking;
+        _promotionQueue = popups;
+        _promotionIndex = 0;
+        _promotionsLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _promotionsLoaded = true);
+    }
+  }
+
+  void _dismissCurrentPromotion() {
+    if (_promotionIndex + 1 < _promotionQueue.length) {
+      setState(() => _promotionIndex += 1);
+    } else {
+      setState(() {
+        _promotionQueue = [];
+        _promotionIndex = 0;
+      });
+    }
+  }
+
+  Promotion? get _activePromotion {
+    if (_promotionQueue.isEmpty || _promotionIndex >= _promotionQueue.length) {
+      return null;
+    }
+    return _promotionQueue[_promotionIndex];
   }
 
   Future<void> _syncFcmIfAllowed() async {
@@ -452,6 +497,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       return ForceUpdateScreen(config: _appConfig!);
     }
 
+    if (_promotionsLoaded && _blockingPromotion != null) {
+      return PromotionForceUpdateScreen(
+        promotion: _blockingPromotion!,
+        fallbackConfig: _appConfig,
+      );
+    }
+
+    final activePromo = _promotionsLoaded ? _activePromotion : null;
+
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -535,6 +589,20 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           onAllow: () => unawaited(_onNotifAllow()),
           onSkip: _onNotifSkip,
         ),
+        if (activePromo != null)
+          Positioned.fill(
+            child: PromotionPopupOverlay(
+              key: ValueKey<int>(activePromo.id),
+              promotion: activePromo,
+              onDismiss: _dismissCurrentPromotion,
+              onForceUpdate: () {
+                final uri = activePromo.buttonUrl?.trim();
+                if (uri != null && uri.isNotEmpty) {
+                  // CTA handled inside popup; force-update promos use blocking screen.
+                }
+              },
+            ),
+          ),
       ],
     );
   }
