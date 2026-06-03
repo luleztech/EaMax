@@ -43,7 +43,7 @@ const AdminApp = () => {
       },
       promotions: {
         title: 'Promotion Center',
-        subtitle: 'Launch popups · schedule · target users · track CTR',
+        subtitle: 'Picha · Ujumbe · Tangazo · Ofa',
       },
       ads: {
         title: 'Ads & Points',

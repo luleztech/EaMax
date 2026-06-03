@@ -223,6 +223,10 @@ query(
      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
    )`
 ).catch(() => {});
+query(`ALTER TABLE promotions ADD COLUMN IF NOT EXISTS offer_amount_tsh INTEGER`).catch(() => {});
+query(`ALTER TABLE promotions ADD COLUMN IF NOT EXISTS offer_period_days INTEGER`).catch(() => {});
+query(`ALTER TABLE promotions ADD COLUMN IF NOT EXISTS offer_countdown_minutes INTEGER`).catch(() => {});
+query(`ALTER TABLE promotions ADD COLUMN IF NOT EXISTS offer_ends_at TIMESTAMPTZ`).catch(() => {});
 query(
   `CREATE TABLE IF NOT EXISTS promotion_events (
      id SERIAL PRIMARY KEY,

@@ -16,60 +16,61 @@ import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminPromotionsAPI } from '../../config/api';
 
-const PRIORITY_LABELS = {
-  1: 'Critical',
-  2: 'High',
-  3: 'Medium',
-  4: 'Low',
-};
+const PRIORITY_LABELS = { 1: 'Muhimu', 2: 'Juu', 3: 'Wastani', 4: 'Chini' };
 
 const TYPES = [
-  { id: 'image', label: 'Image', icon: 'image-outline' },
-  { id: 'text', label: 'Text', icon: 'format-text' },
-  { id: 'announcement', label: 'Announcement', icon: 'bullhorn-outline' },
-  { id: 'force_update', label: 'Force Update', icon: 'update' },
+  { id: 'picha', label: 'Picha', icon: 'image-outline', color: '#60a5fa' },
+  { id: 'ujumbe', label: 'Ujumbe', icon: 'message-text-outline', color: '#a78bfa' },
+  { id: 'tangazo', label: 'Tangazo', icon: 'bullhorn-outline', color: '#fbbf24' },
+  { id: 'ofa', label: 'Ofa', icon: 'tag-heart-outline', color: '#34d399' },
 ];
 
 const STYLES = [
   { id: 'dark_glass', label: 'Dark Glass' },
-  { id: 'gold', label: 'Gold Premium' },
+  { id: 'gold', label: 'Gold' },
   { id: 'premium_blue', label: 'Premium Blue' },
   { id: 'red_alert', label: 'Red Alert' },
-  { id: 'green_success', label: 'Green Success' },
+  { id: 'green_success', label: 'Green' },
 ];
 
 const SHOW_MODES = [
-  { id: 'every_launch', label: 'Every launch' },
-  { id: 'daily', label: 'Once per day' },
-  { id: 'once', label: 'Show once' },
+  { id: 'every_launch', label: 'Kila ufunguaji' },
+  { id: 'daily', label: 'Mara kwa siku' },
+  { id: 'once', label: 'Mara moja' },
 ];
 
 const TARGETS = [
-  { id: 'all', label: 'All users' },
-  { id: 'free', label: 'Free users' },
-  { id: 'premium', label: 'Premium users' },
-  { id: 'android', label: 'Android only' },
-  { id: 'version', label: 'Version targeting' },
+  { id: 'all', label: 'Wote' },
+  { id: 'free', label: 'Bure tu' },
+  { id: 'premium', label: 'Premium' },
+  { id: 'android', label: 'Android' },
+  { id: 'version', label: 'Toleo la app' },
 ];
+
+const normalizeType = (t) => {
+  const m = { image: 'picha', text: 'ujumbe', announcement: 'tangazo', force_update: 'tangazo' };
+  return m[t] || t || 'ujumbe';
+};
+
+const typeMeta = (id) => TYPES.find((t) => t.id === id) || TYPES[1];
 
 const emptyForm = () => ({
   title: '',
   description: '',
   imageUrl: '',
-  buttonText: 'Watch Now',
+  buttonText: 'Fungua',
   buttonUrl: '',
-  type: 'text',
+  type: 'ujumbe',
   priority: 3,
   isActive: true,
   showMode: 'daily',
-  startAt: '',
-  endAt: '',
   targetAudience: 'all',
   targetMaxVersion: '',
   targetMinVersion: '',
   backgroundStyle: 'dark_glass',
-  forceUpdate: false,
-  minRequiredVersion: '',
+  offerAmountTsh: '1700',
+  offerPeriodDays: '7',
+  offerCountdownMinutes: '10',
 });
 
 const PromotionSection = () => {
@@ -78,6 +79,7 @@ const PromotionSection = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [typePickerOpen, setTypePickerOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
@@ -91,8 +93,7 @@ const PromotionSection = () => {
       setStats(s || {});
       setItems(Array.isArray(list) ? list : []);
     } catch (e) {
-      console.error('Promotions load:', e);
-      Alert.alert('Error', e?.message || 'Failed to load promotions');
+      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kupakia');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -111,53 +112,76 @@ const PromotionSection = () => {
 
   const openEdit = (item) => {
     setEditing(item);
+    const type = normalizeType(item.type);
     setForm({
       title: item.title || '',
       description: item.description || '',
       imageUrl: item.imageUrl || '',
-      buttonText: item.buttonText || 'Learn More',
+      buttonText: item.buttonText || 'Fungua',
       buttonUrl: item.buttonUrl || '',
-      type: item.type || 'text',
+      type,
       priority: item.priority || 3,
       isActive: item.isActive !== false,
       showMode: item.showMode || 'daily',
-      startAt: item.startAt ? String(item.startAt).slice(0, 16) : '',
-      endAt: item.endAt ? String(item.endAt).slice(0, 16) : '',
-      targetAudience: item.targetAudience || 'all',
+      targetAudience: type === 'ofa' ? 'free' : item.targetAudience || 'all',
       targetMaxVersion: item.targetMaxVersion || '',
       targetMinVersion: item.targetMinVersion || '',
       backgroundStyle: item.backgroundStyle || 'dark_glass',
-      forceUpdate: !!item.forceUpdate,
-      minRequiredVersion: item.minRequiredVersion || '',
+      offerAmountTsh: String(item.offerAmountTsh ?? 1700),
+      offerPeriodDays: String(item.offerPeriodDays ?? 7),
+      offerCountdownMinutes: String(item.offerCountdownMinutes ?? 10),
     });
     setModalOpen(true);
   };
 
-  const buildPayload = () => ({
-    title: form.title.trim(),
-    description: form.description.trim(),
-    imageUrl: form.imageUrl.trim() || null,
-    buttonText: form.buttonText.trim() || 'Learn More',
-    buttonUrl: form.buttonUrl.trim() || null,
-    type: form.type,
-    priority: Number(form.priority) || 3,
-    isActive: !!form.isActive,
-    showMode: form.showMode,
-    startAt: form.startAt.trim() || null,
-    endAt: form.endAt.trim() || null,
-    targetAudience: form.targetAudience,
-    targetMaxVersion:
-      form.targetAudience === 'version' ? form.targetMaxVersion.trim() || null : null,
-    targetMinVersion: form.targetMinVersion.trim() || null,
-    backgroundStyle: form.backgroundStyle,
-    forceUpdate: form.type === 'force_update' ? true : !!form.forceUpdate,
-    minRequiredVersion: form.minRequiredVersion.trim() || null,
-  });
+  const buildPayload = () => {
+    const type = form.type;
+    const payload = {
+      title: form.title.trim(),
+      description: form.description.trim(),
+      imageUrl: type === 'picha' ? form.imageUrl.trim() || null : null,
+      buttonText: type === 'tangazo' ? form.buttonText.trim() || 'Fungua' : '',
+      buttonUrl: type === 'tangazo' ? form.buttonUrl.trim() || null : null,
+      type,
+      priority: Number(form.priority) || 3,
+      isActive: !!form.isActive,
+      showMode: form.showMode,
+      targetAudience: type === 'ofa' ? 'free' : form.targetAudience,
+      targetMaxVersion:
+        form.targetAudience === 'version' ? form.targetMaxVersion.trim() || null : null,
+      targetMinVersion: form.targetMinVersion.trim() || null,
+      backgroundStyle: form.backgroundStyle,
+    };
+    if (type === 'ofa') {
+      payload.offerAmountTsh = Number(form.offerAmountTsh) || 0;
+      payload.offerPeriodDays = Number(form.offerPeriodDays) || 0;
+      payload.offerCountdownMinutes = Number(form.offerCountdownMinutes) || 0;
+    }
+    return payload;
+  };
 
   const handleSave = async () => {
     if (!form.title.trim()) {
-      Alert.alert('Validation', 'Title is required');
+      Alert.alert('Thibitisha', 'Kichwa kinahitajika');
       return;
+    }
+    if (form.type === 'picha' && !form.imageUrl.trim()) {
+      Alert.alert('Thibitisha', 'Weka URL ya picha');
+      return;
+    }
+    if (form.type === 'ofa') {
+      if (!(Number(form.offerAmountTsh) > 0)) {
+        Alert.alert('Thibitisha', 'Weka bei ya ofa (TZS)');
+        return;
+      }
+      if (!(Number(form.offerPeriodDays) > 0)) {
+        Alert.alert('Thibitisha', 'Weka muda wa usajili (siku)');
+        return;
+      }
+      if (!(Number(form.offerCountdownMinutes) > 0)) {
+        Alert.alert('Thibitisha', 'Weka muda wa kuhesabu ofa (dakika)');
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -170,24 +194,24 @@ const PromotionSection = () => {
       setModalOpen(false);
       await load();
     } catch (e) {
-      Alert.alert('Save failed', e?.message || 'Could not save');
+      Alert.alert('Imeshindwa', e?.message || 'Haijahifadhiwa');
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = (item) => {
-    Alert.alert('Delete promotion', `Remove "${item.title}"?`, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Futa', `Futa "${item.title}"?`, [
+      { text: 'Ghairi', style: 'cancel' },
       {
-        text: 'Delete',
+        text: 'Futa',
         style: 'destructive',
         onPress: async () => {
           try {
             await adminPromotionsAPI.remove(item.id);
             await load();
           } catch (e) {
-            Alert.alert('Error', e?.message || 'Delete failed');
+            Alert.alert('Hitilafu', e?.message || 'Imeshindwa');
           }
         },
       },
@@ -199,11 +223,25 @@ const PromotionSection = () => {
       await adminPromotionsAPI.toggle(item.id, !item.isActive);
       await load();
     } catch (e) {
-      Alert.alert('Error', e?.message || 'Toggle failed');
+      Alert.alert('Hitilafu', e?.message || 'Imeshindwa');
     }
   };
 
   const setField = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+
+  const onTypeSelect = (id) => {
+    setField('type', id);
+    if (id === 'ofa') {
+      setForm((f) => ({
+        ...f,
+        type: id,
+        targetAudience: 'free',
+        showMode: 'every_launch',
+        priority: 1,
+      }));
+    }
+    setTypePickerOpen(false);
+  };
 
   if (loading) {
     return (
@@ -213,161 +251,163 @@ const PromotionSection = () => {
     );
   }
 
+  const selectedType = typeMeta(form.type);
+
   return (
     <View style={styles.wrap}>
       <ScrollView
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              load();
+            }}
+          />
+        }
         contentContainerStyle={styles.scroll}>
         <View style={styles.statsRow}>
-          <StatCard label="Views" value={stats?.totalViews} icon="eye-outline" color="#60a5fa" />
-          <StatCard label="Clicks" value={stats?.totalClicks} icon="cursor-default-click" color="#34d399" />
+          <StatCard label="Maoni" value={stats?.totalViews} icon="eye-outline" color="#60a5fa" />
+          <StatCard label="Bofya" value={stats?.totalClicks} icon="cursor-default-click" color="#34d399" />
         </View>
         <View style={styles.statsRow}>
-          <StatCard label="Active" value={stats?.activePromotions} icon="lightning-bolt" color="#fbbf24" />
-          <StatCard label="Expired" value={stats?.expiredPromotions} icon="clock-alert-outline" color="#f87171" />
+          <StatCard label="Hai" value={stats?.activePromotions} icon="lightning-bolt" color="#fbbf24" />
+          <StatCard label="CTR" value={`${stats?.ctrPercent ?? 0}%`} icon="chart-line" color="#a78bfa" />
         </View>
-        {stats?.ctrPercent != null ? (
-          <Text style={styles.ctrText}>CTR {stats.ctrPercent}% across all promotions</Text>
-        ) : null}
 
         <TouchableOpacity style={styles.createBtn} onPress={openCreate} activeOpacity={0.85}>
-          <LinearGradient colors={['#8b5cf6', '#6d28d9']} style={styles.createGrad}>
-            <Icon name="plus" size={22} color="#fff" />
-            <Text style={styles.createText}>Create Promotion</Text>
+          <LinearGradient colors={['#7c3aed', '#5b21b6']} style={styles.createGrad}>
+            <Icon name="plus-circle-outline" size={22} color="#fff" />
+            <Text style={styles.createText}>Tengeneza tangazo</Text>
           </LinearGradient>
         </TouchableOpacity>
 
         {items.length === 0 ? (
-          <Text style={styles.empty}>No promotions yet. Create your first campaign.</Text>
+          <Text style={styles.empty}>Hakuna matangazo bado.</Text>
         ) : (
-          items.map((item) => (
-            <View key={String(item.id)} style={styles.card}>
-              <View style={styles.cardTop}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>{item.title}</Text>
-                  <Text style={styles.cardMeta}>
-                    {PRIORITY_LABELS[item.priority] || 'Medium'} · {item.type} · {item.showMode}
-                  </Text>
-                  <Text style={styles.cardStats}>
-                    {item.viewsCount} views · {item.clicksCount} clicks · {item.closeCount} closes
-                  </Text>
+          items.map((item) => {
+            const t = typeMeta(normalizeType(item.type));
+            return (
+              <View key={String(item.id)} style={styles.card}>
+                <View style={[styles.typeBadge, { backgroundColor: `${t.color}22` }]}>
+                  <Icon name={t.icon} size={18} color={t.color} />
+                  <Text style={[styles.typeBadgeText, { color: t.color }]}>{t.label}</Text>
                 </View>
-                <Switch
-                  value={!!item.isActive}
-                  onValueChange={() => handleToggle(item)}
-                  trackColor={{ true: '#8b5cf6' }}
-                />
+                <View style={styles.cardTop}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>{item.title}</Text>
+                    <Text style={styles.cardMeta}>
+                      {PRIORITY_LABELS[item.priority] || 'Wastani'} · {item.showMode}
+                    </Text>
+                    <Text style={styles.cardStats}>
+                      {item.viewsCount} maoni · {item.clicksCount} bofya
+                    </Text>
+                    {item.type === 'ofa' && item.offerAmountTsh ? (
+                      <Text style={styles.offerLine}>
+                        Tsh {item.offerAmountTsh} · siku {item.offerPeriodDays}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Switch
+                    value={!!item.isActive}
+                    onValueChange={() => handleToggle(item)}
+                    trackColor={{ true: '#7c3aed' }}
+                  />
+                </View>
+                <View style={styles.cardActions}>
+                  <TouchableOpacity onPress={() => openEdit(item)} style={styles.iconBtn}>
+                    <Icon name="pencil-outline" size={20} color="#a78bfa" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleDelete(item)} style={styles.iconBtn}>
+                    <Icon name="delete-outline" size={20} color="#f87171" />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View style={styles.cardActions}>
-                <TouchableOpacity onPress={() => openEdit(item)} style={styles.iconBtn}>
-                  <Icon name="pencil-outline" size={20} color="#a78bfa" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => handleDelete(item)} style={styles.iconBtn}>
-                  <Icon name="delete-outline" size={20} color="#f87171" />
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
       <Modal visible={modalOpen} animationType="slide" transparent onRequestClose={() => setModalOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.modalTitle}>{editing ? 'Edit Promotion' : 'New Promotion'}</Text>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalTitle}>{editing ? 'Hariri' : 'Tangazo jipya'}</Text>
 
-              <Label>Type</Label>
-              <View style={styles.chipRow}>
-                {TYPES.map((t) => (
-                  <Chip
-                    key={t.id}
-                    label={t.label}
-                    active={form.type === t.id}
-                    onPress={() => {
-                      setField('type', t.id);
-                      if (t.id === 'force_update') {
-                        setField('forceUpdate', true);
-                        setField('showMode', 'every_launch');
-                        setField('priority', 1);
-                      }
-                    }}
-                  />
-                ))}
-              </View>
+              <Text style={styles.label}>Aina</Text>
+              <TouchableOpacity
+                style={styles.typeSelect}
+                onPress={() => setTypePickerOpen(true)}
+                activeOpacity={0.85}>
+                <View style={[styles.typeSelectIcon, { backgroundColor: `${selectedType.color}33` }]}>
+                  <Icon name={selectedType.icon} size={22} color={selectedType.color} />
+                </View>
+                <Text style={styles.typeSelectLabel}>{selectedType.label}</Text>
+                <Icon name="chevron-down" size={22} color="#9ca3af" />
+              </TouchableOpacity>
 
-              <Field label="Title *" value={form.title} onChangeText={(v) => setField('title', v)} />
+              <Field label="Kichwa *" value={form.title} onChangeText={(v) => setField('title', v)} />
               <Field
-                label="Description"
+                label="Maelezo"
                 value={form.description}
                 onChangeText={(v) => setField('description', v)}
                 multiline
               />
-              {form.type === 'image' ? (
+
+              {form.type === 'picha' ? (
                 <Field
-                  label="Image URL (PNG/JPG/WEBP)"
+                  label="URL ya picha"
                   value={form.imageUrl}
                   onChangeText={(v) => setField('imageUrl', v)}
                   placeholder="https://..."
                 />
               ) : null}
 
-              <Field label="Button text" value={form.buttonText} onChangeText={(v) => setField('buttonText', v)} />
-              <Field
-                label="Button URL (Play Store / link)"
-                value={form.buttonUrl}
-                onChangeText={(v) => setField('buttonUrl', v)}
-                placeholder="https://..."
-              />
-
-              <Label>Priority</Label>
-              <View style={styles.chipRow}>
-                {[1, 2, 3, 4].map((p) => (
-                  <Chip
-                    key={p}
-                    label={PRIORITY_LABELS[p]}
-                    active={form.priority === p}
-                    onPress={() => setField('priority', p)}
+              {form.type === 'tangazo' ? (
+                <>
+                  <Field label="Maandishi ya kitufe" value={form.buttonText} onChangeText={(v) => setField('buttonText', v)} />
+                  <Field
+                    label="Kiungo (Play Store / tovuti)"
+                    value={form.buttonUrl}
+                    onChangeText={(v) => setField('buttonUrl', v)}
+                    placeholder="https://..."
                   />
-                ))}
-              </View>
-
-              <Label>Show mode</Label>
-              <View style={styles.chipRow}>
-                {SHOW_MODES.map((m) => (
-                  <Chip
-                    key={m.id}
-                    label={m.label}
-                    active={form.showMode === m.id}
-                    onPress={() => setField('showMode', m.id)}
-                  />
-                ))}
-              </View>
-
-              <Label>Target audience</Label>
-              <View style={styles.chipRow}>
-                {TARGETS.map((t) => (
-                  <Chip
-                    key={t.id}
-                    label={t.label}
-                    active={form.targetAudience === t.id}
-                    onPress={() => setField('targetAudience', t.id)}
-                  />
-                ))}
-              </View>
-
-              {form.targetAudience === 'version' ? (
-                <Field
-                  label="Max app version (show if user ≤ this version)"
-                  value={form.targetMaxVersion}
-                  onChangeText={(v) => setField('targetMaxVersion', v)}
-                  placeholder="1.3.7"
-                />
+                </>
               ) : null}
 
-              {form.type === 'text' || form.type === 'announcement' ? (
+              {form.type === 'ofa' ? (
+                <View style={styles.ofaBox}>
+                  <Text style={styles.ofaTitle}>Mipangilio ya ofa</Text>
+                  <Field
+                    label="Bei (TZS)"
+                    value={form.offerAmountTsh}
+                    onChangeText={(v) => setField('offerAmountTsh', v.replace(/\D/g, ''))}
+                    keyboardType="numeric"
+                    placeholder="1700"
+                  />
+                  <Field
+                    label="Muda wa usajili (siku)"
+                    value={form.offerPeriodDays}
+                    onChangeText={(v) => setField('offerPeriodDays', v.replace(/\D/g, ''))}
+                    keyboardType="numeric"
+                    placeholder="7 = wiki moja"
+                  />
+                  <Field
+                    label="Muda wa kuhesabu ofa (dakika)"
+                    value={form.offerCountdownMinutes}
+                    onChangeText={(v) => setField('offerCountdownMinutes', v.replace(/\D/g, ''))}
+                    keyboardType="numeric"
+                    placeholder="10"
+                  />
+                  <Text style={styles.ofaHint}>
+                    Watumiaji wa bure wataona ofa na kuhesabu muda. Pokea Ofa inatuma ombi la malipo.
+                  </Text>
+                </View>
+              ) : null}
+
+              {form.type !== 'ofa' ? (
                 <>
-                  <Label>Background style</Label>
+                  <Text style={styles.label}>Muonekano</Text>
                   <View style={styles.chipRow}>
                     {STYLES.map((s) => (
                       <Chip
@@ -381,48 +421,97 @@ const PromotionSection = () => {
                 </>
               ) : null}
 
-              {form.type === 'force_update' ? (
-                <Field
-                  label="Minimum required version"
-                  value={form.minRequiredVersion}
-                  onChangeText={(v) => setField('minRequiredVersion', v)}
-                  placeholder="1.3.8"
-                />
-              ) : null}
+              <Text style={styles.label}>Kipaumbele</Text>
+              <View style={styles.chipRow}>
+                {[1, 2, 3, 4].map((p) => (
+                  <Chip
+                    key={p}
+                    label={PRIORITY_LABELS[p]}
+                    active={form.priority === p}
+                    onPress={() => setField('priority', p)}
+                  />
+                ))}
+              </View>
 
-              <Field
-                label="Start (ISO, optional)"
-                value={form.startAt}
-                onChangeText={(v) => setField('startAt', v)}
-                placeholder="2026-06-01T08:00"
-              />
-              <Field
-                label="End (ISO, optional)"
-                value={form.endAt}
-                onChangeText={(v) => setField('endAt', v)}
-                placeholder="2026-12-31T23:59"
-              />
+              <Text style={styles.label}>Onyesha</Text>
+              <View style={styles.chipRow}>
+                {SHOW_MODES.map((m) => (
+                  <Chip
+                    key={m.id}
+                    label={m.label}
+                    active={form.showMode === m.id}
+                    onPress={() => setField('showMode', m.id)}
+                  />
+                ))}
+              </View>
+
+              {form.type !== 'ofa' ? (
+                <>
+                  <Text style={styles.label}>Lengo</Text>
+                  <View style={styles.chipRow}>
+                    {TARGETS.map((t) => (
+                      <Chip
+                        key={t.id}
+                        label={t.label}
+                        active={form.targetAudience === t.id}
+                        onPress={() => setField('targetAudience', t.id)}
+                      />
+                    ))}
+                  </View>
+                  {form.targetAudience === 'version' ? (
+                    <Field
+                      label="Toleo la juu (≤)"
+                      value={form.targetMaxVersion}
+                      onChangeText={(v) => setField('targetMaxVersion', v)}
+                      placeholder="1.3.7"
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <Text style={styles.ofaHint}>Ofa inaonyeshwa kwa watumiaji wa bure pekee.</Text>
+              )}
 
               <View style={styles.switchRow}>
-                <Text style={styles.switchLabel}>Active</Text>
+                <Text style={styles.switchLabel}>Imewashwa</Text>
                 <Switch value={form.isActive} onValueChange={(v) => setField('isActive', v)} />
               </View>
 
               <View style={styles.modalActions}>
                 <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalOpen(false)}>
-                  <Text style={styles.cancelText}>Cancel</Text>
+                  <Text style={styles.cancelText}>Ghairi</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
                   {saving ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.saveText}>Save</Text>
+                    <Text style={styles.saveText}>Hifadhi</Text>
                   )}
                 </TouchableOpacity>
               </View>
             </ScrollView>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={typePickerOpen} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.pickerBackdrop}
+          activeOpacity={1}
+          onPress={() => setTypePickerOpen(false)}>
+          <View style={styles.pickerSheet}>
+            <Text style={styles.pickerTitle}>Chagua aina</Text>
+            {TYPES.map((t) => (
+              <TouchableOpacity
+                key={t.id}
+                style={[styles.pickerRow, form.type === t.id && styles.pickerRowActive]}
+                onPress={() => onTypeSelect(t.id)}>
+                <Icon name={t.icon} size={24} color={t.color} />
+                <Text style={styles.pickerRowText}>{t.label}</Text>
+                {form.type === t.id ? <Icon name="check" size={20} color="#a78bfa" /> : null}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
       </Modal>
     </View>
   );
@@ -431,14 +520,14 @@ const PromotionSection = () => {
 const StatCard = ({ label, value, icon, color }) => (
   <View style={[styles.statCard, { borderColor: `${color}44` }]}>
     <Icon name={icon} size={20} color={color} />
-    <Text style={styles.statValue}>{Number(value || 0).toLocaleString()}</Text>
+    <Text style={styles.statValue}>
+      {typeof value === 'number' ? Number(value).toLocaleString() : value ?? '0'}
+    </Text>
     <Text style={styles.statLabel}>{label}</Text>
   </View>
 );
 
-const Label = ({ children }) => <Text style={styles.label}>{children}</Text>;
-
-const Field = ({ label, value, onChangeText, multiline, placeholder }) => (
+const Field = ({ label, value, onChangeText, multiline, placeholder, keyboardType }) => (
   <View style={styles.field}>
     <Text style={styles.fieldLabel}>{label}</Text>
     <TextInput
@@ -448,6 +537,7 @@ const Field = ({ label, value, onChangeText, multiline, placeholder }) => (
       placeholder={placeholder}
       placeholderTextColor="#6b7280"
       multiline={multiline}
+      keyboardType={keyboardType}
     />
   </View>
 );
@@ -475,7 +565,6 @@ const styles = StyleSheet.create({
   },
   statValue: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 8 },
   statLabel: { color: '#9ca3af', fontSize: 12, marginTop: 4 },
-  ctrText: { color: '#a78bfa', fontSize: 13, marginBottom: 16, textAlign: 'center' },
   createBtn: { marginBottom: 20, borderRadius: 14, overflow: 'hidden' },
   createGrad: {
     flexDirection: 'row',
@@ -494,10 +583,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1f2937',
   },
+  typeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  typeBadgeText: { fontSize: 12, fontWeight: '700' },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
   cardTitle: { color: '#fff', fontSize: 17, fontWeight: '700' },
   cardMeta: { color: '#9ca3af', fontSize: 12, marginTop: 4 },
   cardStats: { color: '#6b7280', fontSize: 11, marginTop: 6 },
+  offerLine: { color: '#34d399', fontSize: 12, marginTop: 6, fontWeight: '600' },
   cardActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12, gap: 8 },
   iconBtn: { padding: 8 },
   modalBackdrop: {
@@ -512,8 +613,27 @@ const styles = StyleSheet.create({
     maxHeight: '92%',
     padding: 20,
   },
-  modalTitle: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 16 },
-  label: { color: '#9ca3af', fontSize: 13, fontWeight: '600', marginTop: 12, marginBottom: 8 },
+  modalTitle: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
+  label: { color: '#9ca3af', fontSize: 13, fontWeight: '600', marginTop: 14, marginBottom: 8 },
+  typeSelect: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    padding: 12,
+    marginBottom: 8,
+    gap: 12,
+  },
+  typeSelectIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  typeSelectLabel: { flex: 1, color: '#fff', fontSize: 16, fontWeight: '700' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   chip: {
     paddingHorizontal: 12,
@@ -537,6 +657,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   inputMulti: { minHeight: 80, textAlignVertical: 'top' },
+  ofaBox: {
+    backgroundColor: '#052e16',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#166534',
+  },
+  ofaTitle: { color: '#34d399', fontWeight: '800', fontSize: 15, marginBottom: 8 },
+  ofaHint: { color: '#6b7280', fontSize: 12, marginBottom: 12, lineHeight: 18 },
   switchRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -561,6 +691,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   saveText: { color: '#fff', fontWeight: '800' },
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  pickerSheet: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  pickerTitle: { color: '#fff', fontSize: 18, fontWeight: '800', marginBottom: 12 },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  pickerRowActive: { backgroundColor: '#1f2937' },
+  pickerRowText: { flex: 1, color: '#fff', fontSize: 16, fontWeight: '600' },
 });
 
 export default PromotionSection;

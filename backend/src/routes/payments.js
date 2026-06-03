@@ -651,6 +651,19 @@ const PLAN_CONFIG = {
   year: { amount: 12000, interval: '90 days' },
 };
 
+/** Standard bundles or promotion offers stored as `offer:<days>`. */
+const resolvePremiumInterval = (plan) => {
+  const key = String(plan || '').toLowerCase();
+  if (key.startsWith('offer:')) {
+    const days = parseInt(key.split(':')[1], 10);
+    if (Number.isFinite(days) && days > 0 && days <= 366) {
+      return `${days} days`;
+    }
+    return null;
+  }
+  return PLAN_CONFIG[key]?.interval ?? null;
+};
+
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
   const candidates = sonicPhoneCandidatesForApi(normalizedPhone);
@@ -809,14 +822,19 @@ const pollZenoOrderStatus = async (orderId) => {
 // Active gateway for NEW payments is ONLY `app_settings.payment_provider` (never inferred from the URL path).
 async function handlePaymentStart(req, res, next) {
   try {
-    const bodySchema = z.object({
-      externalId: z.string().min(1),
-      bundle: z.enum(['week', 'month', 'year']),
-      amount: z.number().int().min(1).optional(), // exact amount user selected (2000, 5000, 12000)
-      phone: z.string().min(9).max(15),
-      email: z.string().email().optional(),
-      name: z.string().optional(),
-    });
+    const bodySchema = z
+      .object({
+        externalId: z.string().min(1),
+        bundle: z.enum(['week', 'month', 'year']).optional(),
+        promotionId: z.coerce.number().int().positive().optional(),
+        amount: z.number().int().min(1).optional(),
+        phone: z.string().min(9).max(15),
+        email: z.string().email().optional(),
+        name: z.string().optional(),
+      })
+      .refine((d) => d.promotionId != null || d.bundle != null, {
+        message: 'bundle or promotionId required',
+      });
 
     const data = bodySchema.parse(req.body);
 
@@ -841,18 +859,54 @@ async function handlePaymentStart(req, res, next) {
     }
     const userId = userRes.rows[0].id;
 
-    const planInfo = PLAN_CONFIG[data.bundle];
-    if (!planInfo) {
-      return res.status(400).json({ error: 'Invalid bundle plan' });
-    }
+    let planKey;
+    let amountToSend;
 
-    // Use the exact amount the user selected. If client sends amount, it must match the bundle (anti-tamper).
-    if (data.amount != null && data.amount !== planInfo.amount) {
-      return res.status(400).json({
-        error: `Amount for ${data.bundle} must be ${planInfo.amount} TZS.`,
-      });
+    if (data.promotionId) {
+      const promoRes = await query(
+        `SELECT id, type, is_active, offer_amount_tsh, offer_period_days, offer_ends_at, target_audience
+           FROM promotions WHERE id = $1 LIMIT 1`,
+        [data.promotionId],
+      );
+      if (!promoRes.rows.length) {
+        return res.status(404).json({ error: 'Ofa haipatikani' });
+      }
+      const promo = promoRes.rows[0];
+      const promoType = String(promo.type || '').toLowerCase();
+      if (promoType !== 'ofa' || promo.is_active !== true) {
+        return res.status(400).json({ error: 'Hii si ofa halali' });
+      }
+      if (promo.offer_ends_at) {
+        const end = new Date(promo.offer_ends_at);
+        if (!Number.isNaN(end.getTime()) && end < new Date()) {
+          return res.status(400).json({ error: 'Ofa imekwisha' });
+        }
+      }
+      const offerAmount = Number(promo.offer_amount_tsh);
+      const offerDays = Number(promo.offer_period_days);
+      if (!offerAmount || !offerDays) {
+        return res.status(400).json({ error: 'Ofa haijasanidi vizuri' });
+      }
+      if (data.amount != null && data.amount !== offerAmount) {
+        return res.status(400).json({
+          error: `Kiasi cha ofa ni Tsh ${offerAmount}.`,
+        });
+      }
+      planKey = `offer:${offerDays}`;
+      amountToSend = offerAmount;
+    } else {
+      const planInfo = PLAN_CONFIG[data.bundle];
+      if (!planInfo) {
+        return res.status(400).json({ error: 'Invalid bundle plan' });
+      }
+      if (data.amount != null && data.amount !== planInfo.amount) {
+        return res.status(400).json({
+          error: `Amount for ${data.bundle} must be ${planInfo.amount} TZS.`,
+        });
+      }
+      planKey = data.bundle;
+      amountToSend = data.amount != null ? data.amount : planInfo.amount;
     }
-    const amountToSend = data.amount != null ? data.amount : planInfo.amount;
 
     const orderId = crypto.randomUUID();
     console.log('[Backend] Generated payment orderId:', orderId);
@@ -925,7 +979,7 @@ async function handlePaymentStart(req, res, next) {
         phoneLocal: normalizedPhone,
         phoneCandidates: sonicPhoneCandidatesForApi(normalizedPhone),
         amount: amountToSend,
-        bundle: data.bundle,
+        bundle: planKey,
         hasSecretKey: Boolean(SONICPESA_SECRET_KEY),
       });
 
@@ -958,7 +1012,7 @@ async function handlePaymentStart(req, res, next) {
         await query(
           `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [userId, data.bundle, planInfo.amount, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
+          [userId, planKey, amountToSend, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
         );
 
         return res.json({
@@ -1009,7 +1063,7 @@ async function handlePaymentStart(req, res, next) {
     await query(
       `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, data.bundle, planInfo.amount, 'TZS', 'pending', orderId, paymentProviderForRow, buyerPhoneLocal],
+      [userId, planKey, amountToSend, 'TZS', 'pending', orderId, paymentProviderForRow, buyerPhoneLocal],
     );
 
     const rollbackPendingZenoByRef = async (ref) => {
@@ -1030,7 +1084,7 @@ async function handlePaymentStart(req, res, next) {
       phonePrefix: normalizedPhone.slice(0, 3),
       walletHint: resolveZenoMobileWalletProviderHint(normalizedPhone),
       amount: amountToSend,
-      bundle: data.bundle,
+      bundle: planKey,
     });
 
     const { response, zenoData, phoneUsed } = await initiateZenoPayment({
@@ -1212,20 +1266,26 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     return null;
   }
 
-  const planInfo = PLAN_CONFIG[plan];
-  if (!planInfo || !planInfo.interval) {
+  const planInterval = resolvePremiumInterval(plan);
+  if (!planInterval) {
     console.error('[Payment] Invalid or missing plan:', plan);
     return null;
   }
 
   if (payment.status === 'completed') {
     console.log('[Payment] Payment already completed:', orderId);
-    await repairUserEntitlements(userId, planInfo.interval);
+    await repairUserEntitlements(userId, planInterval);
     const user = await fetchUserPremiumSnapshotByUserId(userId);
     return { ...payment, user };
   }
 
-  console.log('[Payment] Found payment:', { id: paymentId, user_id: userId, plan, amount_cents: payment.amount_cents, interval: planInfo.interval });
+  console.log('[Payment] Found payment:', {
+    id: paymentId,
+    user_id: userId,
+    plan,
+    amount_cents: payment.amount_cents,
+    interval: planInterval,
+  });
 
   const client = await pool.connect();
   try {
@@ -1244,7 +1304,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
       const cur = await client.query('SELECT status FROM subscription_payments WHERE id = $1', [paymentId]);
       if (cur.rows[0]?.status === 'completed') {
         await client.query('COMMIT');
-        await repairUserEntitlements(userId, planInfo.interval);
+        await repairUserEntitlements(userId, planInterval);
         const user = await fetchUserPremiumSnapshotByUserId(userId);
         return { ...payment, user };
       }
@@ -1252,7 +1312,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     }
     console.log('[Payment] Payment status set to completed, id:', paymentId);
 
-    await grantUserEntitlementsInTransaction(client, userId, planInfo.interval);
+    await grantUserEntitlementsInTransaction(client, userId, planInterval);
 
     await client.query('COMMIT');
     console.log('[Payment] Transaction committed for order:', orderId, '- revenue and premium users will reflect in admin.');
@@ -1319,9 +1379,9 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       );
       if (payRow.rows.length > 0) {
         const plan = String(payRow.rows[0].plan || '').toLowerCase();
-        const planInfo = PLAN_CONFIG[plan];
-        if (planInfo?.interval) {
-          await repairUserEntitlements(Number(payRow.rows[0].user_id), planInfo.interval);
+        const planInterval = resolvePremiumInterval(plan);
+        if (planInterval) {
+          await repairUserEntitlements(Number(payRow.rows[0].user_id), planInterval);
         }
       }
       return res.json(await buildCompletedStatusPayload(orderId, { data: [{ payment_status: 'COMPLETED' }] }));

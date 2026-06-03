@@ -5,45 +5,62 @@ const { compareSemver } = require('../middleware/appVersion');
 
 const router = express.Router();
 
-const promotionRowToJson = (row) => ({
-  id: row.id,
-  title: row.title,
-  description: row.description || '',
-  imageUrl: row.image_url || null,
-  image_url: row.image_url || null,
-  buttonText: row.button_text || 'Learn More',
-  button_text: row.button_text || 'Learn More',
-  buttonUrl: row.button_url || null,
-  button_url: row.button_url || null,
-  type: row.type,
-  priority: Number(row.priority) || 3,
-  active: row.is_active === true,
-  is_active: row.is_active === true,
-  showMode: row.show_mode || 'daily',
-  show_mode: row.show_mode || 'daily',
-  startDate: row.start_at,
-  start_at: row.start_at,
-  endDate: row.end_at,
-  end_at: row.end_at,
-  target: row.target_audience || 'all',
-  target_audience: row.target_audience || 'all',
-  targetMaxVersion: row.target_max_version || null,
-  target_max_version: row.target_max_version || null,
-  targetMinVersion: row.target_min_version || null,
-  target_min_version: row.target_min_version || null,
-  backgroundStyle: row.background_style || 'dark_glass',
-  background_style: row.background_style || 'dark_glass',
-  forceUpdate: row.force_update === true,
-  force_update: row.force_update === true,
-  minRequiredVersion: row.min_required_version || null,
-  min_required_version: row.min_required_version || null,
-  viewsCount: Number(row.views_count) || 0,
-  clicksCount: Number(row.clicks_count) || 0,
-  closeCount: Number(row.close_count) || 0,
-  lastViewedAt: row.last_viewed_at,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-});
+const TYPE_ALIASES = {
+  image: 'picha',
+  text: 'ujumbe',
+  announcement: 'tangazo',
+  force_update: 'tangazo',
+};
+
+function normalizeType(type) {
+  const t = String(type || 'ujumbe').toLowerCase();
+  return TYPE_ALIASES[t] || t;
+}
+
+const promotionRowToJson = (row) => {
+  const type = normalizeType(row.type);
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || '',
+    imageUrl: row.image_url || null,
+    image_url: row.image_url || null,
+    buttonText: row.button_text || '',
+    button_text: row.button_text || '',
+    buttonUrl: row.button_url || null,
+    button_url: row.button_url || null,
+    type,
+    priority: Number(row.priority) || 3,
+    active: row.is_active === true,
+    is_active: row.is_active === true,
+    showMode: row.show_mode || 'daily',
+    show_mode: row.show_mode || 'daily',
+    target: row.target_audience || 'all',
+    target_audience: row.target_audience || 'all',
+    targetMaxVersion: row.target_max_version || null,
+    target_max_version: row.target_max_version || null,
+    targetMinVersion: row.target_min_version || null,
+    target_min_version: row.target_min_version || null,
+    backgroundStyle: row.background_style || 'dark_glass',
+    background_style: row.background_style || 'dark_glass',
+    offerAmountTsh: row.offer_amount_tsh != null ? Number(row.offer_amount_tsh) : null,
+    offer_amount_tsh: row.offer_amount_tsh != null ? Number(row.offer_amount_tsh) : null,
+    offerPeriodDays: row.offer_period_days != null ? Number(row.offer_period_days) : null,
+    offer_period_days: row.offer_period_days != null ? Number(row.offer_period_days) : null,
+    offerCountdownMinutes:
+      row.offer_countdown_minutes != null ? Number(row.offer_countdown_minutes) : null,
+    offer_countdown_minutes:
+      row.offer_countdown_minutes != null ? Number(row.offer_countdown_minutes) : null,
+    offerEndsAt: row.offer_ends_at,
+    offer_ends_at: row.offer_ends_at,
+    viewsCount: Number(row.views_count) || 0,
+    clicksCount: Number(row.clicks_count) || 0,
+    closeCount: Number(row.close_count) || 0,
+    lastViewedAt: row.last_viewed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+};
 
 async function resolveUserContext(externalId) {
   if (!externalId) {
@@ -86,14 +103,11 @@ function matchesTargeting(row, ctx, appVersion, platform) {
   return true;
 }
 
-function isScheduleActive(row, now = new Date()) {
+function isPromotionActive(row, now = new Date()) {
   if (row.is_active !== true) return false;
-  if (row.start_at) {
-    const start = new Date(row.start_at);
-    if (!Number.isNaN(start.getTime()) && start > now) return false;
-  }
-  if (row.end_at) {
-    const end = new Date(row.end_at);
+  const type = normalizeType(row.type);
+  if (type === 'ofa' && row.offer_ends_at) {
+    const end = new Date(row.offer_ends_at);
     if (!Number.isNaN(end.getTime()) && end < now) return false;
   }
   return true;
@@ -123,7 +137,6 @@ async function recordPromotionEvent(promotionId, eventType, userId, externalId) 
   ).catch(() => {});
 }
 
-// Public: active promotions for app launch (validated server-side)
 router.get('/active', async (req, res, next) => {
   try {
     const schema = z.object({
@@ -151,7 +164,7 @@ router.get('/active', async (req, res, next) => {
 
     const now = new Date();
     const eligible = (result.rows || [])
-      .filter((row) => isScheduleActive(row, now))
+      .filter((row) => isPromotionActive(row, now))
       .filter((row) => matchesTargeting(row, ctx, appVersion, platform))
       .map(promotionRowToJson);
 

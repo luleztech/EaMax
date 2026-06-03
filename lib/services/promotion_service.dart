@@ -16,7 +16,7 @@ class PromotionService {
 
   Future<List<Promotion>> fetchForLaunch({bool forceRefresh = false}) async {
     final all = await fetchEligible(forceRefresh: forceRefresh);
-    return _filterByShowMode(all.where((p) => !p.blocksAppForUpdate).toList());
+    return _filterByShowMode(all);
   }
 
   Future<List<Promotion>> fetchEligible({bool forceRefresh = false}) async {
@@ -111,12 +111,6 @@ class PromotionService {
     } catch (_) {}
   }
 
-  Promotion? findBlockingForceUpdate(List<Promotion> list) {
-    for (final p in list) {
-      if (p.blocksAppForUpdate) return p;
-    }
-    return null;
-  }
 }
 
 final promotionService = PromotionService();

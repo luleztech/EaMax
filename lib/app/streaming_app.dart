@@ -13,7 +13,6 @@ import '../models/app_config.dart';
 import '../models/promotion.dart';
 import '../screens/force_update_screen.dart';
 import '../screens/maintenance_screen.dart';
-import '../screens/promotion_force_update_screen.dart';
 import '../services/promotion_service.dart';
 import '../widgets/promotion_popup.dart';
 import '../services/app_config_service.dart';
@@ -58,8 +57,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   List<Promotion> _promotionQueue = [];
   int _promotionIndex = 0;
   bool _promotionsLoaded = false;
-  Promotion? _blockingPromotion;
-
   /// Rewarded-ad sheet (aligned with RN `AdModal.js`).
   bool _adOverlayVisible = false;
   AdRewardPhase _adPhase = AdRewardPhase.prompt;
@@ -497,13 +494,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       return ForceUpdateScreen(config: _appConfig!);
     }
 
-    if (_promotionsLoaded && _blockingPromotion != null) {
-      return PromotionForceUpdateScreen(
-        promotion: _blockingPromotion!,
-        fallbackConfig: _appConfig,
-      );
-    }
-
     final activePromo = _promotionsLoaded ? _activePromotion : null;
 
     return Stack(
@@ -595,12 +585,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               key: ValueKey<int>(activePromo.id),
               promotion: activePromo,
               onDismiss: _dismissCurrentPromotion,
-              onForceUpdate: () {
-                final uri = activePromo.buttonUrl?.trim();
-                if (uri != null && uri.isNotEmpty) {
-                  // CTA handled inside popup; force-update promos use blocking screen.
-                }
-              },
+              onPaymentSuccess: () => unawaited(_refreshUser()),
             ),
           ),
       ],

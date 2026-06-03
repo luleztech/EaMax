@@ -261,6 +261,31 @@ class MatchesApi {
 
 class PaymentsApi {
   /// Start a payment using the currently active payment provider
+  Future<Map<String, dynamic>> startOfferPayment({
+    required String externalId,
+    required int promotionId,
+    required int amount,
+    required String phone,
+    required String email,
+    required String name,
+  }) async {
+    final r = await apiRequest(
+      '/api/payments/start',
+      method: 'POST',
+      body: {
+        'externalId': externalId,
+        'promotionId': promotionId,
+        'amount': amount,
+        'phone': phone,
+        'email': email,
+        'name': name,
+      },
+      enableRetries: false,
+      timeout: const Duration(seconds: 50),
+    );
+    return Map<String, dynamic>.from(r as Map);
+  }
+
   Future<Map<String, dynamic>> startPayment({
     required String externalId,
     required String bundle,
