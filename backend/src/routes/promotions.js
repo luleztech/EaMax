@@ -152,7 +152,7 @@ router.get('/active', async (req, res, next) => {
         : req.headers['x-app-version'] || '';
     const platform =
       parsed.success && parsed.data.platform
-        ? parsed.data.platform.trim()
+        ? parsed.data.platform.trim().toLowerCase()
         : 'android';
 
     const ctx = await resolveUserContext(externalId);

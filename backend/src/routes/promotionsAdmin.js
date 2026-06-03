@@ -37,7 +37,7 @@ const promotionBodySchema = z
     type: promotionTypeSchema,
     priority: z.number().int().min(1).max(4).default(3),
     isActive: z.boolean().optional().default(true),
-    showMode: z.enum(['once', 'daily', 'every_launch']).default('daily'),
+    showMode: z.enum(['once', 'daily', 'every_launch']).default('every_launch'),
     targetAudience: z
       .enum(['all', 'free', 'premium', 'android', 'version'])
       .default('all'),

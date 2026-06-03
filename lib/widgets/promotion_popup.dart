@@ -275,7 +275,12 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
   @override
   Widget build(BuildContext context) {
     final p = widget.promotion;
-    final maxW = math.min(MediaQuery.sizeOf(context).width - 32, 400.0);
+    final screen = MediaQuery.sizeOf(context);
+    final imagePromo = p.hasImage && p.isPicha;
+    final maxW = imagePromo
+        ? screen.width - 24
+        : math.min(screen.width - 32, 400.0);
+    final maxImageH = screen.height * 0.78;
 
     return Material(
       type: MaterialType.transparency,
@@ -317,29 +322,29 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
                       child: Stack(
                         clipBehavior: Clip.none,
                         children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(22, 44, 22, 22),
+                          SingleChildScrollView(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 if (p.hasImage) ...[
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: CachedNetworkImage(
-                                      imageUrl: p.imageUrl!,
-                                      height: 160,
-                                      width: double.infinity,
-                                      fit: BoxFit.cover,
-                                      placeholder: (_, __) => const SizedBox(
-                                        height: 100,
-                                        child: Center(
-                                          child: CircularProgressIndicator(strokeWidth: 2),
-                                        ),
-                                      ),
-                                    ),
+                                  _PromotionFullImage(
+                                    url: p.imageUrl!,
+                                    maxWidth: maxW,
+                                    maxHeight: maxImageH,
                                   ),
-                                  const SizedBox(height: 16),
+                                  if (!imagePromo) const SizedBox(height: 16),
                                 ],
+                                Padding(
+                                  padding: EdgeInsets.fromLTRB(
+                                    22,
+                                    p.hasImage ? 16 : 44,
+                                    22,
+                                    22,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
                                 Text(
                                   p.title,
                                   textAlign: TextAlign.center,
@@ -461,6 +466,9 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
                               ],
                             ),
                           ),
+                              ],
+                            ),
+                          ),
                           Positioned(
                             top: 8,
                             right: 8,
@@ -476,6 +484,51 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
                 ),
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shows the full image at natural aspect ratio (no crop), up to [maxWidth] × [maxHeight].
+class _PromotionFullImage extends StatelessWidget {
+  const _PromotionFullImage({
+    required this.url,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  final String url;
+  final double maxWidth;
+  final double maxHeight;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: maxWidth,
+        maxHeight: maxHeight,
+      ),
+      child: CachedNetworkImage(
+        imageUrl: url,
+        width: maxWidth,
+        fit: BoxFit.contain,
+        fadeInDuration: const Duration(milliseconds: 280),
+        placeholder: (_, __) => SizedBox(
+          width: maxWidth,
+          height: math.min(maxHeight * 0.35, 160),
+          child: const Center(
+            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+          ),
+        ),
+        errorWidget: (_, __, ___) => SizedBox(
+          width: maxWidth,
+          height: 120,
+          child: const Icon(
+            Icons.broken_image_outlined,
+            size: 48,
+            color: Colors.white54,
           ),
         ),
       ),

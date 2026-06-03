@@ -6,13 +6,22 @@ import '../config/app_version.dart';
 import '../models/promotion.dart';
 import 'user_id.dart';
 
-const _cacheKey = 'promotions_cache_v1';
-const _cacheTimeKey = 'promotions_cache_time_v1';
 const _cacheTtlMs = 5 * 60 * 1000;
 
 class PromotionService {
   List<Promotion> _cached = [];
   DateTime? _cachedAt;
+
+  static String _platformParam() {
+    if (kIsWeb) return 'web';
+    if (defaultTargetPlatform == TargetPlatform.android) return 'android';
+    return 'ios';
+  }
+
+  void invalidateCache() {
+    _cached = [];
+    _cachedAt = null;
+  }
 
   Future<List<Promotion>> fetchForLaunch({bool forceRefresh = false}) async {
     final all = await fetchEligible(forceRefresh: forceRefresh);
@@ -31,7 +40,7 @@ class PromotionService {
       final uid = await getStoredUserId();
       final q = <String, String>{
         'appVersion': kAppVersion,
-        'platform': defaultTargetPlatform == TargetPlatform.android ? 'android' : 'ios',
+        'platform': _platformParam(),
       };
       if (uid != null && uid.isNotEmpty) q['externalId'] = uid;
       final query = q.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
@@ -48,7 +57,7 @@ class PromotionService {
 
       return list;
     } catch (_) {
-      return [];
+      return _cached;
     }
   }
 

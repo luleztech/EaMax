@@ -16,7 +16,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminPromotionsAPI } from '../../config/api';
 
-const PRIORITY_LABELS = { 1: 'Muhimu', 2: 'Juu', 3: 'Wastani', 4: 'Chini' };
+const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low' };
 
 const TYPES = [
   { id: 'picha', label: 'Picha', icon: 'image-outline', color: '#60a5fa' },
@@ -43,8 +43,6 @@ const TARGETS = [
   { id: 'all', label: 'Wote' },
   { id: 'free', label: 'Bure tu' },
   { id: 'premium', label: 'Premium' },
-  { id: 'android', label: 'Android' },
-  { id: 'version', label: 'Toleo la app' },
 ];
 
 const normalizeType = (t) => {
@@ -63,7 +61,7 @@ const emptyForm = () => ({
   type: 'ujumbe',
   priority: 3,
   isActive: true,
-  showMode: 'daily',
+  showMode: 'every_launch',
   targetAudience: 'all',
   targetMaxVersion: '',
   targetMinVersion: '',
@@ -123,7 +121,12 @@ const PromotionSection = () => {
       priority: item.priority || 3,
       isActive: item.isActive !== false,
       showMode: item.showMode || 'daily',
-      targetAudience: type === 'ofa' ? 'free' : item.targetAudience || 'all',
+      targetAudience: (() => {
+        if (type === 'ofa') return 'free';
+        const t = item.targetAudience || 'all';
+        if (t === 'android' || t === 'version') return 'all';
+        return t;
+      })(),
       targetMaxVersion: item.targetMaxVersion || '',
       targetMinVersion: item.targetMinVersion || '',
       backgroundStyle: item.backgroundStyle || 'dark_glass',
@@ -147,8 +150,7 @@ const PromotionSection = () => {
       isActive: !!form.isActive,
       showMode: form.showMode,
       targetAudience: type === 'ofa' ? 'free' : form.targetAudience,
-      targetMaxVersion:
-        form.targetAudience === 'version' ? form.targetMaxVersion.trim() || null : null,
+      targetMaxVersion: null,
       targetMinVersion: form.targetMinVersion.trim() || null,
       backgroundStyle: form.backgroundStyle,
     };
@@ -297,7 +299,7 @@ const PromotionSection = () => {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.cardTitle}>{item.title}</Text>
                     <Text style={styles.cardMeta}>
-                      {PRIORITY_LABELS[item.priority] || 'Wastani'} · {item.showMode}
+                      {PRIORITY_LABELS[item.priority] || 'Medium'} · {item.showMode}
                     </Text>
                     <Text style={styles.cardStats}>
                       {item.viewsCount} maoni · {item.clicksCount} bofya
@@ -458,14 +460,6 @@ const PromotionSection = () => {
                       />
                     ))}
                   </View>
-                  {form.targetAudience === 'version' ? (
-                    <Field
-                      label="Toleo la juu (≤)"
-                      value={form.targetMaxVersion}
-                      onChangeText={(v) => setField('targetMaxVersion', v)}
-                      placeholder="1.3.7"
-                    />
-                  ) : null}
                 </>
               ) : (
                 <Text style={styles.ofaHint}>Ofa inaonyeshwa kwa watumiaji wa bure pekee.</Text>

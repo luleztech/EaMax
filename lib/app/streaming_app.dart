@@ -151,6 +151,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       unawaited(_refreshUser());
       unawaited(_syncFcmIfAllowed());
       unawaited(_maybePromptNotificationPermission());
+      if (_splashDone && _appConfigChecked && _appConfig?.shouldBlockAccess != true) {
+        unawaited(_loadPromotions());
+      }
       final home = _homeKey.currentState;
       if (home != null) unawaited(home.reloadRemoteData());
     }
@@ -188,6 +191,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await _refreshUser();
     await _syncFcmIfAllowed();
     await _checkPendingPayment();
+    if (_splashDone && _appConfigChecked && _appConfig?.shouldBlockAccess != true) {
+      await _loadPromotions();
+    }
   }
 
   Future<void> _retryConnectionTap() async {
@@ -288,14 +294,14 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   Future<void> _loadPromotions() async {
     try {
-      final all = await promotionService.fetchEligible(forceRefresh: true);
-      final blocking = promotionService.findBlockingForceUpdate(all);
-      final popups = await promotionService.fetchForLaunch(forceRefresh: false);
+      promotionService.invalidateCache();
+      final popups = await promotionService.fetchForLaunch(forceRefresh: true);
       if (!mounted) return;
       setState(() {
-        _blockingPromotion = blocking;
-        _promotionQueue = popups;
-        _promotionIndex = 0;
+        if (popups.isNotEmpty || _promotionQueue.isEmpty) {
+          _promotionQueue = popups;
+          _promotionIndex = 0;
+        }
         _promotionsLoaded = true;
       });
     } catch (_) {
@@ -473,6 +479,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           }
           if (_appConfigChecked) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_appConfig?.shouldBlockAccess != true &&
+                  (!_promotionsLoaded || _promotionQueue.isEmpty)) {
+                unawaited(_loadPromotions());
+              }
               unawaited(_maybePromptNotificationPermission());
             });
           }
