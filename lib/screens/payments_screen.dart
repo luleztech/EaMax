@@ -236,7 +236,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (orderId == null || orderId.isEmpty) return;
 
     var polls = 0;
-    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       polls++;
       if (!mounted) return;
       try {

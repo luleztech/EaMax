@@ -25,7 +25,7 @@ class AppConfig {
     return AppConfig(
       minimumSupportedVersion:
           json['minimumSupportedVersion']?.toString() ?? '1.0.0',
-      latestVersion: json['latestVersion']?.toString() ?? kAppVersion,
+      latestVersion: json['latestVersion']?.toString() ?? appVersion,
       forceUpdate: json['forceUpdate'] == true,
       maintenanceMode: json['maintenanceMode'] == true,
       maintenanceMessage: json['maintenanceMessage']?.toString() ??
@@ -40,18 +40,21 @@ class AppConfig {
 
   /// True when the installed build is older than the server-mandated minimum.
   bool get isCurrentVersionTooOld =>
-      compareSemver(kAppVersion, minimumSupportedVersion) < 0;
+      compareSemver(appVersion, minimumSupportedVersion) < 0;
 
   /// True when the installed build is older than the current published version.
   bool get isCurrentVersionBelowLatest =>
-      compareSemver(kAppVersion, latestVersion) < 0;
+      compareSemver(appVersion, latestVersion) < 0;
 
   /// True when the app must be blocked.
   ///
-  /// This matches server-side semantics:
-  /// - Always block builds below the minimum supported version.
-  /// - Block additional builds only when forceUpdate is enabled and the build
-  ///   is below the current latest version.
-  bool get shouldBlockAccess =>
-      isCurrentVersionTooOld || (forceUpdate && isCurrentVersionBelowLatest);
+  /// Installed builds at or above [latestVersion] are never blocked, so users
+  /// on the current Play release never get a stuck update screen.
+  /// - Always block builds below [minimumSupportedVersion].
+  /// - Otherwise block only when [forceUpdate] is true and below [latestVersion].
+  bool get shouldBlockAccess {
+    if (isCurrentVersionTooOld) return true;
+    if (!isCurrentVersionBelowLatest) return false;
+    return forceUpdate;
+  }
 }

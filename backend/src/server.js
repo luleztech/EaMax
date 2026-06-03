@@ -7,7 +7,7 @@ const morgan = require('morgan');
 const http = require('http');
 
 const { query } = require('./db');
-const { generalLimiter, catalogLimiter, paymentLimiter, authLimiter } = require('./middleware/rateLimiter');
+const { generalLimiter, catalogLimiter, paymentStartLimiter, authLimiter } = require('./middleware/rateLimiter');
 const { requireAppVersion, attachVersionInfo } = require('./middleware/appVersion');
 const appConfigRouter = require('./routes/appConfig');
 const usersRouter = require('./routes/users');
@@ -63,7 +63,7 @@ app.use('/api/settings', catalogLimiter);
 app.use('/api/matches', catalogLimiter);
 app.use('/api/promotions', catalogLimiter);
 app.use('/api/', generalLimiter);
-app.use('/api/payments', paymentLimiter);
+app.use('/api/payments', paymentStartLimiter);
 app.use('/api/users/register', authLimiter);
 
 // ── Version enforcement (opt-in via REQUIRE_APP_VERSION=true) ─────────────

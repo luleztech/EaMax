@@ -15,10 +15,19 @@ final Dio _dio = Dio(BaseOptions(
   validateStatus: (status) => status != null,
   headers: <String, String>{
     'Content-Type': 'application/json',
-    'X-App-Version': kAppVersion,
     'X-App-Bundle': kAppBundleId,
   },
-))..interceptors.add(AppUpdateInterceptor());
+))
+  ..interceptors.add(_AppVersionHeaderInterceptor())
+  ..interceptors.add(AppUpdateInterceptor());
+
+class _AppVersionHeaderInterceptor extends Interceptor {
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    options.headers['X-App-Version'] = appVersion;
+    handler.next(options);
+  }
+}
 
 Dio get apiClient => _dio;
 
@@ -269,21 +278,35 @@ class PaymentsApi {
     required String email,
     required String name,
   }) async {
-    final r = await apiRequest(
-      '/api/payments/start',
-      method: 'POST',
-      body: {
-        'externalId': externalId,
-        'promotionId': promotionId,
-        'amount': amount,
-        'phone': phone,
-        'email': email,
-        'name': name,
-      },
-      enableRetries: false,
-      timeout: const Duration(seconds: 50),
-    );
-    return Map<String, dynamic>.from(r as Map);
+    Object? lastErr;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final r = await apiRequest(
+          '/api/payments/start',
+          method: 'POST',
+          body: {
+            'externalId': externalId,
+            'promotionId': promotionId,
+            'amount': amount,
+            'phone': phone,
+            'email': email,
+            'name': name,
+          },
+          enableRetries: false,
+          timeout: const Duration(seconds: 50),
+        );
+        return Map<String, dynamic>.from(r as Map);
+      } on ApiRateLimitedException catch (e) {
+        lastErr = e;
+        if (attempt < 2) {
+          final waitSec = e.retryAfterSeconds ?? 3;
+          await _sleep((waitSec.clamp(1, 15)) * 1000);
+          continue;
+        }
+        rethrow;
+      }
+    }
+    throw lastErr ?? Exception('Payment start failed');
   }
 
   Future<Map<String, dynamic>> startPayment({

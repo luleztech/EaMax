@@ -9,7 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api.dart';
+import '../models/api_exceptions.dart';
 import '../models/promotion.dart';
+import '../utils/api_error_message.dart';
 import '../services/promotion_service.dart';
 import '../services/user_id.dart';
 
@@ -125,7 +127,6 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
   Future<void> _pokeaOfa() async {
     final p = widget.promotion;
     if (_offerExpired || p.offerAmountTsh == null) return;
-    await promotionService.reportClick(p.id);
 
     final phoneCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
@@ -181,6 +182,8 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
 
     if (confirmed != true || !mounted) return;
 
+    await promotionService.reportClick(p.id);
+
     final uid = await getStoredUserId();
     if (uid == null || uid.isEmpty) {
       _showSnack('Fungua wasifu kwanza, kisha jaribu tena.');
@@ -225,8 +228,10 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
       );
       widget.onPaymentSuccess?.call();
       await _close();
+    } on ApiRateLimitedException catch (e) {
+      _showSnack(userFacingApiError(e));
     } catch (e) {
-      _showSnack(e.toString().replaceFirst('Exception: ', ''));
+      _showSnack(userFacingApiError(e));
     } finally {
       if (mounted) setState(() => _submittingOffer = false);
     }

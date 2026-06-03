@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
 
 import 'app/streaming_app.dart';
+import 'config/app_version.dart';
 import 'firebase_options.dart';
 import 'services/fcm_notifications.dart';
 import 'register_webview_for_web_stub.dart'
@@ -16,6 +17,7 @@ import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initAppVersion();
   registerWebViewPlatformForWeb();
   try {
     MediaKit.ensureInitialized();

@@ -39,7 +39,7 @@ class PromotionService {
     try {
       final uid = await getStoredUserId();
       final q = <String, String>{
-        'appVersion': kAppVersion,
+        'appVersion': appVersion,
         'platform': _platformParam(),
       };
       if (uid != null && uid.isNotEmpty) q['externalId'] = uid;

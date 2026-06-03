@@ -1,8 +1,25 @@
-/// App version constants — keep in sync with `version:` in pubspec.yaml.
-/// The semver string is sent as  `X-App-Version`  on every API request.
-/// The backend uses it for version enforcement and the /app-config response.
-const String kAppVersion = '1.3.8';
+import 'package:package_info_plus/package_info_plus.dart';
+
+/// Fallback semver — keep in sync with `version:` in pubspec.yaml.
+/// After [initAppVersion], [appVersion] comes from the installed build.
+const String kAppVersion = '1.3.10';
 const String kAppBundleId = 'com.eamax';
+
+String _installedVersion = kAppVersion;
+
+/// Semver sent as `X-App-Version` and used for update checks.
+String get appVersion => _installedVersion;
+
+/// Load version from the platform package info (matches Play Store versionName).
+Future<void> initAppVersion() async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    final v = info.version.trim();
+    if (v.isNotEmpty) _installedVersion = v;
+  } catch (_) {
+    // Keep [kAppVersion] fallback.
+  }
+}
 
 /// Compare two semver strings.  Returns negative if [a] < [b].
 int compareSemver(String a, String b) {

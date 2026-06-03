@@ -78,10 +78,20 @@ router.get('/:externalId', async (req, res, next) => {
       const d = new Date(row.premium_expires_at);
       if (!Number.isNaN(d.getTime())) premiumExpiresAt = d;
     }
+    const now = new Date();
+    const subscriptionExpired =
+      premiumExpiresAt != null && premiumExpiresAt <= now;
+    if (row.is_premium === true && subscriptionExpired) {
+      await query(
+        'UPDATE users SET is_premium = FALSE WHERE id = $1 AND premium_expires_at <= NOW()',
+        [row.id],
+      );
+      row.is_premium = false;
+    }
     const isPremiumCurrently =
       row.blocked !== true &&
       row.is_premium === true &&
-      (!premiumExpiresAt || premiumExpiresAt > new Date());
+      (!premiumExpiresAt || premiumExpiresAt > now);
 
     return res.json({
       id: row.id,

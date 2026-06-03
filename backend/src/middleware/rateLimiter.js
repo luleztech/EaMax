@@ -4,10 +4,7 @@ const ADMIN_KEY = () => String(process.env.ADMIN_API_KEY || 'super-secret-admin-
 
 /** Paths served only to EaAdmin — never count against mobile rate limits. */
 function isAdminApiPath(req) {
-  const path = String(
-    req.originalUrl ||
-    (req.baseUrl ? `${req.baseUrl}${req.path || ''}` : req.url || ''),
-  ).toLowerCase();
+  const path = apiPath(req);
   return (
     path.startsWith('/api/admin') ||
     path.startsWith('/api/dashboard') ||
@@ -21,8 +18,31 @@ function hasValidAdminKey(req) {
   return provided.length > 0 && provided === ADMIN_KEY();
 }
 
+function apiPath(req) {
+  return String(
+    req.originalUrl ||
+    (req.baseUrl ? `${req.baseUrl}${req.path || ''}` : req.url || ''),
+  ).toLowerCase();
+}
+
 function shouldSkipRateLimit(req) {
   return isAdminApiPath(req) || hasValidAdminKey(req);
+}
+
+function isPaymentStartRoute(req) {
+  const path = apiPath(req);
+  const method = String(req.method || 'GET').toUpperCase();
+  return method === 'POST' && (path.endsWith('/start') || path.endsWith('/zeno/start'));
+}
+
+function isPromotionAnalyticsRoute(req) {
+  const path = apiPath(req);
+  const method = String(req.method || 'GET').toUpperCase();
+  return method === 'POST' && /\/api\/promotions\/\d+\/(view|click|close)$/.test(path);
+}
+
+function isPaymentsApiPath(req) {
+  return apiPath(req).startsWith('/api/payments');
 }
 
 /**
@@ -40,7 +60,7 @@ const catalogLimiter = rateLimit({
 
 /**
  * General API rate limiter — protects write-heavy / user routes.
- * Default 300 requests / 15 minutes per client IP (trust proxy required on Railway).
+ * Payment routes and promotion analytics are excluded (separate limiters below).
  */
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -50,10 +70,8 @@ const generalLimiter = rateLimit({
   message: { error: 'Maombi mengi sana. Jaribu tena baadaye.' },
   skip: (req) => {
     if (shouldSkipRateLimit(req)) return true;
-    const path = String(
-      req.originalUrl ||
-      (req.baseUrl ? `${req.baseUrl}${req.path || ''}` : req.url || ''),
-    ).toLowerCase();
+    if (isPaymentsApiPath(req) || isPromotionAnalyticsRoute(req)) return true;
+    const path = apiPath(req);
     const method = String(req.method || 'GET').toUpperCase();
     if (method === 'GET' && (
       path.startsWith('/api/channels') ||
@@ -69,21 +87,25 @@ const generalLimiter = rateLimit({
 });
 
 /**
- * Strict limiter for payment endpoints — prevents brute-force order creation.
- * 15 requests / 60 minutes per IP.
+ * Only limits POST /start (STK / offer payment creation) — NOT status polling.
+ * Keyed per user externalId when present so shared IPs are not punished.
  */
-const paymentLimiter = rateLimit({
+const paymentStartLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 15,
+  max: Number(process.env.RATE_LIMIT_PAYMENT_START_MAX || 40),
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Maombi mengi ya malipo. Subiri kidogo.' },
-  skip: shouldSkipRateLimit,
+  message: { error: 'Maombi mengi ya malipo. Subiri kidogo kisha jaribu tena.' },
+  keyGenerator: (req) => {
+    const ext = req.body?.externalId;
+    if (ext && String(ext).trim()) return `pay-start:${String(ext).trim()}`;
+    return `pay-start-ip:${req.ip}`;
+  },
+  skip: (req) => shouldSkipRateLimit(req) || !isPaymentStartRoute(req),
 });
 
 /**
  * Auth / registration limiter — prevents device-ID farming.
- * 20 requests / 15 minutes per IP.
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -97,7 +119,7 @@ const authLimiter = rateLimit({
 module.exports = {
   generalLimiter,
   catalogLimiter,
-  paymentLimiter,
+  paymentStartLimiter,
   authLimiter,
   shouldSkipRateLimit,
 };

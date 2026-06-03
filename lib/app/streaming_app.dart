@@ -18,6 +18,7 @@ import '../widgets/promotion_popup.dart';
 import '../services/app_config_service.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
+import '../utils/premium_snapshot.dart';
 import '../services/user_id.dart';
 import '../widgets/ad_reward_modal.dart';
 import '../widgets/notification_permission_modal.dart';
@@ -94,25 +95,26 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
   }
 
+  void _applyPremiumSnapshot(PremiumSnapshot snap, {int? points}) {
+    if (!mounted) return;
+    setState(() {
+      if (points != null) _points = points;
+      _premium = snap.isPremium;
+      _premiumExpiresAt = snap.isPremium ? snap.expiresAt : null;
+    });
+  }
+
   Future<void> _refreshUser() async {
     try {
       final uid = await getStoredUserId();
       if (uid == null) return;
       final userData = await userApi.getUser(uid);
       if (!mounted) return;
-      final blocked = userData['blocked'] == true;
-      final premium = !blocked && userData['isPremium'] == true;
+      final snap = PremiumSnapshot.fromDynamic(userData);
+      if (snap == null) return;
       final pts = (userData['points'] as num?)?.toInt() ?? 0;
-      final endStr = userData['subscriptionEndDate']?.toString();
-      DateTime? expires;
-      if (!blocked && endStr != null && endStr.isNotEmpty) {
-        expires = DateTime.tryParse(endStr);
-      }
-      setState(() {
-        _points = pts;
-        _premium = premium;
-        _premiumExpiresAt = premium ? expires : null;
-      });
+      _applyPremiumSnapshot(snap, points: pts);
+      final premium = snap.isPremium;
       unawaited(_syncFcmIfAllowed());
       if (premium) {
         final prefs = await SharedPreferences.getInstance();
@@ -337,11 +339,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _startPendingPaymentWatcher() {
     _pendingPaymentWatcher?.cancel();
-    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 5), (_) {
+    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 4), (_) {
       unawaited(_checkPendingPayment());
     });
   }
 
+  Future<void> _onPaymentSuccess() async {
+    await _refreshUser();
+    await _homeKey.currentState?.reloadRemoteData();
+  }
 
   Future<void> _checkPendingPayment() async {
     if (_checkingPendingPayment) return;
@@ -595,7 +601,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               key: ValueKey<int>(activePromo.id),
               promotion: activePromo,
               onDismiss: _dismissCurrentPromotion,
-              onPaymentSuccess: () => unawaited(_refreshUser()),
+              onPaymentSuccess: () => unawaited(_onPaymentSuccess()),
             ),
           ),
       ],
