@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
 import androidx.media3.common.Tracks
+import com.eamax.domain.model.DrmData
 import com.eamax.domain.model.StreamSession
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
@@ -39,6 +40,8 @@ class PlayerManager(
     private var isInitialized = false
     /** If Exo fails with HTML/manifest errors, try WebView once with the original session URL. */
     private var webViewFallbackAttempted = false
+    /** After WebView decrypts a gateway page, promote to Exo once. */
+    private var gatewayExoPromotionAttempted = false
     private val probeExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -59,6 +62,7 @@ class PlayerManager(
 
         currentSession = streamSession
         webViewFallbackAttempted = false
+        gatewayExoPromotionAttempted = false
 
         probeExecutor.execute {
             val resolved = StreamProbe.resolveForSession(streamSession)
@@ -68,24 +72,19 @@ class PlayerManager(
                 try {
                     when (resolved.kind) {
                         StreamProbe.ResolvedKind.WEB_VIEW_PAGE -> {
-                            webViewEngine = WebViewEngine(
-                                context = context,
-                                onPlaybackStateChanged = { state ->
-                                    Log.d(TAG, "WebView state: $state")
-                                    onStateChanged(state)
-                                },
-                                onError = { err ->
-                                    Log.e(TAG, "WebView error: $err")
-                                    onError(err)
-                                }
-                            )
+                            webViewEngine = createWebViewEngine(streamSession)
                             webViewEngine?.initialize(streamSession)
                             if (webViewEngine?.getWebView() == null) {
                                 onError("WebView init failed")
                                 return@post
                             }
                             isInitialized = true
-                            onReady()
+                            // Wait for JS decrypt → native Exo promotion before showing WebView.
+                            mainHandler.postDelayed({
+                                if (!gatewayExoPromotionAttempted && engine == null) {
+                                    onReady()
+                                }
+                            }, 2500)
                         }
                         else -> {
                             val forced = when (resolved.kind) {
@@ -95,13 +94,7 @@ class PlayerManager(
                                 StreamProbe.ResolvedKind.EXO_SNIFF -> ExoPlayerEngine.StreamFormat.SNIFFING
                                 else -> null
                             }
-                            val mergedHeaders = LinkedHashMap(streamSession.headers).apply {
-                                resolved.headerOverlay.forEach { (k, v) -> put(k, v) }
-                            }
-                            val mergedSession = streamSession.copy(
-                                mpdUrl = resolved.playbackUri,
-                                headers = mergedHeaders
-                            )
+                            val mergedSession = mergeResolvedSession(streamSession, resolved)
                             engine = ExoPlayerEngine(
                                 context = context,
                                 onPlaybackStateChanged = { state ->
@@ -121,17 +114,7 @@ class PlayerManager(
                                                 engine?.release()
                                                 engine = null
                                                 val session = currentSession ?: streamSession
-                                                webViewEngine = WebViewEngine(
-                                                    context = context,
-                                                    onPlaybackStateChanged = { state ->
-                                                        Log.d(TAG, "WebView state: $state")
-                                                        onStateChanged(state)
-                                                    },
-                                                    onError = { err ->
-                                                        Log.e(TAG, "WebView error: $err")
-                                                        onError(err)
-                                                    },
-                                                )
+                                                webViewEngine = createWebViewEngine(session)
                                                 webViewEngine?.initialize(session)
                                                 if (webViewEngine?.getWebView() == null) {
                                                     onError(error)
@@ -160,17 +143,7 @@ class PlayerManager(
                                 if (gateway) {
                                     engine?.release()
                                     engine = null
-                                    webViewEngine = WebViewEngine(
-                                        context = context,
-                                        onPlaybackStateChanged = { state ->
-                                            Log.d(TAG, "WebView state: $state")
-                                            onStateChanged(state)
-                                        },
-                                        onError = { err ->
-                                            Log.e(TAG, "WebView error: $err")
-                                            onError(err)
-                                        },
-                                    )
+                                    webViewEngine = createWebViewEngine(streamSession)
                                     webViewEngine?.initialize(streamSession)
                                     if (webViewEngine?.getWebView() == null) {
                                         onError("Playback failed for this stream")
@@ -240,7 +213,107 @@ class PlayerManager(
         engine = null
         isInitialized = false
         webViewFallbackAttempted = false
+        gatewayExoPromotionAttempted = false
         currentSession = null
+    }
+
+    private fun createWebViewEngine(baseSession: StreamSession): WebViewEngine {
+        return WebViewEngine(
+            context = context,
+            onPlaybackStateChanged = { state ->
+                Log.d(TAG, "WebView state: $state")
+                onStateChanged(state)
+            },
+            onError = { err ->
+                Log.e(TAG, "WebView error: $err")
+                onError(err)
+            },
+            onGatewayExtracted = { extracted ->
+                mainHandler.post { promoteGatewayToExo(baseSession, extracted) }
+            },
+        )
+    }
+
+    private fun mergeResolvedSession(
+        base: StreamSession,
+        resolved: StreamProbe.Result,
+    ): StreamSession {
+        val mergedHeaders = LinkedHashMap(base.headers).apply {
+            resolved.headerOverlay.forEach { (k, v) -> put(k, v) }
+        }
+        val drmType = resolved.drmType ?: base.drmType
+        val licenseUrl = resolved.licenseUrl.ifEmpty { base.licenseUrl }
+        val drmHeaders = buildDrmHeaders(resolved, base)
+        val drmData = when {
+            drmHeaders.isNotEmpty() -> base.drmData.copy(headers = drmHeaders)
+            resolved.clearKeys.isNotEmpty() -> DrmData(keys = resolved.clearKeys, headers = base.drmData.headers)
+            else -> base.drmData
+        }
+        return base.copy(
+            mpdUrl = resolved.playbackUri,
+            headers = mergedHeaders,
+            licenseUrl = licenseUrl,
+            drmType = drmType,
+            drmData = drmData,
+        )
+    }
+
+    private fun buildDrmHeaders(
+        resolved: StreamProbe.Result,
+        base: StreamSession,
+    ): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        base.drmData.headers?.let { out.putAll(it) }
+        if (resolved.authToken.isNotEmpty()) {
+            out["nv-authorizations"] = resolved.authToken
+        }
+        return out
+    }
+
+    private fun promoteGatewayToExo(
+        baseSession: StreamSession,
+        extracted: PhpGatewayExtractor.Extracted,
+    ) {
+        if (gatewayExoPromotionAttempted || engine != null) return
+        gatewayExoPromotionAttempted = true
+        Log.d(TAG, "Gateway decrypted in WebView → promoting to native ExoPlayer")
+        try {
+            webViewEngine?.release()
+            webViewEngine = null
+            val resolved = StreamProbe.resultFromExtracted(extracted, baseSession.mpdUrl, baseSession.headers)
+            val merged = mergeResolvedSession(baseSession, resolved)
+            currentSession = merged
+            val forced = when (extracted.resolvedKind()) {
+                StreamProbe.ResolvedKind.EXO_HLS -> ExoPlayerEngine.StreamFormat.HLS
+                StreamProbe.ResolvedKind.EXO_DASH -> ExoPlayerEngine.StreamFormat.DASH
+                else -> if (extracted.isHls) ExoPlayerEngine.StreamFormat.HLS else ExoPlayerEngine.StreamFormat.DASH
+            }
+            engine = ExoPlayerEngine(
+                context = context,
+                onPlaybackStateChanged = { state ->
+                    Log.d(TAG, "Playback state changed: $state")
+                    onStateChanged(state)
+                },
+                onError = { error ->
+                    Log.e(TAG, "Player error: $error")
+                    onError(error)
+                },
+                onTracksChangedCallback = { tracks ->
+                    Log.d(TAG, "Tracks available: ${tracks.groups.size} groups")
+                    onTracksAvailable(tracks)
+                },
+            )
+            engine?.initialize(merged, forcedStreamFormat = forced)
+            if (engine?.getPlayer() == null) {
+                onError("Playback failed for this stream")
+                return
+            }
+            isInitialized = true
+            onReady()
+        } catch (e: Exception) {
+            Log.e(TAG, "promoteGatewayToExo failed", e)
+            gatewayExoPromotionAttempted = false
+        }
     }
 
     /**
@@ -344,8 +417,8 @@ class PlayerManager(
     /** Exo returned HTML/login or manifest parse errors — try in-app WebView once. */
     private fun shouldFallbackExoToWebView(message: String): Boolean {
         val m = message.lowercase()
-        // Do not route transport/HTTP authorization failures to WebView.
-        // These should surface directly to user (expired URL, unreachable host, forbidden, etc).
+        // Do not route transport/network failures to WebView.
+        // Allow 403/401/forbidden to fallback — WebView may have browser session/cookies.
         if (m.contains("could not connect") ||
             m.contains("connection failed") ||
             m.contains("timed out") ||
@@ -353,12 +426,7 @@ class PlayerManager(
             m.contains("dns") ||
             m.contains("no route") ||
             m.contains("unreachable") ||
-            m.contains("refused connection") ||
-            m.contains("403") ||
-            m.contains("401") ||
-            m.contains("forbidden") ||
-            m.contains("unauthorized") ||
-            m.contains("access denied")
+            m.contains("refused connection")
         ) {
             return false
         }
@@ -367,6 +435,11 @@ class PlayerManager(
             m.contains("login page") ||
             m.contains("wrong file") ||
             m.contains("parsing") ||
-            m.contains("not found")
+            m.contains("not found") ||
+            m.contains("403") ||
+            m.contains("401") ||
+            m.contains("forbidden") ||
+            m.contains("unauthorized") ||
+            m.contains("access denied")
     }
 }

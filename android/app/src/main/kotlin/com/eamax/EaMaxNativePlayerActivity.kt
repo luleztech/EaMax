@@ -6,6 +6,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
@@ -22,6 +23,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
 import com.eamax.player.PlayerManager
@@ -82,9 +84,27 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             return
         }
 
+        val session = try {
+            StreamSessionBuilder.fromFlutterBundle(extras)
+        } catch (e: Exception) {
+            Log.e(TAG, "Invalid playback bundle", e)
+            showChannelUnavailableAndFinish()
+            return
+        }
+
+        if (session.mpdUrl.isEmpty()) {
+            showChannelUnavailableAndFinish()
+            return
+        }
+
         val playerView = findViewById<PlayerView>(R.id.player_view).apply {
             applyResizeModeForOrientation()
             setKeepScreenOn(true)
+            // Enable secure surface for DRM content to support Widevine L1
+            if (session.drmType != DrmType.NONE) {
+                (videoSurfaceView as? SurfaceView)?.setSecure(true)
+                Log.d(TAG, "Secure surface enabled for DRM: ${session.drmType}")
+            }
         }
         val webContainer = findViewById<FrameLayout>(R.id.webview_container)
         rotateHintOverlay = findViewById(R.id.rotate_hint_overlay)
@@ -103,19 +123,6 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         close.setOnClickListener { finish() }
         val okoaBundle = findViewById<Button>(R.id.btn_okoa_bundle)
         okoaBundle.setOnClickListener { showOkoaQualityDialog() }
-
-        val session = try {
-            StreamSessionBuilder.fromFlutterBundle(extras)
-        } catch (e: Exception) {
-            Log.e(TAG, "Invalid playback bundle", e)
-            showChannelUnavailableAndFinish()
-            return
-        }
-
-        if (session.mpdUrl.isEmpty()) {
-            showChannelUnavailableAndFinish()
-            return
-        }
 
         playerManager = PlayerManager(
             context = this,
@@ -159,6 +166,9 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             }
                             playerManager.setQuality(selectedOkoaQuality)
                         } else {
+                            webContainer.visibility = View.GONE
+                            webContainer.removeAllViews()
+                            playerView.visibility = View.VISIBLE
                             okoaBundle.visibility = View.VISIBLE
                             playerManager.setQuality(selectedOkoaQuality)
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)

@@ -18,7 +18,8 @@ import com.eamax.domain.model.PlaybackState
 class WebViewEngine(
     private val context: Context,
     private val onPlaybackStateChanged: (PlaybackState) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onGatewayExtracted: ((PhpGatewayExtractor.Extracted) -> Unit)? = null,
 ) {
     private var webView: WebView? = null
     private var currentSession: StreamSession? = null
@@ -67,9 +68,11 @@ class WebViewEngine(
                             url.contains(".php", ignoreCase = true)
                         if (injectRecovery) {
                             w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
+                            w.postDelayed({
+                                w.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
+                            }, 400)
                         }
                         applyDefaultOkoa360(w)
-                        onPlaybackStateChanged(PlaybackState.PLAYING)
                     }
 
                     override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
@@ -86,7 +89,11 @@ class WebViewEngine(
                     }
                 }
 
-                jsInterface = WebViewJsInterface(onPlaybackStateChanged, onError)
+                jsInterface = WebViewJsInterface(
+                    onPlaybackStateChanged,
+                    onError,
+                    onGatewayExtracted,
+                )
                 addJavascriptInterface(jsInterface!!, "ShakaPlayerBridge")
             }
 
@@ -154,7 +161,8 @@ class WebViewEngine(
 
 class WebViewJsInterface(
     private val onPlaybackStateChanged: (PlaybackState) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onGatewayExtracted: ((PhpGatewayExtractor.Extracted) -> Unit)? = null,
 ) {
     @android.webkit.JavascriptInterface
     fun onPlaybackStarted() { onPlaybackStateChanged(PlaybackState.PLAYING) }
@@ -166,4 +174,33 @@ class WebViewJsInterface(
     fun onPlaybackError(errorMessage: String) { onError("WebView Playback Error: $errorMessage") }
     @android.webkit.JavascriptInterface
     fun onPlaybackEnded() { onPlaybackStateChanged(PlaybackState.ENDED) }
+
+    @android.webkit.JavascriptInterface
+    fun onGatewayStreamExtracted(json: String) {
+        try {
+            val o = org.json.JSONObject(json)
+            val streamUrl = o.optString("streamUrl", "").trim()
+            if (streamUrl.isEmpty()) return
+            val clearKeyRaw = o.optString("clearKeyRaw", "").trim()
+            val clearKeys = if (clearKeyRaw.contains(':')) {
+                val parts = clearKeyRaw.split(':', limit = 2)
+                listOf(
+                    com.eamax.domain.model.ClearKey(
+                        kid = parts.getOrElse(0) { "" }.trim(),
+                        k = parts.getOrElse(1) { "" }.trim(),
+                    )
+                )
+            } else {
+                emptyList()
+            }
+            val extracted = PhpGatewayExtractor.Extracted(
+                streamUrl = streamUrl,
+                isHls = o.optBoolean("isHls", streamUrl.contains(".m3u8", ignoreCase = true)),
+                licenseUrl = o.optString("licenseUrl", "").trim(),
+                authToken = o.optString("authToken", "").trim(),
+                clearKeys = clearKeys,
+            )
+            onGatewayExtracted?.invoke(extracted)
+        } catch (_: Exception) { }
+    }
 }

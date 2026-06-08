@@ -2,6 +2,8 @@ package com.eamax.player
 
 import android.net.Uri
 import android.util.Log
+import com.eamax.domain.model.ClearKey
+import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamSession
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -42,7 +44,12 @@ object StreamProbe {
         val playbackUri: String,
         val finalUrlAfterRedirects: String,
         /** Merge into StreamSession headers (Referer for CDN policies). */
-        val headerOverlay: Map<String, String>
+        val headerOverlay: Map<String, String>,
+        /** Populated when a PHP gateway page was decrypted server-side. */
+        val licenseUrl: String = "",
+        val drmType: DrmType? = null,
+        val authToken: String = "",
+        val clearKeys: List<ClearKey> = emptyList(),
     )
 
     fun resolveForSession(session: StreamSession): Result {
@@ -50,26 +57,37 @@ object StreamProbe {
 
         // ── Cache check ───────────────────────────────────────────────────────
         // Skip all network probing if we resolved this URL recently.
+        // Do NOT use cache for PHP gateways — tokens expire quickly.
         val now = System.currentTimeMillis()
-        probeCache[original]?.let { entry ->
-            if (now < entry.expiresAt) {
-                Log.d(TAG, "cache hit for ${original.take(80)}")
-                return entry.result
-            } else {
-                probeCache.remove(original)
+        val isPhp = StreamUrlClassifier.isPhpLikeUrl(original)
+        if (!isPhp) {
+            probeCache[original]?.let { entry ->
+                if (now < entry.expiresAt) {
+                    Log.d(TAG, "cache hit for ${original.take(80)}")
+                    return entry.result
+                } else {
+                    probeCache.remove(original)
+                }
             }
         }
 
         val headers = buildRequestHeaders(session)
 
         fun cache(r: Result): Result {
-            probeCache[original] = CacheEntry(r, now + CACHE_TTL_MS)
+            // Do not cache PHP gateway results — extracted URLs contain time-sensitive tokens
+            // that expire quickly (causing 403 errors on replay). Always re-extract fresh.
+            val skip = StreamUrlClassifier.isPhpLikeUrl(original)
+            if (!skip) {
+                probeCache[original] = CacheEntry(r, now + CACHE_TTL_MS)
+            } else {
+                Log.d(TAG, "Skipping cache for PHP gateway: ${original.take(80)}")
+            }
             return r
         }
 
-        // ── PHP gateways: always WebView ──────────────────────────────────────
+        // ── PHP gateways: decrypt embedded stream URL → native Exo, else WebView ──
         if (StreamUrlClassifier.isPhpLikeUrl(original)) {
-            return cache(Result(ResolvedKind.WEB_VIEW_PAGE, original, original, refererOverlay(original, headers)))
+            return cache(tryResolvePhpGateway(original, headers))
         }
 
         // ── Obvious .m3u8 → HLS, no network probe needed ─────────────────────
@@ -170,6 +188,52 @@ object StreamProbe {
         }
         return h
     }
+
+    private fun tryResolvePhpGateway(url: String, headers: Map<String, String>): Result {
+        return try {
+            val html = fetchGatewayHtml(url, headers)
+            val extracted = PhpGatewayExtractor.extractFromHtml(html)
+            if (extracted != null) {
+                Log.d(TAG, "PHP gateway decrypted → ${extracted.resolvedKind()} ${extracted.streamUrl.take(80)}")
+                resultFromExtracted(extracted, url, headers)
+            } else {
+                Log.w(TAG, "PHP gateway decrypt failed, WebView fallback: $url")
+                Result(ResolvedKind.WEB_VIEW_PAGE, url, url, refererOverlay(url, headers))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "PHP gateway probe failed, WebView fallback: ${e.message}")
+            Result(ResolvedKind.WEB_VIEW_PAGE, url, url, refererOverlay(url, headers))
+        }
+    }
+
+    private fun fetchGatewayHtml(url: String, headers: Map<String, String>): String {
+        val reqHeaders = HashMap(headers).apply {
+            putIfAbsent("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+            putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
+        }
+        val client = EamaxHttpDataSource.fastProbeClient()
+        val b = okhttp3.Request.Builder().url(url)
+        reqHeaders.forEach { (k, v) -> b.header(k, v) }
+        return client.newCall(b.get().build()).execute().use { r ->
+            if (!r.isSuccessful) throw IllegalStateException("HTTP ${r.code}")
+            r.body?.string() ?: throw IllegalStateException("empty body")
+        }
+    }
+
+    fun resultFromExtracted(
+        extracted: PhpGatewayExtractor.Extracted,
+        gatewayUrl: String,
+        headers: Map<String, String>,
+    ): Result = Result(
+        kind = extracted.resolvedKind(),
+        playbackUri = extracted.streamUrl,
+        finalUrlAfterRedirects = extracted.streamUrl,
+        headerOverlay = refererOverlay(gatewayUrl, headers),
+        licenseUrl = extracted.licenseUrl,
+        drmType = extracted.drmType(),
+        authToken = extracted.authToken,
+        clearKeys = extracted.clearKeys,
+    )
 
     private fun refererOverlay(original: String, existing: Map<String, String>): Map<String, String> {
         val hasRef = existing.keys.any { it.equals("Referer", true) || it.equals("referer", true) }

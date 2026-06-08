@@ -110,6 +110,58 @@ object PhpWebViewSupport {
      * Defines [window.__eaMaxOkoaSetQuality] for hls.js / Shaka-style players inside gateway pages.
      * mode: `"auto"` or height as string e.g. `"360"`.
      */
+    /**
+     * Reads XOR-encrypted constants from the loaded gateway page and posts decrypted
+     * stream + DRM fields to [androidInterfaceName].onGatewayStreamExtracted(json).
+     */
+    fun gatewayStreamExtractScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
+        return """
+            (function () {
+              try {
+                var html = document.documentElement ? document.documentElement.innerHTML : '';
+                if (!html || html.indexOf('encryptedMpd') < 0) return false;
+                function pick(name) {
+                  var re = new RegExp(name + '\\s*=\\s*["\\']([^"\\']+)["\\']', 'i');
+                  var m = html.match(re);
+                  return m ? m[1] : '';
+                }
+                function xorDecrypt(enc, key) {
+                  try {
+                    var raw = atob(enc);
+                    var out = '';
+                    for (var i = 0; i < raw.length; i++) {
+                      out += String.fromCharCode(raw.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+                    }
+                    return out;
+                  } catch (e) { return ''; }
+                }
+                var keyPart = pick('keyPart');
+                var encMpd = pick('encryptedMpd');
+                if (!keyPart || !encMpd) return false;
+                var streamUrl = xorDecrypt(encMpd, keyPart);
+                if (!streamUrl || streamUrl.indexOf('http') !== 0) return false;
+                var licenseUrl = pick('encryptedLicense') ? xorDecrypt(pick('encryptedLicense'), keyPart) : '';
+                var authToken = pick('encryptedToken') ? xorDecrypt(pick('encryptedToken'), keyPart) : '';
+                var clearKeyRaw = pick('encryptedClearKey') ? xorDecrypt(pick('encryptedClearKey'), keyPart) : '';
+                var payload = {
+                  streamUrl: streamUrl,
+                  isHls: streamUrl.indexOf('.m3u8') >= 0,
+                  licenseUrl: licenseUrl || '',
+                  authToken: authToken || '',
+                  clearKeyRaw: clearKeyRaw || ''
+                };
+                if (typeof $androidInterfaceName !== 'undefined' &&
+                    $androidInterfaceName.onGatewayStreamExtracted) {
+                  $androidInterfaceName.onGatewayStreamExtracted(JSON.stringify(payload));
+                }
+                return true;
+              } catch (e) {
+                return false;
+              }
+            })();
+        """.trimIndent()
+    }
+
     fun eaMaxOkoaQualityApiScript(): String {
         return """
             (function() {
