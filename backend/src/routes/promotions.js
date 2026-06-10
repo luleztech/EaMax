@@ -103,14 +103,49 @@ function matchesTargeting(row, ctx, appVersion, platform) {
   return true;
 }
 
-function isPromotionActive(row, now = new Date()) {
-  if (row.is_active !== true) return false;
-  const type = normalizeType(row.type);
-  if (type === 'ofa' && row.offer_ends_at) {
-    const end = new Date(row.offer_ends_at);
-    if (!Number.isNaN(end.getTime()) && end < now) return false;
-  }
-  return true;
+function isPromotionActive(row) {
+  return row.is_active === true;
+}
+
+function offerCountdownMinutes(row) {
+  return Number(row.offer_countdown_minutes) || 0;
+}
+
+async function getUserOfaFirstViewAt(promotionId, externalId) {
+  if (!externalId) return null;
+  const result = await query(
+    `SELECT MIN(created_at) AS first_view
+       FROM promotion_events
+      WHERE promotion_id = $1
+        AND external_id = $2
+        AND event_type = 'view'`,
+    [promotionId, externalId],
+  );
+  const firstView = result.rows[0]?.first_view;
+  if (!firstView) return null;
+  const ts = new Date(firstView);
+  return Number.isNaN(ts.getTime()) ? null : ts;
+}
+
+function computeUserOfferEndsAt(firstViewAt, countdownMinutes) {
+  const mins = Number(countdownMinutes) || 0;
+  if (!firstViewAt || mins <= 0) return null;
+  return new Date(firstViewAt.getTime() + mins * 60 * 1000);
+}
+
+async function isOfaEligibleForUser(row, externalId, now = new Date()) {
+  const firstViewAt = await getUserOfaFirstViewAt(row.id, externalId);
+  if (!firstViewAt) return true;
+  const endsAt = computeUserOfferEndsAt(firstViewAt, offerCountdownMinutes(row));
+  if (!endsAt) return true;
+  return endsAt > now;
+}
+
+async function resolveUserOfferEndsAt(row, externalId) {
+  const firstViewAt = await getUserOfaFirstViewAt(row.id, externalId);
+  if (!firstViewAt) return null;
+  const endsAt = computeUserOfferEndsAt(firstViewAt, offerCountdownMinutes(row));
+  return endsAt ? endsAt.toISOString() : null;
 }
 
 async function recordPromotionEvent(promotionId, eventType, userId, externalId) {
@@ -163,10 +198,24 @@ router.get('/active', async (req, res, next) => {
     );
 
     const now = new Date();
-    const eligible = (result.rows || [])
-      .filter((row) => isPromotionActive(row, now))
-      .filter((row) => matchesTargeting(row, ctx, appVersion, platform))
-      .map(promotionRowToJson);
+    const rows = (result.rows || [])
+      .filter((row) => isPromotionActive(row))
+      .filter((row) => matchesTargeting(row, ctx, appVersion, platform));
+
+    const eligible = [];
+    for (const row of rows) {
+      const type = normalizeType(row.type);
+      if (type === 'ofa') {
+        const ok = await isOfaEligibleForUser(row, externalId, now);
+        if (!ok) continue;
+      }
+      const json = promotionRowToJson(row);
+      if (type === 'ofa') {
+        json.offerEndsAt = await resolveUserOfferEndsAt(row, externalId);
+        json.offer_ends_at = json.offerEndsAt;
+      }
+      eligible.push(json);
+    }
 
     return res.json({ promotions: eligible });
   } catch (err) {

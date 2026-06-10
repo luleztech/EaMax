@@ -68,12 +68,6 @@ const promotionBodySchema = z
     }
   });
 
-function computeOfferEndsAt(countdownMinutes) {
-  const mins = Number(countdownMinutes) || 0;
-  if (mins <= 0) return null;
-  return new Date(Date.now() + mins * 60 * 1000).toISOString();
-}
-
 const mapRow = (row) => ({
   id: row.id,
   title: row.title,
@@ -105,15 +99,13 @@ const mapRow = (row) => ({
 function buildInsertValues(data) {
   const type = normalizeType(data.type);
   const targetAudience = type === 'ofa' ? 'free' : data.targetAudience;
-  const offerEndsAt =
-    type === 'ofa' ? computeOfferEndsAt(data.offerCountdownMinutes) : null;
   return {
     type,
     targetAudience,
     offerAmountTsh: type === 'ofa' ? data.offerAmountTsh : null,
     offerPeriodDays: type === 'ofa' ? data.offerPeriodDays : null,
     offerCountdownMinutes: type === 'ofa' ? data.offerCountdownMinutes : null,
-    offerEndsAt,
+    offerEndsAt: null,
     buttonText:
       type === 'ofa'
         ? ''
@@ -136,7 +128,7 @@ router.get('/stats', async (req, res, next) => {
       query(`SELECT COUNT(*)::int AS n FROM promotions WHERE is_active = TRUE`),
       query(
         `SELECT COUNT(*)::int AS n FROM promotions
-          WHERE type = 'ofa' AND offer_ends_at IS NOT NULL AND offer_ends_at < now()`,
+          WHERE type = 'ofa' AND is_active = FALSE`,
       ),
     ]);
     const row = totals.rows[0] || {};
@@ -214,10 +206,6 @@ router.put('/:id', async (req, res, next) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
     const data = promotionBodySchema.parse(req.body);
     const built = buildInsertValues(data);
-    const existingRes = await query('SELECT offer_ends_at FROM promotions WHERE id = $1', [id]);
-    if (built.type === 'ofa' && existingRes.rows[0]?.offer_ends_at) {
-      built.offerEndsAt = existingRes.rows[0].offer_ends_at;
-    }
     const result = await query(
       `UPDATE promotions SET
          title = $1, description = $2, image_url = $3, button_text = $4, button_url = $5,

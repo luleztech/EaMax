@@ -269,7 +269,7 @@ const PromotionSection = () => {
         }
         contentContainerStyle={styles.scroll}>
         <View style={styles.statsRow}>
-          <StatCard label="Maoni" value={stats?.totalViews} icon="eye-outline" color="#60a5fa" />
+          <StatCard label="Views" value={stats?.totalViews} icon="eye-outline" color="#60a5fa" />
           <StatCard label="Bofya" value={stats?.totalClicks} icon="cursor-default-click" color="#34d399" />
         </View>
         <View style={styles.statsRow}>
@@ -302,7 +302,7 @@ const PromotionSection = () => {
                       {PRIORITY_LABELS[item.priority] || 'Medium'} · {item.showMode}
                     </Text>
                     <Text style={styles.cardStats}>
-                      {item.viewsCount} maoni · {item.clicksCount} bofya
+                      {item.viewsCount}  · {item.clicksCount} bofya
                     </Text>
                     {item.type === 'ofa' && item.offerAmountTsh ? (
                       <Text style={styles.offerLine}>

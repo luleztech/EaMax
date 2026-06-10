@@ -62,8 +62,30 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
   }
 
   void _startCountdownIfNeeded() {
+    if (!widget.promotion.isOfa) return;
     final ends = widget.promotion.offerEndsAt;
-    if (!widget.promotion.isOfa || ends == null) return;
+    if (ends == null) {
+      unawaited(_startLocalCountdown());
+      return;
+    }
+    void tick() {
+      final left = ends.difference(DateTime.now());
+      if (!mounted) return;
+      setState(() {
+        _remaining = left.isNegative ? Duration.zero : left;
+        _offerExpired = left.isNegative;
+      });
+    }
+    tick();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => tick());
+  }
+
+  Future<void> _startLocalCountdown() async {
+    final localEnds = await promotionService.localOfaEndsAt(widget.promotion);
+    final mins = widget.promotion.offerCountdownMinutes ?? 0;
+    final ends = localEnds ??
+        (mins > 0 ? DateTime.now().add(Duration(minutes: mins)) : null);
+    if (ends == null) return;
     void tick() {
       final left = ends.difference(DateTime.now());
       if (!mounted) return;

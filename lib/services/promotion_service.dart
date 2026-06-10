@@ -64,9 +64,16 @@ class PromotionService {
   Future<List<Promotion>> _filterByShowMode(List<Promotion> list) async {
     final prefs = await SharedPreferences.getInstance();
     final today = DateTime.now().toIso8601String().substring(0, 10);
+    final now = DateTime.now();
     final out = <Promotion>[];
 
     for (final p in list) {
+      if (p.isOfa) {
+        if (_isLocalOfaExpired(prefs, p, now)) continue;
+        final serverEnd = p.offerEndsAt;
+        if (serverEnd != null && !serverEnd.isAfter(now)) continue;
+      }
+
       if (p.showMode == 'every_launch') {
         out.add(p);
         continue;
@@ -86,8 +93,30 @@ class PromotionService {
     return out;
   }
 
+  bool _isLocalOfaExpired(SharedPreferences prefs, Promotion p, DateTime now) {
+    if (!p.isOfa) return false;
+    final endRaw = prefs.getString('promo_ofa_end_${p.id}');
+    if (endRaw == null) return false;
+    final end = DateTime.tryParse(endRaw);
+    return end != null && !end.isAfter(now);
+  }
+
+  Future<DateTime?> localOfaEndsAt(Promotion p) async {
+    final prefs = await SharedPreferences.getInstance();
+    final endRaw = prefs.getString('promo_ofa_end_${p.id}');
+    if (endRaw == null) return null;
+    return DateTime.tryParse(endRaw);
+  }
+
   Future<void> markShown(Promotion p) async {
     final prefs = await SharedPreferences.getInstance();
+    if (p.isOfa) {
+      final mins = p.offerCountdownMinutes ?? 0;
+      if (mins > 0 && prefs.getString('promo_ofa_end_${p.id}') == null) {
+        final ends = DateTime.now().add(Duration(minutes: mins));
+        await prefs.setString('promo_ofa_end_${p.id}', ends.toIso8601String());
+      }
+    }
     if (p.showMode == 'once') {
       await prefs.setBool('promo_once_${p.id}', true);
     } else if (p.showMode == 'daily') {

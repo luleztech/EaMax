@@ -12,6 +12,7 @@ class Promotion {
     required this.backgroundStyle,
     this.offerAmountTsh,
     this.offerPeriodDays,
+    this.offerCountdownMinutes,
     this.offerEndsAt,
   });
 
@@ -27,6 +28,7 @@ class Promotion {
   final String backgroundStyle;
   final int? offerAmountTsh;
   final int? offerPeriodDays;
+  final int? offerCountdownMinutes;
   final DateTime? offerEndsAt;
 
   static String _normalizeType(String? raw) {
@@ -69,6 +71,9 @@ class Promotion {
           ?.toInt(),
       offerPeriodDays: (json['offerPeriodDays'] ?? json['offer_period_days'] as num?)
           ?.toInt(),
+      offerCountdownMinutes:
+          (json['offerCountdownMinutes'] ?? json['offer_countdown_minutes'] as num?)
+              ?.toInt(),
       offerEndsAt: ends,
     );
   }

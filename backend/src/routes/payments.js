@@ -864,7 +864,8 @@ async function handlePaymentStart(req, res, next) {
 
     if (data.promotionId) {
       const promoRes = await query(
-        `SELECT id, type, is_active, offer_amount_tsh, offer_period_days, offer_ends_at, target_audience
+        `SELECT id, type, is_active, offer_amount_tsh, offer_period_days,
+                offer_countdown_minutes, target_audience
            FROM promotions WHERE id = $1 LIMIT 1`,
         [data.promotionId],
       );
@@ -876,8 +877,21 @@ async function handlePaymentStart(req, res, next) {
       if (promoType !== 'ofa' || promo.is_active !== true) {
         return res.status(400).json({ error: 'Hii si ofa halali' });
       }
-      if (promo.offer_ends_at) {
-        const end = new Date(promo.offer_ends_at);
+      const countdownMinutes = Number(promo.offer_countdown_minutes) || 0;
+      if (countdownMinutes > 0) {
+        const viewRes = await query(
+          `SELECT MIN(created_at) AS first_view
+             FROM promotion_events
+            WHERE promotion_id = $1
+              AND external_id = $2
+              AND event_type = 'view'`,
+          [promo.id, data.externalId],
+        );
+        const firstView = viewRes.rows[0]?.first_view;
+        if (!firstView) {
+          return res.status(400).json({ error: 'Ofa imekwisha' });
+        }
+        const end = new Date(new Date(firstView).getTime() + countdownMinutes * 60 * 1000);
         if (!Number.isNaN(end.getTime()) && end < new Date()) {
           return res.status(400).json({ error: 'Ofa imekwisha' });
         }
