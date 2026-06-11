@@ -18,6 +18,7 @@ import androidx.appcompat.app.AlertDialog
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.C
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -39,6 +40,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private lateinit var playerManager: PlayerManager
     private var exoBoundToView = false
     private var selectedOkoaQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var okoaAppliedOnTracks = false
 
     private lateinit var rotateHintOverlay: FrameLayout
     private lateinit var rotateHintPhone: ImageView
@@ -123,6 +125,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         close.setOnClickListener { finish() }
         val okoaBundle = findViewById<Button>(R.id.btn_okoa_bundle)
         okoaBundle.setOnClickListener { showOkoaQualityDialog() }
+        applyOkoaButtonInsets(okoaBundle)
 
         playerManager = PlayerManager(
             context = this,
@@ -141,12 +144,22 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                     showChannelUnavailableAndFinish()
                 }
             },
-            onTracksAvailable = {},
+            onTracksAvailable = { tracks ->
+                runOnUiThread {
+                    if (isFinishing || okoaAppliedOnTracks || playerManager.isWebViewPlayback()) return@runOnUiThread
+                    val hasVideo = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
+                    if (!hasVideo) return@runOnUiThread
+                    okoaAppliedOnTracks = true
+                    playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+                }
+            },
             onReady = {
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
                     playbackReady = true
                     try {
+                        close.bringToFront()
+                        okoaBundle.bringToFront()
                         if (playerManager.isWebViewPlayback()) {
                             playerView.player = null
                             okoaBundle.visibility = View.VISIBLE
@@ -164,13 +177,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             } ?: run {
                                 showChannelUnavailableAndFinish()
                             }
-                            playerManager.setQuality(selectedOkoaQuality)
+                            playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                         } else {
                             webContainer.visibility = View.GONE
                             webContainer.removeAllViews()
                             playerView.visibility = View.VISIBLE
                             okoaBundle.visibility = View.VISIBLE
-                            playerManager.setQuality(selectedOkoaQuality)
+                            playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)
                         }
                         maybeShowRotateHint()
@@ -283,6 +296,20 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyOkoaButtonInsets(okoaBundle: Button) {
+        val baseTop = (16 * resources.displayMetrics.density).toInt()
+        ViewCompat.setOnApplyWindowInsetsListener(okoaBundle) { v, insets ->
+            val top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            val lp = v.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                lp.topMargin = baseTop + top
+                v.layoutParams = lp
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(okoaBundle)
+    }
+
     private fun showOkoaQualityDialog() {
         val qualities = listOf(
             StreamQuality.AUTO,
@@ -300,7 +327,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 initial,
             ) { d, which ->
                 selectedOkoaQuality = qualities[which]
-                playerManager.setQuality(selectedOkoaQuality)
+                playerManager.setQuality(selectedOkoaQuality, fromUser = true)
                 d.dismiss()
             }
             .setNegativeButton(android.R.string.cancel, null)

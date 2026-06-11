@@ -330,11 +330,12 @@ class PlayerManager(
 
     /**
      * Set video quality
+     * @param fromUser false when applying the default 360p cap on startup
      */
-    fun setQuality(quality: StreamQuality) {
-        webViewEngine?.setQuality(quality)
+    fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
+        webViewEngine?.setQuality(quality, fromUser)
         engine?.setQuality(quality)
-        Log.d(TAG, "Quality changed to: $quality")
+        Log.d(TAG, "Quality changed to: $quality (fromUser=$fromUser)")
     }
 
     /**

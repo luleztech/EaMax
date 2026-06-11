@@ -18,6 +18,35 @@ class ChannelBadgeUi {
   final ChannelBadgeKind kind;
 }
 
+/// Admin + subscription rules for the top-right channel badge.
+ChannelBadgeUi channelBadgeFor(
+  ChannelUi ch, {
+  required bool isPremium,
+  required bool channelsPremiumOnly,
+}) {
+  // Free channels always show Bure — even when the user has Premium.
+  if (channelIsFreeForCatalog(ch, channelsPremiumOnly)) {
+    return const ChannelBadgeUi(label: 'Bure');
+  }
+  if (isPremium) {
+    return const ChannelBadgeUi(
+      label: 'Imefunguliwa',
+      kind: ChannelBadgeKind.premiumMemberUnlocked,
+    );
+  }
+  if (channelsPremiumOnly) {
+    return const ChannelBadgeUi(
+      label: 'Imefungwa',
+      kind: ChannelBadgeKind.lockedProChannel,
+    );
+  }
+  return ChannelBadgeUi(label: '${ch.pointsRequired}');
+}
+
+/// Whether the channel belongs in “Chaneli za bure” / free filters.
+bool channelIsFreeForCatalog(ChannelUi ch, bool channelsPremiumOnly) =>
+    channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired <= 0;
+
 class ChannelUi {
   ChannelUi({
     required this.id,

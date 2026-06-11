@@ -1,6 +1,8 @@
 package com.eamax.player
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -24,6 +26,10 @@ class WebViewEngine(
     private var webView: WebView? = null
     private var currentSession: StreamSession? = null
     private var jsInterface: WebViewJsInterface? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val defaultOkoaRunnables = mutableListOf<Runnable>()
+    /** Once the user picks from Okoa dialog, stop re-applying the 360p default. */
+    private var userPickedOkoaQuality = false
 
     fun initialize(streamSession: StreamSession) {
         currentSession = streamSession
@@ -73,6 +79,11 @@ class WebViewEngine(
                             }, 400)
                         }
                         applyDefaultOkoa360(w)
+                        // Shaka UI attaches after onPageFinished — poll until player exists.
+                        w.evaluateJavascript(
+                            "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('360');}catch(e){}",
+                            null,
+                        )
                     }
 
                     override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
@@ -116,24 +127,59 @@ class WebViewEngine(
     }
     fun stop() { webView?.stopLoading(); webView?.loadUrl("about:blank") }
 
-    fun setQuality(quality: StreamQuality) {
+    fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
+        if (fromUser) {
+            userPickedOkoaQuality = true
+            cancelDefaultOkoaRunnables()
+        }
         val mode = when (quality) {
             StreamQuality.AUTO -> "auto"
             else -> quality.height.toString()
         }
-        webView?.evaluateJavascript(
+        injectOkoaQuality(mode)
+        if (fromUser) {
+            // hls.js / Shaka may attach after first paint — re-apply user choice.
+            scheduleOkoaQualityRetries(mode)
+        }
+    }
+
+    private fun injectOkoaQuality(mode: String) {
+        val w = webView ?: return
+        w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
+        w.evaluateJavascript(
             "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode');}catch(e){}",
             null,
         )
     }
 
+    private fun scheduleOkoaQualityRetries(mode: String) {
+        listOf(300L, 800L, 1500L, 3000L, 5000L, 8000L).forEach { delayMs ->
+            val r = Runnable {
+                if (!userPickedOkoaQuality) return@Runnable
+                injectOkoaQuality(mode)
+            }
+            mainHandler.postDelayed(r, delayMs)
+        }
+    }
+
+    private fun cancelDefaultOkoaRunnables() {
+        defaultOkoaRunnables.forEach { mainHandler.removeCallbacks(it) }
+        defaultOkoaRunnables.clear()
+    }
+
     /** Re-apply Okoa cap as hls.js/Shaka attach after first paint (360p default). */
     private fun applyDefaultOkoa360(target: WebView) {
+        if (userPickedOkoaQuality) return
         val js =
             "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('360');}catch(e){}"
-        target.postDelayed({ target.evaluateJavascript(js, null) }, 450)
-        target.postDelayed({ target.evaluateJavascript(js, null) }, 2200)
-        target.postDelayed({ target.evaluateJavascript(js, null) }, 5500)
+        listOf(450L, 2200L, 5500L).forEach { delayMs ->
+            val r = Runnable {
+                if (userPickedOkoaQuality) return@Runnable
+                target.evaluateJavascript(js, null)
+            }
+            defaultOkoaRunnables.add(r)
+            target.postDelayed(r, delayMs)
+        }
     }
 
     fun setAudioLanguage(language: String) {
@@ -141,6 +187,7 @@ class WebViewEngine(
     }
 
     fun release() {
+        cancelDefaultOkoaRunnables()
         webView?.apply {
             stopLoading()
             clearHistory()

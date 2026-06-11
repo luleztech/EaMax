@@ -340,25 +340,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     } catch (_) {}
   }
 
-  ChannelBadgeUi _channelBadge(ChannelUi ch) {
-    if (widget.isPremium) {
-      return const ChannelBadgeUi(
-        label: 'Imefunguliwa',
-        kind: ChannelBadgeKind.premiumMemberUnlocked,
+  ChannelBadgeUi _channelBadge(ChannelUi ch) => channelBadgeFor(
+        ch,
+        isPremium: widget.isPremium,
+        channelsPremiumOnly: widget.channelsPremiumOnly,
       );
-    }
-    if (widget.channelsPremiumOnly && !ch.unlockToFree) {
-      return const ChannelBadgeUi(
-        label: 'Imefungwa',
-        kind: ChannelBadgeKind.lockedProChannel,
-      );
-    }
-    if (widget.channelsPremiumOnly && ch.unlockToFree) {
-      return const ChannelBadgeUi(label: 'Bure');
-    }
-    if (ch.pointsRequired <= 0) return const ChannelBadgeUi(label: 'Bure');
-    return ChannelBadgeUi(label: '${ch.pointsRequired}');
-  }
 
   List<ChannelSection> _sections() {
     switch (_homeChannelFilter) {
@@ -756,8 +742,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                 title: tab == 0 ? 'EaMax' : (tab == 1 ? 'Ratiba' : 'Channels'),
                 subtitle: tab == 0 ? 'MPIRA NA TAMTHILIA' : (tab == 1 ? 'MECHI ZIJAZO' : 'ALL STREAMS'),
                 points: widget.userPoints,
-                isPremium: widget.isPremium,
-                onPremium: openPaymentsTab,
                 onSearch: tab == 0 || tab == 2 ? _toggleSearch : null,
                 onSettings: () {
                   Navigator.of(context).push<void>(

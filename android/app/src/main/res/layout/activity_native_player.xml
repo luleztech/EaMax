@@ -11,7 +11,7 @@
         android:layout_height="match_parent"
         app:show_buffering="when_playing"
         app:surface_type="surface_view"
-        app:use_controller="true" />
+        app:use_controller="false" />
 
     <FrameLayout
         android:id="@+id/webview_container"
@@ -106,10 +106,14 @@
         android:layout_marginTop="16dp"
         android:layout_marginEnd="16dp"
         android:backgroundTint="#CC000000"
-        android:elevation="12dp"
+        android:clickable="true"
+        android:contentDescription="@string/okoa_bundle"
+        android:elevation="24dp"
+        android:focusable="true"
         android:minHeight="48dp"
         android:paddingStart="14dp"
         android:paddingEnd="14dp"
+        android:stateListAnimator="@null"
         android:text="@string/okoa_bundle"
         android:textAllCaps="false"
         android:textColor="#FFFFFFFF"

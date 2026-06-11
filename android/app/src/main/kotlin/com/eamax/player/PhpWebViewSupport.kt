@@ -170,6 +170,14 @@ object PhpWebViewSupport {
                 var n = parseInt(mode, 10);
                 return (isFinite(n) && n > 0) ? n : 0;
               }
+              function maxBitrateForHeight(h) {
+                if (h <= 240) return 400000;
+                if (h <= 360) return 800000;
+                if (h <= 480) return 1400000;
+                if (h <= 720) return 2500000;
+                if (h <= 1080) return 4000000;
+                return 8000000;
+              }
               function pickLevel(levels, maxH) {
                 if (!levels || !levels.length) return -1;
                 if (maxH <= 0) return -1;
@@ -187,14 +195,70 @@ object PhpWebViewSupport {
                 }
                 return minI;
               }
+              function collectShakaPlayers() {
+                var out = [];
+                var seen = [];
+                function add(p) {
+                  if (!p || typeof p.getVariantTracks !== 'function' ||
+                      typeof p.selectVariantTrack !== 'function') return;
+                  for (var s = 0; s < seen.length; s++) { if (seen[s] === p) return; }
+                  seen.push(p);
+                  out.push(p);
+                }
+                try {
+                  [window.shakaPlayer, window.player, window.shaka_player].forEach(add);
+                } catch (e0) {}
+                try {
+                  var vids = document.querySelectorAll('video');
+                  for (var i = 0; i < vids.length; i++) {
+                    var v = vids[i];
+                    if (window.shaka && shaka.Player &&
+                        typeof shaka.Player.getPlayerInstance === 'function') {
+                      add(shaka.Player.getPlayerInstance(v));
+                    }
+                    try {
+                      if (v['ui'] && v['ui'].getControls &&
+                          typeof v['ui'].getControls === 'function') {
+                        var controls = v['ui'].getControls();
+                        if (controls && typeof controls.getPlayer === 'function') {
+                          add(controls.getPlayer());
+                        }
+                      }
+                    } catch (uiErr) {}
+                    try {
+                      var container = v.closest('.shaka-video-container') || v.parentElement;
+                      if (container && container['ui'] &&
+                          typeof container['ui'].getPlayer === 'function') {
+                        add(container['ui'].getPlayer());
+                      }
+                    } catch (cErr) {}
+                  }
+                } catch (e1) {}
+                try {
+                  for (var k in window) {
+                    if (k === 'parent' || k === 'top' || k === 'frameElement') continue;
+                    try {
+                      var o = window[k];
+                      if (o && typeof o === 'object' &&
+                          typeof o.getVariantTracks === 'function' &&
+                          typeof o.selectVariantTrack === 'function') add(o);
+                    } catch (xe) {}
+                  }
+                } catch (e2) {}
+                return out;
+              }
               function tryHls(maxH) {
+                var found = false;
                 var tryOne = function(hls) {
                   if (!hls || !hls.levels || !hls.levels.length) return;
+                  found = true;
                   if (maxH <= 0) {
                     hls.currentLevel = -1;
                     if (typeof hls.loadLevel === 'function') hls.loadLevel(-1);
+                    if (typeof hls.autoLevelEnabled !== 'undefined') hls.autoLevelEnabled = true;
                     return;
                   }
+                  if (typeof hls.autoLevelEnabled !== 'undefined') hls.autoLevelEnabled = false;
                   var idx = pickLevel(hls.levels, maxH);
                   if (idx >= 0) {
                     hls.currentLevel = idx;
@@ -210,65 +274,66 @@ object PhpWebViewSupport {
                     if (v._hls) tryOne(v._hls);
                   }
                 } catch (e1) {}
-                try {
-                  for (var k in window) {
-                    if (k === 'parent' || k === 'top' || k === 'frameElement') continue;
-                    var o;
-                    try { o = window[k]; } catch (xe) { continue; }
-                    if (o && typeof o === 'object' && o.levels && o.levels.length &&
-                        typeof o.currentLevel === 'number')
-                      tryOne(o);
-                  }
-                } catch (e2) {}
+                return found;
               }
               function tryShaka(maxH) {
-                var candidates = [];
-                try {
-                  [window.shakaPlayer, window.player, window.shaka_player].forEach(function (p) {
-                    if (p && typeof p.getVariantTracks === 'function') candidates.push(p);
-                  });
-                } catch (e) {}
-                try {
-                  for (var k in window) {
-                    try {
-                      var o = window[k];
-                      if (o && typeof o === 'object' && typeof o.getVariantTracks === 'function' &&
-                          typeof o.selectVariantTrack === 'function')
-                        candidates.push(o);
-                    } catch (xe) {}
-                  }
-                } catch (e2) {}
+                var candidates = collectShakaPlayers();
+                if (!candidates.length) return false;
                 for (var i = 0; i < candidates.length; i++) {
                   var pl = candidates[i];
                   try {
                     if (maxH <= 0) {
-                      pl.configure({ abr: { enabled: true } });
+                      pl.configure({
+                        abr: { enabled: true },
+                        restrictions: {
+                          minHeight: 0, maxHeight: Infinity,
+                          minBandwidth: 0, maxBandwidth: Infinity
+                        }
+                      });
                       continue;
                     }
-                    pl.configure({ abr: { enabled: false } });
+                    var cap = maxBitrateForHeight(maxH);
+                    pl.configure({
+                      abr: { enabled: false },
+                      restrictions: { maxHeight: maxH, maxBandwidth: cap }
+                    });
                     var tracks = pl.getVariantTracks();
                     var best = null, bestH = 0;
                     for (var t = 0; t < tracks.length; t++) {
                       var tr = tracks[t];
+                      if (tr.type && tr.type !== 'variant' && tr.type !== 'video') continue;
                       var h = tr.height || 0;
                       if (h > 0 && h <= maxH && h > bestH) { best = tr; bestH = h; }
                     }
-                    if (best) pl.selectVariantTrack(best, true);
-                    else if (tracks.length) {
+                    if (best) {
+                      pl.selectVariantTrack(best, true);
+                    } else if (tracks.length) {
                       var minTr = tracks[0], minHt = tracks[0].height || 99999;
                       for (var u = 1; u < tracks.length; u++) {
                         var hh = tracks[u].height || 99999;
-                        if (hh < minHt) { minHt = hh; minTr = tracks[u]; }
+                        if (hh > 0 && hh < minHt) { minHt = hh; minTr = tracks[u]; }
                       }
                       pl.selectVariantTrack(minTr, true);
                     }
                   } catch (e3) {}
                 }
+                return true;
+              }
+              function applyOkoaQuality(mode) {
+                var maxH = parseTarget(String(mode));
+                var hlsOk = tryHls(maxH);
+                var shakaOk = tryShaka(maxH);
+                return hlsOk || shakaOk;
               }
               window.__eaMaxOkoaSetQuality = function(mode) {
-                var maxH = parseTarget(String(mode));
-                tryHls(maxH);
-                tryShaka(maxH);
+                window.__eaMaxOkoaLastMode = String(mode);
+                if (applyOkoaQuality(mode)) return true;
+                var tries = 0;
+                var id = setInterval(function() {
+                  if (applyOkoaQuality(window.__eaMaxOkoaLastMode) || ++tries >= 30) {
+                    clearInterval(id);
+                  }
+                }, 300);
                 return true;
               };
               true;

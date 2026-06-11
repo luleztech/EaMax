@@ -14,6 +14,8 @@ class ChannelRail extends StatefulWidget {
     required this.channels,
     required this.lockedFor,
     required this.onChannel,
+    required this.isPremium,
+    required this.channelsPremiumOnly,
     this.tileWidth = kHomeRailTileWidth,
     this.railHeight = kHomeRailHeight,
   });
@@ -22,6 +24,8 @@ class ChannelRail extends StatefulWidget {
   final List<ChannelUi> channels;
   final bool Function(ChannelUi) lockedFor;
   final void Function(ChannelUi) onChannel;
+  final bool isPremium;
+  final bool channelsPremiumOnly;
   final double tileWidth;
   final double railHeight;
 
@@ -131,7 +135,11 @@ class _ChannelRailState extends State<ChannelRail> {
                       child: ChannelCard(
                         width: widget.tileWidth,
                         channel: ch,
-                        locked: widget.lockedFor(ch),
+                        badge: channelBadgeFor(
+                          ch,
+                          isPremium: widget.isPremium,
+                          channelsPremiumOnly: widget.channelsPremiumOnly,
+                        ),
                         onPress: () => widget.onChannel(ch),
                       ),
                     );

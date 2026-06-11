@@ -41,12 +41,7 @@ const double kHomeRailHeight = kHomeRailCardHeight + kRailListBottomPadding;
 extension ChannelUiFree on ChannelUi {
   /// Catalog “free” row: depends on admin channel mode (same rules as playback).
   bool isFreeForCatalog(bool channelsPremiumOnly) =>
-      channelsPremiumOnly ? unlockToFree : pointsRequired <= 0;
-
-  /// Badge: show “Bure” on card.
-  bool get showsBureBadge {
-    return pointsRequired <= 0 || unlockToFree;
-  }
+      channelIsFreeForCatalog(this, channelsPremiumOnly);
 }
 
 const Map<String, String> kCatLabel = {
@@ -115,8 +110,8 @@ class ChannelCard extends StatefulWidget {
   const ChannelCard({
     super.key,
     required this.channel,
+    required this.badge,
     required this.onPress,
-    this.locked = false,
     this.isLoading = false,
     this.width,
     this.compactGrid = false,
@@ -124,8 +119,8 @@ class ChannelCard extends StatefulWidget {
   });
 
   final ChannelUi channel;
+  final ChannelBadgeUi badge;
   final VoidCallback onPress;
-  final bool locked;
   final bool isLoading;
   final double? width;
   final bool compactGrid;
@@ -139,14 +134,14 @@ class _ChannelPoster extends StatelessWidget {
   const _ChannelPoster({
     required this.t,
     required this.ch,
-    required this.locked,
+    required this.badge,
     this.titleOverlay = false,
     this.titleOverlayCompact = false,
   });
 
   final AppThemeColors t;
   final ChannelUi ch;
-  final bool locked;
+  final ChannelBadgeUi badge;
   final bool titleOverlay;
   final bool titleOverlayCompact;
 
@@ -172,7 +167,7 @@ class _ChannelPoster extends StatelessWidget {
           Positioned(
             top: 6,
             right: 6,
-            child: _AccessBadge(colors: t, channel: ch, lockedForViewer: locked),
+            child: _AccessBadge(colors: t, badge: badge),
           ),
           Positioned.fill(
             child: DecoratedBox(
@@ -262,7 +257,7 @@ class _ChannelCardState extends State<ChannelCard> {
                     child: _ChannelPoster(
                       t: t,
                       ch: ch,
-                      locked: widget.locked,
+                      badge: widget.badge,
                       titleOverlay: true,
                       titleOverlayCompact: true,
                     ),
@@ -276,14 +271,14 @@ class _ChannelCardState extends State<ChannelCard> {
                 child: _ChannelPoster(
                   t: t,
                   ch: ch,
-                  locked: widget.locked,
+                  badge: widget.badge,
                   titleOverlay: true,
                 ),
               )
             else
               AspectRatio(
                 aspectRatio: 3 / 4,
-                child: _ChannelPoster(t: t, ch: ch, locked: widget.locked),
+                child: _ChannelPoster(t: t, ch: ch, badge: widget.badge),
               ),
             if (!titleInsidePoster) ...[
               const SizedBox(height: 10),
@@ -310,29 +305,43 @@ class _ChannelCardState extends State<ChannelCard> {
 }
 
 class _AccessBadge extends StatelessWidget {
-  const _AccessBadge({required this.colors, required this.channel, required this.lockedForViewer});
+  const _AccessBadge({required this.colors, required this.badge});
   final AppThemeColors colors;
-  final ChannelUi channel;
-  final bool lockedForViewer;
+  final ChannelBadgeUi badge;
 
   @override
   Widget build(BuildContext context) {
     final t = colors;
-    final ch = channel;
+    final b = badge;
 
-    if (ch.pointsRequired <= 0 || ch.unlockToFree) {
+    if (b.kind == ChannelBadgeKind.premiumMemberUnlocked) {
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        constraints: const BoxConstraints(maxWidth: 124),
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
         decoration: BoxDecoration(
-          color: const Color(0xFF27272a),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          color: const Color(0xFF14532d).withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: const Color(0xFF22c55e).withValues(alpha: 0.45)),
         ),
-        child: Text('Bure', style: orbitron(7, weight: FontWeight.w900).copyWith(color: const Color(0xFFa1a1aa), letterSpacing: 0.8)),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Ionicons.lock_open, size: 11, color: const Color(0xFFbbf7d0)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                b.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: rajdhani(8, weight: FontWeight.w700).copyWith(color: const Color(0xFFbbf7d0)),
+              ),
+            ),
+          ],
+        ),
       );
     }
 
-    if (lockedForViewer) {
+    if (b.kind == ChannelBadgeKind.lockedProChannel) {
       return Container(
         constraints: const BoxConstraints(maxWidth: 118),
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
@@ -347,22 +356,51 @@ class _AccessBadge extends StatelessWidget {
             Icon(Ionicons.lock_closed, size: 11, color: t.accent),
             const SizedBox(width: 4),
             Flexible(
-              child: Text('imefungwa', maxLines: 1, overflow: TextOverflow.ellipsis, style: rajdhani(9, weight: FontWeight.w700).copyWith(color: Colors.white)),
+              child: Text(
+                b.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: rajdhani(9, weight: FontWeight.w700).copyWith(color: Colors.white),
+              ),
             ),
           ],
         ),
       );
     }
 
+    if (b.label == 'Bure') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: const Color(0xFF27272a),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+        ),
+        child: Text(
+          'Bure',
+          style: orbitron(7, weight: FontWeight.w900).copyWith(color: const Color(0xFFa1a1aa), letterSpacing: 0.8),
+        ),
+      );
+    }
+
     return Container(
-      constraints: const BoxConstraints(maxWidth: 124),
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: const Color(0xFF14532d).withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: const Color(0xFF22c55e).withValues(alpha: 0.45)),
+        color: const Color(0xFF27272a),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: t.accent.withValues(alpha: 0.35)),
       ),
-      child: Text('zimefunguliwa', maxLines: 1, overflow: TextOverflow.ellipsis, style: rajdhani(8, weight: FontWeight.w700).copyWith(color: const Color(0xFFbbf7d0))),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.star, size: 10, color: t.accent),
+          const SizedBox(width: 3),
+          Text(
+            b.label,
+            style: orbitron(7, weight: FontWeight.w900).copyWith(color: t.accent, letterSpacing: 0.4),
+          ),
+        ],
+      ),
     );
   }
 }

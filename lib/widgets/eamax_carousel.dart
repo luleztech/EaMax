@@ -9,6 +9,7 @@ import '../theme/app_typography.dart';
 import 'safe_network_image.dart';
 
 /// Supasoka-style hero carousel: 360px, in-card dots, LIVE badge overlay.
+/// Supports static images (JPG/PNG/WebP) and animated GIFs from admin URLs.
 class EamaxCarousel extends StatefulWidget {
   const EamaxCarousel({super.key, required this.items});
 
@@ -33,7 +34,7 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
       if (!mounted || widget.items.length <= 1) return;
       final next = (_index + 1) % widget.items.length;
       setState(() => _index = next);
-      _pageController.animateToPage(next, duration: const Duration(milliseconds: 450), curve: Curves.easeOut);
+      _pageController.animateToPage(next, duration: const Duration(milliseconds: 450), curve: Curves.easeOutCubic);
     });
   }
 
@@ -76,7 +77,11 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
                   controller: _pageController,
                   itemCount: widget.items.length,
                   onPageChanged: (i) => setState(() => _index = i),
-                  itemBuilder: (context, i) => _CarouselSlideWidget(item: widget.items[i], colors: t),
+                  itemBuilder: (context, i) => _CarouselSlideWidget(
+                    key: ValueKey(widget.items[i].id ?? widget.items[i].imageUrl ?? i),
+                    item: widget.items[i],
+                    colors: t,
+                  ),
                 ),
                 Positioned(
                   left: 18,
@@ -88,7 +93,11 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
                       return GestureDetector(
                         onTap: () {
                           setState(() => _index = i);
-                          _pageController.animateToPage(i, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+                          _pageController.animateToPage(
+                            i,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOutCubic,
+                          );
                         },
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
@@ -113,31 +122,59 @@ class _EamaxCarouselState extends State<EamaxCarousel> {
   }
 }
 
-class _CarouselSlideWidget extends StatelessWidget {
-  const _CarouselSlideWidget({required this.item, required this.colors});
+class _CarouselSlideWidget extends StatefulWidget {
+  const _CarouselSlideWidget({super.key, required this.item, required this.colors});
   final CarouselSlide item;
   final AppThemeColors colors;
 
   @override
+  State<_CarouselSlideWidget> createState() => _CarouselSlideWidgetState();
+}
+
+class _CarouselSlideWidgetState extends State<_CarouselSlideWidget> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final item = widget.item;
+    final colors = widget.colors;
     final badge = (item.badge != null && item.badge!.trim().isNotEmpty) ? item.badge!.trim() : 'LIVE';
     final title = item.title?.trim() ?? '';
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (item.imageUrl != null && item.imageUrl!.isNotEmpty)
-          SafeNetworkImage(imageUrl: item.imageUrl!, fit: BoxFit.cover, placeholderColor: colors.card)
-        else
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: item.gradient.length >= 2 ? item.gradient : [colors.card, colors.bg2],
-              ),
+        RepaintBoundary(
+          child: item.imageUrl != null && item.imageUrl!.isNotEmpty
+              ? SafeNetworkImage(imageUrl: item.imageUrl!, fit: BoxFit.cover, placeholderColor: colors.card)
+              : DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: item.gradient.length >= 2 ? item.gradient : [colors.card, colors.bg2],
+                    ),
+                  ),
+                ),
+        ),
+        // Vignette — keeps text readable on bright GIFs / photos.
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              stops: [0.0, 0.35, 0.72, 1.0],
+              colors: [
+                Color(0x14000000),
+                Color(0x00000000),
+                Color(0x66000000),
+                Color(0xC0000000),
+              ],
             ),
           ),
+        ),
         Positioned(
           left: 20,
           right: 24,
@@ -153,7 +190,10 @@ class _CarouselSlideWidget extends StatelessWidget {
                   children: [
                     Container(width: 4, height: 4, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle)),
                     const SizedBox(width: 6),
-                    Text(badge.toUpperCase(), style: orbitron(8, weight: FontWeight.w900).copyWith(color: Colors.white, letterSpacing: 1.5)),
+                    Text(
+                      badge.toUpperCase(),
+                      style: orbitron(8, weight: FontWeight.w900).copyWith(color: Colors.white, letterSpacing: 1.5),
+                    ),
                   ],
                 ),
               ),

@@ -102,6 +102,8 @@ class ExoPlayerEngine(
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val trackSelector = DefaultTrackSelector(context)
+    /** Kotlin-owned quality; default ~360p (“Okoa bando”) until user picks Auto or higher. */
+    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
     private var currentSession: StreamSession? = null
     private var currentFormat: StreamFormat? = null
     private var malformedManifestRecovered = false
@@ -804,19 +806,73 @@ class ExoPlayerEngine(
     }
 
     fun setQuality(quality: StreamQuality) {
-        val parameters = if (quality == StreamQuality.AUTO) {
-            trackSelector.buildUponParameters()
-                .clearVideoSizeConstraints()
-                .setForceHighestSupportedBitrate(false)
-                .build()
-        } else {
-            trackSelector.buildUponParameters()
-                .setMaxVideoSize(Int.MAX_VALUE, quality.height)
-                .setForceHighestSupportedBitrate(false)
-                .build()
-        }
-        trackSelector.setParameters(parameters)
+        selectedQuality = quality
+        applySelectedQuality()
         Log.d(TAG, "🎨 Quality set to: $quality")
+    }
+
+    /** Applies [selectedQuality] using track overrides when manifest tracks are available. */
+    private fun applySelectedQuality() {
+        val player = exoPlayer ?: return
+        val quality = selectedQuality
+
+        if (quality == StreamQuality.AUTO) {
+            val params = player.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .clearVideoSizeConstraints()
+                .setMaxVideoBitrate(Int.MAX_VALUE)
+                .setForceHighestSupportedBitrate(false)
+                .build()
+            player.trackSelectionParameters = params
+            trackSelector.setParameters(params)
+            return
+        }
+
+        var bestGroup: Tracks.Group? = null
+        var bestIndex = -1
+        var bestHeight = -1
+        for (group in player.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val h = group.getTrackFormat(i).height
+                if (h <= 0) continue
+                if (h <= quality.height && h > bestHeight) {
+                    bestHeight = h
+                    bestGroup = group
+                    bestIndex = i
+                }
+            }
+        }
+
+        val maxBitrate = maxBitrateForQuality(quality)
+        val builder = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setMaxVideoSize(Int.MAX_VALUE, quality.height)
+            .setMaxVideoBitrate(maxBitrate)
+            .setForceHighestSupportedBitrate(false)
+
+        if (bestGroup != null && bestIndex >= 0) {
+            builder.addOverride(TrackSelectionOverride(bestGroup.mediaTrackGroup, bestIndex))
+            Log.d(TAG, "🎨 Selected video track ${quality.height}p (actual=${bestHeight}p, idx=$bestIndex)")
+        } else {
+            Log.d(TAG, "🎨 Capped video to ${quality.height}p via max size/bitrate (no override yet)")
+        }
+
+        val params = builder.build()
+        player.trackSelectionParameters = params
+        trackSelector.setParameters(params)
+    }
+
+    private fun maxBitrateForQuality(quality: StreamQuality): Int = when (quality) {
+        StreamQuality.QUALITY_240P -> 400_000
+        StreamQuality.QUALITY_360P -> 800_000
+        StreamQuality.QUALITY_480P -> 1_400_000
+        StreamQuality.QUALITY_720P -> 2_500_000
+        StreamQuality.QUALITY_1080P -> 4_000_000
+        else -> Int.MAX_VALUE
     }
 
     fun setAudioLanguage(language: String) {
@@ -910,6 +966,10 @@ class ExoPlayerEngine(
                     else -> "Other"
                 }
                 Log.v(TAG, "  Group $index: type=$trackType, tracks=${group.length}, selected=${group.isSelected}")
+            }
+
+            if (selectedQuality != StreamQuality.AUTO) {
+                applySelectedQuality()
             }
             
             onTracksChangedCallback(tracks)

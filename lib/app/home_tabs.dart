@@ -38,8 +38,6 @@ class HomeHeader extends StatelessWidget {
     this.title = 'EaMax',
     this.subtitle = 'LIVE TV',
     required this.points,
-    required this.isPremium,
-    required this.onPremium,
     this.onSettings,
     this.onSearch,
   });
@@ -47,8 +45,6 @@ class HomeHeader extends StatelessWidget {
   final String title;
   final String subtitle;
   final int points;
-  final bool isPremium;
-  final VoidCallback onPremium;
   final VoidCallback? onSettings;
   final VoidCallback? onSearch;
 
@@ -79,21 +75,6 @@ class HomeHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (!isPremium) ...[
-            const SizedBox(width: 8),
-            Material(
-              color: t.accent,
-              borderRadius: BorderRadius.circular(99),
-              child: InkWell(
-                onTap: onPremium,
-                borderRadius: BorderRadius.circular(99),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  child: Text('PREMIUM', style: orbitron(9, weight: FontWeight.w900).copyWith(color: Colors.white)),
-                ),
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -457,6 +438,8 @@ class HomeMainTab extends StatelessWidget {
               channels: filtered,
               lockedFor: _locked,
               onChannel: (ch) => onChannel(ch),
+              isPremium: isPremium,
+              channelsPremiumOnly: channelsPremiumOnly,
             ),
           ),
         );
@@ -471,6 +454,8 @@ class HomeMainTab extends StatelessWidget {
                 channels: list,
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
+                isPremium: isPremium,
+                channelsPremiumOnly: channelsPremiumOnly,
               ),
             ),
           );
@@ -487,6 +472,8 @@ class HomeMainTab extends StatelessWidget {
                 channels: freeOnly,
                 lockedFor: (_) => false,
                 onChannel: (ch) => onChannel(ch),
+                isPremium: isPremium,
+                channelsPremiumOnly: channelsPremiumOnly,
               ),
             ),
           );
@@ -496,7 +483,14 @@ class HomeMainTab extends StatelessWidget {
         if (mpira.isNotEmpty) {
           slivers.add(
             SliverToBoxAdapter(
-              child: ChannelRail(title: 'Mpira', channels: mpira, lockedFor: _locked, onChannel: (ch) => onChannel(ch)),
+              child: ChannelRail(
+                title: 'Mpira',
+                channels: mpira,
+                lockedFor: _locked,
+                onChannel: (ch) => onChannel(ch),
+                isPremium: isPremium,
+                channelsPremiumOnly: channelsPremiumOnly,
+              ),
             ),
           );
         }
@@ -511,6 +505,8 @@ class HomeMainTab extends StatelessWidget {
                 channels: list,
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
+                isPremium: isPremium,
+                channelsPremiumOnly: channelsPremiumOnly,
               ),
             ),
           );
@@ -520,7 +516,14 @@ class HomeMainTab extends StatelessWidget {
         if (habari.isNotEmpty) {
           slivers.add(
             SliverToBoxAdapter(
-              child: ChannelRail(title: 'Habari', channels: habari, lockedFor: _locked, onChannel: (ch) => onChannel(ch)),
+              child: ChannelRail(
+                title: 'Habari',
+                channels: habari,
+                lockedFor: _locked,
+                onChannel: (ch) => onChannel(ch),
+                isPremium: isPremium,
+                channelsPremiumOnly: channelsPremiumOnly,
+              ),
             ),
           );
         }
@@ -643,9 +646,6 @@ class ChannelsTab extends StatelessWidget {
     final posterH = channelGridCellHeight(innerW) - 1.5;
     final tileH = posterH.clamp(56.0, double.infinity);
 
-    bool locked(ChannelUi ch) =>
-        channelLockedForViewer(ch, isPremium: isPremium, channelsPremiumOnly: channelsPremiumOnly);
-
     return ColoredBox(
       color: t.bg1,
       child: RefreshIndicator(
@@ -715,7 +715,11 @@ class ChannelsTab extends StatelessWidget {
                           child: ChannelCard(
                             compactGrid: true,
                             channel: ch,
-                            locked: locked(ch),
+                            badge: channelBadgeFor(
+                              ch,
+                              isPremium: isPremium,
+                              channelsPremiumOnly: channelsPremiumOnly,
+                            ),
                             onPress: () => onChannel(ch),
                           ),
                         ),

@@ -38,4 +38,5 @@ class Ionicons {
   static const IconData search_outline = Icons.search;
   static const IconData close_circle = Icons.cancel_outlined;
   static const IconData lock_closed = Icons.lock;
+  static const IconData lock_open = Icons.lock_open;
 }
