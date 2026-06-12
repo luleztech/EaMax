@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../config/api.dart';
 import '../services/user_id.dart';
+import '../utils/premium_snapshot.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/app_header.dart';
@@ -111,12 +112,10 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       setState(() => _userId = id);
       final userData = await userApi.getUser(id);
       if (!mounted) return;
-      final end = userData['subscriptionEndDate']?.toString();
-      final blocked = userData['blocked'] == true;
+      final snap = PremiumSnapshot.fromDynamic(userData);
       setState(() {
-        _premium = !blocked && userData['isPremium'] == true;
-        _subEnd =
-            blocked ? null : ((end != null && end.isNotEmpty) ? DateTime.tryParse(end) : null);
+        _premium = snap?.isPremium ?? false;
+        _subEnd = snap?.isPremium == true ? snap?.expiresAt : null;
       });
       _countdownTimer?.cancel();
       if (_subscriptionTimeActive) {
@@ -135,7 +134,13 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     if (diff.isNegative || diff.inSeconds <= 0) {
       _countdownTimer?.cancel();
       _countdownTimer = null;
-      if (mounted) setState(() => _remain = Duration.zero);
+      if (mounted) {
+        setState(() {
+          _remain = Duration.zero;
+          _premium = false;
+          _subEnd = null;
+        });
+      }
       _load(false);
       return;
     }

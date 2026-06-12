@@ -45,6 +45,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   Timer? _pendingPaymentWatcher;
+  Timer? _premiumRefreshTimer;
   Timer? _configRefreshTimer;
   bool _checkingPendingPayment = false;
   bool _offlineModalVisible = false;
@@ -97,10 +98,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _applyPremiumSnapshot(PremiumSnapshot snap, {int? points}) {
     if (!mounted) return;
+    final premium = PremiumSnapshot.resolveActive(
+      blocked: false,
+      apiPremium: snap.isPremium,
+      expiresAt: snap.expiresAt,
+    );
     setState(() {
       if (points != null) _points = points;
-      _premium = snap.isPremium;
-      _premiumExpiresAt = snap.isPremium ? snap.expiresAt : null;
+      _premium = premium;
+      _premiumExpiresAt = premium ? snap.expiresAt : null;
     });
   }
 
@@ -143,6 +149,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     _pendingPaymentWatcher?.cancel();
+    _premiumRefreshTimer?.cancel();
     _configRefreshTimer?.cancel();
     super.dispose();
   }
@@ -241,15 +248,19 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _onGlobalUpdateStateChanged() {
     if (!mounted) return;
+    final blockAccess = appUpdateState.config?.shouldBlockAccess == true;
     setState(() {
       _appConfig = appUpdateState.config;
-      if (_appConfig?.shouldBlockAccess == true) {
+      if (blockAccess) {
         _points = 0;
         _premium = false;
         _congratsOpen = false;
         _offlineModalVisible = false;
       }
     });
+    if (!blockAccess) {
+      unawaited(_refreshUser());
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -267,6 +278,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await setupFcmLocalNotifications();
     await _checkPendingPayment();
     _startPendingPaymentWatcher();
+    _startPremiumRefreshWatcher();
     _configRefreshTimer?.cancel();
     _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       unawaited(_fetchAppConfig(forceRefresh: true));
@@ -341,6 +353,14 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _pendingPaymentWatcher?.cancel();
     _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 4), (_) {
       unawaited(_checkPendingPayment());
+    });
+  }
+
+  /// Keep premium state aligned with the server and revoke only when expiry passes.
+  void _startPremiumRefreshWatcher() {
+    _premiumRefreshTimer?.cancel();
+    _premiumRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_refreshUser());
     });
   }
 

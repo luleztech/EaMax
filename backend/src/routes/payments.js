@@ -3,6 +3,10 @@ const crypto = require('crypto');
 const { z } = require('zod');
 const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
+const {
+  buildPremiumPayload,
+  isPremiumActive,
+} = require('../services/premiumStatus');
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
 const PAYMENT_PROVIDERS = {
@@ -342,28 +346,15 @@ const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
 const allowPaymentTestComplete = () =>
   process.env.NODE_ENV !== 'production' || String(process.env.PAYMENT_ALLOW_TEST_COMPLETE || '').trim() === '1';
 
-const computeIsPremiumActive = (row) => {
-  if (!row || row.is_premium !== true) return false;
-  if (!row.premium_expires_at) return true;
-  const exp = new Date(row.premium_expires_at);
-  return !Number.isNaN(exp.getTime()) && exp > new Date();
-};
-
 const fetchUserPremiumSnapshotByUserId = async (userId) => {
   const r = await query(
-    'SELECT is_premium, premium_expires_at, external_id FROM users WHERE id = $1 LIMIT 1',
+    'SELECT is_premium, premium_expires_at, blocked, external_id FROM users WHERE id = $1 LIMIT 1',
     [userId],
   );
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
-  const expiresAt = row.premium_expires_at ? new Date(row.premium_expires_at).toISOString() : null;
-  const isPremium = computeIsPremiumActive(row);
   return {
-    isPremium,
-    is_premium: isPremium,
-    premiumExpiresAt: expiresAt,
-    premium_expires_at: expiresAt,
-    subscriptionEndDate: expiresAt,
+    ...buildPremiumPayload(row),
     externalId: row.external_id,
   };
 };
@@ -1244,6 +1235,17 @@ const repairUserEntitlements = async (userId, planInterval) => {
   }
 };
 
+/** Only grant when the user still lacks an active subscription (avoids re-stacking on every status poll). */
+const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
+  const userRes = await query(
+    'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1 LIMIT 1',
+    [userId],
+  );
+  if (userRes.rows.length === 0) return;
+  if (isPremiumActive(userRes.rows[0])) return;
+  await repairUserEntitlements(userId, planInterval);
+};
+
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
 // [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents Zeno callbacks from completing Sonic orders and vice versa.
@@ -1288,7 +1290,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
 
   if (payment.status === 'completed') {
     console.log('[Payment] Payment already completed:', orderId);
-    await repairUserEntitlements(userId, planInterval);
+    await repairUserEntitlementsIfNeeded(userId, planInterval);
     const user = await fetchUserPremiumSnapshotByUserId(userId);
     return { ...payment, user };
   }
@@ -1318,7 +1320,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
       const cur = await client.query('SELECT status FROM subscription_payments WHERE id = $1', [paymentId]);
       if (cur.rows[0]?.status === 'completed') {
         await client.query('COMMIT');
-        await repairUserEntitlements(userId, planInterval);
+        await repairUserEntitlementsIfNeeded(userId, planInterval);
         const user = await fetchUserPremiumSnapshotByUserId(userId);
         return { ...payment, user };
       }
@@ -1351,11 +1353,11 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
       if (global.realtimeServer && externalId) {
         try {
           const updatedUser = await query(
-            'SELECT is_premium, premium_expires_at FROM users WHERE id = $1',
+            'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
             [userId]
           );
           if (updatedUser.rows[0]) {
-            global.realtimeServer.notifyPremiumUpdate(externalId, updatedUser.rows[0]);
+            global.realtimeServer.notifyPremiumUpdate(externalId, buildPremiumPayload(updatedUser.rows[0]));
           }
         } catch (err) {
           console.error('[Payment] Failed to send real-time update:', err.message);
@@ -1395,7 +1397,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         const plan = String(payRow.rows[0].plan || '').toLowerCase();
         const planInterval = resolvePremiumInterval(plan);
         if (planInterval) {
-          await repairUserEntitlements(Number(payRow.rows[0].user_id), planInterval);
+          await repairUserEntitlementsIfNeeded(Number(payRow.rows[0].user_id), planInterval);
         }
       }
       return res.json(await buildCompletedStatusPayload(orderId, { data: [{ payment_status: 'COMPLETED' }] }));

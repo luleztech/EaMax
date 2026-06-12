@@ -29,6 +29,10 @@ import {
 import realtimeSyncService from '../services/realtimeSync';
 import backgroundSyncService from '../services/backgroundSync';
 import cacheService from '../services/cacheService';
+import {
+  resolvePremiumFromRealtimePayload,
+  resolvePremiumFromUserData,
+} from '../utils/premiumStatus';
 
 const StreamingApp = () => {
   const [isPremium, setIsPremium] = useState(false);
@@ -47,20 +51,12 @@ const StreamingApp = () => {
   const handleRealtimeUpdate = useCallback((channel, data) => {
     console.log(`[RealtimeUpdate] Received update on ${channel}:`, data);
     if (channel === 'user_premium_update') {
-      // Update premium status immediately from WebSocket
-      // Support both camelCase and snake_case from backend
-      const isPrem = !!data.isPremium || !!data.is_premium;
-      const expiresAt = data.premiumExpiresAt || data.premium_expires_at;
-      
-      console.log(`[RealtimeUpdate] Premium update: ${isPrem}, expires: ${expiresAt}`);
-      
+      const { premium: isPrem, subEnd } = resolvePremiumFromRealtimePayload(data);
+
+      console.log(`[RealtimeUpdate] Premium update: ${isPrem}, expires: ${subEnd?.toISOString?.() || null}`);
+
       setIsPremium(isPrem);
-      if (expiresAt) {
-        const d = new Date(expiresAt);
-        if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
-      } else if (!isPrem) {
-        setSubscriptionEndDate(null);
-      }
+      setSubscriptionEndDate(isPrem ? subEnd : null);
 
       // Show congrats if wasn't already shown
       if (isPrem) {
@@ -79,7 +75,7 @@ const StreamingApp = () => {
       
       cacheService.update('user_data', {
         isPremium: isPrem,
-        premium_expires_at: expiresAt,
+        premium_expires_at: subEnd ? subEnd.toISOString() : null,
       });
     } else if (channel === 'user_points_update') {
       // Update points immediately from WebSocket
@@ -106,17 +102,12 @@ const StreamingApp = () => {
         // Fetch user data and update cache
         const userData = await userAPI.getUser(userId);
         const points = userData.points ?? 0;
-        const premium = !!userData.isPremium;
-        let subEnd = null;
-        if (userData.subscriptionEndDate) {
-          const d = new Date(userData.subscriptionEndDate);
-          if (!Number.isNaN(d.getTime())) subEnd = d;
-        }
+        const { premium, subEnd } = resolvePremiumFromUserData(userData);
 
         cacheService.set('user_data', {
           points,
           isPremium: premium,
-          premium_expires_at: userData.subscriptionEndDate,
+          premium_expires_at: subEnd ? subEnd.toISOString() : userData.subscriptionEndDate,
           _fetchedAt: Date.now(),
         }, 60);
 
@@ -158,13 +149,10 @@ const StreamingApp = () => {
           // Check cache first for faster load
           const cachedUser = cacheService.get('user_data');
           if (cachedUser) {
+            const { premium, subEnd } = resolvePremiumFromUserData(cachedUser);
             setUserPoints(cachedUser.points ?? 0);
-            setIsPremium(!!cachedUser.isPremium);
-            const cachedExp = cachedUser.premium_expires_at || cachedUser.premiumExpiresAt;
-            if (cachedExp) {
-              const d = new Date(cachedExp);
-              if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
-            }
+            setIsPremium(premium);
+            setSubscriptionEndDate(premium ? subEnd : null);
           }
 
           // Then refresh from server (will update cache)
@@ -357,14 +345,10 @@ const StreamingApp = () => {
   const handlePaymentSuccess = useCallback(async (paymentUser) => {
     console.log('[Payment] Success! Triggering instant premium upgrade...');
 
-    setIsPremium(true);
-    const exp =
-      paymentUser?.premiumExpiresAt ||
-      paymentUser?.premium_expires_at ||
-      paymentUser?.subscriptionEndDate;
-    if (exp) {
-      const d = new Date(exp);
-      if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
+    const { premium, subEnd } = resolvePremiumFromUserData(paymentUser || {});
+    setIsPremium(premium || true);
+    if (subEnd) {
+      setSubscriptionEndDate(subEnd);
     }
     cacheService.delete('user_data');
 

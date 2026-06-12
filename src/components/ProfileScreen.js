@@ -14,6 +14,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { userAPI } from '../config/api';
+import { resolvePremiumFromUserData } from '../utils/premiumStatus';
 import { getOrCreateUserId } from '../services/userId';
 import {
   initializeNotifications,
@@ -62,17 +63,12 @@ const ProfileScreen = ({
       // Fetch latest user data (source of truth for points, premium, subscription)
       try {
         const userData = await userAPI.getUser(storedUserId);
-        const apiPremium = userData.isPremium ?? false;
-        setIsPremium(parentIsPremium === true ? true : apiPremium);
+        const { premium, subEnd } = resolvePremiumFromUserData(userData);
+        setIsPremium(parentIsPremium === true ? true : premium);
         if (parentPoints === undefined || parentPoints === null) {
           setUserPoints(userData.points ?? 0);
         }
-        if (userData.isPremium && userData.subscriptionEndDate) {
-          const d = new Date(userData.subscriptionEndDate);
-          if (!Number.isNaN(d.getTime())) setSubscriptionEndDate(d);
-        } else {
-          setSubscriptionEndDate(null);
-        }
+        setSubscriptionEndDate(premium ? subEnd : null);
       } catch (fetchError) {
         console.error('Failed to fetch user data:', fetchError);
       }
@@ -193,6 +189,9 @@ const ProfileScreen = ({
         setTimeRemaining({ days, hours, minutes, seconds });
       } else {
         setTimeRemaining({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+        setIsPremium(false);
+        setSubscriptionEndDate(null);
+        if (onPointsRefresh) onPointsRefresh();
       }
     };
 
@@ -200,7 +199,7 @@ const ProfileScreen = ({
     const interval = setInterval(updateCountdown, 1000);
 
     return () => clearInterval(interval);
-  }, [isPremium, subscriptionEndDate]);
+  }, [isPremium, subscriptionEndDate, onPointsRefresh]);
 
   if (loading) {
     return (

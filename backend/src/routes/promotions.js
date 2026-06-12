@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
 const { compareSemver } = require('../middleware/appVersion');
+const { isPremiumActive } = require('../services/premiumStatus');
 
 const router = express.Router();
 
@@ -75,12 +76,9 @@ async function resolveUserContext(externalId) {
     return { userId: null, isPremium: false, blocked: false };
   }
   const row = result.rows[0];
-  const exp = row.premium_expires_at ? new Date(row.premium_expires_at) : null;
-  const activePremium =
-    row.is_premium === true && (!exp || exp > new Date());
   return {
     userId: row.id,
-    isPremium: activePremium,
+    isPremium: isPremiumActive(row),
     blocked: row.blocked === true,
   };
 }

@@ -1,6 +1,12 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const {
+  buildPremiumPayload,
+  isPremiumActive,
+  shouldClearStalePremiumFlag,
+  shouldRestorePremiumFlag,
+} = require('../services/premiumStatus');
 
 const router = express.Router();
 
@@ -234,8 +240,7 @@ router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) =>
     }
     const userId = userResult.rows[0].id;
     const userPoints = userResult.rows[0].points;
-    const isPremium = !!userResult.rows[0].is_premium &&
-      (userResult.rows[0].premium_expires_at == null || new Date(userResult.rows[0].premium_expires_at) > new Date());
+    const isPremium = isPremiumActive(userResult.rows[0]);
 
     const settingsResult = await query(
       "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",

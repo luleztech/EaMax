@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
+const { buildPremiumPayload } = require('../services/premiumStatus');
 
 const promotionsAdminRouter = require('./promotionsAdmin');
 
@@ -322,10 +323,7 @@ router.post('/users/:id/special-access', async (req, res, next) => {
       if (global.realtimeServer && externalId) {
         try {
           const row = updated.rows[0];
-          global.realtimeServer.notifyPremiumUpdate(externalId, {
-            is_premium: row.is_premium,
-            premium_expires_at: row.premium_expires_at,
-          });
+          global.realtimeServer.notifyPremiumUpdate(externalId, buildPremiumPayload(row));
         } catch (err) {
           console.error('[Admin] Failed to send real-time update:', err.message);
         }
