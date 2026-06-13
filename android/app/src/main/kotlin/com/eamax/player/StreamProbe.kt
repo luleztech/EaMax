@@ -50,6 +50,7 @@ object StreamProbe {
         val drmType: DrmType? = null,
         val authToken: String = "",
         val clearKeys: List<ClearKey> = emptyList(),
+        val licenseHeaders: Map<String, String> = emptyMap(),
     )
 
     fun resolveForSession(session: StreamSession): Result {
@@ -85,9 +86,18 @@ object StreamProbe {
             return r
         }
 
-        // ── PHP gateways: decrypt embedded stream URL → native Exo, else WebView ──
-        if (StreamUrlClassifier.isPhpLikeUrl(original)) {
-            return cache(tryResolvePhpGateway(original, headers))
+        // ── Gateway pages: start WebView immediately (WebViewEngine decrypts in parallel).
+        // Blocking HTML fetch here duplicated WebView work and added seconds before playback.
+        if (StreamUrlClassifier.isPhpLikeUrl(original) ||
+            StreamUrlClassifier.isLikelyGatewayUrl(original)
+        ) {
+            Log.d(TAG, "fast-path WEB_VIEW (gateway): ${original.take(80)}")
+            return Result(
+                ResolvedKind.WEB_VIEW_PAGE,
+                original,
+                original,
+                refererOverlay(original, headers),
+            )
         }
 
         // ── Obvious .m3u8 → HLS, no network probe needed ─────────────────────
@@ -233,11 +243,14 @@ object StreamProbe {
         drmType = extracted.drmType(),
         authToken = extracted.authToken,
         clearKeys = extracted.clearKeys,
+        licenseHeaders = extracted.licenseHeaders,
     )
 
     private fun refererOverlay(original: String, existing: Map<String, String>): Map<String, String> {
         val hasRef = existing.keys.any { it.equals("Referer", true) || it.equals("referer", true) }
-        return if (hasRef) emptyMap() else mapOf("Referer" to stripHash(original))
+        if (hasRef) return emptyMap()
+        val overlay = GatewayHttpHeaders.forGateway(stripHash(original), emptyMap())
+        return overlay.filterKeys { key -> !existing.containsKey(key) }
     }
 
     private fun stripHash(url: String): String {

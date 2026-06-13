@@ -107,6 +107,30 @@ object PhpWebViewSupport {
     }
 
     /**
+     * Hides gateway page chrome, security banners, HLS/package error text — video surface only.
+     * Does not report playback errors; the native watchdog handles timeouts.
+     */
+    fun playerOnlyUiScript(): String {
+        return """
+            (function () {
+              if (document.getElementById('__eaMaxPlayerOnly')) return true;
+              var root = document.head || document.documentElement || document.body;
+              if (!root) return false;
+              var s = document.createElement('style');
+              s.id = '__eaMaxPlayerOnly';
+              s.textContent =
+                'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important}' +
+                'video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{' +
+                'position:fixed!important;inset:0!important;width:100%!important;height:100%!important;' +
+                'max-width:100%!important;max-height:100%!important;object-fit:contain!important;' +
+                'z-index:2147483646!important;opacity:1!important;visibility:visible!important;display:block!important}';
+              root.appendChild(s);
+              return true;
+            })();
+        """.trimIndent()
+    }
+
+    /**
      * Defines [window.__eaMaxOkoaSetQuality] for hls.js / Shaka-style players inside gateway pages.
      * mode: `"auto"` or height as string e.g. `"360"`.
      */
@@ -118,12 +142,22 @@ object PhpWebViewSupport {
         return """
             (function () {
               try {
-                var html = document.documentElement ? document.documentElement.innerHTML : '';
-                if (!html || html.indexOf('encryptedMpd') < 0) return false;
+                if (window.__eaMaxExtractSent) return true;
+                var html = '';
+                if (document.documentElement) html = document.documentElement.innerHTML || '';
+                var scripts = document.getElementsByTagName('script');
+                for (var si = 0; si < scripts.length; si++) {
+                  var sc = scripts[si];
+                  if (sc && sc.textContent) html += '\n' + sc.textContent;
+                }
+                if (!html) return false;
                 function pick(name) {
-                  var re = new RegExp(name + '\\s*=\\s*["\\']([^"\\']+)["\\']', 'i');
-                  var m = html.match(re);
-                  return m ? m[1] : '';
+                  var dq = new RegExp(name + '[\\s=]+"([^"]+)"', 'i');
+                  var sq = new RegExp(name + "[\\s=]+'([^']+)'", 'i');
+                  var m = html.match(dq);
+                  if (m && m[1]) return m[1];
+                  m = html.match(sq);
+                  return (m && m[1]) ? m[1] : '';
                 }
                 function xorDecrypt(enc, key) {
                   try {
@@ -135,14 +169,37 @@ object PhpWebViewSupport {
                     return out;
                   } catch (e) { return ''; }
                 }
-                var keyPart = pick('keyPart');
-                var encMpd = pick('encryptedMpd');
-                if (!keyPart || !encMpd) return false;
-                var streamUrl = xorDecrypt(encMpd, keyPart);
+                var keyPart = pick('keyPart') || pick('key') || pick('xorKey');
+                var encMpd = pick('encryptedMpd') || pick('encryptedStream') || pick('encryptedUrl') ||
+                             pick('encryptedHls') || pick('encryptedDash') || pick('encryptedManifest');
+                var streamUrl = '';
+                var licenseUrl = '';
+                if (keyPart && encMpd) {
+                  streamUrl = xorDecrypt(encMpd, keyPart);
+                }
+                if (!streamUrl || streamUrl.indexOf('http') !== 0) {
+                  streamUrl = window.__eaMaxCapturedManifest || '';
+                }
                 if (!streamUrl || streamUrl.indexOf('http') !== 0) return false;
-                var licenseUrl = pick('encryptedLicense') ? xorDecrypt(pick('encryptedLicense'), keyPart) : '';
+                if (keyPart) {
+                  var licEnc = pick('encryptedLicense') || pick('encryptedLicence') ||
+                               pick('encryptedDrm') || pick('encryptedWidevine');
+                  if (licEnc) licenseUrl = xorDecrypt(licEnc, keyPart);
+                }
+                if (!licenseUrl) {
+                  licenseUrl = window.__eaMaxCapturedLicense || '';
+                }
+                if (!licenseUrl) {
+                  try {
+                    var lm = html.match(/com\.widevine\.alpha[^'"]*["'](https[^'"]+)/i);
+                    if (lm && lm[1]) {
+                      licenseUrl = lm[1].indexOf('://') >= 0 ? lm[1] : ('https:' + lm[1]);
+                    }
+                  } catch (e) {}
+                }
                 var authToken = pick('encryptedToken') ? xorDecrypt(pick('encryptedToken'), keyPart) : '';
                 var clearKeyRaw = pick('encryptedClearKey') ? xorDecrypt(pick('encryptedClearKey'), keyPart) : '';
+                window.__eaMaxExtractSent = true;
                 var payload = {
                   streamUrl: streamUrl,
                   isHls: streamUrl.indexOf('.m3u8') >= 0,
@@ -158,6 +215,429 @@ object PhpWebViewSupport {
               } catch (e) {
                 return false;
               }
+            })();
+        """.trimIndent()
+    }
+
+    /**
+     * Hooks Shaka Player.configure()/load() before EME runs — captures manifest + license URL
+     * on gateways where Huawei WebView Widevine fails after load().
+     */
+    fun gatewayShakaConfigureHookScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
+        return """
+            (function () {
+              if (window.__eaMaxConfigureHook) return true;
+              window.__eaMaxConfigureHook = true;
+              function readLicense(cfg) {
+                if (!cfg || !cfg.drm || !cfg.drm.servers) return '';
+                var s = cfg.drm.servers;
+                return s['com.widevine.alpha'] || s['com.widevine'] ||
+                       s['org.w3.clearkey'] || s['com.microsoft.playready'] || '';
+              }
+              function notify(uri, licenseUrl, authToken, licenseHeaders) {
+                if (!uri && !licenseUrl) return;
+                var payload = {
+                  streamUrl: uri || window.__eaMaxCapturedManifest || '',
+                  isHls: (uri || '').indexOf('.m3u8') >= 0,
+                  licenseUrl: licenseUrl || '',
+                  authToken: authToken || '',
+                  clearKeyRaw: '',
+                  licenseHeaders: licenseHeaders || window.__eaMaxLicenseHeaders || {}
+                };
+                if (!payload.streamUrl || payload.streamUrl.indexOf('http') !== 0) return;
+                try {
+                  if (typeof $androidInterfaceName !== 'undefined' &&
+                      $androidInterfaceName.onGatewayStreamExtracted) {
+                    $androidInterfaceName.onGatewayStreamExtracted(JSON.stringify(payload));
+                  }
+                } catch (e) {}
+              }
+              function reportLicenseHeaders(hdrs) {
+                if (!hdrs) return;
+                var out = {};
+                try {
+                  Object.keys(hdrs).forEach(function(k){ out[k] = String(hdrs[k]); });
+                } catch (e) {}
+                if (Object.keys(out).length === 0) return;
+                window.__eaMaxLicenseHeaders = out;
+                notify(window.__eaMaxCapturedManifest, window.__eaMaxCapturedLicense, '', out);
+              }
+              function readAuthToken(cfg) {
+                if (!cfg || !cfg.drm || !cfg.drm.advanced) return '';
+                var adv = cfg.drm.advanced['com.widevine.alpha'];
+                if (adv && adv.serverCertificateUri) return '';
+                return '';
+              }
+              function captureCfg(cfg) {
+                if (!cfg) return;
+                try {
+                  if (cfg.drm && (cfg.drm.servers || cfg.drm.clearKeys)) {
+                    window.__eaMaxShakaDrmSignaled = true;
+                  }
+                  var uri = (cfg.manifest && cfg.manifest.uri) ? String(cfg.manifest.uri) : '';
+                  if (uri.indexOf('http') === 0) window.__eaMaxCapturedManifest = uri;
+                  var lic = readLicense(cfg);
+                  if (lic) window.__eaMaxCapturedLicense = lic;
+                  notify(uri || window.__eaMaxCapturedManifest, lic || window.__eaMaxCapturedLicense, '', window.__eaMaxLicenseHeaders);
+                } catch (e) {}
+              }
+              function wrapPlayer(Orig) {
+                var Wrapped = function (video) {
+                  var p = new Orig(video);
+                  try {
+                    var oc = p.configure;
+                    if (typeof oc === 'function') {
+                      p.configure = function (cfg, clear) {
+                        captureCfg(cfg);
+                        var ret = oc.call(this, cfg, clear);
+                        try {
+                          if (!p.__eaMaxLicFilter && typeof p.getNetworkingEngine === 'function') {
+                            var eng = p.getNetworkingEngine();
+                            if (eng && typeof eng.registerRequestFilter === 'function' &&
+                                typeof shaka !== 'undefined' && shaka.net &&
+                                shaka.net.NetworkingEngine) {
+                              p.__eaMaxLicFilter = true;
+                              var RT = shaka.net.NetworkingEngine.RequestType;
+                              eng.registerRequestFilter(function (type, req) {
+                                if (type === RT.LICENSE && req && req.headers) {
+                                  reportLicenseHeaders(req.headers);
+                                }
+                              });
+                            }
+                          }
+                        } catch (e5) {}
+                        return ret;
+                      };
+                    }
+                    var ol = p.load;
+                    if (typeof ol === 'function') {
+                      p.load = function (uri) {
+                        if (uri) {
+                          window.__eaMaxCapturedManifest = String(uri);
+                          notify(String(uri), window.__eaMaxCapturedLicense || '', '', window.__eaMaxLicenseHeaders);
+                        }
+                        return ol.apply(this, arguments);
+                      };
+                    }
+                  } catch (e2) {}
+                  return p;
+                };
+                Wrapped.prototype = Orig.prototype;
+                try {
+                  Object.getOwnPropertyNames(Orig).forEach(function (k) {
+                    try { Wrapped[k] = Orig[k]; } catch (e3) {}
+                  });
+                } catch (e4) {}
+                return Wrapped;
+              }
+              function tryHook() {
+                if (typeof shaka === 'undefined' || !shaka.Player) return;
+                if (shaka.Player.__eaMaxHooked) return;
+                shaka.Player = wrapPlayer(shaka.Player);
+                shaka.Player.__eaMaxHooked = true;
+              }
+              setInterval(tryHook, 40);
+              return true;
+            })();
+        """.trimIndent()
+    }
+
+    /** Fetch/XHR/Shaka network hooks — injected at document start before gateway scripts run. */
+    fun gatewayNetworkCaptureScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
+        return """
+            (function () {
+              if (window.__eaMaxNetHook) return true;
+              window.__eaMaxNetHook = true;
+              function isLicenseUrl(u) {
+                if (!u) return false;
+                u = String(u).toLowerCase();
+                return u.indexOf('license') >= 0 || u.indexOf('widevine') >= 0 ||
+                       u.indexOf('rightsManager') >= 0 || u.indexOf('acquirelicense') >= 0 ||
+                       u.indexOf('/drm') >= 0 || u.indexOf('/wv/') >= 0 ||
+                       u.indexOf('getkey') >= 0 || u.indexOf('azamtvltd') >= 0;
+              }
+              function captureLicense(u) {
+                if (!isLicenseUrl(u)) return;
+                window.__eaMaxCapturedLicense = String(u);
+                window.__eaMaxShakaDrmSignaled = true;
+              }
+              function postLicenseHeaders(hdrs) {
+                if (!hdrs) return;
+                var out = {};
+                try {
+                  Object.keys(hdrs).forEach(function(k){ out[k] = String(hdrs[k]); });
+                } catch (e) {}
+                if (Object.keys(out).length === 0) return;
+                window.__eaMaxLicenseHeaders = out;
+                try {
+                  if (typeof $androidInterfaceName !== 'undefined' &&
+                      $androidInterfaceName.onGatewayStreamExtracted) {
+                    $androidInterfaceName.onGatewayStreamExtracted(JSON.stringify({
+                      streamUrl: window.__eaMaxCapturedManifest || '',
+                      isHls: false,
+                      licenseUrl: window.__eaMaxCapturedLicense || '',
+                      authToken: '',
+                      clearKeyRaw: '',
+                      licenseHeaders: out
+                    }));
+                  }
+                } catch (e) {}
+              }
+              function captureManifest(u) {
+                u = String(u || '');
+                if (u.indexOf('http') === 0 &&
+                    (u.indexOf('.mpd') >= 0 || u.indexOf('.m3u8') >= 0)) {
+                  window.__eaMaxCapturedManifest = u;
+                }
+              }
+              if (typeof shaka !== 'undefined' && shaka.net && shaka.net.NetworkingEngine) {
+                try {
+                  var RequestType = shaka.net.NetworkingEngine.RequestType;
+                  var orig = shaka.net.NetworkingEngine.prototype.request;
+                  shaka.net.NetworkingEngine.prototype.request = function(type, request) {
+                    try {
+                      if (request && request.uris && request.uris[0]) {
+                        var u = String(request.uris[0]);
+                        if (type === RequestType.LICENSE || isLicenseUrl(u)) captureLicense(u);
+                        if (type === RequestType.MANIFEST || type === RequestType.SEGMENT) captureManifest(u);
+                      }
+                      if (type === RequestType.LICENSE && request && request.headers) {
+                        postLicenseHeaders(request.headers);
+                      }
+                    } catch (e) {}
+                    return orig.call(this, type, request);
+                  };
+                } catch (e) {}
+              }
+              if (!window.__eaMaxFetchHook) {
+                window.__eaMaxFetchHook = true;
+                try {
+                  var origFetch = window.fetch;
+                  if (origFetch) {
+                    window.fetch = function(input) {
+                      try {
+                        var u = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+                        captureLicense(u);
+                        captureManifest(u);
+                      } catch (e) {}
+                      return origFetch.apply(this, arguments);
+                    };
+                  }
+                } catch (e) {}
+                try {
+                  var origOpen = XMLHttpRequest.prototype.open;
+                  XMLHttpRequest.prototype.open = function(method, url) {
+                    try {
+                      captureLicense(url);
+                      captureManifest(url);
+                    } catch (e) {}
+                    return origOpen.apply(this, arguments);
+                  };
+                } catch (e) {}
+              }
+              return true;
+            })();
+        """.trimIndent()
+    }
+
+    /** Combined early injection: configure hook + network capture (document-start). */
+    fun gatewayDocumentStartScript(androidInterfaceName: String = "ShakaPlayerBridge"): String =
+        gatewayShakaConfigureHookScript(androidInterfaceName) +
+            "\n" +
+            gatewayNetworkCaptureScript(androidInterfaceName)
+
+    /** Exo Widevine license POST via WebView fetch (Nagra/Azam — uses page cookies + origin). */
+    fun webViewLicenseFetchScript(
+        bridgeName: String = WebViewLicenseBridge.JS_INTERFACE_NAME,
+    ): String {
+        return """
+            (function () {
+              if (window.__eaMaxLicenseFetch) return true;
+              window.__eaMaxLicenseFetch = true;
+              window.__eaMaxFetchWidevineLicense = function (id, url, bodyB64, headers) {
+                try {
+                  var raw = atob(bodyB64);
+                  var bytes = new Uint8Array(raw.length);
+                  for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                  var hdrs = (headers && typeof headers === 'object') ? headers : {};
+                  if (!hdrs['Content-Type']) hdrs['Content-Type'] = 'application/octet-stream';
+                  var xhr = new XMLHttpRequest();
+                  xhr.open('POST', url, true);
+                  xhr.withCredentials = true;
+                  xhr.responseType = 'arraybuffer';
+                  Object.keys(hdrs).forEach(function (k) {
+                    try { xhr.setRequestHeader(k, hdrs[k]); } catch (e) {}
+                  });
+                  xhr.onload = function () {
+                    if (xhr.status < 200 || xhr.status >= 300) {
+                      $bridgeName.onLicenseError(id, 'HTTP ' + xhr.status);
+                      return;
+                    }
+                    var ab = xhr.response;
+                    var b = new Uint8Array(ab);
+                    var s = '';
+                    for (var j = 0; j < b.length; j++) s += String.fromCharCode(b[j]);
+                    $bridgeName.onLicenseSuccess(id, btoa(s));
+                  };
+                  xhr.onerror = function () {
+                    $bridgeName.onLicenseError(id, 'XHR network error');
+                  };
+                  xhr.send(bytes);
+                } catch (e) {
+                  $bridgeName.onLicenseError(id, String(e.message || e));
+                }
+              };
+              return true;
+            })();
+        """.trimIndent()
+    }
+
+    /**
+     * Reads live Shaka player config from the gateway page (license URL + manifest URI).
+     */
+    fun gatewayShakaHookScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
+        return """
+            (function () {
+              if (window.__eaMaxShakaHook) return true;
+              window.__eaMaxShakaHook = true;
+              function post(uri, licenseUrl, authToken) {
+                if (!uri || uri.indexOf('http') !== 0) return;
+                var prevLicense = window.__eaMaxLastLicense || '';
+                if (licenseUrl) window.__eaMaxLastLicense = licenseUrl;
+                if (window.__eaMaxExtractSent && !licenseUrl) return;
+                if (window.__eaMaxExtractSent && licenseUrl && licenseUrl === prevLicense) return;
+                if (licenseUrl || !window.__eaMaxExtractSent) window.__eaMaxExtractSent = true;
+                var payload = {
+                  streamUrl: uri,
+                  isHls: uri.indexOf('.m3u8') >= 0,
+                  licenseUrl: licenseUrl || '',
+                  authToken: authToken || '',
+                  clearKeyRaw: ''
+                };
+                try {
+                  if (typeof $androidInterfaceName !== 'undefined' &&
+                      $androidInterfaceName.onGatewayStreamExtracted) {
+                    $androidInterfaceName.onGatewayStreamExtracted(JSON.stringify(payload));
+                  }
+                } catch (e) {}
+              }
+              function readLicense(cfg) {
+                if (!cfg || !cfg.drm || !cfg.drm.servers) return '';
+                var s = cfg.drm.servers;
+                return s['com.widevine.alpha'] || s['com.widevine'] || s['org.w3.clearkey'] || '';
+              }
+              function tryShaka() {
+                if (window.__eaMaxExtractSent || typeof shaka === 'undefined') return;
+                var videos = document.querySelectorAll('video');
+                for (var i = 0; i < videos.length; i++) {
+                  var p = null;
+                  try {
+                    if (shaka.Player && shaka.Player.getPlayerInstance) {
+                      p = shaka.Player.getPlayerInstance(videos[i]);
+                    }
+                  } catch (e1) {}
+                  if (!p) continue;
+                  var uri = '';
+                  try { uri = p.getAssetUri ? p.getAssetUri() : ''; } catch (e2) {}
+                  if (!uri) continue;
+                  var cfg = null;
+                  try { cfg = p.getConfiguration ? p.getConfiguration() : null; } catch (e3) {}
+                  post(uri, readLicense(cfg), '');
+                  return;
+                }
+              }
+              if (typeof shaka !== 'undefined' && shaka.net && shaka.net.NetworkingEngine) {
+                try {
+                  var RequestType = shaka.net.NetworkingEngine.RequestType;
+                  var orig = shaka.net.NetworkingEngine.prototype.request;
+                  shaka.net.NetworkingEngine.prototype.request = function(type, request) {
+                    try {
+                      if (request && request.uris && request.uris[0]) {
+                        var u = String(request.uris[0]);
+                        if (type === RequestType.LICENSE ||
+                            u.indexOf('license') >= 0 ||
+                            u.indexOf('widevine') >= 0 ||
+                            u.indexOf('RightsManager') >= 0 ||
+                            u.indexOf('AcquireLicense') >= 0 ||
+                            u.indexOf('/drm') >= 0) {
+                          window.__eaMaxCapturedLicense = u;
+                          window.__eaMaxShakaDrmSignaled = true;
+                        }
+                        if ((type === RequestType.MANIFEST || type === RequestType.SEGMENT) &&
+                            (u.indexOf('.mpd') >= 0 || u.indexOf('.m3u8') >= 0) &&
+                            u.indexOf('http') === 0) {
+                          window.__eaMaxCapturedManifest = u;
+                        }
+                      }
+                    } catch (e4) {}
+                    return orig.call(this, type, request);
+                  };
+                } catch (e5) {}
+              }
+              if (!window.__eaMaxFetchHook) {
+                window.__eaMaxFetchHook = true;
+                try {
+                  var origFetch = window.fetch;
+                  if (origFetch) {
+                    window.fetch = function(input, init) {
+                      try {
+                        var u = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+                        if (u && (u.indexOf('license') >= 0 || u.indexOf('widevine') >= 0 ||
+                            u.indexOf('RightsManager') >= 0 || u.indexOf('AcquireLicense') >= 0)) {
+                          window.__eaMaxCapturedLicense = u;
+                          window.__eaMaxShakaDrmSignaled = true;
+                        }
+                      } catch (e6) {}
+                      return origFetch.apply(this, arguments);
+                    };
+                  }
+                } catch (e7) {}
+                try {
+                  var origOpen = XMLHttpRequest.prototype.open;
+                  XMLHttpRequest.prototype.open = function(method, url) {
+                    try {
+                      var u = String(url || '');
+                      if (u.indexOf('license') >= 0 || u.indexOf('widevine') >= 0 ||
+                          u.indexOf('RightsManager') >= 0) {
+                        window.__eaMaxCapturedLicense = u;
+                        window.__eaMaxShakaDrmSignaled = true;
+                      }
+                    } catch (e8) {}
+                    return origOpen.apply(this, arguments);
+                  };
+                } catch (e9) {}
+              }
+              setInterval(function () {
+                tryShaka();
+                if (window.__eaMaxCapturedManifest) {
+                  post(window.__eaMaxCapturedManifest,
+                       window.__eaMaxCapturedLicense || '',
+                       '');
+                }
+              }, 500);
+              return true;
+            })();
+        """.trimIndent()
+    }
+
+    /** Sends page HTML to Kotlin for [PhpGatewayExtractor] (license + stream fields). */
+    fun gatewayHtmlProbeScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
+        return """
+            (function () {
+              try {
+                var html = document.documentElement ? (document.documentElement.innerHTML || '') : '';
+                var scripts = document.getElementsByTagName('script');
+                for (var i = 0; i < scripts.length; i++) {
+                  var sc = scripts[i];
+                  if (sc && sc.textContent) html += '\n' + sc.textContent;
+                }
+                if (!html || html.length < 200) return false;
+                if (typeof $androidInterfaceName !== 'undefined' &&
+                    $androidInterfaceName.onGatewayHtmlProbe) {
+                  $androidInterfaceName.onGatewayHtmlProbe(html);
+                }
+                return true;
+              } catch (e) { return false; }
             })();
         """.trimIndent()
     }
@@ -338,6 +818,96 @@ object PhpWebViewSupport {
               };
               true;
             })();
+        """.trimIndent()
+    }
+
+    /**
+     * Embedded Shaka Player 4.11.4 — HLS (.m3u8) and DASH (.mpd) in WebView (no raw gateway page).
+     * Posts playback events to [androidInterfaceName] (ShakaPlayerBridge).
+     */
+    fun buildShakaPlayerHtml(
+        streamUrl: String,
+        headers: Map<String, String> = emptyMap(),
+        clearKeys: Map<String, String> = emptyMap(),
+        licenseUrl: String = "",
+        maxHeight: Int = 360,
+        androidInterfaceName: String = "ShakaPlayerBridge",
+    ): String {
+        val headerJson = org.json.JSONObject(headers as Map<*, *>).toString()
+        val clearKeysJson = org.json.JSONObject(clearKeys as Map<*, *>).toString()
+        val urlJson = org.json.JSONObject.quote(streamUrl)
+        val licenseJson = org.json.JSONObject.quote(licenseUrl)
+        val maxW = when {
+            maxHeight >= 1080 -> 1920
+            maxHeight >= 720 -> 1280
+            maxHeight >= 480 -> 854
+            maxHeight >= 360 -> 640
+            else -> 426
+        }
+
+        return """
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#000;height:100%;width:100%;overflow:hidden}
+video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.4/dist/shaka-player.compiled.js"
+  onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.4/shaka-player.compiled.min.js';document.head.appendChild(s);})();"></script>
+</head><body>
+<video id="v" autoplay playsinline webkit-playsinline controls></video>
+<script>
+(function(){
+  var BR='$androidInterfaceName';
+  var url=$urlJson, headers=$headerJson, clearKeys=$clearKeysJson;
+  var licenseUrl=$licenseJson, maxH=$maxHeight, maxW=$maxW;
+  function postPlaying(){ try{ window[BR]&&window[BR].onPlaybackStarted&&window[BR].onPlaybackStarted(); }catch(e){} }
+  function postError(){ try{ window[BR]&&window[BR].onPlaybackError&&window[BR].onPlaybackError('unavailable'); }catch(e){} }
+  function waitShaka(cb){ var n=0;(function t(){ if(typeof shaka!=='undefined'){ cb(true); return; } if(++n>40){ cb(false); return; } setTimeout(t,150); })(); }
+  waitShaka(function(ok){
+    if(!ok){ postError(); return; }
+    var v=document.getElementById('v');
+    shaka.polyfill.installAll();
+    var player=new shaka.Player(v);
+    player.getNetworkingEngine().registerRequestFilter(function(type,req){
+      req.allowCrossSiteCredentials=true;
+      Object.keys(headers||{}).forEach(function(k){ if(headers[k]!=null) req.headers[k]=String(headers[k]); });
+      if(type===shaka.net.NetworkingEngine.RequestType.MANIFEST){
+        req.headers['Accept']=req.headers['Accept']||'application/dash+xml,application/vnd.apple.mpegurl,*/*';
+      }
+    });
+    var drmCfg={};
+    if(clearKeys&&Object.keys(clearKeys).length) drmCfg.clearKeys=clearKeys;
+    if(licenseUrl) drmCfg.servers={'com.widevine.alpha':licenseUrl,'org.w3.clearkey':licenseUrl};
+    player.configure({
+      streaming:{bufferingGoal:20,rebufferingGoal:3,retryParameters:{maxAttempts:5,baseDelay:1000,timeout:30000}},
+      drm:drmCfg,
+      abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
+    });
+    player.addEventListener('error',function(){ postError(); });
+    v.addEventListener('playing', postPlaying);
+    player.load(url).then(function(){
+      try{
+        var tracks=player.getVariantTracks();
+        if(tracks&&tracks.length){
+          var best=tracks[0], bestH=tracks[0].height||0;
+          for(var i=0;i<tracks.length;i++){
+            var h=tracks[i].height||0;
+            if(h>0&&h<=maxH&&h>=bestH){ best=tracks[i]; bestH=h; }
+          }
+          if(best) player.selectVariantTrack(best,false,0);
+        }
+      }catch(e){}
+      postPlaying();
+      v.play().catch(function(){});
+    }).catch(function(){ postError(); });
+  });
+})();
+</script></body></html>
         """.trimIndent()
     }
 }

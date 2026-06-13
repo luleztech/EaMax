@@ -24,9 +24,18 @@ const _kFeatureChips = [
 ];
 
 class LoaderScreen extends StatefulWidget {
-  const LoaderScreen({super.key, required this.onDone});
+  const LoaderScreen({
+    super.key,
+    required this.onDone,
+    this.canProceed = false,
+    this.maxWaitForReady = const Duration(seconds: 6),
+  });
 
   final VoidCallback onDone;
+  /// Parent signals app bootstrap is far enough to enter the main shell.
+  final bool canProceed;
+  /// Never hold splash longer than this after the intro animation finishes.
+  final Duration maxWaitForReady;
 
   @override
   State<LoaderScreen> createState() => _LoaderScreenState();
@@ -78,6 +87,13 @@ class _LoaderScreenState extends State<LoaderScreen> with TickerProviderStateMix
       await Future<void>.delayed(const Duration(milliseconds: 520));
       if (!mounted) return;
       setState(() => _messageIndex = i);
+    }
+
+    final deadline = DateTime.now().add(widget.maxWaitForReady);
+    while (mounted && !_navigating) {
+      if (widget.canProceed) break;
+      if (!DateTime.now().isBefore(deadline)) break;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
     }
 
     await Future<void>.delayed(const Duration(milliseconds: 400));

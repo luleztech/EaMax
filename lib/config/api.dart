@@ -207,9 +207,17 @@ class UserApi {
 }
 
 class ChannelsApi {
-  Future<List<dynamic>> getChannels({String? category}) async {
+  Future<List<dynamic>> getChannels({
+    String? category,
+    Duration? timeout,
+    bool enableRetries = true,
+  }) async {
     final q = category != null ? '?category=$category' : '';
-    final data = await apiRequest('/api/channels$q');
+    final data = await apiRequest(
+      '/api/channels$q',
+      timeout: timeout,
+      enableRetries: enableRetries,
+    );
     if (data is List) return data;
     return [];
   }
@@ -247,8 +255,16 @@ class SettingsApi {
     }
     return 'zeno';
   }
-  Future<List<dynamic>> getCarouselSlides(String category) async {
-    final data = await apiRequest('/api/carousel?category=$category');
+  Future<List<dynamic>> getCarouselSlides(
+    String category, {
+    Duration? timeout,
+    bool enableRetries = true,
+  }) async {
+    final data = await apiRequest(
+      '/api/carousel?category=$category',
+      timeout: timeout,
+      enableRetries: enableRetries,
+    );
     if (data is List) return data;
     return [];
   }

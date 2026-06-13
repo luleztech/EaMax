@@ -264,13 +264,31 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   }
 
   Future<void> _bootstrap() async {
-    await _fetchAppConfig(forceRefresh: true);
+    final cached = AppConfigService.cached;
+    if (cached != null && mounted) {
+      setState(() => _appConfig = cached);
+    }
+
+    final configFuture = _fetchAppConfig(forceRefresh: true);
+    await Future.any([
+      configFuture.then((_) {}),
+      Future<void>.delayed(const Duration(milliseconds: 1200)),
+    ]);
+
     if (!mounted) return;
-    setState(() => _appConfigChecked = true);
+    setState(() {
+      _appConfigChecked = true;
+      _appConfig ??= AppConfigService.cached;
+    });
+
     if (_appConfig?.shouldBlockAccess == true) {
       return;
     }
 
+    unawaited(_finishBootstrap());
+  }
+
+  Future<void> _finishBootstrap() async {
     await getOrCreateUserId();
     await refreshChannelsPremiumOnlySetting();
     await _refreshUser();
@@ -497,21 +515,18 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    if (!_splashDone || !_appConfigChecked) {
+    if (!_splashDone) {
       return LoaderScreen(
+        canProceed: _appConfigChecked,
         onDone: () {
-          if (!_splashDone) {
-            setState(() => _splashDone = true);
-          }
-          if (_appConfigChecked) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (_appConfig?.shouldBlockAccess != true &&
-                  (!_promotionsLoaded || _promotionQueue.isEmpty)) {
-                unawaited(_loadPromotions());
-              }
-              unawaited(_maybePromptNotificationPermission());
-            });
-          }
+          setState(() => _splashDone = true);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_appConfig?.shouldBlockAccess != true &&
+                (!_promotionsLoaded || _promotionQueue.isEmpty)) {
+              unawaited(_loadPromotions());
+            }
+            unawaited(_maybePromptNotificationPermission());
+          });
         },
       );
     }

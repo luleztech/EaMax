@@ -8,5 +8,6 @@
     <string name="rotate_hint_later">Baadae</string>
     <string name="rotate_hint_never_again">Usioneshe tena</string>
     <string name="channel_unavailable_message">Mafundi wetu wanahangaikia channel hii, itarejea hivi punde, asante kwa kuwa nasi.</string>
+    <string name="player_connecting">Inaunganisha…</string>
     <string name="ok_understood">Sawa</string>
 </resources>

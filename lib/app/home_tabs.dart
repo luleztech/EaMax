@@ -342,7 +342,7 @@ class HomeMainTab extends StatelessWidget {
 
     final slivers = <Widget>[];
 
-    if ((initialLoading || refreshing) && allChannels.isEmpty) {
+    if (initialLoading && allChannels.isEmpty) {
       slivers.add(
         SliverPadding(
           padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPad),
@@ -675,7 +675,7 @@ class ChannelsTab extends StatelessWidget {
                 ),
               ),
             ),
-            if ((initialLoading || refreshing) && list.isEmpty)
+            if (initialLoading && list.isEmpty)
               SliverPadding(
                 padding: EdgeInsets.fromLTRB(hPad, 0, hPad, bottomPad),
                 sliver: SliverGrid(

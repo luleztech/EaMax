@@ -19,6 +19,33 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
+    <!-- Covers gateway WebView until video plays — never show third-party error pages. -->
+    <FrameLayout
+        android:id="@+id/web_loading_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:indeterminate="true"
+            android:indeterminateTint="#99FFFFFF" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:layout_marginTop="72dp"
+            android:text="@string/player_connecting"
+            android:textColor="#99FFFFFF"
+            android:textSize="14sp" />
+    </FrameLayout>
+
     <FrameLayout
         android:id="@+id/rotate_hint_overlay"
         android:layout_width="match_parent"

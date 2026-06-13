@@ -50,10 +50,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     /** After landscape once, do not show rotate hint again this session. */
     private var hasBeenLandscapeThisSession = false
     private var playbackReady = false
+    private lateinit var webLoadingOverlay: FrameLayout
+    private var unavailableDialogShown = false
 
     /** Never expose URLs / HTTP / DRM details to the user (security). */
     private fun showChannelUnavailableAndFinish() {
-        if (isFinishing) return
+        if (isFinishing || unavailableDialogShown) return
+        unavailableDialogShown = true
         try {
             AlertDialog.Builder(this)
                 .setMessage(R.string.channel_unavailable_message)
@@ -109,6 +112,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             }
         }
         val webContainer = findViewById<FrameLayout>(R.id.webview_container)
+        webLoadingOverlay = findViewById(R.id.web_loading_overlay)
         rotateHintOverlay = findViewById(R.id.rotate_hint_overlay)
         rotateHintPhone = findViewById(R.id.rotate_hint_phone)
         findViewById<Button>(R.id.btn_rotate_hint_later).setOnClickListener {
@@ -127,20 +131,48 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         okoaBundle.setOnClickListener { showOkoaQualityDialog() }
         applyOkoaButtonInsets(okoaBundle)
 
+        showWebLoadingOverlay()
+
         playerManager = PlayerManager(
             context = this,
             onStateChanged = { state ->
+                runOnUiThread {
+                    if (playerManager.isWebViewPlayback()) {
+                        when (state) {
+                            PlaybackState.PLAYING -> {
+                                hideWebLoadingOverlay()
+                                attachWebViewIfNeeded(webContainer, playerView)
+                                playerManager.getWebView()?.alpha = 1f
+                            }
+                            PlaybackState.ENDED -> showChannelUnavailableAndFinish()
+                            else -> { }
+                        }
+                        return@runOnUiThread
+                    }
+                }
                 if (exoBoundToView || playerManager.isWebViewPlayback()) return@PlayerManager
                 val attach = state == PlaybackState.BUFFERING ||
                     state == PlaybackState.READY ||
                     state == PlaybackState.PLAYING
                 if (!attach) return@PlayerManager
-                runOnUiThread { bindExoToPlayerViewIfNeeded(playerView, strictNull = false) }
+                runOnUiThread {
+                    hideWebLoadingOverlay()
+                    webContainer.visibility = View.GONE
+                    playerView.visibility = View.VISIBLE
+                    bindExoToPlayerViewIfNeeded(playerView, strictNull = false)
+                }
             },
             onError = { msg ->
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
                     Log.w(TAG, "Playback error: $msg")
+                    if (playerManager.tryRevertToWebViewPlayback()) {
+                        Log.i(TAG, "Reverted to WebView — suppressing unavailable dialog")
+                        attachWebViewIfNeeded(webContainer, playerView)
+                        hideWebLoadingOverlay()
+                        return@runOnUiThread
+                    }
+                    hideWebLoadingOverlay()
                     showChannelUnavailableAndFinish()
                 }
             },
@@ -164,21 +196,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             playerView.player = null
                             okoaBundle.visibility = View.VISIBLE
                             playerView.visibility = View.GONE
-                            webContainer.visibility = View.VISIBLE
-                            webContainer.removeAllViews()
-                            playerManager.getWebView()?.let { w ->
-                                webContainer.addView(
-                                    w,
-                                    FrameLayout.LayoutParams(
-                                        FrameLayout.LayoutParams.MATCH_PARENT,
-                                        FrameLayout.LayoutParams.MATCH_PARENT,
-                                    ),
-                                )
-                            } ?: run {
-                                showChannelUnavailableAndFinish()
-                            }
+                            attachWebViewIfNeeded(webContainer, playerView)
+                            showWebLoadingOverlay()
+                            playerManager.getWebView()?.alpha = 0f
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                         } else {
+                            exoBoundToView = false
+                            hideWebLoadingOverlay()
                             webContainer.visibility = View.GONE
                             webContainer.removeAllViews()
                             playerView.visibility = View.VISIBLE
@@ -278,6 +302,21 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         startPhoneHintAnimation()
     }
 
+    private fun hideWebLoadingOverlay() {
+        if (::webLoadingOverlay.isInitialized) {
+            webLoadingOverlay.visibility = View.GONE
+        }
+    }
+
+    private fun showWebLoadingOverlay() {
+        if (::webLoadingOverlay.isInitialized) {
+            webLoadingOverlay.visibility = View.VISIBLE
+            webLoadingOverlay.bringToFront()
+            findViewById<ImageButton>(R.id.btn_close)?.bringToFront()
+            findViewById<Button>(R.id.btn_okoa_bundle)?.bringToFront()
+        }
+    }
+
     private fun hideRotateHintOverlay() {
         phoneHintAnimator?.cancel()
         phoneHintAnimator = null
@@ -332,6 +371,27 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun attachWebViewIfNeeded(webContainer: FrameLayout, playerView: PlayerView) {
+        val w = playerManager.getWebViewForReattach() ?: run {
+            hideWebLoadingOverlay()
+            showChannelUnavailableAndFinish()
+            return
+        }
+        webContainer.visibility = View.VISIBLE
+        playerView.visibility = View.GONE
+        if (w.parent !== webContainer) {
+            (w.parent as? android.view.ViewGroup)?.removeView(w)
+            webContainer.removeAllViews()
+            webContainer.addView(
+                w,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
     }
 
     private fun bindExoToPlayerViewIfNeeded(playerView: PlayerView, strictNull: Boolean) {

@@ -52,4 +52,55 @@ object StreamUrlClassifier {
             false
         }
     }
+
+    /** Azam / tokenized CDNs that serve Widevine DASH — never promote Exo without a license URL. */
+    fun likelyRequiresWidevine(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.lowercase()
+        return u.contains("azamtvltd") ||
+            u.contains("cdntoken=") ||
+            u.contains("cdnblncr") ||
+            u.contains("mpilalivetv") ||
+            u.contains("/wv/") ||
+            u.contains("widevine")
+    }
+
+    fun isNagraLicense(licenseUrl: String?): Boolean {
+        if (licenseUrl.isNullOrBlank()) return false
+        return licenseUrl.contains("nagra", ignoreCase = true)
+    }
+
+    /**
+     * True for real Widevine license POST endpoints — not CDN manifest/token URLs.
+     * Azam gateways often expose `.../tok_eyJ...` URLs that must stay in WebView Shaka.
+     */
+    fun isLikelyLicenseServerUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.trim().lowercase()
+        if (!u.startsWith("http")) return false
+        if (hasObviousM3u8(u) || hasObviousMpd(u)) return false
+        if (u.contains("/tok_") || u.contains("tok_eyj")) return false
+        if (u.contains("cdntoken=")) return false
+        if (isNagraLicense(url)) return true
+        if (Regex("""/(license|licenses|licence|licences|getkey|acquirelicense|rights)""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(u)
+        ) {
+            return true
+        }
+        if (u.contains("widevine") && (u.contains("license") || u.contains("/wv/"))) return true
+        if (u.contains("rightsmanager")) return true
+        if (u.contains("azamtvltd") &&
+            (u.contains("license") || u.contains("/wv/") || u.contains("nagra"))
+        ) {
+            return true
+        }
+        return false
+    }
+
+    /** Native Exo needs a real license server (or clear keys). Otherwise keep WebView Shaka. */
+    fun canPromoteGatewayToNativeExo(extracted: PhpGatewayExtractor.Extracted): Boolean {
+        if (extracted.clearKeys.isNotEmpty()) return true
+        if (!likelyRequiresWidevine(extracted.streamUrl)) return true
+        return isLikelyLicenseServerUrl(extracted.licenseUrl)
+    }
 }

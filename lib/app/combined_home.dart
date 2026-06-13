@@ -12,6 +12,7 @@ import '../screens/fullscreen_video_page.dart';
 import '../screens/payments_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
+import '../services/home_data_cache.dart';
 import '../services/native_android_player.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
@@ -63,6 +64,9 @@ const _movieGenres = [
   _Genre('Katuni', 'katuni', 'movie', Color(0xFFF59E0B)),
   _Genre('Sayansi', 'sayansi', 'movie', Color(0xFF8B5CF6)),
 ];
+
+const _homeLoadTimeout = Duration(seconds: 10);
+const _homeRequestTimeout = Duration(seconds: 10);
 
 String _hexColor(Color c) => '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
 
@@ -142,8 +146,36 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     super.initState();
     _localPoints = widget.userPoints;
     _glowCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
+    unawaited(_hydrateFromCache());
     _loadAll();
     getOrCreateUserId();
+  }
+
+  Future<void> _hydrateFromCache() async {
+    final rows = await HomeDataCache.loadChannels();
+    final carouselRows = await HomeDataCache.loadCarousel();
+    final cachedMatches = await HomeDataCache.loadMatches();
+    if (!mounted) return;
+
+    setState(() {
+      if (rows != null && rows.isNotEmpty) {
+        _applyChannelRows(rows);
+      }
+      if (carouselRows != null && carouselRows.isNotEmpty) {
+        _carousel = _mapSlides(
+          carouselRows,
+          const [Color(0xFF14532D), Color(0xFF111827), Color(0xFF000000)],
+        );
+      }
+      if (cachedMatches != null && cachedMatches.isNotEmpty) {
+        _matches = cachedMatches;
+      }
+      final hasChannels = rows != null && rows.isNotEmpty;
+      final hasCarousel = carouselRows != null && carouselRows.isNotEmpty;
+      if (hasChannels || hasCarousel) {
+        _initialLoading = false;
+      }
+    });
   }
 
   @override
@@ -201,14 +233,15 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   Future<void> _loadAll() async {
     try {
-      await widget.syncPremiumSetting();
-    } catch (_) {}
-    await Future.wait([
-      _loadSlides().catchError((_) {}),
-      _loadChannels().catchError((_) {}),
-      _loadMatches().catchError((_) {}),
-    ]);
-    if (mounted) setState(() => _initialLoading = false);
+      unawaited(widget.syncPremiumSetting().catchError((_) {}));
+      await Future.wait([
+        _loadSlides().catchError((_) {}),
+        _loadChannels().catchError((_) {}),
+        _loadMatches().catchError((_) {}),
+      ]).timeout(_homeLoadTimeout, onTimeout: () => <void>[]);
+    } finally {
+      if (mounted) setState(() => _initialLoading = false);
+    }
   }
 
   List<CarouselSlide> _mapSlides(List<dynamic> data, List<Color> defGrad) {
@@ -235,15 +268,40 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   Future<void> _loadSlides() async {
-    final football = await settingsApi.getCarouselSlides('football');
-    final movies = await settingsApi.getCarouselSlides('movies');
+    final football = await settingsApi.getCarouselSlides(
+      'football',
+      timeout: _homeRequestTimeout,
+      enableRetries: false,
+    );
+    final movies = await settingsApi.getCarouselSlides(
+      'movies',
+      timeout: _homeRequestTimeout,
+      enableRetries: false,
+    );
     if (!mounted) return;
-    setState(() {
-      _carousel = [
-        ..._mapSlides(football, const [Color(0xFF14532D), Color(0xFF111827), Color(0xFF000000)]),
-        ..._mapSlides(movies, const [Color(0xFF581C87), Color(0xFF111827), Color(0xFF000000)]),
-      ];
-    });
+    final slides = [
+      ..._mapSlides(football, const [Color(0xFF14532D), Color(0xFF111827), Color(0xFF000000)]),
+      ..._mapSlides(movies, const [Color(0xFF581C87), Color(0xFF111827), Color(0xFF000000)]),
+    ];
+    setState(() => _carousel = slides);
+    if (slides.isNotEmpty) {
+      unawaited(HomeDataCache.saveCarousel(
+        slides
+            .map((s) => {
+                  'title': s.title,
+                  'subtitle': s.subtitle,
+                  'badge': s.badge,
+                  'image_url': s.imageUrl,
+                  'video_url': s.videoUrl,
+                  'id': s.id,
+                  'gradient_start': '#${(s.gradient[0].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
+                  'gradient_mid': '#${(s.gradient[1].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
+                  'gradient_end': '#${(s.gradient[2].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
+                  'info_text': s.info.isNotEmpty ? s.info.first.text : null,
+                })
+            .toList(),
+      ));
+    }
   }
 
   int _channelSortKey(Map<String, dynamic> ch) {
@@ -252,16 +310,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     return int.tryParse('$raw') ?? (ch['id'] as num?)?.toInt() ?? 0;
   }
 
-  Future<void> _loadChannels() async {
-    final all = await channelsApi.getChannels();
-    if (all.isEmpty) return;
-    final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
-      ..sort((a, b) {
-        final c = _channelSortKey(a).compareTo(_channelSortKey(b));
-        if (c != 0) return c;
-        return ((a['id'] as num?) ?? 0).compareTo((b['id'] as num?) ?? 0);
-      });
-
+  void _applyChannelRows(List<Map<String, dynamic>> rows) {
     final football = <ChannelUi>[];
     final free = <ChannelUi>[];
     final cat = {
@@ -298,18 +347,37 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         cat[category]!.add(mapped);
       }
     }
+
+    _football = football;
+    _freeOrdered = free;
+    _byCat = cat;
+  }
+
+  Future<void> _loadChannels() async {
+    final all = await channelsApi.getChannels(
+      timeout: _homeRequestTimeout,
+      enableRetries: false,
+    );
+    if (all.isEmpty) return;
+    final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
+      ..sort((a, b) {
+        final c = _channelSortKey(a).compareTo(_channelSortKey(b));
+        if (c != 0) return c;
+        return ((a['id'] as num?) ?? 0).compareTo((b['id'] as num?) ?? 0);
+      });
+
     if (!mounted) return;
     setState(() {
-      _football = football;
-      _freeOrdered = free;
-      _byCat = cat;
+      _applyChannelRows(rows);
     });
+    unawaited(HomeDataCache.saveChannels(rows));
   }
 
   Future<void> _loadMatches() async {
     final m = await matchesApi.getUpcomingMatches();
     if (!mounted) return;
     setState(() => _matches = m);
+    if (m.isNotEmpty) unawaited(HomeDataCache.saveMatches(m));
   }
 
   /// Syncs admin channel mode + carousel + channels + matches (same as pull-to-refresh).
@@ -318,14 +386,15 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     _channelDataCache.clear();
     _channelDataCacheTime.clear();
     try {
-      await widget.syncPremiumSetting();
-    } catch (_) {}
-    await Future.wait([
-      _loadSlides().catchError((_) {}),
-      _loadChannels().catchError((_) {}),
-      _loadMatches().catchError((_) {}),
-    ]);
-    if (mounted) setState(() => _refreshing = false);
+      unawaited(widget.syncPremiumSetting().catchError((_) {}));
+      await Future.wait([
+        _loadSlides().catchError((_) {}),
+        _loadChannels().catchError((_) {}),
+        _loadMatches().catchError((_) {}),
+      ]).timeout(_homeLoadTimeout, onTimeout: () => <void>[]);
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
   }
 
   Future<void> _onRefresh() => reloadRemoteData();
@@ -452,12 +521,19 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
           !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
         merged['Authorization'] = 'Bearer $token';
       }
+      final ck = _extractClearKeyPayload(channelData);
+      final drm = _normalizedDrmType(channelData, ck, url);
+      final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           builder: (_) => FullscreenVideoPage(
             videoUrl: url,
             channelName: channelName,
             httpHeaders: merged.isEmpty ? null : merged,
+            drmType: drm,
+            licenseUrl: license != null ? '$license' : '',
+            clearKeyRaw: ck,
+            playbackToken: token,
           ),
         ),
       );
@@ -595,37 +671,43 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     return t != null && DateTime.now().difference(t) < _channelCacheTtl;
   }
 
+  Future<void> _refreshChannelDataInBackground(ChannelUi ch) async {
+    try {
+      final data = await channelsApi.getChannel(ch.id);
+      _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
+      _channelDataCacheTime[ch.id] = DateTime.now();
+    } catch (_) {
+      // Non-blocking — list URL was enough to start playback.
+    }
+  }
+
   Future<void> _openChannel(ChannelUi ch) async {
     final canPlay = widget.isPremium ||
         (widget.channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired == 0);
     if (canPlay) {
+      final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
+      final quickData = cachedData ?? ch.apiRow;
+      final quickUrl = _channelExternalUrl(ch, quickData);
+
+      // Open player immediately when the channel list already has a stream URL.
+      if (quickUrl.isNotEmpty) {
+        final channelData = quickData != null
+            ? Map<String, dynamic>.from(quickData)
+            : ch.apiRow;
+        unawaited(_openVideoPlayback(
+          url: quickUrl,
+          channelName: ch.name,
+          channelData: channelData,
+        ));
+        unawaited(_refreshChannelDataInBackground(ch));
+        return;
+      }
+
       setState(() => _loadingChannelId = ch.id);
       try {
-        final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
-        final quickData = cachedData ?? ch.apiRow;
-        final quickUrl = _channelExternalUrl(ch, quickData);
-
-        if (quickData != null && quickUrl.isNotEmpty && _canOpenFromCachedData(quickData)) {
-          try {
-            await _openVideoPlayback(
-              url: quickUrl,
-              channelName: ch.name,
-              channelData: Map<String, dynamic>.from(quickData),
-            );
-            return;
-          } catch (_) {
-            // Fast path failed. Continue to fetch full details.
-          }
-        }
-
-        Map<String, dynamic> data;
-        if (cachedData != null) {
-          data = cachedData;
-        } else {
-          data = await channelsApi.getChannel(ch.id);
-          _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
-          _channelDataCacheTime[ch.id] = DateTime.now();
-        }
+        final data = cachedData ?? await channelsApi.getChannel(ch.id);
+        _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
+        _channelDataCacheTime[ch.id] = DateTime.now();
 
         final url = _channelExternalUrl(ch, data);
         if (url.isNotEmpty && mounted) {
@@ -639,16 +721,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
         if (mounted) await showChannelUnavailableModal(context);
       } catch (_) {
-        final quickUrl = ch.streamUrl?.trim();
-        if (quickUrl != null && quickUrl.isNotEmpty && mounted) {
-          await _openVideoPlayback(
-            url: quickUrl,
-            channelName: ch.name,
-            channelData: ch.apiRow,
-          );
-        } else if (mounted) {
-          await showChannelUnavailableModal(context);
-        }
+        if (mounted) await showChannelUnavailableModal(context);
       } finally {
         if (mounted) setState(() => _loadingChannelId = null);
       }

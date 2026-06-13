@@ -79,7 +79,19 @@ object EamaxHttpDataSource {
             .callTimeout(12, TimeUnit.SECONDS)
             .build()
     }
+
+    /** Parallel gateway HTML prefetch while WebView loads the same page. */
+    val gatewayFastClient: OkHttpClient by lazy {
+        sharedClient.newBuilder()
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(6, TimeUnit.SECONDS)
+            .build()
+    }
+
     fun fastProbeClient(): OkHttpClient = fastProbeClient
+
+    fun gatewayFastClient(): OkHttpClient = gatewayFastClient
 
     @Suppress("UNUSED_PARAMETER")
     fun factory(

@@ -109,6 +109,7 @@ class ExoPlayerEngine(
     private var malformedManifestRecovered = false
     private var blockedHeadersRecovered = false
     private var networkFallbackRecovered = false
+    private var webViewLicenseBridge: WebViewLicenseBridge? = null
 
     companion object {
         private const val TAG = "ExoPlayerEngine"
@@ -131,8 +132,10 @@ class ExoPlayerEngine(
         streamSession: StreamSession,
         forcedStreamFormat: StreamFormat? = null,
         resetRecoveryFlags: Boolean = true,
+        webViewLicenseBridge: WebViewLicenseBridge? = null,
     ) {
         currentSession = streamSession
+        this.webViewLicenseBridge = webViewLicenseBridge
         if (resetRecoveryFlags) {
             malformedManifestRecovered = false
             blockedHeadersRecovered = false
@@ -271,21 +274,28 @@ class ExoPlayerEngine(
         }
     }
 
+    /** Headers for Widevine license POST — separate from manifest/CDN headers. */
+    private fun buildLicenseHeaders(streamSession: StreamSession): Map<String, String> {
+        val headers = LinkedHashMap<String, String>()
+        streamSession.drmData.headers?.forEach { (k, v) -> if (v.isNotBlank()) headers[k] = v }
+        headers.putIfAbsent("Content-Type", "application/octet-stream")
+        headers.putIfAbsent("Accept", "*/*")
+        if (!headers.keys.any { it.equals("User-Agent", ignoreCase = true) }) {
+            headers["User-Agent"] = PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
+        }
+        Log.d(TAG, "🔑 License POST headers: ${headers.keys.joinToString()}")
+        return headers
+    }
+
     /**
      * Builds complete headers including auth, DRM, and custom headers
      */
     private fun buildHeaders(streamSession: StreamSession): Map<String, String> {
         val headers = HashMap<String, String>().apply {
-            // Priority 1: Add DRM-specific headers first (highest priority)
-            streamSession.drmData.headers?.let { drmHeaders ->
-                putAll(drmHeaders)
-                Log.d(TAG, "  Added ${drmHeaders.size} DRM headers")
-            }
-            
-            // Priority 2: Add session-level headers (may override defaults)
-            streamSession.headers?.let { sessionHeaders ->
-                putAll(sessionHeaders)
-                Log.d(TAG, "  Added ${sessionHeaders.size} session headers")
+            // Session-level headers for manifest/segments (license headers are separate).
+            streamSession.headers.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
+            if (streamSession.headers.isNotEmpty()) {
+                Log.d(TAG, "  Added ${streamSession.headers.size} session headers")
             }
             
             // Priority 3: Add standard browser-like headers (lowest priority, won't override)
@@ -319,29 +329,34 @@ class ExoPlayerEngine(
             // Priority 6: Referer + Origin — gateways, DRM, auth, and typical .mpd/.m3u8 hosts that 403 bare clients.
             try {
                 val raw = streamSession.mpdUrl.trim()
-                // Send Referer + Origin for ALL HTTP/HTTPS streams — most IPTV panels and CDNs
-                // require or benefit from a self-Referer. maybeRecoverFromBlockedHeaders will
-                // strip them if they trigger a 401/403 block on the server side.
                 val shouldAttachReferrerOrigin =
                     raw.startsWith("http://", ignoreCase = true) ||
                     raw.startsWith("https://", ignoreCase = true)
                 if (raw.isNotEmpty() && shouldAttachReferrerOrigin) {
-                    val u = Uri.parse(raw)
-                    if (u.scheme != null && u.host != null) {
-                        if (!keys.any { it.equals("Referer", true) || it.equals("referer", true) }) {
-                            val portPart = when {
-                                u.port <= 0 || u.port == 80 || u.port == 443 -> ""
-                                else -> ":${u.port}"
-                            }
-                            val ref = "${u.scheme}://${u.host}$portPart/"
-                            put("Referer", ref)
+                    val referer = entries.firstOrNull { (k, _) ->
+                        k.equals("Referer", ignoreCase = true) || k.equals("referer", ignoreCase = true)
+                    }?.value?.trim().orEmpty()
+                    if (referer.startsWith("http", ignoreCase = true)) {
+                        if (!keys.any { it.equals("Origin", ignoreCase = true) }) {
+                            GatewayHttpHeaders.originFromUrl(referer)?.let { put("Origin", it) }
                         }
-                        if (!keys.any { it.equals("Origin", true) }) {
-                            val portPart = when {
-                                u.port <= 0 || u.port == 80 || u.port == 443 -> ""
-                                else -> ":${u.port}"
+                    } else {
+                        val u = Uri.parse(raw)
+                        if (u.scheme != null && u.host != null) {
+                            if (!keys.any { it.equals("Referer", true) || it.equals("referer", true) }) {
+                                val portPart = when {
+                                    u.port <= 0 || u.port == 80 || u.port == 443 -> ""
+                                    else -> ":${u.port}"
+                                }
+                                put("Referer", "${u.scheme}://${u.host}$portPart/")
                             }
-                            put("Origin", "${u.scheme}://${u.host}$portPart")
+                            if (!keys.any { it.equals("Origin", true) }) {
+                                val portPart = when {
+                                    u.port <= 0 || u.port == 80 || u.port == 443 -> ""
+                                    else -> ":${u.port}"
+                                }
+                                put("Origin", "${u.scheme}://${u.host}$portPart")
+                            }
                         }
                     }
                 }
@@ -448,7 +463,8 @@ class ExoPlayerEngine(
             ) {
                 Log.w(TAG, "⚠️ Skipping DRM (missing license URL) for ${streamSession.drmType}")
             } else {
-                val drmConfig = buildDrmConfiguration(streamSession, headers)
+                val licenseHeaders = buildLicenseHeaders(streamSession)
+                val drmConfig = buildDrmConfiguration(streamSession, licenseHeaders)
                 mediaItemBuilder.setDrmConfiguration(drmConfig)
                 Log.d(TAG, "🔐 DRM configuration added: ${streamSession.drmType}")
             }
@@ -665,17 +681,31 @@ class ExoPlayerEngine(
     private fun createDrmSessionManager(
         streamSession: StreamSession,
         dataSourceFactory: HttpDataSource.Factory,
-        headers: Map<String, String>
+        @Suppress("UNUSED_PARAMETER") manifestHeaders: Map<String, String>,
     ): DefaultDrmSessionManager {
+        val licenseHeaders = buildLicenseHeaders(streamSession)
         return when (streamSession.drmType) {
             DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 -> {
                 Log.d(TAG, "🔑 Creating Widevine DRM session manager")
                 Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
                 
-                val drmCallback = HttpMediaDrmCallback(
+                val nativeCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    EamaxHttpDataSource.factory(headers, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
+                    EamaxHttpDataSource.factory(licenseHeaders, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
                 )
+                val drmCallback: androidx.media3.exoplayer.drm.MediaDrmCallback =
+                    if (webViewLicenseBridge != null &&
+                        StreamUrlClassifier.isNagraLicense(streamSession.licenseUrl)
+                    ) {
+                        GatewayMediaDrmCallback(
+                            licenseUrl = streamSession.licenseUrl,
+                            licenseHeaders = licenseHeaders,
+                            nativeCallback = nativeCallback,
+                            webViewBridge = webViewLicenseBridge,
+                        )
+                    } else {
+                        nativeCallback
+                    }
                 
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(
@@ -691,7 +721,7 @@ class ExoPlayerEngine(
                 
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    EamaxHttpDataSource.factory(headers, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
+                    EamaxHttpDataSource.factory(licenseHeaders, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
                 )
                 
                 DefaultDrmSessionManager.Builder()
@@ -1124,6 +1154,9 @@ class ExoPlayerEngine(
         if (blockedHeadersRecovered) return false
         val session = currentSession ?: return false
         if (session.drmType != DrmType.NONE) return false
+        // Tokenized / gateway CDNs need Referer+Origin; stripping them causes 403 on Azam-style hosts.
+        if (StreamUrlClassifier.likelyRequiresWidevine(session.mpdUrl)) return false
+        if (session.headers.keys.any { it.equals("Referer", ignoreCase = true) }) return false
 
         var t: Throwable? = error
         var blockedHttp = false

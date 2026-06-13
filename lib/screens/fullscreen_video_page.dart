@@ -9,17 +9,11 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../player/stream_url_utils.dart';
+import '../player/web_playback_config.dart';
 import '../services/player_rotate_hint_prefs.dart';
 import '../widgets/channel_unavailable_modal.dart';
-
-/// Align with native [StreamUrlClassifier]: gateway pages should use in-app WebView, not raw media_kit.
-bool _useWebViewForUrl(String url) {
-  final l = url.toLowerCase();
-  if (l.contains('.php') || l.contains('.html') || l.contains('.htm')) return true;
-  if (l.contains('/embed/') || l.contains('/gateway/')) return true;
-  if (l.contains('/player/') || l.contains('/play/')) return true;
-  return false;
-}
+import '../widgets/web_embedded_player.dart';
 
 /// Full-screen playback: `media_kit` for streams; WebView for PHP/HTML pages (same strategy as RN).
 class FullscreenVideoPage extends StatefulWidget {
@@ -28,12 +22,21 @@ class FullscreenVideoPage extends StatefulWidget {
     required this.videoUrl,
     this.channelName,
     this.httpHeaders,
+    this.drmType,
+    this.licenseUrl,
+    this.clearKeyRaw,
+    this.playbackToken,
   });
 
   final String videoUrl;
   final String? channelName;
   /// Optional HTTP headers for manifest/segment requests (e.g. Referer, Authorization).
   final Map<String, String>? httpHeaders;
+  /// Server DRM settings — used by Flutter Web player (ClearKey / Widevine).
+  final String? drmType;
+  final String? licenseUrl;
+  final String? clearKeyRaw;
+  final String? playbackToken;
 
   @override
   State<FullscreenVideoPage> createState() => _FullscreenVideoPageState();
@@ -48,6 +51,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   StreamSubscription<Tracks>? _tracksSub;
 
   bool _webView = false;
+  bool _useWebPlayer = false;
   bool _loading = true;
   bool _isPlaying = false;
 
@@ -73,7 +77,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _webView = _useWebViewForUrl(widget.videoUrl);
+    _useWebPlayer = kIsWeb;
+    _webView = !kIsWeb && useWebViewForUrl(widget.videoUrl);
     _applyImmersive();
     // All orientations so rotation to landscape is responsive (matches native fullSensor behavior).
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
@@ -106,6 +111,10 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   Future<void> _init() async {
+    if (_useWebPlayer) {
+      setState(() => _loading = true);
+      return;
+    }
     setState(() => _loading = true);
     try {
       if (_webView) {
@@ -365,6 +374,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     if (_hasSeenLandscapeSession) return false;
     if (orientation != Orientation.portrait) return false;
     if (_loading) return false;
+    if (_useWebPlayer) return true;
     if (_webView) return _webController != null;
     return _videoController != null;
   }
@@ -395,15 +405,33 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
               Positioned.fill(
                 child: ColoredBox(
                   color: Colors.black,
-                  child: _webView && _webController != null
-                      ? WebViewWidget(controller: _webController!)
-                      : _videoController != null
-                          ? Video(
-                              controller: _videoController!,
-                              fit: videoFit,
-                              fill: Colors.black,
-                            )
-                          : const SizedBox.shrink(),
+                  child: _useWebPlayer
+                      ? WebEmbeddedPlayer(
+                          config: WebPlaybackConfig(
+                            url: widget.videoUrl,
+                            headers: widget.httpHeaders ?? const {},
+                            drmType: widget.drmType ?? 'NONE',
+                            licenseUrl: widget.licenseUrl ?? '',
+                            clearKeyRaw: widget.clearKeyRaw ?? '',
+                            token: widget.playbackToken ?? '',
+                          ),
+                          onLoadingChanged: (loading) {
+                            if (mounted) setState(() => _loading = loading);
+                          },
+                          onError: (_) => unawaited(_notifyUnavailableAndExit()),
+                          onPlaying: () {
+                            if (mounted) setState(() => _isPlaying = true);
+                          },
+                        )
+                      : _webView && _webController != null
+                          ? WebViewWidget(controller: _webController!)
+                          : _videoController != null
+                              ? Video(
+                                  controller: _videoController!,
+                                  fit: videoFit,
+                                  fill: Colors.black,
+                                )
+                              : const SizedBox.shrink(),
                 ),
               ),
               if (_loading)
@@ -432,7 +460,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                   ),
                 ),
               ),
-              if (!_webView && _player != null)
+              if (!_webView && !_useWebPlayer && _player != null)
                 SafeArea(
                   child: Align(
                     alignment: Alignment.topRight,
