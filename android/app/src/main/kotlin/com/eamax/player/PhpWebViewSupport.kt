@@ -41,7 +41,8 @@ object PhpWebViewSupport {
                 video.setAttribute('playsinline', 'true');
                 video.setAttribute('webkit-playsinline', 'true');
                 try { video.muted = false; } catch (e) {}
-                video.controls = true;
+                video.controls = false;
+                video.removeAttribute('controls');
 
                 video.addEventListener('timeupdate', function () {
                   lastProgressAt = Date.now();
@@ -120,6 +121,12 @@ object PhpWebViewSupport {
               s.id = '__eaMaxPlayerOnly';
               s.textContent =
                 'html,body{background:#000!important;margin:0!important;padding:0!important;overflow:hidden!important}' +
+                'video::-webkit-media-controls-enclosure,video::-webkit-media-controls,' +
+                'video::-webkit-media-controls-panel,video::-webkit-media-controls-current-time-display,' +
+                'video::-webkit-media-controls-time-remaining-display,video::-webkit-media-controls-duration-display,' +
+                'video::-webkit-media-controls-timeline{display:none!important;visibility:hidden!important;opacity:0!important}' +
+                '.vjs-time-control,.vjs-duration,.vjs-current-time,.vjs-remaining-time,' +
+                '.shaka-current-time,.shaka-time-container,.shaka-seek-bar-container{display:none!important}' +
                 'video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{' +
                 'position:fixed!important;inset:0!important;width:100%!important;height:100%!important;' +
                 'max-width:100%!important;max-height:100%!important;object-fit:contain!important;' +
@@ -854,12 +861,16 @@ object PhpWebViewSupport {
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{background:#000;height:100%;width:100%;overflow:hidden}
 video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
+video::-webkit-media-controls-enclosure,video::-webkit-media-controls,
+video::-webkit-media-controls-panel,video::-webkit-media-controls-current-time-display,
+video::-webkit-media-controls-time-remaining-display,video::-webkit-media-controls-duration-display,
+video::-webkit-media-controls-timeline{display:none!important}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.4/dist/shaka-player.compiled.js"
   onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.4/shaka-player.compiled.min.js';document.head.appendChild(s);})();"></script>
 </head><body>
-<video id="v" autoplay playsinline webkit-playsinline controls></video>
+<video id="v" autoplay playsinline webkit-playsinline></video>
 <script>
 (function(){
   var BR='$androidInterfaceName';

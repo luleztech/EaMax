@@ -8,8 +8,6 @@ const promotionsAdminRouter = require('./promotionsAdmin');
 
 const router = express.Router();
 
-router.use('/promotions', promotionsAdminRouter);
-
 const ensureAppSettingsTable = async () => {
   await query(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -30,6 +28,8 @@ router.use((req, res, next) => {
   }
   return next();
 });
+
+router.use('/promotions', promotionsAdminRouter);
 
 // Dashboard stats for EaAdmin
 router.get('/dashboard', async (req, res, next) => {
@@ -534,6 +534,7 @@ router.post('/channels', async (req, res, next) => {
       isActive: z.boolean().optional().default(true),
       drmType: z.enum(['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY']).optional().default('NONE'),
       drmClearKey: z.string().max(2048).optional().nullable(),
+      licenseUrl: z.string().url().optional().nullable(),
       ownerUserId: z.number().int().optional(),
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
       unlockToFree: z.boolean().optional().default(false),
@@ -575,8 +576,8 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, owner_user_id, points_required, unlock_to_free)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING *`,
       [
         data.name,
@@ -590,6 +591,7 @@ router.post('/channels', async (req, res, next) => {
         needsDrm,
         drmType,
         drmKeyValue,
+        data.licenseUrl ? String(data.licenseUrl).trim() : null,
         data.ownerUserId || null,
         data.pointsRequired ?? 0,
         !!data.unlockToFree,
@@ -634,6 +636,7 @@ router.put('/channels/:id', async (req, res, next) => {
       isActive: z.boolean().optional(),
       drmType: z.enum(['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY']).optional(),
       drmClearKey: z.string().max(2048).optional().nullable(),
+      licenseUrl: z.string().url().optional().nullable(),
       pointsRequired: z.coerce.number().int().min(0).optional(),
       unlockToFree: z.boolean().optional(),
       sortOrder: z.coerce.number().int().min(0).optional(),
@@ -696,6 +699,7 @@ router.put('/channels/:id', async (req, res, next) => {
       }),
       ...(data.unlockToFree !== undefined && { unlock_to_free: !!data.unlockToFree }),
       ...(data.sortOrder !== undefined && { sort_order: data.sortOrder }),
+      ...(data.licenseUrl !== undefined && { license_url: data.licenseUrl != null ? String(data.licenseUrl).trim() : null }),
     };
 
     if (data.sortOrder !== undefined) {

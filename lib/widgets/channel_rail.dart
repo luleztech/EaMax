@@ -18,6 +18,7 @@ class ChannelRail extends StatefulWidget {
     required this.channelsPremiumOnly,
     this.tileWidth = kHomeRailTileWidth,
     this.railHeight = kHomeRailHeight,
+    this.loadingChannelId,
   });
 
   final String title;
@@ -28,6 +29,7 @@ class ChannelRail extends StatefulWidget {
   final bool channelsPremiumOnly;
   final double tileWidth;
   final double railHeight;
+  final int? loadingChannelId;
 
   @override
   State<ChannelRail> createState() => _ChannelRailState();
@@ -141,6 +143,7 @@ class _ChannelRailState extends State<ChannelRail> {
                           channelsPremiumOnly: widget.channelsPremiumOnly,
                         ),
                         onPress: () => widget.onChannel(ch),
+                        isLoading: widget.loadingChannelId == ch.id,
                       ),
                     );
                   },

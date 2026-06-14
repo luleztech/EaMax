@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../player/web_playback_config.dart';
 
 /// Stub — real implementation is on Flutter Web only.
-class WebEmbeddedPlayer extends StatelessWidget {
+class WebEmbeddedPlayer extends StatefulWidget {
   const WebEmbeddedPlayer({
     super.key,
     required this.config,
@@ -18,14 +18,25 @@ class WebEmbeddedPlayer extends StatelessWidget {
   final VoidCallback? onPlaying;
 
   @override
+  State<WebEmbeddedPlayer> createState() => _WebEmbeddedPlayerStubState();
+}
+
+class _WebEmbeddedPlayerStubState extends State<WebEmbeddedPlayer> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onLoadingChanged?.call(false);
+      widget.onError?.call('');
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return const ColoredBox(
       color: Colors.black,
       child: Center(
-        child: Text(
-          'Web player unavailable on this platform',
-          style: TextStyle(color: Colors.white54),
-        ),
+        child: CircularProgressIndicator(color: Colors.white54),
       ),
     );
   }

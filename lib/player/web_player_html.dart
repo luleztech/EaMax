@@ -18,6 +18,13 @@ class WebPlayerHtml {
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{background:#000;height:100%;width:100%;overflow:hidden}
 video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
+video::-webkit-media-controls-enclosure{display:none!important}
+video::-webkit-media-controls{display:none!important}
+video::-webkit-media-controls-panel{display:none!important}
+video::-webkit-media-controls-current-time-display,
+video::-webkit-media-controls-time-remaining-display,
+video::-webkit-media-controls-duration-display,
+video::-webkit-media-controls-timeline{display:none!important}
 #err{display:none;position:fixed;inset:0;align-items:center;justify-content:center;
      color:#fff;font:15px/1.5 system-ui,sans-serif;text-align:center;padding:24px}
 #err.show{display:flex}
@@ -36,11 +43,17 @@ video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
     final clearKeys = WebDrmUtils.parseClearKeys(clearKeyRaw);
     final servers = <String, String>{};
     if (licenseUrl.isNotEmpty) {
-      final dt = drmType.toUpperCase();
-      if (dt.startsWith('WIDEVINE') || dt == 'PLAYREADY') {
+      final dt = drmType.toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
+      if (dt == 'PLAYREADY') {
+        servers['com.microsoft.playready'] = licenseUrl;
+      } else if (dt.startsWith('WIDEVINE')) {
         servers['com.widevine.alpha'] = licenseUrl;
-      } else {
+      } else if (dt == 'CLEARKEY' || dt == 'CLEAR_KEY') {
         servers['org.w3.clearkey'] = licenseUrl;
+      } else if (licenseUrl.toLowerCase().contains('playready')) {
+        servers['com.microsoft.playready'] = licenseUrl;
+      } else {
+        servers['com.widevine.alpha'] = licenseUrl;
       }
     }
     return {
@@ -85,7 +98,7 @@ video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
 <script id="shaka-script" src="$_shakaCdn" onerror="(function(){var s=document.createElement('script');s.src='$_shakaCdnFallback';document.head.appendChild(s);})();"></script>
 </head><body>
 <div id="spin">Connecting…</div>
-<video id="v" autoplay playsinline webkit-playsinline controls></video>
+<video id="v" autoplay playsinline webkit-playsinline></video>
 <div id="err"></div>
 <script>
 (function(){
@@ -209,7 +222,7 @@ video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
 <script src="$_shakaCdn"></script>
 </head><body>
 <div id="spin">Connecting…</div>
-<video id="v" autoplay playsinline webkit-playsinline controls></video>
+<video id="v" autoplay playsinline webkit-playsinline></video>
 <div id="err"></div>
 <script>
 (function(){

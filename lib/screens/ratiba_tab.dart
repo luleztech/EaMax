@@ -58,7 +58,7 @@ class RatibaTab extends StatelessWidget {
                 ),
               ),
             ),
-            if (refreshing && matches.isEmpty)
+            if ((initialLoading || refreshing) && matches.isEmpty)
               SliverPadding(
                 padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPad),
                 sliver: SliverList(

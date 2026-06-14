@@ -532,7 +532,7 @@ function classifyError(errorCode, errorString = '') {
   for (const [key, msg] of Object.entries(ERROR_MESSAGES)) {
     if (code.includes(key) || (errorString && errorString.toUpperCase().includes(key))) return msg;
   }
-  return errorString || 'Playback error';
+  return 'Mafundi wetu wanahangaikia channel hii, itarejea hivi punde.';
 }
 
 // ─── Retry Strategy ───────────────────────────────────────────────────────────

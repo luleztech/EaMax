@@ -44,6 +44,8 @@ router.get('/', async (req, res, next) => {
         streamUrl: row.resolved_stream_url ?? row.stream_url,
         stream_alias: row.stream_alias ?? null,
         streamAlias: row.stream_alias ?? null,
+        license_url: row.license_url ?? null,
+        licenseUrl: row.license_url ?? null,
         points_required: pts,
         pointsRequired: Number.isNaN(pts) ? 0 : pts,
         drm_type: drmType,
@@ -80,6 +82,7 @@ router.get('/:id', async (req, res, next) => {
          c.thumbnail_url, c.thumbnail_emoji, c.color, c.points_required, c.drm_protected,
          COALESCE(c.drm_type, 'NONE') AS drm_type,
          c.drm_clear_key,
+         c.license_url,
          COALESCE(c.unlock_to_free, false) AS unlock_to_free
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
@@ -113,6 +116,8 @@ router.get('/:id', async (req, res, next) => {
       drmType,
       drm_clear_key: clearKey,
       drmClearKey: clearKey,
+      license_url: row.license_url ?? null,
+      licenseUrl: row.license_url ?? null,
       unlock_to_free: unlockToFree,
       unlockToFree,
     });

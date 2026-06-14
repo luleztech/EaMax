@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../theme/ionicons_compat.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -24,6 +25,7 @@ class ProfileScreen extends StatefulWidget {
     this.onPointsRefresh,
     this.onOpenPayments,
     this.onOpenSettings,
+    this.isActive = false,
   });
 
   final Color accentColor;
@@ -35,6 +37,7 @@ class ProfileScreen extends StatefulWidget {
   final Future<void> Function()? onPointsRefresh;
   final VoidCallback? onOpenPayments;
   final VoidCallback? onOpenSettings;
+  final bool isActive;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -43,10 +46,14 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserver {
   String? _userId;
   bool _premium = false;
-  bool _loading = true;
+  bool _loading = false;
+  bool _profileStarted = false;
   DateTime? _subEnd;
   Duration _remain = Duration.zero;
   Timer? _countdownTimer;
+
+  static const _identityTimeout = Duration(seconds: 15);
+  static const _profileFetchTimeout = Duration(seconds: 12);
 
   bool get _subscriptionTimeActive =>
       _premium && _subEnd != null && _subEnd!.isAfter(DateTime.now());
@@ -59,7 +66,9 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
       _premium = true;
       _subEnd = widget.subscriptionEndDate;
     }
-    _load(true);
+    if (widget.isActive) {
+      unawaited(_warmProfile());
+    }
   }
 
   @override
@@ -68,6 +77,12 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     if (widget.isPremium != oldWidget.isPremium ||
         widget.subscriptionEndDate != oldWidget.subscriptionEndDate) {
       _syncFromParent(widget.isPremium, widget.subscriptionEndDate);
+    }
+    if (widget.isActive && !oldWidget.isActive) {
+      if (_userId == null || _userId!.isEmpty) {
+        setState(() => _loading = true);
+      }
+      unawaited(_warmProfile());
     }
   }
 
@@ -97,35 +112,60 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _load(false);
+      unawaited(_refreshProfile());
     }
   }
 
-  Future<void> _load(bool showLoading) async {
-    if (showLoading) setState(() => _loading = true);
+  Future<void> _warmProfile() async {
+    if (_profileStarted) {
+      await _refreshProfile();
+      return;
+    }
+    _profileStarted = true;
+
+    final cachedId = await getStoredUserId();
+    if (!mounted) return;
+    if (cachedId != null && cachedId.isNotEmpty) {
+      setState(() => _userId = cachedId);
+    } else {
+      setState(() => _loading = true);
+    }
+    await _refreshProfile();
+  }
+
+  Future<void> _refreshProfile() async {
     try {
-      final id = await getOrCreateUserId();
-      if (id == null) {
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
-      setState(() => _userId = id);
-      final userData = await userApi.getUser(id);
+      final id = await getOrCreateUserId().timeout(
+        _identityTimeout,
+        onTimeout: () => _userId,
+      );
+      if (id == null || id.isEmpty) return;
+      if (mounted) setState(() => _userId = id);
+
+      final userData = await userApi.getUser(id).timeout(_profileFetchTimeout);
       if (!mounted) return;
       final snap = PremiumSnapshot.fromDynamic(userData);
       setState(() {
-        _premium = snap?.isPremium ?? false;
-        _subEnd = snap?.isPremium == true ? snap?.expiresAt : null;
+        _premium = snap?.isPremium ?? widget.isPremium;
+        _subEnd = _premium ? (snap?.expiresAt ?? widget.subscriptionEndDate) : null;
       });
       _countdownTimer?.cancel();
       if (_subscriptionTimeActive) {
         _tick();
         _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
-      } else {
-        if (mounted) setState(() => _remain = Duration.zero);
+      } else if (mounted) {
+        setState(() => _remain = Duration.zero);
       }
-    } catch (_) {}
-    if (mounted) setState(() => _loading = false);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _premium = widget.isPremium;
+          _subEnd = widget.isPremium ? widget.subscriptionEndDate : null;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   void _tick() {
@@ -141,7 +181,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
           _subEnd = null;
         });
       }
-      _load(false);
+      unawaited(_refreshProfile());
       return;
     }
     if (mounted) setState(() => _remain = diff);
@@ -149,14 +189,28 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
 
   void _onKusanyaPoint() {
     widget.onWatchAd?.call();
-    Future.delayed(const Duration(milliseconds: 7500), () => _load(false));
-    Future.delayed(const Duration(milliseconds: 10000), () => _load(false));
-    Future.delayed(const Duration(milliseconds: 12000), () => _load(false));
+    Future.delayed(const Duration(milliseconds: 7500), () => unawaited(_refreshProfile()));
+    Future.delayed(const Duration(milliseconds: 10000), () => unawaited(_refreshProfile()));
+    Future.delayed(const Duration(milliseconds: 12000), () => unawaited(_refreshProfile()));
+  }
+
+  Future<void> _copyUserId() async {
+    final id = _userId?.trim();
+    if (id == null || id.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: id));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Jina la mtumiaji limenakiliwa', style: rajdhani(14, weight: FontWeight.w600)),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (_loading && (_userId == null || _userId!.isEmpty)) {
       final t = context.watch<ThemeController>().colors;
       return ColoredBox(
         color: t.bg1,
@@ -179,7 +233,10 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                 children: [
                   CircularProgressIndicator(color: widget.accentColor),
                   const SizedBox(height: 16),
-                  Text('Loading profile...', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 16)),
+                  Text(
+                    'Inapakia wasifu...',
+                    style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 16),
+                  ),
                 ],
               ),
             ),
@@ -198,7 +255,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
         color: t.accent,
         onRefresh: () async {
           await widget.onPointsRefresh?.call();
-          await _load(false);
+          await _refreshProfile();
         },
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -221,7 +278,32 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                     child: Text(letters, style: orbitron(28, weight: FontWeight.w900).copyWith(color: Colors.black)),
                   ),
                   const SizedBox(height: 16),
-                  Text(_userId ?? '...', style: orbitron(18).copyWith(color: t.text, letterSpacing: 0.6)),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _userId != null && _userId!.isNotEmpty ? _copyUserId : null,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                _userId ?? '...',
+                                style: orbitron(18).copyWith(color: t.text, letterSpacing: 0.6),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (_userId != null && _userId!.isNotEmpty) ...[
+                              const SizedBox(width: 8),
+                              Icon(Ionicons.copy_outline, size: 18, color: t.text2),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

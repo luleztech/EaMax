@@ -111,7 +111,8 @@ class WebStreamProbe {
   ) async {
     try {
       final html = await _fetchBody(url, headers, gatewayStyle: true);
-      final extracted = GatewayStreamExtractor.extract(html);
+      final extracted = GatewayStreamExtractor.extract(html) ??
+          GatewayStreamExtractor.extractDrmFromHtml(html);
       if (extracted != null && extracted.streamUrl.startsWith('http')) {
         final merged = Map<String, String>.from(headers);
         if (extracted.authToken.isNotEmpty &&
@@ -126,8 +127,8 @@ class WebStreamProbe {
             : config.clearKeyRaw;
         var drm = config.normalizedDrmType;
         if (drm == 'NONE') {
-          if (license.isNotEmpty && extracted.authToken.isNotEmpty) {
-            drm = 'WIDEVINE';
+          if (license.isNotEmpty) {
+            drm = license.toLowerCase().contains('playready') ? 'PLAYREADY' : 'WIDEVINE';
           } else if (clearKey.isNotEmpty) {
             drm = 'CLEARKEY';
           }

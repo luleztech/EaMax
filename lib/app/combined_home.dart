@@ -65,8 +65,9 @@ const _movieGenres = [
   _Genre('Sayansi', 'sayansi', 'movie', Color(0xFF8B5CF6)),
 ];
 
-const _homeLoadTimeout = Duration(seconds: 10);
-const _homeRequestTimeout = Duration(seconds: 10);
+const _homeLoadTimeout = Duration(seconds: 30);
+const _homeRequestTimeout = Duration(seconds: 30);
+const _homeReloadDebounce = Duration(seconds: 25);
 
 String _hexColor(Color c) => '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
 
@@ -93,6 +94,7 @@ class CombinedHome extends StatefulWidget {
     required this.onPaymentsActiveChange,
     required this.syncPremiumSetting,
     this.externalTabIndex = 0,
+    this.onRefreshingChange,
   });
 
   final int externalTabIndex;
@@ -105,6 +107,7 @@ class CombinedHome extends StatefulWidget {
   final void Function(bool active) onPaymentsActiveChange;
   /// Refetch channels-premium-only mode (must run when connectivity returns; cached in parent).
   final Future<void> Function() syncPremiumSetting;
+  final ValueChanged<bool>? onRefreshingChange;
 
   @override
   State<CombinedHome> createState() => CombinedHomeState();
@@ -126,6 +129,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   List<dynamic> _matches = [];
   bool _refreshing = false;
   bool _initialLoading = true;
+  bool _channelsLoadFailed = false;
+  DateTime? _lastRemoteReload;
 
   bool _unlockOpen = false;
   bool _insufficientOpen = false;
@@ -170,9 +175,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       if (cachedMatches != null && cachedMatches.isNotEmpty) {
         _matches = cachedMatches;
       }
-      final hasChannels = rows != null && rows.isNotEmpty;
-      final hasCarousel = carouselRows != null && carouselRows.isNotEmpty;
-      if (hasChannels || hasCarousel) {
+      // Only cached channels dismiss the loading state — carousel alone must not
+      // end shimmer before the channel list fetch completes.
+      if (rows != null && rows.isNotEmpty) {
         _initialLoading = false;
       }
     });
@@ -232,11 +237,14 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   Future<void> _loadAll() async {
+    if (mounted) setState(() => _channelsLoadFailed = false);
     try {
       unawaited(widget.syncPremiumSetting().catchError((_) {}));
+      // Channels first — carousel/matches must not starve or timeout the catalog fetch.
+      await _loadChannels();
+      if (!mounted) return;
       await Future.wait([
         _loadSlides().catchError((_) {}),
-        _loadChannels().catchError((_) {}),
         _loadMatches().catchError((_) {}),
       ]).timeout(_homeLoadTimeout, onTimeout: () => <void>[]);
     } finally {
@@ -271,12 +279,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final football = await settingsApi.getCarouselSlides(
       'football',
       timeout: _homeRequestTimeout,
-      enableRetries: false,
     );
     final movies = await settingsApi.getCarouselSlides(
       'movies',
       timeout: _homeRequestTimeout,
-      enableRetries: false,
     );
     if (!mounted) return;
     final slides = [
@@ -310,6 +316,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     return int.tryParse('$raw') ?? (ch['id'] as num?)?.toInt() ?? 0;
   }
 
+  int? _parseChannelId(dynamic idRaw) {
+    if (idRaw is num) return idRaw.toInt();
+    return int.tryParse('$idRaw');
+  }
+
   void _applyChannelRows(List<Map<String, dynamic>> rows) {
     final football = <ChannelUi>[];
     final free = <ChannelUi>[];
@@ -320,14 +331,15 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
     for (final ch in rows) {
       if (ch['is_active'] == false) continue;
-      final idRaw = ch['id'];
-      if (idRaw is! num) continue;
-      final category = (ch['category']?.toString() ?? '').toLowerCase();
+      final id = _parseChannelId(ch['id']);
+      if (id == null) continue;
+      var category = (ch['category']?.toString() ?? '').toLowerCase();
+      if (category == 'mpira') category = 'football';
       final pr = ch['pointsRequired'] ?? ch['points_required'];
       final points = pr is num ? pr.toInt() : int.tryParse('$pr') ?? 0;
       final unlock = ch['unlockToFree'] == true || ch['unlock_to_free'] == true;
       final mapped = ChannelUi(
-        id: idRaw.toInt(),
+        id: id,
         name: ch['name']?.toString() ?? '',
         streamUrl: ch['stream_url']?.toString(),
         thumbnailUrl: ch['thumbnail_url']?.toString(),
@@ -345,6 +357,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         football.add(mapped);
       } else if (cat.containsKey(category)) {
         cat[category]!.add(mapped);
+      } else {
+        cat['habari']!.add(mapped);
       }
     }
 
@@ -354,23 +368,30 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   Future<void> _loadChannels() async {
-    final all = await channelsApi.getChannels(
-      timeout: _homeRequestTimeout,
-      enableRetries: false,
-    );
-    if (all.isEmpty) return;
-    final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
-      ..sort((a, b) {
-        final c = _channelSortKey(a).compareTo(_channelSortKey(b));
-        if (c != 0) return c;
-        return ((a['id'] as num?) ?? 0).compareTo((b['id'] as num?) ?? 0);
-      });
+    try {
+      final all = await channelsApi.getChannels(timeout: _homeRequestTimeout);
+      if (!mounted) return;
+      if (all.isEmpty) {
+        setState(() => _channelsLoadFailed = _allChannels().isEmpty);
+        return;
+      }
+      final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList()
+        ..sort((a, b) {
+          final c = _channelSortKey(a).compareTo(_channelSortKey(b));
+          if (c != 0) return c;
+          return ((a['id'] as num?) ?? 0).compareTo((b['id'] as num?) ?? 0);
+        });
 
-    if (!mounted) return;
-    setState(() {
-      _applyChannelRows(rows);
-    });
-    unawaited(HomeDataCache.saveChannels(rows));
+      setState(() {
+        _applyChannelRows(rows);
+        _channelsLoadFailed = false;
+      });
+      unawaited(HomeDataCache.saveChannels(rows));
+    } catch (_) {
+      if (mounted) {
+        setState(() => _channelsLoadFailed = _allChannels().isEmpty);
+      }
+    }
   }
 
   Future<void> _loadMatches() async {
@@ -381,19 +402,34 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   /// Syncs admin channel mode + carousel + channels + matches (same as pull-to-refresh).
+  void _setRefreshing(bool value) {
+    if (_refreshing == value) return;
+    setState(() => _refreshing = value);
+    widget.onRefreshingChange?.call(value);
+  }
+
+  /// Syncs admin channel mode + carousel + channels + matches (same as pull-to-refresh).
   Future<void> reloadRemoteData() async {
-    setState(() => _refreshing = true);
+    final now = DateTime.now();
+    if (_lastRemoteReload != null &&
+        now.difference(_lastRemoteReload!) < _homeReloadDebounce) {
+      return;
+    }
+    _lastRemoteReload = now;
+    _setRefreshing(true);
     _channelDataCache.clear();
     _channelDataCacheTime.clear();
+    if (mounted) setState(() => _channelsLoadFailed = false);
     try {
       unawaited(widget.syncPremiumSetting().catchError((_) {}));
+      await _loadChannels();
+      if (!mounted) return;
       await Future.wait([
         _loadSlides().catchError((_) {}),
-        _loadChannels().catchError((_) {}),
         _loadMatches().catchError((_) {}),
       ]).timeout(_homeLoadTimeout, onTimeout: () => <void>[]);
     } finally {
-      if (mounted) setState(() => _refreshing = false);
+      if (mounted) _setRefreshing(false);
     }
   }
 
@@ -556,9 +592,26 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       return;
     }
     if (!mounted) return;
+    final ck = _extractClearKeyPayload(channelData);
+    final drm = _normalizedDrmType(channelData, ck, url);
+    final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
+    final token = _extractPlaybackToken(channelData);
+    final playbackHeaders = _extractPlaybackHeaders(channelData);
+    final merged = Map<String, String>.from(playbackHeaders);
+    if (token.isNotEmpty && !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
+      merged['Authorization'] = 'Bearer $token';
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => FullscreenVideoPage(videoUrl: url, channelName: channelName),
+        builder: (_) => FullscreenVideoPage(
+          videoUrl: url,
+          channelName: channelName,
+          httpHeaders: merged.isEmpty ? null : merged,
+          drmType: drm,
+          licenseUrl: license != null ? '$license' : '',
+          clearKeyRaw: ck,
+          playbackToken: token,
+        ),
       ),
     );
   }
@@ -837,6 +890,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                   HomeMainTab(
                     initialLoading: _initialLoading,
                     refreshing: _refreshing,
+                    channelsLoadFailed: _channelsLoadFailed,
                     carousel: _carousel,
                     allChannels: _allChannels(),
                     channelFilter: _homeChannelFilter,
@@ -847,6 +901,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                     bottomPad: bottomPad,
                     onChannel: _openChannel,
                     onRefresh: _onRefresh,
+                    loadingChannelId: _loadingChannelId,
                   ),
                   RatibaTab(
                     matches: _matches,
@@ -860,6 +915,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                   ChannelsTab(
                     initialLoading: _initialLoading,
                     refreshing: _refreshing,
+                    channelsLoadFailed: _channelsLoadFailed,
                     allChannels: _allChannels(),
                     channelFilter: _channelsGridFilter,
                     onFilter: (k) => setState(() => _channelsGridFilter = k),
@@ -869,6 +925,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                     onRefresh: _onRefresh,
                     isPremium: widget.isPremium,
                     channelsPremiumOnly: widget.channelsPremiumOnly,
+                    loadingChannelId: _loadingChannelId,
                   ),
                   PaymentsScreen(
                     bottomPadding: bottomPad,
@@ -876,6 +933,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                   ),
                   ProfileScreen(
                     bottomPadding: bottomPad,
+                    isActive: tab == 4,
                     userPoints: widget.userPoints,
                     isPremium: widget.isPremium,
                     subscriptionEndDate: widget.subscriptionEndDate,

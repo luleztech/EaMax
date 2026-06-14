@@ -113,7 +113,27 @@ function getBitrateForHeight(h) {
   return 3800000;
 }
 
-function getWidthForHeight(h) {
+const USER_PLAYBACK_ERROR =
+  'Mafundi wetu wanahangaikia channel hii, itarejea hivi punde.';
+
+function buildDrmServers(drmConfig) {
+  if (drmConfig.servers && Object.keys(drmConfig.servers).length > 0) {
+    return drmConfig.servers;
+  }
+  const licenseUrl = (drmConfig.licenseUrl || '').trim();
+  if (!licenseUrl) return {};
+  const drmType = String(drmConfig.drmType || '').toUpperCase();
+  if (drmType === 'PLAYREADY' || licenseUrl.toLowerCase().includes('playready')) {
+    return { 'com.microsoft.playready': licenseUrl };
+  }
+  if (drmType.startsWith('WIDEVINE')) {
+    return { 'com.widevine.alpha': licenseUrl };
+  }
+  if (drmType === 'CLEARKEY' || drmType === 'CLEAR_KEY') {
+    return { 'org.w3.clearkey': licenseUrl };
+  }
+  return { 'com.widevine.alpha': licenseUrl };
+}
   if (h >= 1080) return 1920;
   if (h >= 720)  return 1280;
   if (h >= 480)  return 854;
@@ -143,7 +163,7 @@ function buildShakaHtmlCore(
   const clearKeysStr   = JSON.stringify(drmConfig.clearKeys || {});
   const licenseUrl     = drmConfig.licenseUrl || '';
   const licenseHeadersStr = JSON.stringify(drmConfig.licenseHeaders || {});
-  const drmServers     = drmConfig.servers || (licenseUrl ? { 'org.w3.clearkey': licenseUrl } : {});
+  const drmServers     = buildDrmServers(drmConfig);
   const maxH           = (extraConfig && extraConfig.maxHeight) || 360;
   const maxW           = (extraConfig && extraConfig.maxWidth) || getWidthForHeight(maxH);
   const startBitrate   = getBitrateForHeight(maxH);
@@ -206,30 +226,23 @@ function buildShakaHtmlCore(
       }catch(e){}
     }
 
-    function showErr(msg) {
+    function showErr() {
       var el=document.getElementById('err');
-      if(el){el.style.display='block';el.textContent=msg;}
-      post('error',{message:msg});
+      if(el){el.style.display='block';el.textContent=${JSON.stringify(USER_PLAYBACK_ERROR)};}
+      post('error',{message:${JSON.stringify(USER_PLAYBACK_ERROR)}});
     }
 
     if(!shakaAvailable){
-      showErr('Failed to load player. Please check your internet connection.');
+      showErr();
       return;
     }
 
-    function mapErr(code,msg){
-      var l=(msg||'').toLowerCase();
-      if(code===2||l.indexOf('network')!==-1)return'Network error — check connection';
-      if(code===3||l.indexOf('manifest')!==-1)return'Manifest error';
-      if(code===4001||l.indexOf('xml')!==-1)return'Invalid MPD format';
-      if(code===4||l.indexOf('drm')!==-1||l.indexOf('license')!==-1)return'DRM authorization failed';
-      if(code===5||l.indexOf('decode')!==-1)return'Device decode error';
-      if(code>=6000&&code<7000)return'Segment load failed';
-      return msg||'Playback failed (code '+code+')';
+    function mapErr(){
+      return ${JSON.stringify(USER_PLAYBACK_ERROR)};
     }
 
     var video=document.getElementById('v');
-    if(!video){showErr('No video element');return;}
+    if(!video){showErr();return;}
 
     // FIX: Install polyfills BEFORE calling isBrowserSupported().
     // Polyfills patch missing EME/MSE APIs in older Android WebView.
@@ -330,10 +343,7 @@ function buildShakaHtmlCore(
         },
       });
 
-      player.addEventListener('error',function(e){
-        var err=e.detail||e;
-        showErr(mapErr(err.code,err.message||String(err)));
-      });
+      player.addEventListener('error',function(){ showErr(); });
 
       // Force 360p on start, then re-enable ABR
       function forceStartQuality(p, targetH) {
@@ -360,17 +370,14 @@ function buildShakaHtmlCore(
         forceStartQuality(player,maxH);
         post('ready');
         video.play().catch(function(){});
-      }).catch(function(e){
-        URL.revokeObjectURL(blobUrl);
-        showErr(mapErr(e.code,e.message));
-      });`
+      }).catch(function(){ showErr(); });`
         : `var mpdUrl=${JSON.stringify(manifestSource)};
       player.load(mpdUrl).then(function(){
         forceStartQuality(player,maxH);
         post('ready');
         video.play().catch(function(){});
       }).catch(function(e){
-        post(e.code===1002?'fallback':'error',{message:mapErr(e.code,e.message),code:e.code});
+        post(e.code===1002?'fallback':'error',{message:mapErr(),code:e.code});
       });`
       }
 
@@ -379,10 +386,10 @@ function buildShakaHtmlCore(
       video.addEventListener('waiting', function(){ post('buffering',{isBuffering:true}); });
       video.addEventListener('canplay', function(){ post('buffering',{isBuffering:false}); });
       video.addEventListener('stalled', function(){ post('buffering',{isBuffering:true}); });
-      video.addEventListener('error',   function(){ showErr('Video element error'); });
+      video.addEventListener('error',   function(){ showErr(); });
 
     }catch(err){
-      showErr('Player init failed: '+(err&&err.message?err.message:String(err)));
+      showErr();
     }
   }
   </script>

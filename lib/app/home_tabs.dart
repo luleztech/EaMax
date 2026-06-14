@@ -3,8 +3,6 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:shimmer/shimmer.dart';
-
 import '../models/carousel_slide.dart';
 import '../models/channel_ui.dart';
 import '../theme/app_theme.dart';
@@ -305,6 +303,7 @@ class HomeMainTab extends StatelessWidget {
     super.key,
     required this.initialLoading,
     required this.refreshing,
+    required this.channelsLoadFailed,
     required this.carousel,
     required this.allChannels,
     required this.channelFilter,
@@ -315,10 +314,12 @@ class HomeMainTab extends StatelessWidget {
     required this.bottomPad,
     required this.onChannel,
     required this.onRefresh,
+    this.loadingChannelId,
   });
 
   final bool initialLoading;
   final bool refreshing;
+  final bool channelsLoadFailed;
   final List<CarouselSlide> carousel;
   final List<ChannelUi> allChannels;
   final String channelFilter;
@@ -329,6 +330,7 @@ class HomeMainTab extends StatelessWidget {
   final double bottomPad;
   final Future<void> Function(ChannelUi) onChannel;
   final Future<void> Function() onRefresh;
+  final int? loadingChannelId;
 
   bool _locked(ChannelUi ch) =>
       channelLockedForViewer(ch, isPremium: isPremium, channelsPremiumOnly: channelsPremiumOnly);
@@ -342,19 +344,14 @@ class HomeMainTab extends StatelessWidget {
 
     final slivers = <Widget>[];
 
-    if (initialLoading && allChannels.isEmpty) {
+    final showHomeShimmer =
+        !searching && allChannels.isEmpty && carousel.isEmpty && (initialLoading || refreshing);
+    final showChannelShimmer =
+        !searching && allChannels.isEmpty && carousel.isNotEmpty && (initialLoading || refreshing);
+    if (showHomeShimmer) {
       slivers.add(
-        SliverPadding(
-          padding: EdgeInsets.fromLTRB(16, 8, 16, bottomPad),
-          sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              childAspectRatio: 16 / 10,
-            ),
-            delegate: SliverChildBuilderDelegate((_, __) => const ShimmerBox(radius: 16), childCount: 6),
-          ),
+        SliverToBoxAdapter(
+          child: HomeLoadingShimmer(),
         ),
       );
     } else {
@@ -414,7 +411,7 @@ class HomeMainTab extends StatelessWidget {
         );
       }
 
-      if (filtered.isEmpty && !initialLoading) {
+      if (filtered.isEmpty && !initialLoading && !refreshing) {
         slivers.add(
           SliverFillRemaining(
             hasScrollBody: false,
@@ -422,12 +419,34 @@ class HomeMainTab extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.tv_off_outlined, size: 40, color: t.border),
+                  Icon(
+                    channelsLoadFailed ? Icons.cloud_off_outlined : Icons.tv_off_outlined,
+                    size: 40,
+                    color: t.border,
+                  ),
                   const SizedBox(height: 12),
-                  Text('Hakuna channels', style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2)),
+                  Text(
+                    channelsLoadFailed
+                        ? 'Imeshindwa kupakia channel'
+                        : 'Hakuna channels',
+                    style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2),
+                  ),
+                  if (channelsLoadFailed) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Vuta chini kujaribu tena',
+                      style: rajdhani(12).copyWith(color: t.text2.withValues(alpha: 0.75)),
+                    ),
+                  ],
                 ],
               ),
             ),
+          ),
+        );
+      } else if (showChannelShimmer) {
+        slivers.add(
+          const SliverToBoxAdapter(
+            child: HomeLoadingShimmer(channelsOnly: true),
           ),
         );
       } else if (searching || fk == 'mpira' || fk == 'habari') {
@@ -440,6 +459,7 @@ class HomeMainTab extends StatelessWidget {
               onChannel: (ch) => onChannel(ch),
               isPremium: isPremium,
               channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
             ),
           ),
         );
@@ -455,8 +475,9 @@ class HomeMainTab extends StatelessWidget {
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
                 isPremium: isPremium,
-                channelsPremiumOnly: channelsPremiumOnly,
-              ),
+              channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
+            ),
             ),
           );
         }
@@ -473,8 +494,9 @@ class HomeMainTab extends StatelessWidget {
                 lockedFor: (_) => false,
                 onChannel: (ch) => onChannel(ch),
                 isPremium: isPremium,
-                channelsPremiumOnly: channelsPremiumOnly,
-              ),
+              channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
+            ),
             ),
           );
         }
@@ -489,8 +511,9 @@ class HomeMainTab extends StatelessWidget {
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
                 isPremium: isPremium,
-                channelsPremiumOnly: channelsPremiumOnly,
-              ),
+              channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
+            ),
             ),
           );
         }
@@ -506,8 +529,9 @@ class HomeMainTab extends StatelessWidget {
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
                 isPremium: isPremium,
-                channelsPremiumOnly: channelsPremiumOnly,
-              ),
+              channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
+            ),
             ),
           );
         }
@@ -522,8 +546,9 @@ class HomeMainTab extends StatelessWidget {
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
                 isPremium: isPremium,
-                channelsPremiumOnly: channelsPremiumOnly,
-              ),
+              channelsPremiumOnly: channelsPremiumOnly,
+              loadingChannelId: loadingChannelId,
+            ),
             ),
           );
         }
@@ -552,6 +577,7 @@ class ChannelsTab extends StatelessWidget {
     super.key,
     required this.initialLoading,
     required this.refreshing,
+    required this.channelsLoadFailed,
     required this.allChannels,
     required this.channelFilter,
     required this.onFilter,
@@ -561,10 +587,12 @@ class ChannelsTab extends StatelessWidget {
     required this.onRefresh,
     required this.isPremium,
     required this.channelsPremiumOnly,
+    this.loadingChannelId,
   });
 
   final bool initialLoading;
   final bool refreshing;
+  final bool channelsLoadFailed;
   final List<ChannelUi> allChannels;
   final String channelFilter;
   final ValueChanged<String> onFilter;
@@ -574,6 +602,7 @@ class ChannelsTab extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final bool isPremium;
   final bool channelsPremiumOnly;
+  final int? loadingChannelId;
 
   List<String> _filterKeys() {
     final cats = allChannels.map((c) => c.category ?? 'other').toSet().toList()..sort();
@@ -675,7 +704,7 @@ class ChannelsTab extends StatelessWidget {
                 ),
               ),
             ),
-            if (initialLoading && list.isEmpty)
+            if ((initialLoading || refreshing) && list.isEmpty)
               SliverPadding(
                 padding: EdgeInsets.fromLTRB(hPad, 0, hPad, bottomPad),
                 sliver: SliverGrid(
@@ -692,7 +721,30 @@ class ChannelsTab extends StatelessWidget {
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: Center(
-                  child: Text('Hakuna channels', style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2)),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        channelsLoadFailed ? Icons.cloud_off_outlined : Icons.tv_off_outlined,
+                        size: 40,
+                        color: t.border,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        channelsLoadFailed
+                            ? 'Imeshindwa kupakia channel'
+                            : 'Hakuna channels',
+                        style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2),
+                      ),
+                      if (channelsLoadFailed) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Vuta chini kujaribu tena',
+                          style: rajdhani(12).copyWith(color: t.text2.withValues(alpha: 0.75)),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               )
             else
@@ -721,6 +773,7 @@ class ChannelsTab extends StatelessWidget {
                               channelsPremiumOnly: channelsPremiumOnly,
                             ),
                             onPress: () => onChannel(ch),
+                            isLoading: loadingChannelId == ch.id,
                           ),
                         ),
                       );
@@ -736,87 +789,51 @@ class ChannelsTab extends StatelessWidget {
   }
 }
 
-class _ShimmerHome extends StatelessWidget {
-  const _ShimmerHome({required this.cardW, required this.cardH});
-  final double cardW;
-  final double cardH;
+/// Full home skeleton: carousel, category pills, and channel grid (matches RN `renderShimmer`).
+class HomeLoadingShimmer extends StatelessWidget {
+  const HomeLoadingShimmer({super.key, this.channelsOnly = false});
+
+  final bool channelsOnly;
 
   @override
   Widget build(BuildContext context) {
-    final w = MediaQuery.sizeOf(context).width - 32;
+    final w = MediaQuery.sizeOf(context).width;
+    const hPad = 16.0;
+    const gap = 10.0;
+    final innerW = w - hPad * 2;
+    final cellW = (innerW - gap) / 2;
+    final cellH = cellW * 10 / 16;
+
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(hPad, 8, hPad, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Shimmer.fromColors(
-            baseColor: const Color(0xFF0C1322),
-            highlightColor: const Color(0x2460A5FA),
-            child: Container(width: w, height: 320, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20))),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: List.generate(
-              4,
-              (_) => Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Shimmer.fromColors(
-                    baseColor: const Color(0xFF0C1322),
-                    highlightColor: const Color(0x2660A5FA),
-                    child: Container(height: 36, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20))),
+          if (!channelsOnly) ...[
+            ShimmerBox(width: innerW, height: 220, radius: 20),
+            const SizedBox(height: 16),
+            Row(
+              children: List.generate(
+                4,
+                (_) => Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: ShimmerBox(height: 36, radius: 20),
                   ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 16),
+          ],
           Wrap(
-            spacing: 12,
-            runSpacing: 12,
+            spacing: gap,
+            runSpacing: gap,
             children: List.generate(
               6,
-              (_) => Shimmer.fromColors(
-                baseColor: const Color(0xFF0C1322),
-                highlightColor: const Color(0x2E60A5FA),
-                child: Container(
-                  width: cardW,
-                  height: cardH,
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-                ),
-              ),
+              (_) => ShimmerBox(width: cellW, height: cellH, radius: 16),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ShimmerGrid extends StatelessWidget {
-  const _ShimmerGrid({required this.cardW, required this.cardH});
-  final double cardW;
-  final double cardH;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Wrap(
-        spacing: 12,
-        runSpacing: 12,
-        children: List.generate(
-          4,
-          (_) => Shimmer.fromColors(
-            baseColor: const Color(0xFF0C1322),
-            highlightColor: const Color(0x2E60A5FA),
-            child: Container(
-              width: cardW,
-              height: cardH,
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)),
-            ),
-          ),
-        ),
       ),
     );
   }

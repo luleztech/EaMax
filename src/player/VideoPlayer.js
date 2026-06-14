@@ -42,6 +42,9 @@ import StreamEngine, { DEFAULT_START_HEIGHT, DEFAULT_START_BITRATE } from './Str
 import { getClearKeysForBrowser } from './shakaDash';
 import MPDPlayer from './MPDPlayer';
 
+const USER_PLAYBACK_ERROR =
+  'Mafundi wetu wanahangaikia channel hii, itarejea hivi punde.';
+
 let ExoPlayerConfig = null;
 try { ExoPlayerConfig = require('../native/ExoPlayerConfig').default; } catch (_) {}
 
@@ -587,7 +590,7 @@ export default function VideoPlayer({
       setSourceKey(prev => prev + 1); return;
     }
 
-    const errorMessage = StreamEngine.classifyError(errorCode, errorString) || `Playback error: ${errorString}`;
+    const errorMessage = StreamEngine.classifyError(errorCode, errorString);
 
     if (playbackRetryCountRef.current < StreamEngine.MAX_RETRIES) {
       playbackRetryCountRef.current++;
@@ -621,7 +624,7 @@ export default function VideoPlayer({
       if (data.type === 'playing') { setLoading(false); setError(null); }
       if (data.type === 'ready')   { setLoading(false); setError(null); }
       if (data.type === 'buffering') { setLoading(!!data.isBuffering); }
-      if (data.type === 'error')   { setError(data.message || 'Playback failed'); setLoading(false); }
+      if (data.type === 'error')   { setError(USER_PLAYBACK_ERROR); setLoading(false); }
       if (data.type === 'paused' && isWebPage && webViewRef.current) {
         // Stream paused unexpectedly — force play via injection
         webViewRef.current.injectJavaScript(
@@ -654,9 +657,9 @@ export default function VideoPlayer({
           <MPDPlayer
             key={`mpd-${sourceKey}-h${DEFAULT_PLAYBACK_HEIGHT}`}
             url={url} headers={mergedHeaders}
-            drmClearKey={effectiveDrmClearKey} drmLicenseUrl={drmLicenseUrl}
+            drmClearKey={effectiveDrmClearKey} drmLicenseUrl={drmLicenseUrl} drmType={drmType}
             onClose={handleClose}
-            onError={(msg) => { setError(msg || 'Playback failed'); setLoading(false); }}
+            onError={() => { setError(USER_PLAYBACK_ERROR); setLoading(false); }}
             onPlaying={() => { setLoading(false); setError(null); }}
             onBuffering={(b) => setLoading(b)}
             style={videoStyle} maxHeight={DEFAULT_PLAYBACK_HEIGHT}
@@ -679,7 +682,7 @@ export default function VideoPlayer({
             allowsFullscreenVideo={false}
             injectedJavaScript={PHP_WEBVIEW_INJECTED_JS}
             onMessage={handleWebViewMessage}
-            onError={() => setError('Page could not be loaded.')}
+            onError={() => setError(USER_PLAYBACK_ERROR)}
           />
 
         /* CASE 3: Waiting for DRM key */
@@ -791,7 +794,6 @@ export default function VideoPlayer({
           <View style={styles.errorOverlay}>
             <View style={styles.errorCard}>
               <Icon name="alert-circle" size={40} color="#fff" />
-              <Text style={styles.errorTitle}>Playback Error</Text>
               <Text style={styles.errorMsg} numberOfLines={3}>{error}</Text>
               <TouchableOpacity style={styles.retryBtn} onPress={handleRetry}>
                 <Icon name="refresh" size={18} color="#000" />

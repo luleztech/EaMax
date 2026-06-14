@@ -321,7 +321,7 @@ const AdModal = ({ visible, onClose, onComplete }) => {
             </View>
           )}
           
-          {status === 'loading' && !status === 'closed' && (
+          {status === 'loading' && status !== 'closed' && (
             <View style={styles.watchingContainer}>
               <ActivityIndicator size="large" color="#22c55e" />
               <Text style={styles.watchingTitle}>Loading ad...</Text>

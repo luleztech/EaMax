@@ -12,6 +12,7 @@ const { requireAppVersion, attachVersionInfo } = require('./middleware/appVersio
 const appConfigRouter = require('./routes/appConfig');
 const usersRouter = require('./routes/users');
 const channelsRouter = require('./routes/channels');
+const refreshStreamRouter = require('./routes/refreshStream');
 
 const getRawBody = (req, res, buf, encoding) => {
   if (buf && buf.length) {
@@ -93,6 +94,14 @@ query(
 query(
   `UPDATE channels SET drm_type = 'CLEARKEY' WHERE drm_protected = true AND (drm_type IS NULL OR drm_type = 'NONE')`
 ).catch(() => {});
+query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS license_url TEXT`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    // eslint-disable-next-line no-console
+    console.warn('Migration license_url (non-fatal):', err.message);
+  }
+});
 
 // Mobile money number used for each payment (admin user list)
 query(
@@ -283,6 +292,7 @@ app.get('/health/db', async (req, res) => {
 // Public API for mobile apps
 app.use('/api/users', usersRouter);
 app.use('/api/channels', channelsRouter);
+app.use('/api/refreshStream', refreshStreamRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/carousel', carouselRouter);

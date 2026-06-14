@@ -33,6 +33,9 @@ import {
 } from './shakaDash';
 import StreamEngine from './StreamEngine';
 
+const USER_PLAYBACK_ERROR =
+  'Mafundi wetu wanahangaikia channel hii, itarejea hivi punde.';
+
 const WEBVIEW_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
 
@@ -46,7 +49,7 @@ function isValidUrl(url) {
 }
 
 export default function MPDPlayer({
-  url, headers = {}, drmClearKey, drmLicenseUrl,
+  url, headers = {}, drmClearKey, drmLicenseUrl, drmType = 'NONE',
   onClose, onError, onPlaying, onBuffering,
   style, maxHeight = 360,
 }) {
@@ -70,12 +73,13 @@ export default function MPDPlayer({
     clearKeys: clearKeys || undefined,
     licenseUrl: effectiveLicenseUrl || '',
     licenseHeaders: headers,
+    drmType: drmType || 'NONE',
   };
 
   // ── Fetch manifest & build injected HTML ────────────────────────────────────
   useEffect(() => {
     if (!url) {
-      setError('No stream URL provided');
+      setError(USER_PLAYBACK_ERROR);
       setLoading(false);
       return;
     }
@@ -125,19 +129,16 @@ export default function MPDPlayer({
       .catch((err) => {
         clearTimeout(timeoutId);
         if (cancelled) return;
-        let msg;
-        if (err?.name === 'AbortError') {
-          msg = 'Stream load timed out — check your internet connection';
-        } else {
-          msg = err?.message || 'Could not load stream';
+        if (mountedRef.current) {
+          setError(USER_PLAYBACK_ERROR);
+          setLoading(false);
         }
-        if (mountedRef.current) { setError(msg); setLoading(false); }
-        onError?.(msg);
+        onError?.(USER_PLAYBACK_ERROR);
       });
 
     return () => { cancelled = true; clearTimeout(timeoutId); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, JSON.stringify(headers), drmClearKey, drmLicenseUrl, maxHeight, retryKey]);
+  }, [url, JSON.stringify(headers), drmClearKey, drmLicenseUrl, drmType, maxHeight, retryKey]);
 
   // ── WebView message handler ──────────────────────────────────────────────────
   const handleMessage = useCallback((e) => {
@@ -146,8 +147,8 @@ export default function MPDPlayer({
       if (data.type === 'playing')   { setLoading(false); setError(null); onPlaying?.(); }
       if (data.type === 'ready')     { setLoading(false); setError(null); }
       if (data.type === 'buffering') { const b = !!data.isBuffering; setLoading(b); onBuffering?.(b); }
-      if (data.type === 'error')     { const msg = data.message || 'Playback failed'; setError(msg); setLoading(false); onError?.(msg); }
-      if (data.type === 'fallback')  { setError(data.message || 'Stream manifest error'); setLoading(false); }
+      if (data.type === 'error')     { setError(USER_PLAYBACK_ERROR); setLoading(false); onError?.(USER_PLAYBACK_ERROR); }
+      if (data.type === 'fallback')  { setError(USER_PLAYBACK_ERROR); setLoading(false); }
     } catch (_) {}
   }, [onPlaying, onError, onBuffering]);
 
@@ -186,8 +187,9 @@ export default function MPDPlayer({
           allowsFullscreenVideo={false}
           onMessage={handleMessage}
           onError={(e) => {
-            const msg = e?.nativeEvent?.description || 'WebView failed to load';
-            setError(msg); setLoading(false);
+            setError(USER_PLAYBACK_ERROR);
+            setLoading(false);
+            onError?.(USER_PLAYBACK_ERROR);
           }}
         />
       ) : null}
@@ -206,7 +208,6 @@ export default function MPDPlayer({
       {!!error && (
         <View style={styles.errorOverlay}>
           <Icon name="alert-circle" size={40} color="#ef4444" />
-          <Text style={styles.errorTitle}>Playback Error</Text>
           <Text style={styles.errorMsg} numberOfLines={4}>{error}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={handleRetry}>
             <Icon name="refresh" size={18} color="#000" />

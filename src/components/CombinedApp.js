@@ -897,11 +897,15 @@ const CombinedApp = ({
         drmProtected={(playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE') !== 'NONE'}
         drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
         drmType={playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE'}
-        drmLicenseUrl={
-          (playingChannel?.drmType === 'CLEARKEY' || playingChannel?.drm_type === 'CLEARKEY') && playingChannel?.id
-            ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license`
-            : undefined
-        }
+        drmLicenseUrl={(() => {
+          const dt = (playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE').toUpperCase();
+          const lic = playingChannel?.licenseUrl ?? playingChannel?.license_url;
+          if (lic) return lic;
+          if (dt === 'CLEARKEY' && playingChannel?.id) {
+            return `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license`;
+          }
+          return undefined;
+        })()}
         fetchChannelClearKey={async (id) => {
           const d = await channelsAPI.getChannel(id);
           return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };

@@ -45,17 +45,34 @@ function isPaymentsApiPath(req) {
   return apiPath(req).startsWith('/api/payments');
 }
 
+/** Prefer the real client IP behind Railway / reverse proxies. */
+function clientIp(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  if (xff) return xff;
+  return req.ip || 'unknown';
+}
+
+/** Per-device-ish key for catalog reads so one shared edge IP does not block all users. */
+function catalogRateLimitKey(req) {
+  const bundle = String(req.headers['x-app-bundle'] || '').trim();
+  if (bundle === 'com.eamax') {
+    return `catalog:${bundle}:${clientIp(req)}`;
+  }
+  return `catalog:${clientIp(req)}`;
+}
+
 /**
  * Read-heavy catalog routes (channels list, carousel, settings, matches).
  * Higher cap so home-screen refresh + resume does not blank the channel list.
  */
 const catalogLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_CATALOG_MAX || 400),
+  max: Number(process.env.RATE_LIMIT_CATALOG_MAX || 800),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Maombi mengi sana. Jaribu tena baadaye.' },
   skip: shouldSkipRateLimit,
+  keyGenerator: catalogRateLimitKey,
 });
 
 /**

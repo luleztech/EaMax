@@ -88,7 +88,7 @@ class _WebEmbeddedPlayerState extends State<WebEmbeddedPlayer> {
   Future<void> _tryNextFallback() async {
     if (!mounted) return;
     if (_attemptIndex + 1 >= _fallbackChain.length) {
-      widget.onError?.call('Playback failed');
+      widget.onError?.call('');
       return;
     }
     _attemptIndex++;
@@ -122,7 +122,7 @@ class _WebEmbeddedPlayerState extends State<WebEmbeddedPlayer> {
       if (mounted && gen == _prepareGeneration) _setLoading(false);
     } catch (e) {
       if (mounted && gen == _prepareGeneration) {
-        widget.onError?.call('$e');
+        widget.onError?.call('');
       }
     }
   }

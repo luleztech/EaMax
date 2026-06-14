@@ -11,6 +11,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../player/stream_url_utils.dart';
 import '../player/web_playback_config.dart';
+import '../player/web_player_html.dart';
+import '../player/web_stream_probe.dart';
 import '../services/player_rotate_hint_prefs.dart';
 import '../widgets/channel_unavailable_modal.dart';
 import '../widgets/web_embedded_player.dart';
@@ -117,7 +119,11 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     }
     setState(() => _loading = true);
     try {
-      if (_webView) {
+      if (_needsShakaWebView()) {
+        _webView = true;
+        await _initShakaWebView();
+      } else if (useWebViewForUrl(widget.videoUrl)) {
+        _webView = true;
         await _initWebView();
       } else {
         await _initMediaKitWithFallback();
@@ -127,6 +133,66 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await _notifyUnavailableAndExit();
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  bool _needsShakaWebView() {
+    if (kIsWeb) return false;
+    final drm = (widget.drmType ?? 'NONE').toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
+    if (drm != 'NONE') return true;
+    if ((widget.clearKeyRaw ?? '').trim().isNotEmpty) return true;
+    if ((widget.licenseUrl ?? '').trim().isNotEmpty) return true;
+    final fmt = detectStreamFormat(widget.videoUrl);
+    return fmt == StreamFormat.dash || fmt == StreamFormat.gateway;
+  }
+
+  Future<void> _initShakaWebView() async {
+    _webController = WebViewController();
+    try {
+      _webController!.setJavaScriptMode(JavaScriptMode.unrestricted);
+    } on UnimplementedError {
+      if (!kIsWeb) rethrow;
+    }
+    try {
+      _webController!.setBackgroundColor(Colors.black);
+    } on UnimplementedError {}
+
+    final config = WebPlaybackConfig(
+      url: widget.videoUrl,
+      headers: widget.httpHeaders ?? const {},
+      drmType: widget.drmType ?? 'NONE',
+      licenseUrl: widget.licenseUrl ?? '',
+      clearKeyRaw: widget.clearKeyRaw ?? '',
+      token: widget.playbackToken ?? '',
+    );
+
+    final resolved = await WebStreamProbe.resolve(config);
+    final html = _htmlForProbeResult(resolved);
+    await _webController!.loadHtmlString(html);
+  }
+
+  String _htmlForProbeResult(WebStreamProbeResult result) {
+    final headers = result.headers;
+    final drm = (
+      drmType: result.drmType,
+      licenseUrl: result.licenseUrl,
+      clearKeyRaw: result.clearKeyRaw,
+    );
+    switch (result.kind) {
+      case WebResolvedKind.dash:
+      case WebResolvedKind.hls:
+      case WebResolvedKind.adaptive:
+        return WebPlayerHtml.shaka(
+          result.playbackUrl,
+          headers,
+          drmType: drm.drmType,
+          licenseUrl: drm.licenseUrl,
+          clearKeyRaw: drm.clearKeyRaw,
+        );
+      case WebResolvedKind.progressive:
+        return WebPlayerHtml.progressive(result.playbackUrl);
+      case WebResolvedKind.gatewayEmbed:
+        return WebPlayerHtml.gatewayEmbed(result.playbackUrl);
     }
   }
 
@@ -291,7 +357,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
               const Padding(
                 padding: EdgeInsets.all(16),
                 child: Text(
-                  'Okoa bando — ubora wa video',
+                  'OKOA BANDO — ubora wa video',
                   style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
                 ),
               ),
@@ -475,7 +541,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                           child: const Padding(
                             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                             child: Text(
-                              'Okoa bando',
+                              'OKOA BANDO',
                               style: TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w700,

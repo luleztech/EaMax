@@ -66,9 +66,13 @@ Future<String?> _readLegacyRnUserIdNative() async {
 Future<String?> _resolveExistingUserViaFcm() async {
   if (kIsWeb) return null;
   try {
-    final token = await FirebaseMessaging.instance.getToken();
+    final token = await FirebaseMessaging.instance
+        .getToken()
+        .timeout(const Duration(seconds: 5));
     if (token == null || token.isEmpty) return null;
-    final external = await userApi.resolveExternalIdByFcmToken(token);
+    final external = await userApi
+        .resolveExternalIdByFcmToken(token)
+        .timeout(const Duration(seconds: 8));
     return (external != null && external.isNotEmpty) ? external : null;
   } catch (_) {
     return null;

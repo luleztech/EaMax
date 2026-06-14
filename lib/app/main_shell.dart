@@ -20,6 +20,7 @@ class MainShell extends StatelessWidget {
     required this.onPointsRefresh,
     required this.syncPremiumSetting,
     this.refreshing = false,
+    this.onRefreshingChange,
   });
 
   final GlobalKey<CombinedHomeState> homeKey;
@@ -31,6 +32,7 @@ class MainShell extends StatelessWidget {
   final Future<void> Function() onPointsRefresh;
   final Future<void> Function() syncPremiumSetting;
   final bool refreshing;
+  final ValueChanged<bool>? onRefreshingChange;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +62,7 @@ class MainShell extends StatelessWidget {
               onPaymentsActiveChange: (_) {},
               syncPremiumSetting: syncPremiumSetting,
               externalTabIndex: nav.currentTab,
+              onRefreshingChange: onRefreshingChange,
             ),
           ),
         ],

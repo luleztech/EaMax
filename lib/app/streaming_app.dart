@@ -16,6 +16,7 @@ import '../screens/maintenance_screen.dart';
 import '../services/promotion_service.dart';
 import '../widgets/promotion_popup.dart';
 import '../services/app_config_service.dart';
+import '../services/home_data_cache.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
 import '../utils/premium_snapshot.dart';
@@ -65,6 +66,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   int _lastPointsEarned = pointsPerReward;
   /// Set synchronously in [RewardedAd] reward callback so [onAdDismissedFullScreenContent] is safe.
   bool _rewardEarnedThisSession = false;
+  bool _homeRefreshing = false;
+  bool _bootstrapReady = false;
+  final DateTime _appStartedAt = DateTime.now();
 
   static const _congratsKey = 'premiumCongratsShown';
   static const _channelsPremiumOnlyCacheKey = 'channels_premium_only_cached_v1';
@@ -139,6 +143,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     WidgetsBinding.instance.addObserver(this);
     appUpdateState.addListener(_onGlobalUpdateStateChanged);
     unawaited(_hydrateChannelsPremiumOnlyFromCache());
+    unawaited(HomeDataCache.loadChannels());
+    unawaited(HomeDataCache.loadCarousel());
     _bootstrap();
     unawaited(_initConnectivity());
   }
@@ -164,7 +170,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         unawaited(_loadPromotions());
       }
       final home = _homeKey.currentState;
-      if (home != null) unawaited(home.reloadRemoteData());
+      if (home != null &&
+          DateTime.now().difference(_appStartedAt) > const Duration(seconds: 60)) {
+        unawaited(home.reloadRemoteData());
+      }
     }
   }
 
@@ -288,9 +297,19 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     unawaited(_finishBootstrap());
   }
 
+  Future<void> _prefetchHomeCatalog() async {
+    try {
+      final all = await channelsApi.getChannels();
+      if (all.isEmpty) return;
+      final rows = all.map((raw) => Map<String, dynamic>.from(raw as Map)).toList();
+      await HomeDataCache.saveChannels(rows);
+    } catch (_) {}
+  }
+
   Future<void> _finishBootstrap() async {
     await getOrCreateUserId();
     await refreshChannelsPremiumOnlySetting();
+    await _prefetchHomeCatalog();
     await _refreshUser();
     await _loadPromotions();
     await setupFcmLocalNotifications();
@@ -301,6 +320,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       unawaited(_fetchAppConfig(forceRefresh: true));
     });
+    if (mounted) setState(() => _bootstrapReady = true);
   }
 
   Future<void> _maybePromptNotificationPermission() async {
@@ -517,7 +537,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   Widget build(BuildContext context) {
     if (!_splashDone) {
       return LoaderScreen(
-        canProceed: _appConfigChecked,
+        canProceed: _appConfigChecked && (_bootstrapReady || _appConfig?.shouldBlockAccess == true),
         onDone: () {
           setState(() => _splashDone = true);
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -559,6 +579,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           onWatchAd: _openAd,
           onPointsRefresh: _refreshUser,
           syncPremiumSetting: refreshChannelsPremiumOnlySetting,
+          refreshing: _homeRefreshing,
+          onRefreshingChange: (v) {
+            if (_homeRefreshing != v && mounted) setState(() => _homeRefreshing = v);
+          },
         ),
         if (_adOverlayVisible)
           Positioned.fill(

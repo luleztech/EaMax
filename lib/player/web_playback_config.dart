@@ -25,8 +25,8 @@ class WebPlaybackConfig {
   }
 
   bool get isClearKey => normalizedDrmType == 'CLEARKEY';
-  bool get isWidevine =>
-      normalizedDrmType.startsWith('WIDEVINE') || normalizedDrmType == 'PLAYREADY';
+  bool get isWidevine => normalizedDrmType.startsWith('WIDEVINE');
+  bool get isPlayReady => normalizedDrmType == 'PLAYREADY';
 
   WebPlaybackConfig copyWith({
     String? url,
