@@ -1,12 +1,11 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const { isPremiumActive } = require('../services/premiumStatus');
 const {
-  buildPremiumPayload,
-  isPremiumActive,
-  shouldClearStalePremiumFlag,
-  shouldRestorePremiumFlag,
-} = require('../services/premiumStatus');
+  syncUserPremiumFlagsByExternalId,
+  buildUserSummaryResponse,
+} = require('../services/userEntitlements');
 
 const router = express.Router();
 
@@ -79,39 +78,12 @@ router.get('/:externalId', async (req, res, next) => {
       return res.status(404).json({ error: 'User not found' });
     }
     const row = result.rows[0];
-    let premiumExpiresAt = null;
-    if (row.premium_expires_at) {
-      const d = new Date(row.premium_expires_at);
-      if (!Number.isNaN(d.getTime())) premiumExpiresAt = d;
+    const synced = await syncUserPremiumFlagsByExternalId(externalId);
+    if (synced) {
+      row.is_premium = synced.is_premium;
     }
-    const now = new Date();
-    const subscriptionExpired =
-      premiumExpiresAt != null && premiumExpiresAt <= now;
-    if (row.is_premium === true && subscriptionExpired) {
-      await query(
-        'UPDATE users SET is_premium = FALSE WHERE id = $1 AND premium_expires_at <= NOW()',
-        [row.id],
-      );
-      row.is_premium = false;
-    }
-    const isPremiumCurrently =
-      row.blocked !== true &&
-      row.is_premium === true &&
-      (!premiumExpiresAt || premiumExpiresAt > now);
 
-    return res.json({
-      id: row.id,
-      external_id: row.external_id,
-      points: row.points,
-      blocked: row.blocked,
-      created_at: row.created_at,
-      is_premium: row.is_premium,
-      premium_expires_at: row.premium_expires_at,
-      isPremium: isPremiumCurrently,
-      subscriptionEndDate: row.premium_expires_at
-        ? new Date(row.premium_expires_at).toISOString()
-        : null,
-    });
+    return res.json(buildUserSummaryResponse(row));
   } catch (err) {
     return next(err);
   }

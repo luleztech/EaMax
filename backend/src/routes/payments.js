@@ -5,8 +5,12 @@ const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
 const {
   buildPremiumPayload,
-  isPremiumActive,
 } = require('../services/premiumStatus');
+const {
+  grantUserEntitlementsInTransaction,
+  repairUserEntitlementsIfNeeded,
+  fetchUserPremiumSnapshotByUserId,
+} = require('../services/userEntitlements');
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
 const PAYMENT_PROVIDERS = {
@@ -345,19 +349,6 @@ const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
 
 const allowPaymentTestComplete = () =>
   process.env.NODE_ENV !== 'production' || String(process.env.PAYMENT_ALLOW_TEST_COMPLETE || '').trim() === '1';
-
-const fetchUserPremiumSnapshotByUserId = async (userId) => {
-  const r = await query(
-    'SELECT is_premium, premium_expires_at, blocked, external_id FROM users WHERE id = $1 LIMIT 1',
-    [userId],
-  );
-  if (r.rows.length === 0) return null;
-  const row = r.rows[0];
-  return {
-    ...buildPremiumPayload(row),
-    externalId: row.external_id,
-  };
-};
 
 const fetchUserPremiumSnapshotForOrder = async (orderId) => {
   const r = await query(
@@ -1192,60 +1183,6 @@ async function handlePaymentStart(req, res, next) {
 router.post('/zeno/start', handlePaymentStart);
 router.post('/start', handlePaymentStart);
 
-/** Premium + unlock all channels for the plan interval (must run inside an open transaction). */
-const grantUserEntitlementsInTransaction = async (client, userId, planInterval) => {
-  const userUpdate = await client.query(
-    `UPDATE users
-        SET is_premium = TRUE,
-            blocked = FALSE,
-            premium_expires_at = GREATEST(COALESCE(premium_expires_at, now()), now()) + $2::interval
-      WHERE id = $1
-      RETURNING id, is_premium, premium_expires_at, blocked`,
-    [userId, planInterval],
-  );
-  if (userUpdate.rowCount !== 1) {
-    throw new Error(`Failed to update user id=${userId} (rowCount=${userUpdate.rowCount})`);
-  }
-  const unlockResult = await client.query(
-    `INSERT INTO user_unlocked_channels (user_id, channel_id)
-     SELECT $1, id FROM channels
-     ON CONFLICT (user_id, channel_id) DO NOTHING`,
-    [userId],
-  );
-  console.log('[Payment] User premium + channels:', {
-    userId,
-    premium_expires_at: userUpdate.rows[0].premium_expires_at,
-    channelsUnlocked: unlockResult.rowCount,
-  });
-  return userUpdate.rows[0];
-};
-
-/** Idempotent repair if payment row is completed but premium/unlocks were missed. */
-const repairUserEntitlements = async (userId, planInterval) => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await grantUserEntitlementsInTransaction(client, userId, planInterval);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('[Payment] repairUserEntitlements failed:', err?.message || err);
-  } finally {
-    client.release();
-  }
-};
-
-/** Only grant when the user still lacks an active subscription (avoids re-stacking on every status poll). */
-const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
-  const userRes = await query(
-    'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1 LIMIT 1',
-    [userId],
-  );
-  if (userRes.rows.length === 0) return;
-  if (isPremiumActive(userRes.rows[0])) return;
-  await repairUserEntitlements(userId, planInterval);
-};
-
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
 // [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents Zeno callbacks from completing Sonic orders and vice versa.
@@ -1328,7 +1265,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     }
     console.log('[Payment] Payment status set to completed, id:', paymentId);
 
-    await grantUserEntitlementsInTransaction(client, userId, planInterval);
+    await grantUserEntitlementsInTransaction(client, userId, { planInterval });
 
     await client.query('COMMIT');
     console.log('[Payment] Transaction committed for order:', orderId, '- revenue and premium users will reflect in admin.');
@@ -1380,6 +1317,22 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   return { ...payment, user };
 };
 
+/** Only tell the app COMPLETED once premium is actually active on the user row. */
+const respondPaymentCompletion = async (orderId, rawPayload, res) => {
+  const user = await fetchUserPremiumSnapshotForOrder(orderId);
+  const premiumActive = user && (user.isPremium === true || user.is_premium === true);
+  if (!premiumActive) {
+    return res.json({
+      status: 'PENDING',
+      applying: true,
+      message: 'Malipo yamethibitishwa — tunasasisha akaunti yako…',
+      raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
+      ...(user ? { user } : {}),
+    });
+  }
+  return res.json(await buildCompletedStatusPayload(orderId, rawPayload));
+};
+
 /** Shared GET /status and GET /zeno/status handler. */
 const handlePaymentStatusPoll = async (orderId, res, next) => {
   try {
@@ -1400,7 +1353,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
           await repairUserEntitlementsIfNeeded(Number(payRow.rows[0].user_id), planInterval);
         }
       }
-      return res.json(await buildCompletedStatusPayload(orderId, { data: [{ payment_status: 'COMPLETED' }] }));
+      return respondPaymentCompletion(orderId, { data: [{ payment_status: 'COMPLETED' }] }, res);
     }
 
     const gateway = await resolveGatewayForOrderId(orderId);
@@ -1434,10 +1387,15 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       const isCompleted = isSonicPaidRaw(rawStatus);
 
       if (isCompleted) {
-        await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
-          expectedPaymentProvider: expectedProvider,
-        });
-        return res.json(await buildCompletedStatusPayload(orderId, statusData));
+        try {
+          await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
+            expectedPaymentProvider: expectedProvider,
+          });
+        } catch (applyErr) {
+          console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
+          return res.json({ status: 'PENDING', applying: true, raw: statusData });
+        }
+        return respondPaymentCompletion(orderId, statusData, res);
       }
 
       if (isPaymentTerminalStatus(rawStatus)) {
@@ -1483,10 +1441,15 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
 
     if (isCompleted) {
-      await applyCompletedPayment(orderId, firstItem || statusData || {}, {
-        expectedPaymentProvider: expectedProvider,
-      });
-      return res.json(await buildCompletedStatusPayload(orderId, statusData));
+      try {
+        await applyCompletedPayment(orderId, firstItem || statusData || {}, {
+          expectedPaymentProvider: expectedProvider,
+        });
+      } catch (applyErr) {
+        console.error('[Payment] Zeno applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
+        return res.json({ status: 'PENDING', applying: true, raw: statusData });
+      }
+      return respondPaymentCompletion(orderId, statusData, res);
     }
 
     const clientStatus = zenoClientStatusFromPoll(isCompleted, rawStatus, statusData);

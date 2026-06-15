@@ -3,6 +3,7 @@ const { z } = require('zod');
 const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
 const { buildPremiumPayload } = require('../services/premiumStatus');
+const { grantUserEntitlementsInTransaction } = require('../services/userEntitlements');
 
 const promotionsAdminRouter = require('./promotionsAdmin');
 
@@ -258,6 +259,12 @@ router.post('/users/:id/special-access', async (req, res, next) => {
     const { duration, unit } = bodySchema.parse(req.body);
 
     const userId = Number(id);
+
+    const userCheck = await query('SELECT id FROM users WHERE id = $1 LIMIT 1', [userId]);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     const expiresAt = new Date();
 
     switch (unit) {
@@ -277,30 +284,25 @@ router.post('/users/:id/special-access', async (req, res, next) => {
         expiresAt.setDate(expiresAt.getDate() + duration);
     }
 
-    const updated = await query(
-      `UPDATE users
-          SET is_premium = TRUE,
-              blocked = FALSE,
-              premium_expires_at = $1
-        WHERE id = $2
-        RETURNING id, external_id, is_premium, premium_expires_at, blocked`,
-      [expiresAt.toISOString(), userId],
-    );
+    const updated = await (async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const row = await grantUserEntitlementsInTransaction(client, userId, {
+          expiresAt: expiresAt.toISOString(),
+        });
+        await client.query('COMMIT');
+        return { rows: [row] };
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    })();
 
     if (updated.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Unlock all channels for this user (optional; app uses is_premium for full access)
-    try {
-      await query(
-        `INSERT INTO user_unlocked_channels (user_id, channel_id)
-         SELECT $1, id FROM channels WHERE is_active = TRUE
-         ON CONFLICT (user_id, channel_id) DO NOTHING`,
-        [userId],
-      );
-    } catch (insertErr) {
-      console.error('Unlock channels insert (non-fatal):', insertErr);
     }
 
     // Send push notification to user about admin granting access
@@ -333,11 +335,13 @@ router.post('/users/:id/special-access', async (req, res, next) => {
     }
 
     const row = updated.rows[0];
+    const premium = buildPremiumPayload(row);
     return res.json({
       id: row.id,
       external_id: row.external_id,
       is_premium: row.is_premium,
       premium_expires_at: row.premium_expires_at,
+      ...premium,
       message: `User is now premium until ${row.premium_expires_at}`,
     });
   } catch (err) {

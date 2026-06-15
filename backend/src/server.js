@@ -146,6 +146,38 @@ query(
    WHERE status = 'completed' AND completed_at IS NULL`
 ).catch(() => {});
 
+// FCM + channel unlock table (required for premium grants and admin special access)
+query(
+  `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'fcm_token'
+  ) THEN
+    ALTER TABLE users ADD COLUMN fcm_token TEXT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'fcm_token_updated_at'
+  ) THEN
+    ALTER TABLE users ADD COLUMN fcm_token_updated_at TIMESTAMPTZ;
+  END IF;
+END $$`
+).catch((err) => {
+  console.warn('Migration users FCM columns (non-fatal):', err.message);
+});
+query(
+  `CREATE TABLE IF NOT EXISTS user_unlocked_channels (
+     id SERIAL PRIMARY KEY,
+     user_id INTEGER NOT NULL REFERENCES users(id),
+     channel_id INTEGER NOT NULL REFERENCES channels(id),
+     unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     UNIQUE(user_id, channel_id)
+   )`
+).catch((err) => {
+  console.warn('Migration user_unlocked_channels (non-fatal):', err.message);
+});
+
 // Alias support:
 // - channels.stream_alias: optional alias key instead of stream_url
 // - stream_aliases table stores alias -> real stream url
@@ -356,6 +388,10 @@ try {
   setTimeout(() => {
     sendExpiredSubscriptionReminders({ force: false }).catch((err) => {
       console.error('[ExpiredReminder] initial run failed:', err.message || err);
+    });
+    const { repairCompletedPaymentsMissingPremium } = require('./services/userEntitlements');
+    repairCompletedPaymentsMissingPremium().catch((err) => {
+      console.warn('[Entitlements] Boot repair failed:', err.message || err);
     });
   }, 120000);
 } catch (e) {
