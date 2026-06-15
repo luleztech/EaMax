@@ -37,6 +37,8 @@ const ProfileScreen = ({
   const [userPoints, setUserPoints] = useState(parentPoints ?? 0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
+  const [userCreatedAt, setUserCreatedAt] = useState(null);
 
   const [timeRemaining, setTimeRemaining] = useState({
     days: 0,
@@ -52,9 +54,11 @@ const ProfileScreen = ({
     try {
       if (showLoading) {
         setLoading(true);
+        setError(null);
       }
       const storedUserId = await getOrCreateUserId();
       if (!storedUserId) {
+        setError('Failed to get user ID');
         setLoading(false);
         return;
       }
@@ -69,11 +73,17 @@ const ProfileScreen = ({
           setUserPoints(userData.points ?? 0);
         }
         setSubscriptionEndDate(premium ? subEnd : null);
+        // Store actual user creation date from database
+        if (userData.created_at || userData.createdAt) {
+          setUserCreatedAt(new Date(userData.created_at || userData.createdAt));
+        }
       } catch (fetchError) {
         console.error('Failed to fetch user data:', fetchError);
+        setError('Failed to load user data');
       }
     } catch (error) {
       console.error('Error loading user data:', error);
+      setError('Error loading profile');
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -171,6 +181,15 @@ const ProfileScreen = ({
     }
   };
 
+  // Loading timeout - prevent infinite loading state
+  useEffect(() => {
+    if (!loading) return;
+    const timeout = setTimeout(() => {
+      setLoading(false);
+    }, 8000); // Max 8 seconds loading
+    return () => clearTimeout(timeout);
+  }, [loading]);
+
   // Countdown timer for premium users (subscription end comes from API: paid or admin-granted)
   useEffect(() => {
     if (!isPremium || !subscriptionEndDate) return;
@@ -212,6 +231,26 @@ const ProfileScreen = ({
         />
         <ActivityIndicator size="large" color={accentColor} />
         <Text style={styles.loadingText}>Loading profile...</Text>
+      </View>
+    );
+  }
+
+  if (error && !userId) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <LinearGradient
+          colors={['#030712', '#111827', '#000000']}
+          style={StyleSheet.absoluteFill}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        />
+        <Icon name="alert-circle" size={48} color="#ef4444" />
+        <Text style={[styles.loadingText, { marginTop: 16 }]}>{error}</Text>
+        <TouchableOpacity
+          style={[styles.adsButton, { marginTop: 20 }]}
+          onPress={() => loadUserData(true)}>
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -342,11 +381,17 @@ const ProfileScreen = ({
             <Icon name="calendar" size={20} color="#9ca3af" />
             <Text style={styles.detailLabel}>Tarehe ya Kujiunga:</Text>
             <Text style={styles.detailValue}>
-              {new Date().toLocaleDateString('sw-TZ', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-              })}
+              {userCreatedAt
+                ? userCreatedAt.toLocaleDateString('sw-TZ', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })
+                : new Date().toLocaleDateString('sw-TZ', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
             </Text>
           </View>
           <View style={styles.detailRow}>

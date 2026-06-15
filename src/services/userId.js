@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getToken } from '@react-native-firebase/messaging';
 import { userAPI } from '../config/api';
 
 const STORAGE_KEY = 'userId';
@@ -68,6 +69,30 @@ async function verifyUserExists(userId) {
 }
 
 /**
+ * Resolve existing user via FCM token (after app update / storage loss).
+ * This ensures subscription persists even if AsyncStorage is cleared.
+ */
+async function resolveExistingUserViaFcm() {
+  try {
+    const token = await getToken();
+    if (!token) {
+      console.log('[UserRegistration] No FCM token available');
+      return null;
+    }
+    console.log('[UserRegistration] Resolving user via FCM token...');
+    const externalId = await userAPI.resolveUserByFcmToken(token);
+    if (externalId) {
+      console.log(`[UserRegistration] Found existing user via FCM: ${externalId}`);
+      return externalId;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[UserRegistration] FCM resolution failed:', err?.message);
+    return null;
+  }
+}
+
+/**
  * Background retry for pending registrations.
  * Call this periodically to ensure users eventually get registered.
  */
@@ -103,7 +128,7 @@ export async function getOrCreateUserId() {
         return userId.trim();
       }
       // User not in DB, need to register
-      console.log(`[UserRegistration] User ${userId} not found in DB, registering...`);
+      console.log(`[UserRegistration] User ${userId} not found in DB, attempting recovery...`);
     }
 
     // Check legacy storage
@@ -116,6 +141,23 @@ export async function getOrCreateUserId() {
       }
       // Return legacy ID even if registration failed - will retry in background
       return legacyId.trim();
+    }
+
+    // Try to recover existing user via FCM token (survives app updates)
+    const recoveredId = await resolveExistingUserViaFcm();
+    if (recoveredId) {
+      console.log(`[UserRegistration] Recovered user via FCM: ${recoveredId}`);
+      await AsyncStorage.setItem(STORAGE_KEY, recoveredId);
+      // Verify and re-register if needed
+      const exists = await verifyUserExists(recoveredId);
+      if (exists) {
+        return recoveredId;
+      }
+      // Re-register the recovered user
+      const result = await registerUserWithRetry(recoveredId);
+      if (result.success) {
+        return recoveredId;
+      }
     }
 
     // Generate new user ID

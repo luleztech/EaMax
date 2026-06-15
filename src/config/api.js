@@ -139,6 +139,22 @@ export const userAPI = {
     });
   },
 
+  // Resolve user by FCM token (used after app update when storage is lost)
+  resolveUserByFcmToken: async (fcmToken) => {
+    try {
+      const result = await apiRequest('/api/users/resolve-by-fcm', {
+        method: 'POST',
+        body: JSON.stringify({ fcmToken }),
+      });
+      return result?.externalId || null;
+    } catch (err) {
+      if (err?.message?.includes('404') || err?.status === 404) {
+        return null; // No user found for this FCM token
+      }
+      throw err;
+    }
+  },
+
   // Refresh stream token (for token-expiring streams). Backend may implement POST /api/refreshStream.
   refreshStream: async (payload) => {
     return apiRequest('/api/refreshStream', {
