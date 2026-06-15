@@ -17,7 +17,7 @@ import CombinedApp from './CombinedApp';
 import AdModal from './AdModal';
 import NotificationPermissionModal from './NotificationPermissionModal';
 import { userAPI, paymentsAPI, settingsAPI } from '../config/api';
-import { getOrCreateUserId } from '../services/userId';
+import { getOrCreateUserId, retryPendingRegistrations } from '../services/userId';
 import {
   initializeNotifications,
   setupNotificationHandlers,
@@ -207,8 +207,14 @@ const StreamingApp = () => {
     // Register sync task to check user status
     backgroundSyncService.registerTask('refresh_user_status', refreshUserPoints, 60000); // 60 seconds
 
+    // Register sync task to retry pending user registrations
+    backgroundSyncService.registerTask('retry_pending_registrations', retryPendingRegistrations, 30000); // 30 seconds
+
     // Start sync timer
     backgroundSyncService.startSyncTimer(30000); // Check every 30 seconds
+
+    // Immediate retry on app start
+    retryPendingRegistrations();
 
     return () => {
       backgroundSyncService.cleanup();

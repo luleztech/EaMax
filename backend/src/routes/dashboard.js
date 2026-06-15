@@ -298,12 +298,12 @@ router.get('/users', async (req, res, next) => {
     );
     const total = parseInt(countResult.rows[0].total) || 0;
 
-    // Get users
+    // Get users with optimized query using LEFT JOIN instead of correlated subquery
     queryParams.push(limit);
     queryParams.push(offset);
-    
+
     const usersResult = await query(
-      `SELECT 
+      `SELECT
          u.id,
          u.external_id,
          u.points,
@@ -313,21 +313,16 @@ router.get('/users', async (req, res, next) => {
          u.created_at,
          u.fcm_token_updated_at,
          u.uninstalled_at,
-         COALESCE(
-           (
-             SELECT string_agg(sub.phone, ', ' ORDER BY sub.phone)
-             FROM (
-               SELECT DISTINCT trim(sp.buyer_phone) AS phone
-               FROM subscription_payments sp
-               WHERE sp.user_id = u.id
-                 AND sp.status = 'completed'
-                 AND sp.buyer_phone IS NOT NULL
-                 AND trim(sp.buyer_phone) <> ''
-             ) sub
-           ),
-           ''
-         ) AS payment_phones
+         COALESCE(pp.phones, '') AS payment_phones
        FROM users u
+       LEFT JOIN (
+         SELECT user_id, string_agg(DISTINCT trim(buyer_phone), ', ' ORDER BY trim(buyer_phone)) as phones
+         FROM subscription_payments
+         WHERE status = 'completed'
+           AND buyer_phone IS NOT NULL
+           AND trim(buyer_phone) <> ''
+         GROUP BY user_id
+       ) pp ON pp.user_id = u.id
        ${whereClause}
        ORDER BY u.created_at DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
