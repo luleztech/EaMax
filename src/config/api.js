@@ -26,7 +26,7 @@ async function apiRequestOnce(endpoint, options = {}) {
   const defaultOptions = {
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Version': '1.3.14',
+      'X-App-Version': '1.3.15',
       'X-App-Bundle': 'com.eamax',
     },
   };
@@ -148,7 +148,8 @@ export const userAPI = {
       });
       return result?.externalId || null;
     } catch (err) {
-      if (err?.message?.includes('404') || err?.status === 404) {
+      const msg = err?.message || '';
+      if (msg.includes('404') || msg.includes('No matching user')) {
         return null; // No user found for this FCM token
       }
       throw err;

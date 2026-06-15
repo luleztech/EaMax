@@ -210,7 +210,13 @@ const ProfileScreen = ({
         setTimeRemaining({ days: 0, hours: 0, minutes: 0, seconds: 0 });
         setIsPremium(false);
         setSubscriptionEndDate(null);
-        if (onPointsRefresh) onPointsRefresh();
+        if (onPointsRefresh) {
+          try {
+            await onPointsRefresh();
+          } catch (refreshErr) {
+            console.warn('Points refresh failed during expiry:', refreshErr);
+          }
+        }
       }
     };
 
