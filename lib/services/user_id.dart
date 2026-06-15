@@ -137,6 +137,7 @@ Future<bool> _verifyUserExists(String id) async {
 
 /// Background retry for pending registrations.
 /// Call this periodically to ensure users eventually get registered.
+/// Exported so background services can trigger retry.
 Future<void> retryPendingRegistrations() async {
   try {
     final prefs = await SharedPreferences.getInstance();
