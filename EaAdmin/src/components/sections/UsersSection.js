@@ -18,15 +18,15 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminUsersAPI, dashboardAPI } from '../../config/api';
 
 /** Smaller pages = faster first response; list fills in progressively. */
-const USERS_PAGE_SIZE = 500;
+const USERS_PAGE_SIZE = 200;
 /** Default list shows newest installs only (full 50k+ scan is slow and misses users created mid-fetch). */
-const RECENT_USERS_MAX = 2500;
+const RECENT_USERS_MAX = 800;
 /** Quick poll for new User-XXXXX rows without re-downloading the whole table. */
-const LIVE_REFRESH_LIMIT = 120;
+const LIVE_REFRESH_LIMIT = 60;
 /** Safety cap so a broken offset/total cannot spin forever. */
-const MAX_USER_FETCH_PAGES = 500;
+const MAX_USER_FETCH_PAGES = 300;
 /** Wait until typing pauses before hitting the API (stops list jitter). */
-const SEARCH_DEBOUNCE_MS = 420;
+const SEARCH_DEBOUNCE_MS = 350;
 
 // Generate gradient colors based on user ID
 const getGradientColors = (id) => {

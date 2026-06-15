@@ -305,12 +305,12 @@ router.post('/users/:id/special-access', async (req, res, next) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Send push notification to user about admin granting access
+    // Send push notification to user about admin granting access (best-effort)
     try {
       const userResult = await query('SELECT fcm_token, external_id FROM users WHERE id = $1', [userId]);
       const fcmToken = userResult.rows[0]?.fcm_token;
       const externalId = userResult.rows[0]?.external_id;
-      
+
       if (fcmToken) {
         await sendPushNotification(
           fcmToken,
@@ -332,6 +332,7 @@ router.post('/users/:id/special-access', async (req, res, next) => {
       }
     } catch (notifErr) {
       console.error('[Admin] Failed to send notifications:', notifErr.message);
+      // Continue - don't fail the request if notifications fail
     }
 
     const row = updated.rows[0];

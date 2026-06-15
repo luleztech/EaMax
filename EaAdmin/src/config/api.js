@@ -505,7 +505,7 @@ export const dashboardAPI = {
   },
 
   // Get users with filters (can be slow on large DBs — generous timeout)
-  getUsers: async (limit = 5000, offset = 0, filter = 'all', search = '') => {
+  getUsers: async (limit = 2000, offset = 0, filter = 'all', search = '') => {
     const params = new URLSearchParams({
       limit: limit.toString(),
       offset: offset.toString(),
@@ -517,7 +517,7 @@ export const dashboardAPI = {
     }
 
     return apiRequest(`/api/dashboard/users?${params.toString()}`, {
-      timeoutMs: 120000,
+      timeoutMs: 45000,
     });
   },
 

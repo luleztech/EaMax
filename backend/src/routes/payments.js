@@ -1303,6 +1303,10 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     } catch (notifErr) {
       console.error('[Payment] Failed to send notifications:', notifErr.message);
     }
+
+    // Return success result immediately after commit - MUST be inside try block
+    const user = await fetchUserPremiumSnapshotByUserId(userId);
+    return { ...payment, user };
   } catch (err) {
     console.error('[Payment] Transaction failed, rolling back:', err);
     await client.query('ROLLBACK').catch((rollbackErr) => {
@@ -1312,9 +1316,6 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   } finally {
     client.release();
   }
-
-  const user = await fetchUserPremiumSnapshotByUserId(userId);
-  return { ...payment, user };
 };
 
 /** Only tell the app COMPLETED once premium is actually active on the user row. */
@@ -1330,7 +1331,12 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
       ...(user ? { user } : {}),
     });
   }
-  return res.json(await buildCompletedStatusPayload(orderId, rawPayload));
+  // Use already-fetched user data instead of querying again
+  return res.json({
+    status: 'COMPLETED',
+    raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
+    ...(user ? { user } : {}),
+  });
 };
 
 /** Shared GET /status and GET /zeno/status handler. */
@@ -1681,13 +1687,17 @@ router.post('/zeno/webhook', async (req, res, next) => {
 
     if (paid) {
       console.log('[ZenoPay] Processing completed payment:', webhookOrderId);
-      await applyCompletedPayment(webhookOrderId, payload, { expectedPaymentProvider: PAYMENT_PROVIDERS.ZENO });
-      console.log('[ZenoPay] Payment processing completed for:', webhookOrderId);
+      const result = await applyCompletedPayment(webhookOrderId, payload, { expectedPaymentProvider: PAYMENT_PROVIDERS.ZENO });
+      if (!result) {
+        console.warn('[ZenoPay] Payment processing returned null for:', webhookOrderId);
+        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
+      }
+      console.log('[ZenoPay] Payment processing completed for:', webhookOrderId, 'user:', result.user?.external_id);
+      return res.json({ received: true, processed: true, userId: result.user?.external_id });
     } else {
       console.log('[ZenoPay] Ignoring non-completed payment status:', webhookStatusRaw || '(empty)');
+      return res.json({ received: true, processed: false, reason: 'not_paid' });
     }
-
-    return res.json({ received: true });
   } catch (err) {
     console.error('[ZenoPay] Webhook error:', err);
     return next(err);
@@ -1850,14 +1860,15 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
         expectedPaymentProvider: PAYMENT_PROVIDERS.SONICPESA,
       });
       if (!result) {
-        return res.status(200).json({ received: true, processed: false });
+        console.warn('[SonicPesa] Payment processing returned null for:', orderId);
+        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
       }
+      console.log('[SonicPesa] Payment processing completed for:', orderId, 'user:', result.user?.external_id);
+      return res.status(200).json({ received: true, processed: true, userId: result.user?.external_id });
     } catch (e) {
       console.error('[SonicPesa] Webhook applyCompletedPayment failed:', e?.message || e);
       return res.status(500).json({ error: 'Processing failed' });
     }
-
-    return res.status(200).json({ received: true, processed: true });
   } catch (err) {
     console.error('[SonicPesa] Webhook error:', err);
     return next(err);
