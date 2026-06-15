@@ -1277,11 +1277,26 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
       const externalId = userResult.rows[0]?.external_id;
       
       if (fcmToken) {
+        const updatedUser = await query(
+          'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
+          [userId],
+        );
+        const premium = updatedUser.rows[0]
+          ? buildPremiumPayload(updatedUser.rows[0])
+          : { isPremium: true, is_premium: true, premiumExpiresAt: '', subscriptionEndDate: '' };
         await sendPushNotification(
           fcmToken,
           'Malipo Yamefaulu!',
           'Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
-          { type: 'payment_success', orderId }
+          {
+            type: 'payment_success',
+            orderId: String(orderId || ''),
+            isPremium: String(!!premium.isPremium),
+            is_premium: String(!!premium.is_premium),
+            premiumExpiresAt: premium.premiumExpiresAt || '',
+            subscriptionEndDate: premium.subscriptionEndDate || '',
+            externalId: externalId || '',
+          },
         );
         console.log('[Payment] Push notification sent to user:', userId);
       }

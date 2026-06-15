@@ -8,6 +8,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api.dart';
+import '../config/payment_helpers.dart';
 import '../firebase_options.dart';
 import 'supasoka_fcm_sync.dart';
 import 'user_id.dart' as user_id;
@@ -23,6 +24,36 @@ const _prefsDirectTopicKey = 'eamax_direct_user_topic_v1';
 
 StreamSubscription<String>? _tokenRefreshSub;
 bool _eamaxListenersBound = false;
+
+/// Set from [StreamingApp] — refreshes premium when payment/admin push arrives.
+PremiumUnlockCallback? onPremiumUnlockRequested;
+
+bool _isPremiumUnlockPushType(String? type) {
+  final t = type?.trim().toLowerCase() ?? '';
+  return t == 'payment_success' || t == 'admin_access_granted';
+}
+
+void _maybeRequestPremiumUnlock(RemoteMessage message) {
+  final type = message.data['type']?.toString();
+  if (!_isPremiumUnlockPushType(type)) return;
+
+  Map<String, dynamic>? payload;
+  final isPrem = message.data['isPremium'] ?? message.data['is_premium'];
+  if (isPrem != null && isPrem.isNotEmpty) {
+    final active = isPrem == 'true' || isPrem == '1';
+    final expires = (message.data['premiumExpiresAt'] ?? message.data['subscriptionEndDate'])
+        ?.toString()
+        .trim();
+    payload = <String, dynamic>{
+      'isPremium': active,
+      'is_premium': active,
+      if (expires != null && expires.isNotEmpty) 'premiumExpiresAt': expires,
+      if (expires != null && expires.isNotEmpty) 'subscriptionEndDate': expires,
+    };
+  }
+
+  unawaited(onPremiumUnlockRequested?.call(userPayload: payload));
+}
 
 final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
 
@@ -319,6 +350,7 @@ Future<void> bindEamaxFcmForegroundListener() async {
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
     _logFcm('Foreground message received id=${message.messageId} data=${message.data}');
     unawaited(_trackRemoteMessage(message, openedFromTray: false));
+    _maybeRequestPremiumUnlock(message);
 
     final n = message.notification;
     final title = n?.title ?? message.data['title'] ?? 'EaMax';
@@ -336,11 +368,13 @@ Future<void> bindEamaxFcmForegroundListener() async {
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
     _logFcm('Foreground message opened from tray id=${message.messageId} data=${message.data}');
     unawaited(_trackRemoteMessage(message, openedFromTray: true));
+    _maybeRequestPremiumUnlock(message);
   });
 
   final initial = await FirebaseMessaging.instance.getInitialMessage();
   if (initial != null) {
     await _trackRemoteMessage(initial, openedFromTray: true);
+    _maybeRequestPremiumUnlock(initial);
   }
 }
 

@@ -5,6 +5,7 @@ import '../theme/ionicons_compat.dart';
 import 'package:provider/provider.dart';
 
 import '../theme/app_theme.dart';
+import '../config/payment_helpers.dart';
 import 'combined_home.dart';
 
 /// Supasoka-style 5-tab shell with frosted bottom navigation.
@@ -18,6 +19,7 @@ class MainShell extends StatelessWidget {
     required this.userPoints,
     required this.onWatchAd,
     required this.onPointsRefresh,
+    required this.onPaymentSuccess,
     required this.syncPremiumSetting,
     this.refreshing = false,
     this.onRefreshingChange,
@@ -30,6 +32,7 @@ class MainShell extends StatelessWidget {
   final int userPoints;
   final VoidCallback onWatchAd;
   final Future<void> Function() onPointsRefresh;
+  final PremiumUnlockCallback onPaymentSuccess;
   final Future<void> Function() syncPremiumSetting;
   final bool refreshing;
   final ValueChanged<bool>? onRefreshingChange;
@@ -59,6 +62,7 @@ class MainShell extends StatelessWidget {
               userPoints: userPoints,
               onWatchAd: onWatchAd,
               onPointsRefresh: onPointsRefresh,
+              onPaymentSuccess: onPaymentSuccess,
               onPaymentsActiveChange: (_) {},
               syncPremiumSetting: syncPremiumSetting,
               externalTabIndex: nav.currentTab,

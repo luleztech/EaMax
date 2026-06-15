@@ -76,6 +76,31 @@ const catalogLimiter = rateLimit({
 });
 
 /**
+ * Per-user API limiter — keyed by externalId so carrier NAT does not block all users.
+ */
+function userRateLimitKey(req) {
+  const path = apiPath(req);
+  const match = path.match(/\/api\/users\/([^/]+)/);
+  const segment = match?.[1];
+  if (segment && segment !== 'register' && segment !== 'resolve-by-fcm') {
+    return `user:${decodeURIComponent(segment)}`;
+  }
+  const ext = req.body?.externalId;
+  if (ext && String(ext).trim()) return `user:${String(ext).trim()}`;
+  return `user-ip:${clientIp(req)}`;
+}
+
+const userLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_USER_MAX || 400),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Maombi mengi sana. Jaribu tena baadaye.' },
+  skip: shouldSkipRateLimit,
+  keyGenerator: userRateLimitKey,
+});
+
+/**
  * General API rate limiter — protects write-heavy / user routes.
  * Payment routes and promotion analytics are excluded (separate limiters below).
  */
@@ -89,6 +114,7 @@ const generalLimiter = rateLimit({
     if (shouldSkipRateLimit(req)) return true;
     if (isPaymentsApiPath(req) || isPromotionAnalyticsRoute(req)) return true;
     const path = apiPath(req);
+    if (path.startsWith('/api/users')) return true;
     const method = String(req.method || 'GET').toUpperCase();
     if (method === 'GET' && (
       path.startsWith('/api/channels') ||
@@ -138,5 +164,6 @@ module.exports = {
   catalogLimiter,
   paymentStartLimiter,
   authLimiter,
+  userLimiter,
   shouldSkipRateLimit,
 };

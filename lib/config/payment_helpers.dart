@@ -48,3 +48,13 @@ bool isPaymentTerminalFailure(Object? status) {
   };
   return failures.contains(s);
 }
+
+/// Premium payload returned with `/api/payments/status` when payment completes.
+Map<String, dynamic>? userPayloadFromPaymentResponse(Map<String, dynamic> response) {
+  final user = response['user'];
+  if (user is Map) return Map<String, dynamic>.from(user);
+  return null;
+}
+
+/// Called after payment success or admin grant to unlock channels.
+typedef PremiumUnlockCallback = Future<void> Function({Map<String, dynamic>? userPayload});

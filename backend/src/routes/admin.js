@@ -312,11 +312,20 @@ router.post('/users/:id/special-access', async (req, res, next) => {
       const externalId = userResult.rows[0]?.external_id;
 
       if (fcmToken) {
+        const row = updated.rows[0];
+        const premium = buildPremiumPayload(row);
         await sendPushNotification(
           fcmToken,
           'Access Granted!',
           'Admin has granted you premium access. Enjoy all channels!',
-          { type: 'admin_access_granted' }
+          {
+            type: 'admin_access_granted',
+            isPremium: String(!!premium.isPremium),
+            is_premium: String(!!premium.is_premium),
+            premiumExpiresAt: premium.premiumExpiresAt || '',
+            subscriptionEndDate: premium.subscriptionEndDate || '',
+            externalId: externalId || row.external_id || '',
+          },
         );
         console.log('[Admin] Push notification sent to user:', userId);
       }

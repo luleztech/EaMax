@@ -6,9 +6,7 @@ import '../theme/ionicons_compat.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
-import '../config/api.dart';
 import '../services/user_id.dart';
-import '../utils/premium_snapshot.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/app_header.dart';
@@ -45,27 +43,23 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserver {
   String? _userId;
-  bool _premium = false;
-  bool _loading = false;
   bool _profileStarted = false;
-  DateTime? _subEnd;
   Duration _remain = Duration.zero;
   Timer? _countdownTimer;
 
-  static const _identityTimeout = Duration(seconds: 15);
-  static const _profileFetchTimeout = Duration(seconds: 12);
-
   bool get _subscriptionTimeActive =>
-      _premium && _subEnd != null && _subEnd!.isAfter(DateTime.now());
+      widget.isPremium &&
+      widget.subscriptionEndDate != null &&
+      widget.subscriptionEndDate!.isAfter(DateTime.now());
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.isPremium) {
-      _premium = true;
-      _subEnd = widget.subscriptionEndDate;
-    }
+    unawaited(ensureLocalUserId().then((id) {
+      if (mounted) setState(() => _userId = id);
+    }));
+    _restartCountdown();
     if (widget.isActive) {
       unawaited(_warmProfile());
     }
@@ -76,30 +70,21 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
     super.didUpdateWidget(oldWidget);
     if (widget.isPremium != oldWidget.isPremium ||
         widget.subscriptionEndDate != oldWidget.subscriptionEndDate) {
-      _syncFromParent(widget.isPremium, widget.subscriptionEndDate);
+      _restartCountdown();
     }
     if (widget.isActive && !oldWidget.isActive) {
-      if (_userId == null || _userId!.isEmpty) {
-        setState(() => _loading = true);
-      }
       unawaited(_warmProfile());
     }
   }
 
-  void _syncFromParent(bool premium, DateTime? end) {
-    if (!mounted) return;
-    setState(() {
-      _premium = premium;
-      _subEnd = premium ? end : null;
-      _loading = false;
-    });
+  void _restartCountdown() {
     _countdownTimer?.cancel();
-    if (_subscriptionTimeActive) {
-      _tick();
-      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
-    } else if (mounted) {
-      setState(() => _remain = Duration.zero);
+    if (!_subscriptionTimeActive) {
+      if (mounted) setState(() => _remain = Duration.zero);
+      return;
     }
+    _tick();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
   }
 
   @override
@@ -112,76 +97,28 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_refreshProfile());
+      unawaited(widget.onPointsRefresh?.call());
     }
   }
 
   Future<void> _warmProfile() async {
-    if (_profileStarted) {
-      await _refreshProfile();
-      return;
-    }
+    if (_profileStarted) return;
     _profileStarted = true;
-
-    final cachedId = await getStoredUserId();
+    final cachedId = await ensureLocalUserId();
     if (!mounted) return;
-    if (cachedId != null && cachedId.isNotEmpty) {
-      setState(() => _userId = cachedId);
-    } else {
-      setState(() => _loading = true);
-    }
-    await _refreshProfile();
-  }
-
-  Future<void> _refreshProfile() async {
-    try {
-      final id = await getOrCreateUserId().timeout(
-        _identityTimeout,
-        onTimeout: () => _userId,
-      );
-      if (id == null || id.isEmpty) return;
-      if (mounted) setState(() => _userId = id);
-
-      final userData = await userApi.getUser(id).timeout(_profileFetchTimeout);
-      if (!mounted) return;
-      final snap = PremiumSnapshot.fromDynamic(userData);
-      setState(() {
-        _premium = snap?.isPremium ?? widget.isPremium;
-        _subEnd = _premium ? (snap?.expiresAt ?? widget.subscriptionEndDate) : null;
-      });
-      _countdownTimer?.cancel();
-      if (_subscriptionTimeActive) {
-        _tick();
-        _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
-      } else if (mounted) {
-        setState(() => _remain = Duration.zero);
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _premium = widget.isPremium;
-          _subEnd = widget.isPremium ? widget.subscriptionEndDate : null;
-        });
-      }
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+    setState(() => _userId = cachedId);
+    unawaited(widget.onPointsRefresh?.call());
   }
 
   void _tick() {
-    if (_subEnd == null || !_premium) return;
-    final diff = _subEnd!.difference(DateTime.now());
+    final end = widget.subscriptionEndDate;
+    if (end == null || !widget.isPremium) return;
+    final diff = end.difference(DateTime.now());
     if (diff.isNegative || diff.inSeconds <= 0) {
       _countdownTimer?.cancel();
       _countdownTimer = null;
-      if (mounted) {
-        setState(() {
-          _remain = Duration.zero;
-          _premium = false;
-          _subEnd = null;
-        });
-      }
-      unawaited(_refreshProfile());
+      if (mounted) setState(() => _remain = Duration.zero);
+      unawaited(widget.onPointsRefresh?.call());
       return;
     }
     if (mounted) setState(() => _remain = diff);
@@ -189,9 +126,9 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
 
   void _onKusanyaPoint() {
     widget.onWatchAd?.call();
-    Future.delayed(const Duration(milliseconds: 7500), () => unawaited(_refreshProfile()));
-    Future.delayed(const Duration(milliseconds: 10000), () => unawaited(_refreshProfile()));
-    Future.delayed(const Duration(milliseconds: 12000), () => unawaited(_refreshProfile()));
+    Future.delayed(const Duration(milliseconds: 8000), () {
+      unawaited(widget.onPointsRefresh?.call());
+    });
   }
 
   Future<void> _copyUserId() async {
@@ -210,52 +147,20 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    if (_loading && (_userId == null || _userId!.isEmpty)) {
-      final t = context.watch<ThemeController>().colors;
-      return ColoredBox(
-        color: t.bg1,
-        child: Stack(
-          children: [
-            const Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF030712), Color(0xFF111827), Color(0xFF000000)],
-                  ),
-                ),
-              ),
-            ),
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(color: widget.accentColor),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Inapakia wasifu...',
-                    style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 16),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
     final t = context.watch<ThemeController>().colors;
     final bottom = 32.0 + widget.bottomPadding;
     final letters = (_userId != null && _userId!.length >= 2) ? _userId!.substring(0, 2).toUpperCase() : 'EM';
+    final isPremium = widget.isPremium;
 
     return ColoredBox(
       color: t.bg1,
       child: RefreshIndicator(
         color: t.accent,
         onRefresh: () async {
-          await widget.onPointsRefresh?.call();
-          await _refreshProfile();
+          final id = await ensureLocalUserId();
+          if (mounted) setState(() => _userId = id);
+          await registerUserInDatabase(id: id, maxRetries: 2);
+          unawaited(widget.onPointsRefresh?.call());
         },
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -290,7 +195,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                           children: [
                             Flexible(
                               child: Text(
-                                _userId ?? '...',
+                                _userId ?? 'Inapakia...',
                                 style: orbitron(18).copyWith(color: t.text, letterSpacing: 0.6),
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -308,18 +213,18 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
-                      color: _premium ? t.gold.withValues(alpha: 0.15) : t.card,
+                      color: isPremium ? t.gold.withValues(alpha: 0.15) : t.card,
                       borderRadius: BorderRadius.circular(100),
-                      border: Border.all(color: _premium ? t.gold.withValues(alpha: 0.4) : t.border),
+                      border: Border.all(color: isPremium ? t.gold.withValues(alpha: 0.4) : t.border),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(_premium ? Ionicons.star : Ionicons.person_outline, size: 16, color: _premium ? t.gold : t.text2),
+                        Icon(isPremium ? Ionicons.star : Ionicons.person_outline, size: 16, color: isPremium ? t.gold : t.text2),
                         const SizedBox(width: 8),
                         Text(
-                          _premium ? 'Premium User' : 'Free User',
-                          style: rajdhani(14, weight: FontWeight.w600).copyWith(color: _premium ? t.gold : t.text2),
+                          isPremium ? 'Premium User' : 'Free User',
+                          style: rajdhani(14, weight: FontWeight.w600).copyWith(color: isPremium ? t.gold : t.text2),
                         ),
                       ],
                     ),
@@ -331,7 +236,11 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
             if (_subscriptionTimeActive)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: _SubscriptionRemainCard(accent: t.accent, remain: _remain, subEnd: _subEnd),
+                child: _SubscriptionRemainCard(
+                  accent: t.accent,
+                  remain: _remain,
+                  subEnd: widget.subscriptionEndDate,
+                ),
               )
             else ...[
               Padding(
@@ -341,7 +250,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                   g: [t.accent, t.accent2],
                   icon: Ionicons.key_outline,
                   title: 'Fungua Channel zote',
-                  subtitle: 'Chagua michango Premium',
+                  subtitle: 'Chagua vifurushi vya Premium',
                   onTap: widget.onOpenPayments,
                 ),
               ),
@@ -550,111 +459,6 @@ class _CdUnit extends StatelessWidget {
           const SizedBox(height: 4),
           Text(l, style: const TextStyle(fontSize: 11, color: AppColors.muted, decoration: TextDecoration.none)),
         ],
-      ),
-    );
-  }
-}
-
-class _ProfileActionTile extends StatelessWidget {
-  const _ProfileActionTile({
-    required this.leading,
-    required this.title,
-    required this.subtitle,
-    this.onTap,
-  });
-
-  final Widget leading;
-  final String title;
-  final String subtitle;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(26),
-        child: Ink(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(26),
-            color: const Color(0x801F2937),
-            border: Border.all(color: const Color(0x80374151)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.2),
-                blurRadius: 16,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-            child: Row(
-              children: [
-                leading,
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: enabled ? Colors.white : Colors.white54,
-                          decoration: TextDecoration.none,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.muted,
-                          height: 1.25,
-                          decoration: TextDecoration.none,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  color: enabled ? AppColors.muted : Colors.white.withValues(alpha: 0.2),
-                  size: 26,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _GreenPlusBadge extends StatelessWidget {
-  const _GreenPlusBadge();
-
-  static const _green = Color(0xFF22C55E);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 52,
-      height: 52,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: const Color(0x1A22C55E),
-        border: Border.all(color: _green, width: 3),
-        boxShadow: [
-          BoxShadow(color: _green.withValues(alpha: 0.35), blurRadius: 12, spreadRadius: 0),
-        ],
-      ),
-      child: const Center(
-        child: Icon(Icons.add_rounded, color: _green, size: 28),
       ),
     );
   }

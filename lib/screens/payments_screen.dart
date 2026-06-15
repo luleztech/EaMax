@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api.dart';
-import '../config/payment_helpers.dart' show isPaymentCompleted, isPaymentTerminalFailure, normalizedPaymentStatus;
+import '../config/payment_helpers.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 
@@ -59,7 +59,7 @@ class PaymentsScreen extends StatefulWidget {
 
   final Color accentColor;
   final double bottomPadding;
-  final Future<void> Function()? onPaymentSuccess;
+  final PremiumUnlockCallback? onPaymentSuccess;
 
   @override
   State<PaymentsScreen> createState() => _PaymentsScreenState();
@@ -146,12 +146,16 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     final prefs = await SharedPreferences.getInstance();
     final pending = prefs.getString('pendingPaymentOrderId')?.trim();
 
+    // Show username instantly from local storage (generate if missing).
+    final localUid = await ensureLocalUserId();
+    if (mounted) setState(() => _userId = localUid);
+
     Map<String, dynamic> wMap = <String, dynamic>{};
     String? uid;
     try {
       final parts = await Future.wait([
         settingsApi.getWhatsAppNumber().catchError((_) => <String, dynamic>{}),
-        getOrCreateUserId().catchError((_) => null),
+        getOrCreateUserId().catchError((_) => localUid),
       ]);
       wMap = parts[0] as Map<String, dynamic>;
       uid = parts[1] as String?;
@@ -175,6 +179,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
             title: 'Hongera — malipo yamehakikiwa',
             message:
                 'Malipo yaliyokuwa yanasubiri yamekamilika. Akaunti yako inasasishwa kwa Premium.',
+            userPayload: userPayloadFromPaymentResponse(res),
           );
         } else if (isPaymentTerminalFailure(st)) {
           await prefs.remove('pendingPaymentOrderId');
@@ -256,6 +261,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
             title: 'Hongera — malipo yamehakikiwa',
             message:
                 'Malipo yako yamekamilika kwa uhakika. Akaunti yako inasasishwa; channel zote zitafunguliwa.',
+            userPayload: userPayloadFromPaymentResponse(response),
           );
           return;
         }
@@ -318,13 +324,14 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     _pollTimer = null;
     _waitingTimer?.cancel();
     _waitingTimer = null;
-    await _clearPendingOrderPrefs();
+    // Keep pendingPaymentOrderId — background watcher continues verifying payment.
     if (!mounted) return;
     setState(() {
       _pollingOrderId = null;
       _notFoundStreak = 0;
       _paymentUiPhase = _PaymentUiPhase.timedOut;
-      _sessionEndDetail = detail;
+      _sessionEndDetail = detail ??
+          'Muda wa kusubiri umeisha. Tunathibitisha malipo nyuma ya pazia — ukikamilisha, Premium itafunguliwa.';
     });
   }
 
@@ -445,6 +452,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   Future<void> _markPaymentCompleted({
     required String title,
     required String message,
+    Map<String, dynamic>? userPayload,
   }) async {
     _pollTimer?.cancel();
     _pollTimer = null;
@@ -464,9 +472,10 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       _pendingBundleLabel = null;
     });
 
-    // Trigger the parent callback IMMEDIATELY so the host app shows Premium access
-    // before we show any status dialog — gives instant visual confirmation.
-    widget.onPaymentSuccess?.call().catchError((_) {});
+    // Refresh premium + unlock channels before showing success dialog.
+    try {
+      await widget.onPaymentSuccess?.call(userPayload: userPayload);
+    } catch (_) {}
 
     _showStatus(title, message, _PayDialogTone.success);
   }

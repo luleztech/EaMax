@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/api.dart';
+import '../models/api_exceptions.dart';
 import 'user_id_backup.dart' as backup;
 
 const _storageKey = 'userId';
@@ -20,10 +21,10 @@ const _userIdChannel = MethodChannel('com.eamax/app_data');
 Future<String?>? _identityCreation;
 
 String generateUserId() {
-  const chars = 'ABCDEF0123456789';
-  final r = Random();
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  final r = Random.secure();
   final buf = StringBuffer('User-');
-  for (var i = 0; i < 5; i++) {
+  for (var i = 0; i < 6; i++) {
     buf.write(chars[r.nextInt(chars.length)]);
   }
   return buf.toString();
@@ -88,7 +89,10 @@ Future<bool> _registerWithRetry(String id, {int maxRetries = _maxRegistrationRet
   for (var attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       final result = await userApi.register(id);
-      if (result != null && result['id'] != null) {
+      if (result != null &&
+          (result['id'] != null ||
+              result['external_id'] != null ||
+              result['externalId'] != null)) {
         debugPrint('[UserRegistration] Success for $id on attempt $attempt');
         // Clear any pending registration
         final prefs = await SharedPreferences.getInstance();
@@ -96,18 +100,25 @@ Future<bool> _registerWithRetry(String id, {int maxRetries = _maxRegistrationRet
         return true;
       }
     } catch (e) {
+      final isRateLimited = e is ApiRateLimitedException;
       final msg = e.toString().toLowerCase();
-      final isRateLimited = msg.contains('429') || msg.contains('maombi mengi');
-      final isNetworkError = msg.contains('network') || 
-                              msg.contains('connection') || 
-                              msg.contains('timeout') ||
-                              msg.contains('socket');
-      
-      if (isRateLimited || isNetworkError) {
+      final isNetworkError = isRateLimited ||
+          msg.contains('429') ||
+          msg.contains('maombi mengi') ||
+          msg.contains('network') ||
+          msg.contains('connection') ||
+          msg.contains('timeout') ||
+          msg.contains('socket');
+
+      if (isNetworkError) {
         if (attempt < maxRetries) {
-          final delayMs = (1000 * attempt).clamp(1000, 10000);
-          debugPrint('[UserRegistration] Attempt $attempt failed for $id, retrying in ${delayMs}ms...');
-          await Future<void>.delayed(Duration(milliseconds: delayMs));
+          final retryAfterMs = e is ApiRateLimitedException
+              ? ((e.retryAfterSeconds ?? attempt) * 1000).clamp(1000, 15000)
+              : (1000 * attempt).clamp(1000, 10000);
+          debugPrint(
+            '[UserRegistration] Attempt $attempt failed for $id, retrying in ${retryAfterMs}ms...',
+          );
+          await Future<void>.delayed(Duration(milliseconds: retryAfterMs));
           continue;
         }
       } else {
@@ -125,14 +136,38 @@ Future<bool> _registerWithRetry(String id, {int maxRetries = _maxRegistrationRet
 }
 
 /// Verify that user exists in database by fetching user details.
+/// Returns true only on a successful GET — never guess on rate limits.
 Future<bool> _verifyUserExists(String id) async {
   try {
     final user = await userApi.getUser(id);
-    return user != null && user['id'] != null;
+    return user['id'] != null ||
+        user['external_id'] != null ||
+        user['externalId'] != null;
+  } on ApiRateLimitedException {
+    debugPrint('[UserRegistration] Verification deferred for $id (rate limited)');
+    return false;
   } catch (e) {
+    final msg = e.toString().toLowerCase();
+    if (msg.contains('not found') || msg.contains('404') || msg.contains('user not found')) {
+      return false;
+    }
     debugPrint('[UserRegistration] Verification failed for $id: $e');
     return false;
   }
+}
+
+/// Registers local user in DB (POST only). Safe to call repeatedly — server upserts.
+Future<bool> registerUserInDatabase({String? id, int maxRetries = 4}) async {
+  final uid = (id ?? await getLocalUserId())?.trim();
+  if (uid == null || uid.isEmpty) return false;
+  debugPrint('[UserRegistration] Registering $uid in database...');
+  final success = await _registerWithRetry(uid, maxRetries: maxRetries);
+  if (success) {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_registrationRetryKey);
+    debugPrint('[UserRegistration] $uid saved to database');
+  }
+  return success;
 }
 
 /// Background retry for pending registrations.
@@ -154,20 +189,84 @@ Future<void> retryPendingRegistrations() async {
   }
 }
 
+/// Instant read from local storage — no network calls, never waits on identity creation.
+Future<String?> getLocalUserId() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString(_storageKey)?.trim();
+    if (id != null && id.isNotEmpty) return id;
+
+    id = prefs.getString(_legacyKey)?.trim();
+    if (id != null && id.isNotEmpty) return id;
+
+    id = await _readStableUserIdNative();
+    if (id != null && id.isNotEmpty) return id;
+
+    id = await backup.readUserIdFromFileBackup();
+    if (id != null && id.isNotEmpty) return id;
+
+    id = await _readLegacyRnUserIdNative();
+    if (id != null && id.isNotEmpty) return id;
+
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Returns stored id instantly; generates and persists a unique one if missing.
+Future<String> ensureLocalUserId() async {
+  final existing = await getLocalUserId();
+  if (existing != null && existing.isNotEmpty) return existing;
+
+  final id = generateUserId();
+  await _persistUserIdEverywhere(id);
+  debugPrint('[UserRegistration] Generated new local user id: $id');
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_registrationRetryKey, id);
+  unawaited(registerUserInDatabase(id: id));
+  return id;
+}
+
+/// Ensures a locally stored ID is registered server-side.
+Future<void> ensureUserRegistered(String id) async {
+  await registerUserInDatabase(id: id, maxRetries: 3);
+}
+
+String? _ensureInFlightId;
+Future<void>? _ensureInFlight;
+
+/// Debounced wrapper — avoids duplicate verify/register calls.
+Future<void> ensureUserRegisteredOnce(String id) {
+  if (_ensureInFlightId == id && _ensureInFlight != null) {
+    return _ensureInFlight!;
+  }
+  _ensureInFlightId = id;
+  _ensureInFlight = ensureUserRegistered(id).whenComplete(() {
+    if (_ensureInFlightId == id) {
+      _ensureInFlightId = null;
+      _ensureInFlight = null;
+    }
+  });
+  return _ensureInFlight!;
+}
+
 Future<String?> _resolveIdentityChain() async {
   final prefs = await SharedPreferences.getInstance();
   
-  // 1. Check for existing user ID in storage
+  // 1. Primary local ID — never discard; register if missing from DB.
   var id = prefs.getString(_storageKey)?.trim();
   if (id != null && id.isNotEmpty) {
-    // CRITICAL: Verify user exists in database
     final exists = await _verifyUserExists(id);
     if (exists) {
       unawaited(backup.persistUserIdToFileBackup(id));
       unawaited(_mirrorStableUserIdToAndroid(id));
       return id;
     }
-    debugPrint('[UserRegistration] User $id not found in DB, attempting recovery...');
+    debugPrint('[UserRegistration] User $id not in DB — registering (keeping local ID)');
+    await _persistUserIdEverywhere(id);
+    await _registerWithRetry(id);
+    return id;
   }
 
   // 2. Check legacy storage
@@ -212,12 +311,10 @@ Future<String?> _resolveIdentityChain() async {
   if (id != null && id.isNotEmpty) {
     debugPrint('[UserRegistration] Recovered user via FCM: $id');
     await _persistUserIdEverywhere(id);
-    // Verify and re-register if needed
     final exists = await _verifyUserExists(id);
     if (exists) return id;
-    // Re-register the recovered user
-    final success = await _registerWithRetry(id);
-    if (success) return id;
+    await _registerWithRetry(id);
+    return id;
   }
 
   // 7. Generate new user ID
@@ -253,52 +350,21 @@ Future<String?> _completeIdentityCreation() async {
   }
 }
 
-/// Resolves stored id without registering or creating.
-/// Also verifies the user exists in database before returning.
+/// Returns locally stored id immediately; kicks off background registration if needed.
 Future<String?> getStoredUserId() async {
   try {
     final pending = _identityCreation;
     if (pending != null) await pending;
 
-    final prefs = await SharedPreferences.getInstance();
-    var id = prefs.getString(_storageKey)?.trim();
-    if (id != null && id.isNotEmpty) {
-      // Verify user exists in database
-      final exists = await _verifyUserExists(id);
-      if (exists) return id;
+    final id = await getLocalUserId();
+    if (id != null) {
+      final prefs = await SharedPreferences.getInstance();
+      final pending = prefs.getString(_registrationRetryKey)?.trim();
+      if (pending == id) {
+        unawaited(ensureUserRegisteredOnce(id));
+      }
     }
-
-    id = prefs.getString(_legacyKey)?.trim();
-    if (id != null && id.isNotEmpty) {
-      await _persistUserIdEverywhere(id);
-      return id;
-    }
-
-    id = await _readStableUserIdNative();
-    if (id != null && id.isNotEmpty) {
-      await _persistUserIdEverywhere(id);
-      return id;
-    }
-
-    id = await backup.readUserIdFromFileBackup();
-    if (id != null && id.isNotEmpty) {
-      await _persistUserIdEverywhere(id);
-      return id;
-    }
-
-    id = await _readLegacyRnUserIdNative();
-    if (id != null && id.isNotEmpty) {
-      await _persistUserIdEverywhere(id);
-      return id;
-    }
-
-    id = await _resolveExistingUserViaFcm();
-    if (id != null && id.isNotEmpty) {
-      await _persistUserIdEverywhere(id);
-      return id;
-    }
-
-    return null;
+    return id;
   } catch (_) {
     return null;
   }

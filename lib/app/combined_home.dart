@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
 import '../config/api.dart';
+import '../config/payment_helpers.dart';
 import '../models/carousel_slide.dart';
 import '../models/channel_ui.dart';
 import '../screens/fullscreen_video_page.dart';
@@ -28,7 +29,7 @@ class _MalipoScaffold extends StatelessWidget {
   const _MalipoScaffold({required this.bottomPadding, required this.onPaymentSuccess});
 
   final double bottomPadding;
-  final Future<void> Function() onPaymentSuccess;
+  final PremiumUnlockCallback onPaymentSuccess;
 
   @override
   Widget build(BuildContext context) {
@@ -91,6 +92,7 @@ class CombinedHome extends StatefulWidget {
     required this.userPoints,
     required this.onWatchAd,
     required this.onPointsRefresh,
+    required this.onPaymentSuccess,
     required this.onPaymentsActiveChange,
     required this.syncPremiumSetting,
     this.externalTabIndex = 0,
@@ -104,6 +106,7 @@ class CombinedHome extends StatefulWidget {
   final int userPoints;
   final VoidCallback onWatchAd;
   final Future<void> Function() onPointsRefresh;
+  final PremiumUnlockCallback onPaymentSuccess;
   final void Function(bool active) onPaymentsActiveChange;
   /// Refetch channels-premium-only mode (must run when connectivity returns; cached in parent).
   final Future<void> Function() syncPremiumSetting;
@@ -224,7 +227,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       MaterialPageRoute(
         builder: (context) => _MalipoScaffold(
           bottomPadding: bottomPad,
-          onPaymentSuccess: widget.onPointsRefresh,
+          onPaymentSuccess: widget.onPaymentSuccess,
         ),
       ),
     );
@@ -929,7 +932,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                   ),
                   PaymentsScreen(
                     bottomPadding: bottomPad,
-                    onPaymentSuccess: widget.onPointsRefresh,
+                    onPaymentSuccess: widget.onPaymentSuccess,
                   ),
                   ProfileScreen(
                     bottomPadding: bottomPad,

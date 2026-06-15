@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/ads.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
+import '../models/api_exceptions.dart';
 import '../models/app_config.dart';
 import '../models/promotion.dart';
 import '../screens/force_update_screen.dart';
@@ -20,6 +21,7 @@ import '../services/home_data_cache.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
 import '../utils/premium_snapshot.dart';
+import '../services/user_premium_cache.dart';
 import '../services/user_id.dart';
 import '../widgets/ad_reward_modal.dart';
 import '../widgets/notification_permission_modal.dart';
@@ -70,6 +72,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _bootstrapReady = false;
   final DateTime _appStartedAt = DateTime.now();
 
+  DateTime? _lastFcmSyncAt;
+  Timer? _registrationRetryTimer;
+
+  static const _fcmSyncCooldown = Duration(minutes: 2);
   static const _congratsKey = 'premiumCongratsShown';
   static const _channelsPremiumOnlyCacheKey = 'channels_premium_only_cached_v1';
   static const _maxAdLoadAttempts = 3;
@@ -100,40 +106,121 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
   }
 
-  void _applyPremiumSnapshot(PremiumSnapshot snap, {int? points}) {
+  Future<void> _applyUserPremiumData(
+    Map<String, dynamic> userData, {
+    required String uid,
+  }) async {
     if (!mounted) return;
+    final blocked = userData['blocked'] == true;
+    final endRaw = userData['subscriptionEndDate'] ??
+        userData['premiumExpiresAt'] ??
+        userData['premium_expires_at'];
+    DateTime? expires;
+    if (endRaw != null && endRaw.toString().isNotEmpty) {
+      expires = DateTime.tryParse(endRaw.toString());
+    }
+    final apiPremium =
+        userData['isPremium'] == true || userData['is_premium'] == true;
     final premium = PremiumSnapshot.resolveActive(
-      blocked: false,
-      apiPremium: snap.isPremium,
-      expiresAt: snap.expiresAt,
+      blocked: blocked,
+      apiPremium: apiPremium,
+      expiresAt: expires,
     );
+    final pts = (userData['points'] as num?)?.toInt() ?? _points;
     setState(() {
-      if (points != null) _points = points;
+      _points = pts;
       _premium = premium;
-      _premiumExpiresAt = premium ? snap.expiresAt : null;
+      _premiumExpiresAt = premium ? expires : null;
     });
+    unawaited(UserPremiumCache.save(
+      uid: uid,
+      premium: premium,
+      expiresAt: expires,
+      points: pts,
+    ));
+    if (premium) {
+      final prefs = await SharedPreferences.getInstance();
+      final shown = prefs.getString('${_congratsKey}_$uid');
+      if (shown != '1' && mounted) {
+        setState(() => _congratsOpen = true);
+        await prefs.setString('${_congratsKey}_$uid', '1');
+      }
+    }
+    unawaited(_syncFcmIfAllowed());
   }
 
-  Future<void> _refreshUser() async {
+  Future<void> _refreshUserForUi() async {
     try {
-      final uid = await getStoredUserId();
-      if (uid == null) return;
-      final userData = await userApi.getUser(uid);
-      if (!mounted) return;
-      final snap = PremiumSnapshot.fromDynamic(userData);
-      if (snap == null) return;
-      final pts = (userData['points'] as num?)?.toInt() ?? 0;
-      _applyPremiumSnapshot(snap, points: pts);
-      final premium = snap.isPremium;
-      unawaited(_syncFcmIfAllowed());
-      if (premium) {
-        final prefs = await SharedPreferences.getInstance();
-        final shown = prefs.getString('${_congratsKey}_$uid');
-        if (shown != '1') {
-          setState(() => _congratsOpen = true);
-          await prefs.setString('${_congratsKey}_$uid', '1');
+      final uid = await ensureLocalUserId();
+      await registerUserInDatabase(id: uid, maxRetries: 2);
+      final userData = await userApi
+          .getUser(uid)
+          .timeout(const Duration(seconds: 8));
+      await _applyUserPremiumData(userData, uid: uid);
+    } on ApiRateLimitedException {
+      debugPrint('[Premium] UI refresh rate limited — using cache');
+      await _hydratePremiumFromCache();
+    } catch (e) {
+      debugPrint('[Premium] UI refresh failed: $e');
+      await _hydratePremiumFromCache();
+    }
+  }
+
+  Future<void> _refreshUser({int maxAttempts = 2}) async {
+    try {
+      final uid = await ensureLocalUserId();
+
+      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          final userData = await userApi.getUser(uid);
+          await _applyUserPremiumData(userData, uid: uid);
+          return;
+        } on ApiRateLimitedException catch (e) {
+          debugPrint('[Premium] getUser rate limited ($attempt/$maxAttempts)');
+          await _hydratePremiumFromCache();
+          if (attempt < maxAttempts) {
+            final waitSec = (e.retryAfterSeconds ?? attempt * 2).clamp(2, 8);
+            await Future<void>.delayed(Duration(seconds: waitSec));
+            continue;
+          }
+          return;
+        } catch (e) {
+          final msg = e.toString().toLowerCase();
+          final notFound = msg.contains('not found') || msg.contains('404');
+          debugPrint('[Premium] getUser failed ($attempt/$maxAttempts): $e');
+          if (notFound) {
+            await ensureUserRegistered(uid);
+            if (attempt < maxAttempts) continue;
+          }
+          if (attempt < maxAttempts) {
+            await Future<void>.delayed(Duration(seconds: attempt));
+            continue;
+          }
         }
       }
+      await _hydratePremiumFromCache();
+    } catch (e) {
+      debugPrint('[Premium] _refreshUser error: $e');
+      await _hydratePremiumFromCache();
+    }
+  }
+
+  Future<void> _hydratePremiumFromCache() async {
+    try {
+      final localId = await getLocalUserId();
+      final cached = await UserPremiumCache.load();
+      if (localId == null || cached == null || cached.uid != localId) return;
+      final premium = PremiumSnapshot.resolveActive(
+        blocked: false,
+        apiPremium: cached.premium,
+        expiresAt: cached.expiresAt,
+      );
+      if (!mounted) return;
+      setState(() {
+        _premium = premium;
+        _premiumExpiresAt = premium ? cached.expiresAt : null;
+        _points = cached.points;
+      });
     } catch (_) {}
   }
 
@@ -145,6 +232,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     unawaited(_hydrateChannelsPremiumOnlyFromCache());
     unawaited(HomeDataCache.loadChannels());
     unawaited(HomeDataCache.loadCarousel());
+    onPremiumUnlockRequested = ({userPayload}) => _onPaymentSuccess(userPayload: userPayload);
     _bootstrap();
     unawaited(_initConnectivity());
   }
@@ -156,7 +244,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _connectivitySub?.cancel();
     _pendingPaymentWatcher?.cancel();
     _premiumRefreshTimer?.cancel();
+    _registrationRetryTimer?.cancel();
     _configRefreshTimer?.cancel();
+    onPremiumUnlockRequested = null;
     super.dispose();
   }
 
@@ -307,7 +397,11 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   }
 
   Future<void> _finishBootstrap() async {
-    await getOrCreateUserId();
+    final uid = await ensureLocalUserId();
+    await registerUserInDatabase(id: uid, maxRetries: 5);
+    unawaited(retryPendingRegistrations());
+    await _hydratePremiumFromCache();
+    unawaited(getOrCreateUserId());
     await refreshChannelsPremiumOnlySetting();
     await _prefetchHomeCatalog();
     await _refreshUser();
@@ -316,6 +410,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await _checkPendingPayment();
     _startPendingPaymentWatcher();
     _startPremiumRefreshWatcher();
+    _registrationRetryTimer?.cancel();
+    _registrationRetryTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+      unawaited(retryPendingRegistrations());
+    });
     _configRefreshTimer?.cancel();
     _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       unawaited(_fetchAppConfig(forceRefresh: true));
@@ -381,7 +479,13 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   Future<void> _syncFcmIfAllowed() async {
     if (kIsWeb) return;
-    final uid = await getStoredUserId();
+    final now = DateTime.now();
+    if (_lastFcmSyncAt != null &&
+        now.difference(_lastFcmSyncAt!) < _fcmSyncCooldown) {
+      return;
+    }
+    _lastFcmSyncAt = now;
+    final uid = await getLocalUserId();
     if (uid == null) return;
     if (!await isEamaxNotificationPermissionGranted()) return;
     await ensureEamaxPushReady(uid, isPremium: _premium);
@@ -397,14 +501,31 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   /// Keep premium state aligned with the server and revoke only when expiry passes.
   void _startPremiumRefreshWatcher() {
     _premiumRefreshTimer?.cancel();
-    _premiumRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      unawaited(_refreshUser());
-    });
+    _premiumRefreshTimer = Timer.periodic(
+      Duration(seconds: _premium ? 60 : 10),
+      (_) => unawaited(_refreshUser(maxAttempts: 2)),
+    );
   }
 
-  Future<void> _onPaymentSuccess() async {
-    await _refreshUser();
+  Future<void> _onPaymentSuccess({Map<String, dynamic>? userPayload}) async {
+    final uid = await ensureLocalUserId();
+    if (userPayload != null) {
+      await _applyUserPremiumData(userPayload, uid: uid);
+    }
+    await retryPendingRegistrations();
+
+    if (!_premium) {
+      for (var i = 0; i < 5; i++) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await _refreshUser(maxAttempts: 3);
+        if (_premium) break;
+      }
+    } else {
+      await _refreshUser(maxAttempts: 2);
+    }
+
     await _homeKey.currentState?.reloadRemoteData();
+    if (mounted) setState(() {});
   }
 
   Future<void> _checkPendingPayment() async {
@@ -421,8 +542,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
       if (isPaymentCompleted(st)) {
         await prefs.remove('pendingPaymentOrderId');
-        await _refreshUser();
-        await _homeKey.currentState?.reloadRemoteData();
+        final userPayload = userPayloadFromPaymentResponse(res);
+        await _onPaymentSuccess(userPayload: userPayload);
       } else if (isPaymentTerminalFailure(st)) {
         await prefs.remove('pendingPaymentOrderId');
       }
@@ -577,7 +698,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           channelsPremiumOnly: _channelsPremiumOnly,
           userPoints: _points,
           onWatchAd: _openAd,
-          onPointsRefresh: _refreshUser,
+          onPointsRefresh: _refreshUserForUi,
+          onPaymentSuccess: _onPaymentSuccess,
           syncPremiumSetting: refreshChannelsPremiumOnlySetting,
           refreshing: _homeRefreshing,
           onRefreshingChange: (v) {
@@ -660,7 +782,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               key: ValueKey<int>(activePromo.id),
               promotion: activePromo,
               onDismiss: _dismissCurrentPromotion,
-              onPaymentSuccess: () => unawaited(_onPaymentSuccess()),
+              onPaymentSuccess: ({userPayload}) => _onPaymentSuccess(userPayload: userPayload),
             ),
           ),
       ],
