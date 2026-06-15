@@ -179,7 +179,7 @@ const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
 const fetchUserPremiumSnapshotByUserId = async (userId) => {
   await syncUserPremiumFlags(userId);
   const r = await query(
-    'SELECT is_premium, premium_expires_at, blocked, external_id FROM users WHERE id = $1 LIMIT 1',
+    'SELECT is_premium, premium_expires_at, blocked, external_id, created_at FROM users WHERE id = $1 LIMIT 1',
     [userId],
   );
   if (!r.rows.length) return null;
@@ -187,6 +187,7 @@ const fetchUserPremiumSnapshotByUserId = async (userId) => {
   return {
     ...buildPremiumPayload(row),
     externalId: row.external_id,
+    created_at: row.created_at,
   };
 };
 

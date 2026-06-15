@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getToken } from '@react-native-firebase/messaging';
+import messaging from '@react-native-firebase/messaging';
 import { userAPI } from '../config/api';
 
 const STORAGE_KEY = 'userId';
@@ -74,7 +74,7 @@ async function verifyUserExists(userId) {
  */
 async function resolveExistingUserViaFcm() {
   try {
-    const token = await getToken();
+    const token = await messaging().getToken();
     if (!token) {
       console.log('[UserRegistration] No FCM token available');
       return null;
