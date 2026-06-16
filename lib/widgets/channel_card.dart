@@ -3,6 +3,7 @@ import '../theme/ionicons_compat.dart';
 import 'package:provider/provider.dart';
 
 import '../models/channel_ui.dart';
+import '../services/remote_config_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import 'safe_network_image.dart';
@@ -57,6 +58,9 @@ const Map<String, String> kCatLabel = {
 
 String categoryPillLabel(String cat) {
   if (cat.isEmpty) return cat;
+  if (RemoteConfigService.cached != null) {
+    return RemoteConfigService.categoryLabel(cat);
+  }
   return kCatLabel[cat] ?? '${cat[0].toUpperCase()}${cat.substring(1).toLowerCase()}';
 }
 

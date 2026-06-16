@@ -3,26 +3,12 @@ const { compareSemver } = require('../middleware/appVersion');
 const { query } = require('../db');
 const { getActivePlans } = require('./subscriptionPlansService');
 const { getGlobalPlayerConfig } = require('./playerConfigService');
-
-const DEFAULT_SECTION_LABELS = {
-  football: {
-    channelsTitle: 'Football Channels',
-    channelsSubtitle: 'Chagua channel unayotaka kuangalia',
-    viewAll: 'View all',
-    upcomingMatchesTitle: 'Upcoming Matches',
-    viewAllMatches: 'View All',
-  },
-  movies: {
-    viewAll: 'View all',
-    searchSectionTitle: 'Machaguo mbalimbali',
-    categoryTamthilia: 'Tamthilia',
-    categoryWanyama: 'Wanyama',
-    categoryKatuni: 'Katuni',
-    categoryHabari: 'Habari',
-    categorySayansi: 'Sayansi',
-    categoryMovies: 'Movies',
-  },
-};
+const { mapRow: mapEmergencyRow } = require('./emergencyControlsService');
+const {
+  getSectionLabels,
+  getFeatureFlagsExtra,
+  getAdRewardPoints,
+} = require('./platformSettingsService');
 
 async function getAppSetting(key, fallback = null) {
   try {
@@ -50,16 +36,6 @@ async function getWhatsappNumber() {
   return await getAppSetting('whatsapp_number', null);
 }
 
-async function getSectionLabels() {
-  try {
-    const raw = await getAppSetting('section_labels', null);
-    if (!raw) return DEFAULT_SECTION_LABELS;
-    return JSON.parse(raw);
-  } catch (_) {
-    return DEFAULT_SECTION_LABELS;
-  }
-}
-
 async function getEmergencyControls() {
   try {
     const result = await query(
@@ -68,35 +44,19 @@ async function getEmergencyControls() {
          FROM emergency_controls WHERE id = 1 LIMIT 1`,
     );
     const row = result.rows[0];
+    const mapped = mapEmergencyRow(row);
     if (!row) {
       return {
-        maintenanceMode: config.maintenanceMode,
-        maintenanceMessageSw: config.maintenanceMessage,
-        disablePayments: false,
-        disableChannels: false,
-        disabledChannelIds: [],
-        disabledFeatures: [],
+        ...mapped,
+        maintenanceMode: mapped.maintenanceMode || config.maintenanceMode,
       };
     }
     return {
-      maintenanceMode: row.maintenance_mode === true || config.maintenanceMode,
-      maintenanceMessageSw: row.maintenance_message_sw || config.maintenanceMessage,
-      disablePayments: row.disable_payments === true,
-      disableChannels: row.disable_channels === true,
-      disabledChannelIds: Array.isArray(row.disabled_channel_ids)
-        ? row.disabled_channel_ids.map(Number).filter((n) => n > 0)
-        : [],
-      disabledFeatures: Array.isArray(row.disabled_features) ? row.disabled_features : [],
+      ...mapped,
+      maintenanceMode: mapped.maintenanceMode || config.maintenanceMode,
     };
   } catch (_) {
-    return {
-      maintenanceMode: config.maintenanceMode,
-      maintenanceMessageSw: config.maintenanceMessage,
-      disablePayments: false,
-      disableChannels: false,
-      disabledChannelIds: [],
-      disabledFeatures: [],
-    };
+    return mapEmergencyRow(null);
   }
 }
 
@@ -107,10 +67,12 @@ async function getConfigVersion() {
          (SELECT COUNT(*)::int FROM subscription_plans WHERE updated_at > NOW() - INTERVAL '1 year') AS plans,
          (SELECT EXTRACT(EPOCH FROM MAX(updated_at))::bigint FROM subscription_plans) AS plans_ts,
          (SELECT EXTRACT(EPOCH FROM updated_at)::bigint FROM player_config_global WHERE id = 1) AS player_ts,
-         (SELECT EXTRACT(EPOCH FROM updated_at)::bigint FROM emergency_controls WHERE id = 1) AS emergency_ts`,
+         (SELECT EXTRACT(EPOCH FROM updated_at)::bigint FROM emergency_controls WHERE id = 1) AS emergency_ts,
+         (SELECT EXTRACT(EPOCH FROM MAX(updated_at))::bigint FROM app_settings) AS settings_ts`,
     );
     const row = result.rows[0] || {};
-    return Number(row.plans_ts || 0) + Number(row.player_ts || 0) + Number(row.emergency_ts || 0);
+    return Number(row.plans_ts || 0) + Number(row.player_ts || 0)
+      + Number(row.emergency_ts || 0) + Number(row.settings_ts || 0);
   } catch (_) {
     return Date.now();
   }
@@ -149,6 +111,8 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
     whatsapp,
     sectionLabels,
     configVersion,
+    featureExtra,
+    adRewardPoints,
   ] = await Promise.all([
     getActivePlans(),
     getGlobalPlayerConfig(),
@@ -158,6 +122,8 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
     getWhatsappNumber(),
     getSectionLabels(),
     getConfigVersion(),
+    getFeatureFlagsExtra(),
+    getAdRewardPoints(),
   ]);
 
   const appVersion = buildAppVersionBlock(clientVersion, emergency);
@@ -174,8 +140,8 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
       channelsPremiumOnly,
       paymentsEnabled: !emergency.disablePayments,
       channelsEnabled: !emergency.disableChannels,
-      adsEnabled: true,
-      ratibaTab: true,
+      adsEnabled: featureExtra.adsEnabled,
+      ratibaTab: featureExtra.ratibaTab,
     },
     playerConfig,
     paymentConfig: {
@@ -203,7 +169,7 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
       disabledFeatures: emergency.disabledFeatures,
     },
     ads: {
-      rewardPoints: Number(process.env.AD_REWARD_POINTS || 20),
+      rewardPoints: adRewardPoints,
     },
   };
 }

@@ -208,9 +208,7 @@ object PhpWebViewSupport {
                 var clearKeyRaw = pick('encryptedClearKey') ? xorDecrypt(pick('encryptedClearKey'), keyPart) : '';
                 var needsLicense = streamUrl.indexOf('azamtvltd') >= 0 ||
                   streamUrl.indexOf('widevine') >= 0 || streamUrl.indexOf('cdntoken=') >= 0;
-                if (!needsLicense || licenseUrl) {
-                  window.__eaMaxExtractSent = true;
-                }
+                window.__eaMaxExtractSent = true;
                 var payload = {
                   streamUrl: streamUrl,
                   isHls: streamUrl.indexOf('.m3u8') >= 0,
@@ -256,6 +254,10 @@ object PhpWebViewSupport {
                   licenseHeaders: licenseHeaders || window.__eaMaxLicenseHeaders || {}
                 };
                 if (!payload.streamUrl || payload.streamUrl.indexOf('http') !== 0) return;
+                var notifyKey = payload.streamUrl + '|' + payload.licenseUrl + '|' +
+                  JSON.stringify(payload.licenseHeaders || {});
+                if (window.__eaMaxNotifyKey === notifyKey) return;
+                window.__eaMaxNotifyKey = notifyKey;
                 try {
                   if (typeof $androidInterfaceName !== 'undefined' &&
                       $androidInterfaceName.onGatewayStreamExtracted) {
@@ -362,10 +364,13 @@ object PhpWebViewSupport {
               function isLicenseUrl(u) {
                 if (!u) return false;
                 u = String(u).toLowerCase();
+                if (u.indexOf('/tok_') >= 0 || u.indexOf('tok_eyj') >= 0) return false;
+                if (u.indexOf('.mpd') >= 0 || u.indexOf('.m3u8') >= 0) return false;
+                if (u.indexOf('cdntoken=') >= 0) return false;
                 return u.indexOf('license') >= 0 || u.indexOf('widevine') >= 0 ||
                        u.indexOf('rightsManager') >= 0 || u.indexOf('acquirelicense') >= 0 ||
                        u.indexOf('/drm') >= 0 || u.indexOf('/wv/') >= 0 ||
-                       u.indexOf('getkey') >= 0 || u.indexOf('azamtvltd') >= 0;
+                       u.indexOf('getkey') >= 0;
               }
               function captureLicense(u) {
                 if (!isLicenseUrl(u)) return;
@@ -499,8 +504,15 @@ object PhpWebViewSupport {
                 }
                 return gateway;
               }
-              function patchRequestHeaders(request) {
+              function patchRequestHeaders(request, type) {
                 if (!request || !request.uris) return;
+                var RT = null;
+                try {
+                  if (typeof shaka !== 'undefined' && shaka.net && shaka.net.NetworkingEngine) {
+                    RT = shaka.net.NetworkingEngine.RequestType;
+                  }
+                } catch (e) {}
+                var isLicense = RT && type === RT.LICENSE;
                 for (var i = 0; i < request.uris.length; i++) {
                   var u = String(request.uris[i] || '');
                   if (!needsFix(u)) continue;
@@ -512,7 +524,8 @@ object PhpWebViewSupport {
                   if (origin && !request.headers['Origin'] && !request.headers['origin']) {
                     request.headers['Origin'] = origin;
                   }
-                  request.allowCrossSiteCredentials = true;
+                  // Manifest/segment: omit credentials — Azam CDN returns ACAO:* which breaks credentialed fetch.
+                  request.allowCrossSiteCredentials = isLicense === true;
                 }
               }
               function hookShakaNetworking() {
@@ -523,7 +536,7 @@ object PhpWebViewSupport {
                   var RT = shaka.net.NetworkingEngine.RequestType;
                   var origReq = shaka.net.NetworkingEngine.prototype.request;
                   shaka.net.NetworkingEngine.prototype.request = function(type, request) {
-                    try { patchRequestHeaders(request); } catch (e) {}
+                    try { patchRequestHeaders(request, type); } catch (e) {}
                     return origReq.call(this, type, request);
                   };
                 } catch (e) {}
@@ -536,7 +549,7 @@ object PhpWebViewSupport {
                       var eng = p.getNetworkingEngine && p.getNetworkingEngine();
                       if (eng && eng.registerRequestFilter) {
                         eng.registerRequestFilter(function(type, request) {
-                          patchRequestHeaders(request);
+                          patchRequestHeaders(request, type);
                         });
                       }
                     } catch (e2) {}
@@ -558,7 +571,7 @@ object PhpWebViewSupport {
                       var u = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
                       if (needsFix(u)) {
                         init = init || {};
-                        init.credentials = init.credentials || 'include';
+                        init.credentials = 'omit';
                         var h = new Headers(init.headers || {});
                         if (!h.has('Referer')) h.set('Referer', refererForUrl(u));
                         if (origin && !h.has('Origin')) h.set('Origin', origin);
@@ -591,6 +604,7 @@ object PhpWebViewSupport {
                     var r = origOpen.apply(this, arguments);
                     try {
                       if (needsFix(this.__eaMaxCdnUrl)) {
+                        this.withCredentials = false;
                         if (!this.__eaMaxHasReferer) origSet.call(this, 'Referer', refererForUrl(this.__eaMaxCdnUrl));
                         if (origin && !this.__eaMaxHasOrigin) origSet.call(this, 'Origin', origin);
                       }
@@ -1078,7 +1092,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     shaka.polyfill.installAll();
     var player=new shaka.Player(v);
     player.getNetworkingEngine().registerRequestFilter(function(type,req){
-      req.allowCrossSiteCredentials=true;
+      req.allowCrossSiteCredentials=(type===shaka.net.NetworkingEngine.RequestType.LICENSE);
       Object.keys(headers||{}).forEach(function(k){ if(headers[k]!=null) req.headers[k]=String(headers[k]); });
       if(type===shaka.net.NetworkingEngine.RequestType.MANIFEST){
         req.headers['Accept']=req.headers['Accept']||'application/dash+xml,application/vnd.apple.mpegurl,*/*';

@@ -136,3 +136,4 @@ class RealtimeService {
 const kRealtimePremiumChannel = 'user_premium_update';
 const kRealtimePointsChannel = 'user_points_update';
 const kRealtimePaymentChannel = 'payment_received';
+const kRealtimeConfigChannel = 'config_updated';

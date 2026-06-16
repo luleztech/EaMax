@@ -60,6 +60,8 @@ class WebViewEngine(
     private var licenseHeadersWaitExpired = false
     private var licenseBridge: WebViewLicenseBridge? = null
     private var gatewayWatchdogExtensions = 0
+    private var widevineWebViewLocked = false
+    private var widevineDeferLogged = false
 
     fun initialize(streamSession: StreamSession) {
         released = false
@@ -73,6 +75,8 @@ class WebViewEngine(
         capturedManifestHeaders = emptyMap()
         licenseHeadersWaitExpired = false
         gatewayWatchdogExtensions = 0
+        widevineWebViewLocked = false
+        widevineDeferLogged = false
         cancelLicenseHeadersWait()
         cancelManifestFallback()
         currentSession = streamSession
@@ -372,8 +376,31 @@ class WebViewEngine(
             shouldWaitForLicense(enriched.streamUrl) &&
             !streamDelivered
         ) {
-            Log.d(TAG, "Encrypted stream without license — deferring Exo promotion")
+            val sameStream = lastExtracted?.streamUrl == enriched.streamUrl
             lastExtracted = enriched
+
+            if (widevineWebViewLocked || (sameStream && playbackStarted)) {
+                return
+            }
+
+            if (playbackStarted) {
+                widevineWebViewLocked = true
+                streamDelivered = true
+                cancelManifestFallback()
+                cancelExtendedManifestFallback()
+                cancelLicenseHeadersWait()
+                cancelPlaybackWatchdog()
+                if (!widevineDeferLogged) {
+                    widevineDeferLogged = true
+                    Log.d(TAG, "Azam/Widevine playing in WebView — native Exo skipped")
+                }
+                return
+            }
+
+            if (!widevineDeferLogged) {
+                widevineDeferLogged = true
+                Log.d(TAG, "Encrypted stream without license — waiting for WebView Shaka DRM")
+            }
             return
         }
 
@@ -703,9 +730,8 @@ class WebViewEngine(
     }
 
     private fun fetchGatewayHtml(url: String, headers: Map<String, String>): String {
-        val reqHeaders = HashMap(headers).apply {
+        val reqHeaders = GatewayHttpHeaders.forGateway(url, headers).toMutableMap().apply {
             putIfAbsent("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
-            putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
         }
         val client = EamaxHttpDataSource.gatewayFastClient()
         val b = okhttp3.Request.Builder().url(url)
@@ -978,6 +1004,8 @@ class WebViewJsInterface(
     private val onStreamExtracted: ((PhpGatewayExtractor.Extracted) -> Unit)? = null,
     private val onHtmlProbe: ((String) -> Unit)? = null,
 ) {
+    private var gatewayExtractLogged = false
+
     @android.webkit.JavascriptInterface
     fun onPlaybackStarted() {
         onPlaybackStateChanged(PlaybackState.PLAYING)
@@ -1014,6 +1042,15 @@ class WebViewJsInterface(
             val streamUrl = o.optString("streamUrl", "").trim()
             val licenseHeaders = parseLicenseHeadersJson(o.optJSONObject("licenseHeaders"))
             if (streamUrl.isEmpty() && licenseHeaders.isEmpty()) return
+            if (streamUrl.isNotEmpty() && licenseHeaders.isEmpty()) {
+                val lic = o.optString("licenseUrl", "").trim()
+                if (lic.isNotEmpty() || o.optString("clearKeyRaw", "").isNotBlank()) {
+                    gatewayExtractLogged = false
+                } else if (StreamUrlClassifier.likelyRequiresWidevine(streamUrl)) {
+                    if (gatewayExtractLogged) return
+                    gatewayExtractLogged = true
+                }
+            }
             if (streamUrl.isNotEmpty()) {
                 Log.d("WebViewEngine", "JS gateway extract: ${streamUrl.take(80)}...")
             } else if (licenseHeaders.isNotEmpty()) {

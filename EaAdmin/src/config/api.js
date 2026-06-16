@@ -576,6 +576,51 @@ export const adminSubscriptionPlansAPI = {
     }),
 };
 
+/**
+ * Control plane — emergency, player, flags (server-driven, no app update needed)
+ */
+export const adminControlAPI = {
+  getEmergencyControls: async () => apiRequest('/api/admin/emergency-controls'),
+
+  updateEmergencyControls: async (controls) =>
+    apiRequest('/api/admin/emergency-controls', {
+      method: 'PUT',
+      body: JSON.stringify({ controls }),
+    }),
+
+  getPlayerConfig: async () => apiRequest('/api/admin/player-config'),
+
+  updatePlayerConfig: async (config) =>
+    apiRequest('/api/admin/player-config', {
+      method: 'PUT',
+      body: JSON.stringify({ config }),
+    }),
+
+  getFeatureFlags: async () => apiRequest('/api/admin/settings/feature-flags'),
+
+  updateFeatureFlags: async (flags) =>
+    apiRequest('/api/admin/settings/feature-flags', {
+      method: 'PUT',
+      body: JSON.stringify(flags),
+    }),
+
+  getAdRewardPoints: async () => apiRequest('/api/admin/settings/ad-reward-points'),
+
+  updateAdRewardPoints: async (rewardPoints) =>
+    apiRequest('/api/admin/settings/ad-reward-points', {
+      method: 'PUT',
+      body: JSON.stringify({ rewardPoints }),
+    }),
+
+  getSectionLabels: async () => apiRequest('/api/admin/settings/section-labels'),
+
+  updateSectionLabels: async (labels) =>
+    apiRequest('/api/admin/settings/section-labels', {
+      method: 'PUT',
+      body: JSON.stringify(labels),
+    }),
+};
+
 export default {
   API_BASE_URL,
   ADMIN_API_KEY,
@@ -589,4 +634,5 @@ export default {
   adminAdsAPI,
   adminPromotionsAPI,
   adminSubscriptionPlansAPI,
+  adminControlAPI,
 };

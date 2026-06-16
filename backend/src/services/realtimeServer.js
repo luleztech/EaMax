@@ -7,6 +7,7 @@ const BROADCAST_CHANNELS = {
   CHANNEL_UNLOCK: 'channel_unlock',
   PAYMENT_RECEIVED: 'payment_received',
   ADMIN_ACCESS_GRANTED: 'admin_access_granted',
+  CONFIG_UPDATED: 'config_updated',
 };
 
 // Track connected clients
@@ -215,6 +216,14 @@ const notifyPaymentReceived = (userId, paymentData) => {
   });
 };
 
+/** Push config bundle refresh to all connected apps (admin control plane). */
+const notifyConfigUpdated = (reason = 'admin') => {
+  broadcast(BROADCAST_CHANNELS.CONFIG_UPDATED, {
+    reason,
+    at: new Date().toISOString(),
+  });
+};
+
 module.exports = {
   initializeRealtimeServer,
   broadcast,
@@ -223,5 +232,6 @@ module.exports = {
   notifyPointsUpdate,
   notifyChannelUnlock,
   notifyPaymentReceived,
+  notifyConfigUpdated,
   BROADCAST_CHANNELS,
 };

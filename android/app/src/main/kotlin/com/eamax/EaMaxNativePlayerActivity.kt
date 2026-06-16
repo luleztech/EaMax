@@ -53,20 +53,11 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private lateinit var webLoadingOverlay: FrameLayout
     private var unavailableDialogShown = false
 
-    /** Never expose URLs / HTTP / DRM details to the user (security). */
+    /** Close player silently on fatal playback errors (no technician popup). */
     private fun showChannelUnavailableAndFinish() {
         if (isFinishing || unavailableDialogShown) return
         unavailableDialogShown = true
-        try {
-            AlertDialog.Builder(this)
-                .setMessage(R.string.channel_unavailable_message)
-                .setPositiveButton(R.string.ok_understood) { _, _ -> finish() }
-                .setOnCancelListener { finish() }
-                .setCancelable(true)
-                .show()
-        } catch (_: Exception) {
-            finish()
-        }
+        finish()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../theme/app_theme.dart';
 import '../config/payment_helpers.dart';
+import '../services/remote_config_service.dart';
 import 'combined_home.dart';
 
 /// Supasoka-style 5-tab shell with frosted bottom navigation.
@@ -39,9 +40,18 @@ class MainShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: RemoteConfigService.configVersion,
+      builder: (context, _, __) => _buildShell(context),
+    );
+  }
+
+  Widget _buildShell(BuildContext context) {
     final nav = context.watch<AppNav>();
     final t = context.watch<ThemeController>().colors;
     final bottom = MediaQuery.paddingOf(context).bottom;
+    final showRatiba = RemoteConfigService.ratibaTabEnabled;
+    final showPayments = RemoteConfigService.paymentsEnabled;
 
     return Scaffold(
       backgroundColor: t.bg1,
@@ -101,9 +111,11 @@ class MainShell extends StatelessWidget {
               child: Row(
                 children: [
                   _TabButton(i: 0, label: 'Home', outline: Ionicons.home_outline, solid: Ionicons.home, selected: nav.currentTab == 0),
-                  _TabButton(i: 1, label: 'Ratiba', outline: Ionicons.calendar_outline, solid: Ionicons.calendar, selected: nav.currentTab == 1),
+                  if (showRatiba)
+                    _TabButton(i: 1, label: 'Ratiba', outline: Ionicons.calendar_outline, solid: Ionicons.calendar, selected: nav.currentTab == 1),
                   _TabButton(i: 2, label: 'Channels', outline: Ionicons.tv_outline, solid: Ionicons.tv, selected: nav.currentTab == 2),
-                  _TabButton(i: 3, label: 'Fungua zote', outline: Ionicons.key_outline, solid: Ionicons.key, selected: nav.currentTab == 3),
+                  if (showPayments)
+                    _TabButton(i: 3, label: 'Fungua zote', outline: Ionicons.key_outline, solid: Ionicons.key, selected: nav.currentTab == 3),
                   _TabButton(i: 4, label: 'Mtumiaji', outline: Ionicons.person_outline, solid: Ionicons.person, selected: nav.currentTab == 4),
                 ],
               ),

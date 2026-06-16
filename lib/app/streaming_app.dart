@@ -85,6 +85,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   RealtimeEventHandler? _premiumRealtimeHandler;
   RealtimeEventHandler? _pointsRealtimeHandler;
   RealtimeEventHandler? _paymentRealtimeHandler;
+  RealtimeEventHandler? _configRealtimeHandler;
 
   Future<void> _setupRealtime(String uid) async {
     if (kIsWeb) return;
@@ -101,10 +102,17 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _paymentRealtimeHandler ??= (_) {
       unawaited(_checkPendingPayment());
     };
+    _configRealtimeHandler ??= (_) {
+      RemoteConfigService.invalidateCache();
+      AppConfigService.invalidateCache();
+      unawaited(_fetchAppConfig(forceRefresh: true));
+      unawaited(_fetchRemoteConfig(forceRefresh: true));
+    };
 
     rt.subscribe(kRealtimePremiumChannel, _premiumRealtimeHandler!);
     rt.subscribe(kRealtimePointsChannel, _pointsRealtimeHandler!);
     rt.subscribe(kRealtimePaymentChannel, _paymentRealtimeHandler!);
+    rt.subscribe(kRealtimeConfigChannel, _configRealtimeHandler!);
     await rt.connect(uid);
   }
 
@@ -293,6 +301,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       unawaited(_syncFcmIfAllowed());
       unawaited(ensureLocalUserId().then((uid) => RealtimeService.instance.connect(uid)));
       unawaited(_maybePromptNotificationPermission());
+      RemoteConfigService.invalidateCache();
+      AppConfigService.invalidateCache();
+      unawaited(_fetchAppConfig(forceRefresh: true));
+      unawaited(_fetchRemoteConfig(forceRefresh: true));
       if (_splashDone && _appConfigChecked && _appConfig?.shouldBlockAccess != true) {
         unawaited(_loadPromotions());
       }
@@ -368,6 +380,12 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       await RemoteConfigService.fetch(forceRefresh: forceRefresh);
       if (mounted) {
         await refreshChannelsPremiumOnlySetting();
+        final bundle = RemoteConfigService.cached;
+        if (bundle != null) {
+          setState(() => _appConfig = bundle.appVersion);
+        } else {
+          setState(() {});
+        }
       }
     } catch (_) {}
   }
@@ -464,7 +482,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       unawaited(retryPendingRegistrations());
     });
     _configRefreshTimer?.cancel();
-    _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
+    _configRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       unawaited(_fetchAppConfig(forceRefresh: true));
       unawaited(_fetchRemoteConfig(forceRefresh: true));
     });
@@ -606,11 +624,12 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   }
 
   void _openAd() {
-    if (_premium) return;
+    if (_premium || !RemoteConfigService.adsEnabled) return;
+    final pts = RemoteConfigService.adRewardPoints;
     setState(() {
       _adOverlayVisible = true;
       _adPhase = AdRewardPhase.prompt;
-      _lastPointsEarned = pointsPerReward;
+      _lastPointsEarned = pts;
     });
   }
 
@@ -665,12 +684,13 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           ad.show(
             onUserEarnedReward: (a, r) async {
               _rewardEarnedThisSession = true;
-              var earned = pointsPerReward;
+              final rewardPts = RemoteConfigService.adRewardPoints;
+              var earned = rewardPts;
               final uid = await getOrCreateUserId();
               if (uid != null) {
                 try {
-                  final res = await userApi.recordAdWatched(uid, points: pointsPerReward);
-                  earned = (res['pointsAdded'] as num?)?.toInt() ?? pointsPerReward;
+                  final res = await userApi.recordAdWatched(uid, points: rewardPts);
+                  earned = (res['pointsAdded'] as num?)?.toInt() ?? rewardPts;
                 } catch (_) {}
               }
               await _refreshUser();
@@ -762,6 +782,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
             child: AdRewardModal(
               phase: _adPhase,
               pointsEarned: _lastPointsEarned,
+              rewardPoints: RemoteConfigService.adRewardPoints,
               isWeb: kIsWeb,
               onWatch: _onWatchPressed,
               onClose: _closeAdOverlay,

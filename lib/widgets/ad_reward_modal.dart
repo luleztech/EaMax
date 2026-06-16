@@ -24,10 +24,12 @@ class AdRewardModal extends StatelessWidget {
     required this.onRetry,
     required this.onWatchAgain,
     required this.isWeb,
+    this.rewardPoints = pointsPerReward,
   });
 
   final AdRewardPhase phase;
   final int pointsEarned;
+  final int rewardPoints;
   final VoidCallback onWatch;
   final VoidCallback onClose;
   final VoidCallback onRetry;
@@ -278,7 +280,7 @@ class AdRewardModal extends StatelessWidget {
                     Icon(Icons.stars_rounded, size: 20, color: AppColors.gold.withValues(alpha: 0.95)),
                     const SizedBox(width: 8),
                     Text(
-                      '+$pointsPerReward pointi kwa tangazo',
+                      '+$rewardPoints pointi kwa tangazo',
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,

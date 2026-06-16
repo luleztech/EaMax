@@ -6,6 +6,7 @@ import '../theme/ionicons_compat.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
@@ -243,29 +244,31 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                 ),
               )
             else ...[
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: _MenuTile(
-                  t: t,
-                  g: [t.accent, t.accent2],
-                  icon: Ionicons.key_outline,
-                  title: 'Fungua Channel zote',
-                  subtitle: 'Chagua vifurushi vya Premium',
-                  onTap: widget.onOpenPayments,
+              if (RemoteConfigService.paymentsEnabled)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _MenuTile(
+                    t: t,
+                    g: [t.accent, t.accent2],
+                    icon: Ionicons.key_outline,
+                    title: 'Fungua Channel zote',
+                    subtitle: 'Chagua vifurushi vya Premium',
+                    onTap: widget.onOpenPayments,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: _MenuTile(
-                  t: t,
-                  g: [t.free, const Color(0xFF34d399)],
-                  icon: Ionicons.play_circle_outline,
-                  title: 'Kusanya Point',
-                  subtitle: 'Tazama tangazo',
-                  onTap: widget.onWatchAd != null ? _onKusanyaPoint : null,
+              if (RemoteConfigService.paymentsEnabled) const SizedBox(height: 10),
+              if (RemoteConfigService.adsEnabled && widget.onWatchAd != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _MenuTile(
+                    t: t,
+                    g: [t.free, const Color(0xFF34d399)],
+                    icon: Ionicons.play_circle_outline,
+                    title: 'Kusanya Point',
+                    subtitle: 'Tazama tangazo (+${RemoteConfigService.adRewardPoints})',
+                    onTap: _onKusanyaPoint,
+                  ),
                 ),
-              ),
             ],
             const SizedBox(height: 10),
             Padding(

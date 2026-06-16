@@ -182,10 +182,13 @@ class ExoPlayerEngine(
             // Step 6: Build and configure player
             val renderersFactory = DefaultRenderersFactory(context)
                 .setEnableDecoderFallback(true)
+            val cfg = RemotePlayerConfigHolder
+            val minBuf = cfg.bufferMinMs.coerceIn(500, 60_000)
+            val maxBuf = cfg.bufferMaxMs.coerceIn(minBuf + 500, 120_000)
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    MIN_BUFFER_MS,
-                    MAX_BUFFER_MS,
+                    minBuf,
+                    maxBuf,
                     BUFFER_FOR_PLAYBACK_MS,
                     BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
                 )

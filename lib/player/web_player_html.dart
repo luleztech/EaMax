@@ -4,8 +4,7 @@ import 'web_drm_utils.dart';
 
 /// Shaka Player 4.11.4 — unified web player for HLS, DASH, and live streams.
 class WebPlayerHtml {
-  static const _userError =
-      'Mafundi wetu wanahangaikia channel hii, itarejea hivi punde.';
+  static const _userError = '';
 
   static const _shakaCdn =
       'https://cdn.jsdelivr.net/npm/shaka-player@4.11.4/dist/shaka-player.compiled.js';

@@ -4,7 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
+import com.eamax.player.RemotePlayerConfigHolder
 
 class MainActivity : FlutterActivity() {
 
@@ -79,6 +79,30 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
                     }
+                }
+                "updatePlayerConfig" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any?>
+                    if (args == null) {
+                        result.error("bad_args", "Expected map", null)
+                        return@setMethodCallHandler
+                    }
+                    fun intArg(key: String): Int? =
+                        (args[key] as? Number)?.toInt()
+                            ?: args[key]?.toString()?.toIntOrNull()
+                    fun boolArg(key: String): Boolean? = when (val v = args[key]) {
+                        is Boolean -> v
+                        else -> v?.toString()?.equals("true", ignoreCase = true)
+                    }
+                    RemotePlayerConfigHolder.update(
+                        bufferMinMs = intArg("bufferMinMs"),
+                        bufferMaxMs = intArg("bufferMaxMs"),
+                        retryMax = intArg("retryMax"),
+                        retryDelayMs = intArg("retryDelayMs"),
+                        failoverToWebview = boolArg("failoverToWebview"),
+                        reconnectEnabled = boolArg("reconnectEnabled"),
+                    )
+                    result.success(null)
                 }
                 else -> result.notImplemented()
             }

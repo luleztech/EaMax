@@ -18,8 +18,29 @@ const {
   getChannelPlayback,
   upsertChannelStream,
 } = require('../services/channelPlaybackService');
+const { notifyConfigUpdated } = require('../services/realtimeServer');
+const {
+  getEmergencyControlsAdmin,
+  updateEmergencyControls,
+} = require('../services/emergencyControlsService');
+const {
+  getSectionLabels,
+  updateSectionLabels,
+  getFeatureFlagsExtra,
+  updateFeatureFlagsExtra,
+  getAdRewardPoints,
+  updateAdRewardPoints,
+} = require('../services/platformSettingsService');
 
 const router = express.Router();
+
+const pushConfigRefresh = () => {
+  try {
+    notifyConfigUpdated();
+  } catch (_) {
+    // Realtime optional during cold start
+  }
+};
 
 const ensureAppSettingsTable = async () => {
   await query(`
@@ -1687,6 +1708,7 @@ router.put('/settings/channels-premium-only', async (req, res, next) => {
       [value],
     );
 
+    pushConfigRefresh();
     return res.json({ channelsPremiumOnly: !!channelsPremiumOnly });
   } catch (err) {
     console.error('[Admin] channels-premium-only update error:', err?.message || err);
@@ -1804,6 +1826,7 @@ router.put('/subscription-plans/:slug', async (req, res, next) => {
     });
     const data = schema.parse(body);
     const plan = await upsertPlanAdmin(slug, data);
+    pushConfigRefresh();
     return res.json({ plan });
   } catch (err) {
     if (err.name === 'ZodError') {
@@ -1828,7 +1851,115 @@ router.put('/player-config', async (req, res, next) => {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const patch = body.config && typeof body.config === 'object' ? body.config : body;
     const config = await updateGlobalPlayerConfig(patch);
+    pushConfigRefresh();
     return res.json({ config });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// ── Emergency controls (maintenance, kill switches) ────────────────────────
+router.get('/emergency-controls', async (req, res, next) => {
+  try {
+    const controls = await getEmergencyControlsAdmin();
+    return res.json({ controls });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/emergency-controls', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const patch = body.controls && typeof body.controls === 'object' ? body.controls : body;
+    const schema = z.object({
+      maintenanceMode: z.boolean().optional(),
+      maintenanceMessageSw: z.string().optional(),
+      disablePayments: z.boolean().optional(),
+      disableChannels: z.boolean().optional(),
+      disabledChannelIds: z.array(z.number().int().positive()).optional(),
+      disabledFeatures: z.array(z.string()).optional(),
+    });
+    const data = schema.parse(patch);
+    const controls = await updateEmergencyControls(data);
+    pushConfigRefresh();
+    return res.json({ controls });
+  } catch (err) {
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    }
+    return next(err);
+  }
+});
+
+// ── Feature flags & ad reward (server-driven app behavior) ─────────────────
+router.get('/settings/feature-flags', async (req, res, next) => {
+  try {
+    const flags = await getFeatureFlagsExtra();
+    return res.json(flags);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/settings/feature-flags', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const schema = z.object({
+      adsEnabled: z.boolean().optional(),
+      ratibaTab: z.boolean().optional(),
+    });
+    const data = schema.parse(body);
+    const flags = await updateFeatureFlagsExtra(data);
+    pushConfigRefresh();
+    return res.json(flags);
+  } catch (err) {
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    }
+    return next(err);
+  }
+});
+
+router.get('/settings/ad-reward-points', async (req, res, next) => {
+  try {
+    const rewardPoints = await getAdRewardPoints();
+    return res.json({ rewardPoints });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/settings/ad-reward-points', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const points = Number(body.rewardPoints);
+    const rewardPoints = await updateAdRewardPoints(points);
+    pushConfigRefresh();
+    return res.json({ rewardPoints });
+  } catch (err) {
+    if (err.message && err.message.includes('Ad reward points')) {
+      return res.status(400).json({ error: err.message });
+    }
+    return next(err);
+  }
+});
+
+router.get('/settings/section-labels', async (req, res, next) => {
+  try {
+    const labels = await getSectionLabels();
+    return res.json(labels);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/settings/section-labels', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const labels = await updateSectionLabels(body);
+    pushConfigRefresh();
+    return res.json(labels);
   } catch (err) {
     return next(err);
   }
@@ -1870,6 +2001,7 @@ router.put('/channels/:id/streams/:priority', async (req, res, next) => {
       isActive: body.isActive !== false,
     });
     const playback = await getChannelPlayback(channelId);
+    pushConfigRefresh();
     return res.json(playback);
   } catch (err) {
     return next(err);

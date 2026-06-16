@@ -7,6 +7,7 @@ import '../models/carousel_slide.dart';
 import '../models/channel_ui.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
+import '../services/remote_config_service.dart';
 import '../widgets/app_header.dart';
 import '../widgets/cat_pill.dart';
 import '../widgets/channel_card.dart';
@@ -453,7 +454,9 @@ class HomeMainTab extends StatelessWidget {
         slivers.add(
           SliverToBoxAdapter(
             child: ChannelRail(
-              title: searching ? '🔎 MATOKEO' : (fk == 'mpira' ? 'Mpira' : 'Habari'),
+              title: searching ? '🔎 MATOKEO' : (fk == 'mpira'
+                  ? RemoteConfigService.sectionLabel('football', 'channelsTitle', 'Mpira')
+                  : RemoteConfigService.sectionLabel('movies', 'categoryHabari', 'Habari')),
               channels: filtered,
               lockedFor: _locked,
               onChannel: (ch) => onChannel(ch),
@@ -506,7 +509,7 @@ class HomeMainTab extends StatelessWidget {
           slivers.add(
             SliverToBoxAdapter(
               child: ChannelRail(
-                title: 'Mpira',
+                title: RemoteConfigService.sectionLabel('football', 'channelsTitle', 'Mpira'),
                 channels: mpira,
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
@@ -541,7 +544,7 @@ class HomeMainTab extends StatelessWidget {
           slivers.add(
             SliverToBoxAdapter(
               child: ChannelRail(
-                title: 'Habari',
+                title: RemoteConfigService.sectionLabel('movies', 'categoryHabari', 'Habari'),
                 channels: habari,
                 lockedFor: _locked,
                 onChannel: (ch) => onChannel(ch),
@@ -1385,7 +1388,7 @@ class UnlockChannelOverlay extends StatelessWidget {
                                 icon: Icons.verified_rounded,
                               ),
                             if (canPoints && !channelsPremiumOnly) const SizedBox(height: 8),
-                            if (!channelsPremiumOnly) ...[
+                            if (!channelsPremiumOnly && RemoteConfigService.adsEnabled) ...[
                               _PrimaryCta(
                                 onPressed: onWatchAd,
                                 background: const LinearGradient(
@@ -1396,10 +1399,11 @@ class UnlockChannelOverlay extends StatelessWidget {
                               ),
                               const SizedBox(height: 8),
                             ],
-                            _OutlinedGoldButton(
-                              onPressed: onPremium,
-                              label: 'Lipia Sasa',
-                            ),
+                            if (RemoteConfigService.paymentsEnabled)
+                              _OutlinedGoldButton(
+                                onPressed: onPremium,
+                                label: 'Lipia Sasa',
+                              ),
                             const SizedBox(height: 10),
                             SizedBox(
                               width: double.infinity,
@@ -1692,7 +1696,7 @@ class InsufficientPointsOverlay extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 14),
-                            if (!channelsPremiumOnly)
+                            if (!channelsPremiumOnly && RemoteConfigService.adsEnabled)
                               _PrimaryCta(
                                 onPressed: () {
                                   unawaited(() async {
@@ -1708,11 +1712,12 @@ class InsufficientPointsOverlay extends StatelessWidget {
                                 label: 'Vuna points',
                                 icon: Icons.auto_awesome_rounded,
                               ),
-                            if (!channelsPremiumOnly) const SizedBox(height: 8),
-                            _OutlinedGoldButton(
-                              onPressed: onPremium,
-                              label: 'Lipia Sasa',
-                            ),
+                            if (!channelsPremiumOnly && RemoteConfigService.adsEnabled) const SizedBox(height: 8),
+                            if (RemoteConfigService.paymentsEnabled)
+                              _OutlinedGoldButton(
+                                onPressed: onPremium,
+                                label: 'Lipia Sasa',
+                              ),
                             const SizedBox(height: 10),
                             SizedBox(
                               width: double.infinity,

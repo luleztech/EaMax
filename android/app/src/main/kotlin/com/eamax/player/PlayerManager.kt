@@ -129,6 +129,7 @@ class PlayerManager(
                                     mainHandler.post {
                                         if (!webViewFallbackAttempted &&
                                             webViewEngine == null &&
+                                            RemotePlayerConfigHolder.failoverToWebview &&
                                             shouldFallbackExoToWebView(error)
                                         ) {
                                             webViewFallbackAttempted = true
@@ -270,11 +271,20 @@ class PlayerManager(
             },
             onStreamExtracted = { extracted ->
                 mainHandler.post {
-                    if (!gatewayExoPromotionAttempted) {
-                        promoteGatewayToExo(baseSession, extracted)
-                    } else if (extracted.licenseUrl.isNotEmpty() || extracted.clearKeys.isNotEmpty()) {
-                        repromoteGatewayToExo(baseSession, extracted)
+                    if (gatewayExoPromotionAttempted) {
+                        if (extracted.licenseUrl.isNotEmpty() || extracted.clearKeys.isNotEmpty()) {
+                            repromoteGatewayToExo(baseSession, extracted)
+                        }
+                        return@post
                     }
+                    if (!StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted) &&
+                        webViewEngine?.wasPlaybackStarted() == true
+                    ) {
+                        gatewayExoPromotionAttempted = true
+                        Log.d(TAG, "Gateway stream locked to WebView Shaka playback")
+                        return@post
+                    }
+                    promoteGatewayToExo(baseSession, extracted)
                 }
             },
             onShakaFailed = { extracted ->
@@ -365,7 +375,12 @@ class PlayerManager(
             extracted.licenseUrl.isEmpty() &&
             StreamUrlClassifier.likelyRequiresWidevine(extracted.streamUrl)
         ) {
-            Log.w(TAG, "Encrypted gateway stream without license — waiting for DRM URL")
+            if (webViewEngine?.wasPlaybackStarted() == true) {
+                gatewayExoPromotionAttempted = true
+                Log.d(TAG, "Azam/Widevine gateway — keeping WebView playback (no native license)")
+            } else {
+                Log.w(TAG, "Encrypted gateway stream without license — waiting for DRM URL")
+            }
             return
         }
         if (!StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted)) {

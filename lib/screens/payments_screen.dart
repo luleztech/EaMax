@@ -598,6 +598,35 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!RemoteConfigService.paymentsEnabled) {
+      return Material(
+        color: const Color(0xFF02040A),
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(24, 24, 24, 48 + widget.bottomPadding),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.lock_outline, size: 56, color: widget.accentColor.withValues(alpha: 0.85)),
+                const SizedBox(height: 16),
+                const Text(
+                  'Malipo yamezimwa kwa muda',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Msimamizi amezima malipo kwa muda. Jaribu tena baadaye.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final bottom = 48.0 + widget.bottomPadding;
     final ac = widget.accentColor;
     final canShowPayCta = _phoneOk && _selectedBundle != null;

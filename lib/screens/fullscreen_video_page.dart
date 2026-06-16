@@ -14,7 +14,6 @@ import '../player/web_playback_config.dart';
 import '../player/web_player_html.dart';
 import '../player/web_stream_probe.dart';
 import '../services/player_rotate_hint_prefs.dart';
-import '../widgets/channel_unavailable_modal.dart';
 import '../widgets/web_embedded_player.dart';
 
 /// Full-screen playback: `media_kit` for streams; WebView for PHP/HTML pages (same strategy as RN).
@@ -201,7 +200,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   Future<void> _notifyUnavailableAndExit() async {
     if (!mounted || _unavailableNotified || _playbackConfirmed || _isPlaying) return;
     _unavailableNotified = true;
-    await showChannelUnavailableModal(context);
     if (mounted) Navigator.of(context).pop();
   }
 

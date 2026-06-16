@@ -158,9 +158,38 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     super.initState();
     _localPoints = widget.userPoints;
     _glowCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
+    RemoteConfigService.configVersion.addListener(_onRemoteConfigChanged);
     unawaited(_hydrateFromCache());
     _loadAll();
     getOrCreateUserId();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _enforceTabAvailability());
+  }
+
+  void _onRemoteConfigChanged() {
+    if (!mounted) return;
+    _playbackCache.clear();
+    _playbackCacheTime.clear();
+    _channelDataCache.clear();
+    _channelDataCacheTime.clear();
+    _enforceTabAvailability();
+    setState(() {});
+  }
+
+  void _enforceTabAvailability() {
+    final nav = context.read<AppNav>();
+    final tab = nav.currentTab;
+    if (tab == 1 && !RemoteConfigService.ratibaTabEnabled) {
+      nav.setTab(0);
+    } else if (tab == 3 && !RemoteConfigService.paymentsEnabled) {
+      nav.setTab(0);
+    }
+  }
+
+  void _showFeatureDisabledSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   Future<void> _hydrateFromCache() async {
@@ -192,6 +221,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   @override
   void dispose() {
+    RemoteConfigService.configVersion.removeListener(_onRemoteConfigChanged);
     _searchFocus.dispose();
     _glowCtrl.dispose();
     super.dispose();
@@ -223,6 +253,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   Future<void> _openMalipo() async {
+    if (!RemoteConfigService.paymentsEnabled) {
+      _showFeatureDisabledSnack('Malipo yamezimwa kwa muda. Jaribu tena baadaye.');
+      return;
+    }
     if (!mounted) return;
     final inset = MediaQuery.paddingOf(context).bottom;
     final bottomPad = kHomeBottomNavScrollPaddingBody + inset;
@@ -824,6 +858,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   Future<void> _openChannel(ChannelUi ch) async {
+    if (!RemoteConfigService.channelsEnabled) {
+      _showFeatureDisabledSnack('Channels zimezimwa kwa muda. Jaribu tena baadaye.');
+      return;
+    }
     final canPlay = widget.isPremium ||
         (widget.channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired == 0);
     if (canPlay) {
@@ -923,6 +961,12 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
             ),
           ),
         ),
+        if (!RemoteConfigService.channelsEnabled && (tab == 0 || tab == 2))
+          _FeatureDisabledOverlay(
+            title: 'Channels hazipatikani',
+            message: 'Channels zimezimwa kwa muda na msimamizi.',
+          )
+        else
         Column(
           children: [
             if (tab == 0 || tab == 1 || tab == 2)
@@ -1057,6 +1101,32 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
             },
           ),
       ],
+    );
+  }
+}
+
+class _FeatureDisabledOverlay extends StatelessWidget {
+  const _FeatureDisabledOverlay({required this.title, required this.message});
+
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.tv_off_outlined, size: 56, color: Color(0xFF6B7280)),
+            const SizedBox(height: 16),
+            Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)),
+            const SizedBox(height: 8),
+            Text(message, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF))),
+          ],
+        ),
+      ),
     );
   }
 }

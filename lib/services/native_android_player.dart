@@ -40,6 +40,26 @@ class NativeAndroidPlayer {
     });
   }
 
+  /// Push server-driven player settings to Kotlin [RemotePlayerConfigHolder].
+  static Future<void> syncPlayerConfig({
+    required int bufferMinMs,
+    required int bufferMaxMs,
+    required int retryMax,
+    required int retryDelayMs,
+    required bool failoverToWebview,
+    required bool reconnectEnabled,
+  }) async {
+    if (!supported) return;
+    await _channel.invokeMethod<void>('updatePlayerConfig', <String, dynamic>{
+      'bufferMinMs': bufferMinMs,
+      'bufferMaxMs': bufferMaxMs,
+      'retryMax': retryMax,
+      'retryDelayMs': retryDelayMs,
+      'failoverToWebview': failoverToWebview,
+      'reconnectEnabled': reconnectEnabled,
+    });
+  }
+
   static String _encodeFallbackStreams(List<PlaybackStream>? streams) {
     if (streams == null || streams.isEmpty) return '';
     final payload = streams
