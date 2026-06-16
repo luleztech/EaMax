@@ -6,6 +6,7 @@ import AdsSection from './sections/AdsSection';
 import AnalyticsSection from './sections/AnalyticsSection';
 import SettingsSection from './sections/SettingsSection';
 import PromotionSection from './sections/PromotionSection';
+import SubscriptionPlansSection from './sections/SubscriptionPlansSection';
 import NotificationsPanel from './NotificationsPanel';
 import AppShell from './ui/AppShell';
 
@@ -20,6 +21,7 @@ const AdminApp = () => {
       { id: 'users', label: 'Users', shortLabel: 'Users', icon: 'account-group' },
       { id: 'channels', label: 'Channels', shortLabel: 'Channels', icon: 'movie-open' },
       { id: 'promotions', label: 'Promotion Center', shortLabel: 'Promo', icon: 'bullhorn-variant' },
+      { id: 'plans', label: 'Subscription Plans', shortLabel: 'Plans', icon: 'cash-multiple' },
       { id: 'ads', label: 'Ads & Points', shortLabel: 'Ads', icon: 'bullhorn' },
       { id: 'analytics', label: 'Analytics', shortLabel: 'Stats', icon: 'chart-bar' },
       { id: 'settings', label: 'Settings', shortLabel: 'Settings', icon: 'cog' },
@@ -44,6 +46,10 @@ const AdminApp = () => {
       promotions: {
         title: 'Promotion Center',
         subtitle: 'Picha · Ujumbe · Tangazo · Ofa',
+      },
+      plans: {
+        title: 'Subscription Plans',
+        subtitle: 'Bei na muda wa malipo — inaonekana kwenye app ya wateja',
       },
       ads: {
         title: 'Ads & Points',
@@ -73,6 +79,8 @@ const AdminApp = () => {
         return <ContentSection />;
       case 'promotions':
         return <PromotionSection />;
+      case 'plans':
+        return <SubscriptionPlansSection />;
       case 'ads':
         return <AdsSection />;
       case 'analytics':

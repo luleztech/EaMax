@@ -1,7 +1,10 @@
 const express = require('express');
 const { query } = require('../db');
+const { requireAdminKey } = require('../middleware/requireAdminKey');
 
 const router = express.Router();
+
+router.use(requireAdminKey);
 
 /** App "today" uses East Africa Time so the day resets at local midnight. */
 const APP_TZ = 'Africa/Dar_es_Salaam';

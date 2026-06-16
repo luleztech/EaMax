@@ -28,7 +28,9 @@ const matchesRouter = require('./routes/matches');
 const promotionsRouter = require('./routes/promotions');
 const dashboardRouter = require('./routes/dashboard');
 const partnerRouter = require('./routes/partner');
+const v2Router = require('./routes/v2');
 const { initializeRealtimeServer } = require('./services/realtimeServer');
+const { runEnterpriseMigrations } = require('./services/enterpriseMigrations');
 
 const app = express();
 
@@ -57,6 +59,9 @@ app.use(attachVersionInfo);
 // even an outdated client can discover it needs to update.
 app.use('/app-config', appConfigRouter);
 
+// ── v2 bootstrap (config bundle + playback) — before version gate ─────────
+app.use('/api/v2', v2Router);
+
 // ── Rate limiting (mobile API; admin/dashboard/partner + X-Admin-Key skipped) ─
 app.use('/api/channels', catalogLimiter);
 app.use('/api/carousel', catalogLimiter);
@@ -72,6 +77,10 @@ app.use('/api/users/register', authLimiter);
 // Skips admin / dashboard / partner routes automatically (no X-App-Version
 // header on those requests).
 app.use('/api/', requireAppVersion);
+
+runEnterpriseMigrations().catch((err) => {
+  console.warn('[Migrations] Enterprise bootstrap (non-fatal):', err.message || err);
+});
 
 // Ensure drm_clear_key column exists on channels (run once on startup)
 query(

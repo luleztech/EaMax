@@ -6,6 +6,18 @@ const { buildPremiumPayload } = require('../services/premiumStatus');
 const { grantUserEntitlementsInTransaction } = require('../services/userEntitlements');
 
 const promotionsAdminRouter = require('./promotionsAdmin');
+const {
+  listAllPlansAdmin,
+  upsertPlanAdmin,
+} = require('../services/subscriptionPlansService');
+const {
+  getGlobalPlayerConfig,
+  updateGlobalPlayerConfig,
+} = require('../services/playerConfigService');
+const {
+  getChannelPlayback,
+  upsertChannelStream,
+} = require('../services/channelPlaybackService');
 
 const router = express.Router();
 
@@ -1759,6 +1771,107 @@ router.put('/settings/payment-provider', async (req, res, next) => {
   } catch (err) {
     console.error('[Admin] payment-provider update error:', err?.message || err);
     console.error('[Admin] Error stack:', err?.stack);
+    return next(err);
+  }
+});
+
+// ── Subscription plans (server-driven pricing) ───────────────────────────
+router.get('/subscription-plans', async (req, res, next) => {
+  try {
+    const plans = await listAllPlansAdmin();
+    return res.json({ plans });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/subscription-plans/:slug', async (req, res, next) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().trim();
+    if (!slug) return res.status(400).json({ error: 'Missing plan slug' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const schema = z.object({
+      nameSw: z.string().min(1),
+      nameEn: z.string().optional(),
+      priceTzs: z.number().int().positive(),
+      durationDays: z.number().int().positive(),
+      durationLabelSw: z.string().optional(),
+      priceLineSw: z.string().optional(),
+      isActive: z.boolean().optional(),
+      isPopular: z.boolean().optional(),
+      sortOrder: z.number().int().optional(),
+      badgeText: z.string().nullable().optional(),
+    });
+    const data = schema.parse(body);
+    const plan = await upsertPlanAdmin(slug, data);
+    return res.json({ plan });
+  } catch (err) {
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    }
+    return next(err);
+  }
+});
+
+// ── Global player config ───────────────────────────────────────────────────
+router.get('/player-config', async (req, res, next) => {
+  try {
+    const config = await getGlobalPlayerConfig();
+    return res.json({ config });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/player-config', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const patch = body.config && typeof body.config === 'object' ? body.config : body;
+    const config = await updateGlobalPlayerConfig(patch);
+    return res.json({ config });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// ── Channel streams (multi-stream failover) ────────────────────────────────
+router.get('/channels/:id/streams', async (req, res, next) => {
+  try {
+    const channelId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(channelId) || channelId <= 0) {
+      return res.status(400).json({ error: 'Invalid channel id' });
+    }
+    const playback = await getChannelPlayback(channelId);
+    if (!playback) return res.status(404).json({ error: 'Channel not found' });
+    return res.json(playback);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.put('/channels/:id/streams/:priority', async (req, res, next) => {
+  try {
+    const channelId = parseInt(req.params.id, 10);
+    const priority = parseInt(req.params.priority, 10);
+    if (!Number.isFinite(channelId) || channelId <= 0) {
+      return res.status(400).json({ error: 'Invalid channel id' });
+    }
+    if (!Number.isFinite(priority) || priority < 0) {
+      return res.status(400).json({ error: 'Invalid stream priority' });
+    }
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    await upsertChannelStream(channelId, priority, {
+      streamUrl: body.streamUrl || null,
+      streamAlias: body.streamAlias || null,
+      drmType: body.drmType || 'NONE',
+      drmClearKey: body.drmClearKey || null,
+      licenseUrl: body.licenseUrl || null,
+      headers: body.headers || {},
+      isActive: body.isActive !== false,
+    });
+    const playback = await getChannelPlayback(channelId);
+    return res.json(playback);
+  } catch (err) {
     return next(err);
   }
 });

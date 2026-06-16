@@ -11,6 +11,10 @@ const {
   repairUserEntitlementsIfNeeded,
   fetchUserPremiumSnapshotByUserId,
 } = require('../services/userEntitlements');
+const {
+  getPlanPaymentInfo,
+  resolvePremiumInterval,
+} = require('../services/subscriptionPlansService');
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
 const PAYMENT_PROVIDERS = {
@@ -625,27 +629,6 @@ const zenoQuickPostCreateVerify = async (orderRef) => {
   }
 };
 
-// Map bundle to amount and duration
-const PLAN_CONFIG = {
-  week: { amount: 2000, interval: '7 days' },
-  month: { amount: 5000, interval: '30 days' },
-  // id stays "year" for existing API/clients; duration is 3 months (miezi 3)
-  year: { amount: 12000, interval: '90 days' },
-};
-
-/** Standard bundles or promotion offers stored as `offer:<days>`. */
-const resolvePremiumInterval = (plan) => {
-  const key = String(plan || '').toLowerCase();
-  if (key.startsWith('offer:')) {
-    const days = parseInt(key.split(':')[1], 10);
-    if (Number.isFinite(days) && days > 0 && days <= 366) {
-      return `${days} days`;
-    }
-    return null;
-  }
-  return PLAN_CONFIG[key]?.interval ?? null;
-};
-
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
   const candidates = sonicPhoneCandidatesForApi(normalizedPhone);
@@ -891,7 +874,7 @@ async function handlePaymentStart(req, res, next) {
       planKey = `offer:${offerDays}`;
       amountToSend = offerAmount;
     } else {
-      const planInfo = PLAN_CONFIG[data.bundle];
+      const planInfo = await getPlanPaymentInfo(data.bundle);
       if (!planInfo) {
         return res.status(400).json({ error: 'Invalid bundle plan' });
       }
@@ -1219,7 +1202,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     return null;
   }
 
-  const planInterval = resolvePremiumInterval(plan);
+  const planInterval = await resolvePremiumInterval(plan);
   if (!planInterval) {
     console.error('[Payment] Invalid or missing plan:', plan);
     return null;
@@ -1369,7 +1352,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       );
       if (payRow.rows.length > 0) {
         const plan = String(payRow.rows[0].plan || '').toLowerCase();
-        const planInterval = resolvePremiumInterval(plan);
+        const planInterval = await resolvePremiumInterval(plan);
         if (planInterval) {
           await repairUserEntitlementsIfNeeded(Number(payRow.rows[0].user_id), planInterval);
         }

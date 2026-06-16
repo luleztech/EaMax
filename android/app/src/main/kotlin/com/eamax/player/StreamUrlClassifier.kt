@@ -16,14 +16,34 @@ object StreamUrlClassifier {
     /** PHP, ASP, player gateways, embed paths — probe/sniff instead of assuming DASH. */
     fun isLikelyGatewayUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
+        // Direct manifest/progressive URLs are never gateway pages (paths may contain /stream/ or /play/).
+        if (hasObviousM3u8(url) || hasObviousMpd(url) || hasObviousProgressiveExtension(url)) return false
         val u = url.lowercase()
-        return Regex("""\.(php|asp|aspx|cgi|jsp)(\?|$|#)""", RegexOption.IGNORE_CASE).containsMatchIn(url) ||
-            "/embed/" in u || "/gateway/" in u || "/stream/" in u ||
-            "/play/" in u || "/player/" in u
+        return Regex("""\.(php|asp|aspx|cgi|jsp|html?)(\?|$|#)""", RegexOption.IGNORE_CASE).containsMatchIn(url) ||
+            "/embed/" in u || "/gateway/" in u ||
+            ("/stream/" in u && !hasObviousM3u8(url) && !hasObviousMpd(url)) ||
+            ("/play/" in u && !hasObviousM3u8(url) && !hasObviousMpd(url)) ||
+            "/player/" in u
+    }
+
+    /** IPTV / panel URLs without file extension (with or without port). */
+    fun isLikelyIptvLiveUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        if (hasObviousM3u8(url) || hasObviousMpd(url) || hasObviousProgressiveExtension(url)) return false
+        val base = url.split("#").first().lowercase()
+        if (Regex("""^https?://[^/]+:\d{2,5}/(live|stream|play|hls|iptv|channel|ch)/""").containsMatchIn(base)) {
+            return true
+        }
+        if (Regex("""^https?://[^/]+:\d{2,5}/[^/]+/[^/]+/[^/?#]+$""").containsMatchIn(base)) return true
+        if (Regex("""^https?://[^/]+/(live|stream|play|hls|iptv|channel|ch)/[^/?#]+""").containsMatchIn(base)) {
+            return true
+        }
+        return false
     }
 
     fun hasObviousM3u8(url: String): Boolean =
-        Regex("""\.m3u8(\?|#|$)""", RegexOption.IGNORE_CASE).containsMatchIn(url)
+        Regex("""\.m3u8?(\?|#|$)""", RegexOption.IGNORE_CASE).containsMatchIn(url) ||
+            Regex("""[?&](format|type)=m3u8?(\b|&|$)""", RegexOption.IGNORE_CASE).containsMatchIn(url)
 
     fun hasObviousMpd(url: String): Boolean =
         Regex("""\.mpd(\?|#|$)""", RegexOption.IGNORE_CASE).containsMatchIn(url)
@@ -95,6 +115,23 @@ object StreamUrlClassifier {
             return true
         }
         return false
+    }
+
+    /** License URLs captured from gateway network hooks (may not match strict server heuristics). */
+    fun isGatewayCapturedLicenseUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.trim().lowercase()
+        if (!u.startsWith("http")) return false
+        if (hasObviousM3u8(u) || hasObviousMpd(u)) return false
+        if (u.contains("/tok_") || u.contains("tok_eyj")) return false
+        if (isNagraLicense(url)) return true
+        if (u.contains("azamtvltd") &&
+            (u.contains("license") || u.contains("/wv/") || u.contains("rights") ||
+                u.contains("getkey") || u.contains("acquire"))
+        ) {
+            return true
+        }
+        return isLikelyLicenseServerUrl(url)
     }
 
     /** Native Exo needs a real license server (or clear keys). Otherwise keep WebView Shaka. */

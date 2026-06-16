@@ -8,17 +8,45 @@ import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.PlayerMode
 import com.eamax.domain.model.StreamSession
 import org.json.JSONObject
+import org.json.JSONArray
 
 /** Builds [StreamSession] from Flutter MethodChannel extras (aligned with RN / backend). */
 object StreamSessionBuilder {
 
     fun fromFlutterBundle(b: Bundle): StreamSession {
-        val url = b.getString("url")?.trim().orEmpty()
-        val licenseUrl = b.getString("licenseUrl")?.trim().orEmpty()
-        val token = b.getString("token")?.trim().orEmpty()
-        val drmTypeStr = (b.getString("drmType") ?: "NONE").uppercase()
-        val clearKeyHex = b.getString("clearKeyHex")?.trim().orEmpty()
-        val headersJson = b.getString("headersJson")?.trim().orEmpty()
+        return fromFlutterBundleWithFallbacks(b).first()
+    }
+
+    /** Primary stream + optional backup streams from Flutter v2 playback API. */
+    fun fromFlutterBundleWithFallbacks(b: Bundle): List<StreamSession> {
+        val primary = buildSession(
+            url = b.getString("url")?.trim().orEmpty(),
+            licenseUrl = b.getString("licenseUrl")?.trim().orEmpty(),
+            token = b.getString("token")?.trim().orEmpty(),
+            drmTypeStr = (b.getString("drmType") ?: "NONE").uppercase(),
+            clearKeyHex = b.getString("clearKeyHex")?.trim().orEmpty(),
+            headersJson = b.getString("headersJson")?.trim().orEmpty(),
+        )
+        val fallbackJson = b.getString("fallbackStreamsJson")?.trim().orEmpty()
+        val fallbacks = parseFallbackStreams(fallbackJson)
+        val seen = mutableSetOf<String>()
+        return (listOf(primary) + fallbacks).filter { session ->
+            val key = session.mpdUrl.trim()
+            if (key.isEmpty() || seen.contains(key)) false else {
+                seen.add(key)
+                true
+            }
+        }
+    }
+
+    private fun buildSession(
+        url: String,
+        licenseUrl: String,
+        token: String,
+        drmTypeStr: String,
+        clearKeyHex: String,
+        headersJson: String,
+    ): StreamSession {
 
         val expiresAt = (System.currentTimeMillis() / 1000) + 86400 * 365L
 
@@ -66,6 +94,38 @@ object StreamSessionBuilder {
             channelIsPremium = false,
             headers = headers,
         )
+    }
+
+    private fun parseFallbackStreams(json: String): List<StreamSession> {
+        if (json.isEmpty()) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val url = item.optString("url", "").trim()
+                    if (url.isEmpty()) continue
+                    add(
+                        buildSession(
+                            url = url,
+                            licenseUrl = item.optString("licenseUrl", item.optString("license_url", "")).trim(),
+                            token = item.optString("token", "").trim(),
+                            drmTypeStr = (item.optString("drmType", item.optString("drm_type", "NONE"))).uppercase(),
+                            clearKeyHex = sequenceOf(
+                                item.optString("clearKeyHex", ""),
+                                item.optString("drmClearKey", ""),
+                                item.optString("drm_clear_key", ""),
+                            ).firstOrNull { it.isNotBlank() }.orEmpty().trim(),
+                            headersJson = item.optString("headersJson", "").ifEmpty {
+                                item.optJSONObject("headers")?.toString().orEmpty()
+                            },
+                        ),
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     private fun parseHeaders(json: String): Map<String, String> {

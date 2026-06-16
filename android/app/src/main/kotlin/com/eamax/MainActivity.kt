@@ -73,6 +73,7 @@ class MainActivity : FlutterActivity() {
                         ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
                         intent.putExtra("clearKeyHex", mergedClearKey)
                         intent.putExtra("headersJson", args["headersJson"]?.toString().orEmpty())
+                        intent.putExtra("fallbackStreamsJson", args["fallbackStreamsJson"]?.toString().orEmpty())
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {

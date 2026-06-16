@@ -33,6 +33,10 @@ function _isAdminRoute(req) {
   if (p.startsWith('/admin') || p.startsWith('/dashboard') || p.startsWith('/partner')) {
     return true;
   }
+  // Remote config bootstrap — must work even on outdated builds.
+  if (p.startsWith('/v2/config')) {
+    return true;
+  }
 
   const adminKey = String(req.headers['x-admin-key'] || '').trim();
   if (adminKey && adminKey === process.env.ADMIN_API_KEY) {

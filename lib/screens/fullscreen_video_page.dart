@@ -56,6 +56,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   bool _useWebPlayer = false;
   bool _loading = true;
   bool _isPlaying = false;
+  bool _playbackConfirmed = false;
+  bool _unavailableNotified = false;
 
   /// First multi-track manifest: default to ~360p (“Okoa bando”) unless user changed quality.
   bool _appliedDefaultOkoa360 = false;
@@ -197,7 +199,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   Future<void> _notifyUnavailableAndExit() async {
-    if (!mounted) return;
+    if (!mounted || _unavailableNotified || _playbackConfirmed || _isPlaying) return;
+    _unavailableNotified = true;
     await showChannelUnavailableModal(context);
     if (mounted) Navigator.of(context).pop();
   }
@@ -228,6 +231,9 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     await _playingSub?.cancel();
     _playingSub = player.stream.playing.listen((playing) {
       _isPlaying = playing;
+      if (playing && mounted) {
+        _playbackConfirmed = true;
+      }
     });
 
     try {
@@ -251,10 +257,10 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       unawaited(Future<void>.delayed(const Duration(milliseconds: 300), _maybeApplyDefaultOkoa360));
 
       final started = await _waitUntilPlaying(
-        maxWait: Duration(seconds: kIsWeb ? 3 : 5),
+        maxWait: Duration(seconds: kIsWeb ? 4 : 8),
       );
       if (!mounted) return;
-      if (!started) {
+      if (!started && !_playbackConfirmed) {
         if (kIsWeb) {
           await _notifyUnavailableAndExit();
           return;
@@ -484,9 +490,17 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                           onLoadingChanged: (loading) {
                             if (mounted) setState(() => _loading = loading);
                           },
-                          onError: (_) => unawaited(_notifyUnavailableAndExit()),
+                          onError: (_) {
+                            if (_playbackConfirmed || _isPlaying) return;
+                            unawaited(_notifyUnavailableAndExit());
+                          },
                           onPlaying: () {
-                            if (mounted) setState(() => _isPlaying = true);
+                            if (mounted) {
+                              setState(() {
+                                _isPlaying = true;
+                                _playbackConfirmed = true;
+                              });
+                            }
                           },
                         )
                       : _webView && _webController != null

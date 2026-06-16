@@ -59,6 +59,7 @@ class WebViewEngine(
     private var licenseHeadersWaitRunnable: Runnable? = null
     private var licenseHeadersWaitExpired = false
     private var licenseBridge: WebViewLicenseBridge? = null
+    private var gatewayWatchdogExtensions = 0
 
     fun initialize(streamSession: StreamSession) {
         released = false
@@ -71,6 +72,7 @@ class WebViewEngine(
         shakaDrmSignaled = false
         capturedManifestHeaders = emptyMap()
         licenseHeadersWaitExpired = false
+        gatewayWatchdogExtensions = 0
         cancelLicenseHeadersWait()
         cancelManifestFallback()
         currentSession = streamSession
@@ -88,6 +90,7 @@ class WebViewEngine(
 
             val directStream = StreamUrlClassifier.hasObviousM3u8(url) ||
                 StreamUrlClassifier.hasObviousMpd(url) ||
+                StreamUrlClassifier.isLikelyIptvLiveUrl(url) ||
                 (!StreamUrlClassifier.isLikelyGatewayUrl(url) &&
                     !StreamUrlClassifier.isPhpLikeUrl(url) &&
                     url.startsWith("http", ignoreCase = true))
@@ -186,6 +189,8 @@ class WebViewEngine(
                     super.onPageFinished(view, finishedUrl)
                     val w = view ?: return
                     if (usingShakaEmbed) return
+                    val gateway = currentSession?.mpdUrl ?: finishedUrl.orEmpty()
+                    w.evaluateJavascript(PhpWebViewSupport.gatewayCdnRefererFixScript(gateway), null)
                     injectPlayerOnlyUi(w)
                     if (!okoaApiInjected) {
                         okoaApiInjected = true
@@ -415,7 +420,9 @@ class WebViewEngine(
         if (licenseUrl.isEmpty()) {
             licenseUrl = capturedLicenseUrl.orEmpty()
         }
-        if (!StreamUrlClassifier.isLikelyLicenseServerUrl(licenseUrl)) {
+        if (!StreamUrlClassifier.isLikelyLicenseServerUrl(licenseUrl) &&
+            !StreamUrlClassifier.isGatewayCapturedLicenseUrl(licenseUrl)
+        ) {
             licenseUrl = ""
         }
         if (licenseUrl.isEmpty() && session != null) {
@@ -455,7 +462,7 @@ class WebViewEngine(
             licenseHeadersWaitExpired = true
             Log.d(TAG, "License header wait timeout — promoting with CDN Origin/Referer defaults")
             lastExtracted?.let { deliverExtractedStream(it) }
-        }.also { mainHandler.postDelayed(it, 1_200L) }
+        }.also { mainHandler.postDelayed(it, 700L) }
     }
 
     private fun cancelLicenseHeadersWait() {
@@ -478,7 +485,7 @@ class WebViewEngine(
         manifestFallbackRunnable = Runnable {
             if (released || streamDelivered) return@Runnable
             tryManifestFallback(extended = false)
-        }.also { mainHandler.postDelayed(it, 3_500L) }
+        }.also { mainHandler.postDelayed(it, 2_000L) }
     }
 
     private fun scheduleExtendedManifestFallback() {
@@ -497,9 +504,10 @@ class WebViewEngine(
     private fun installDocumentStartHooks(webView: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         try {
+            val gateway = currentSession?.mpdUrl.orEmpty()
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                PhpWebViewSupport.gatewayDocumentStartScript(),
+                PhpWebViewSupport.gatewayDocumentStartScript(gatewayUrl = gateway),
                 setOf("*"),
             )
             Log.d(TAG, "Document-start Shaka/DRM hooks installed")
@@ -556,10 +564,7 @@ class WebViewEngine(
                     return@post
                 }
                 if (license.isEmpty() && shouldWaitForLicense(manifest) && extended) {
-                    webView?.evaluateJavascript(PhpWebViewSupport.gatewayHtmlProbeScript(), null)
-                    webView?.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
-                    Log.w(TAG, "No license after extended wait — cannot play encrypted stream")
-                    reportErrorOnce("unavailable")
+                    attemptReadDrmFromGatewayPage(gateway, manifest)
                     return@post
                 }
                 Log.d(
@@ -605,7 +610,9 @@ class WebViewEngine(
 
     private fun onLicenseUrlCaptured(url: String, fromProbe: Boolean = false) {
         if (url.isBlank()) return
-        if (!StreamUrlClassifier.isLikelyLicenseServerUrl(url)) {
+        if (!StreamUrlClassifier.isLikelyLicenseServerUrl(url) &&
+            !StreamUrlClassifier.isGatewayCapturedLicenseUrl(url)
+        ) {
             Log.d(TAG, "Ignoring non-license URL: ${url.take(100)}")
             return
         }
@@ -717,6 +724,10 @@ class WebViewEngine(
     private fun handleJsPlaybackError() {
         if (released || errorReported) return
         if (!usingShakaEmbed) return
+        if (playbackStarted || streamDelivered) {
+            Log.d(TAG, "Ignoring Shaka error — playback started or stream handed to Exo")
+            return
+        }
         if (lastExtracted != null) {
             onShakaFailed?.invoke(lastExtracted!!)
         } else {
@@ -746,14 +757,120 @@ class WebViewEngine(
 
     private fun schedulePlaybackWatchdog() {
         cancelPlaybackWatchdog()
+        gatewayWatchdogExtensions = 0
+        schedulePlaybackWatchdogInternal(initial = true)
+    }
+
+    private fun schedulePlaybackWatchdogInternal(initial: Boolean) {
+        val delayMs = if (initial) 22_000L else 18_000L
         playbackWatchdog = Runnable {
             if (released || playbackStarted) return@Runnable
+            if (streamDelivered) {
+                Log.d(TAG, "Watchdog: stream extracted — waiting for native Exo handoff")
+                return@Runnable
+            }
+            if (!usingShakaEmbed && isGatewayDrmPending()) {
+                if (gatewayWatchdogExtensions < 3) {
+                    gatewayWatchdogExtensions++
+                    Log.d(TAG, "Watchdog: gateway DRM pending — extension $gatewayWatchdogExtensions/3")
+                    reinjectGatewayPlaybackHelpers()
+                    schedulePlaybackWatchdogInternal(initial = false)
+                    return@Runnable
+                }
+            }
             if (usingShakaEmbed && lastExtracted != null) {
                 onShakaFailed?.invoke(lastExtracted!!)
+            } else if (!usingShakaEmbed && isGatewayDrmPending()) {
+                scheduleFinalGatewayPlaybackWatchdog()
             } else {
                 reportErrorOnce("unavailable")
             }
-        }.also { mainHandler.postDelayed(it, 20_000L) }
+        }.also { mainHandler.postDelayed(it, delayMs) }
+    }
+
+    private fun isGatewayDrmPending(): Boolean =
+        lastExtracted != null ||
+            capturedManifestUrl != null ||
+            shakaDrmSignaled ||
+            manifestRequiresDrm
+
+    private fun reinjectGatewayPlaybackHelpers() {
+        val w = webView ?: return
+        val gateway = currentSession?.mpdUrl.orEmpty()
+        w.evaluateJavascript(PhpWebViewSupport.gatewayCdnRefererFixScript(gateway), null)
+        w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
+        w.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
+        w.evaluateJavascript(PhpWebViewSupport.gatewayShakaHookScript(), null)
+        injectPlayerOnlyUi(w)
+    }
+
+    private fun attemptReadDrmFromGatewayPage(gateway: String, manifest: String) {
+        reinjectGatewayPlaybackHelpers()
+        webView?.evaluateJavascript(PhpWebViewSupport.readGatewayShakaDrmScript()) { raw ->
+            if (released || playbackStarted) return@evaluateJavascript
+            val license = parseDrmJsonField(raw, "licenseUrl")
+            val stream = parseDrmJsonField(raw, "streamUrl").ifEmpty { manifest }
+            if (license.isNotEmpty()) {
+                Log.d(TAG, "Live Shaka DRM read — license captured from gateway page")
+                onLicenseUrlCaptured(license)
+                return@evaluateJavascript
+            }
+            Log.w(TAG, "No license after extended wait — keeping gateway WebView playback")
+            scheduleFinalGatewayPlaybackWatchdog()
+        }
+    }
+
+    private fun parseDrmJsonField(raw: String?, key: String): String {
+        if (raw.isNullOrBlank() || raw == "null") return ""
+        return try {
+            var s = raw.trim()
+            if (s.length >= 2 && s.first() == '"' && s.last() == '"') {
+                s = s.substring(1, s.length - 1)
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\")
+            }
+            org.json.JSONObject(s).optString(key, "").trim()
+        } catch (_: Exception) {
+            Regex("""\"$key\"\s*:\s*\"([^\"]*)\"""")
+                .find(raw ?: "")?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        }
+    }
+
+    private fun scheduleFinalGatewayPlaybackWatchdog() {
+        mainHandler.postDelayed({
+            if (released || playbackStarted || errorReported) return@postDelayed
+            reinjectGatewayPlaybackHelpers()
+            webView?.evaluateJavascript(PhpWebViewSupport.readGatewayShakaDrmScript()) { raw ->
+                if (released || playbackStarted || errorReported) return@evaluateJavascript
+                val license = parseDrmJsonField(raw, "licenseUrl")
+                if (license.isNotEmpty()) {
+                    onLicenseUrlCaptured(license)
+                    return@evaluateJavascript
+                }
+                mainHandler.postDelayed({
+                    if (released || playbackStarted || errorReported) return@postDelayed
+                    if (isAzamGatewayPlayback()) {
+                        Log.d(TAG, "Azam gateway — extending playback wait")
+                        reinjectGatewayPlaybackHelpers()
+                        mainHandler.postDelayed({
+                            if (!released && !playbackStarted && !errorReported) {
+                                reportErrorOnce("unavailable")
+                            }
+                        }, 20_000L)
+                    } else {
+                        reportErrorOnce("unavailable")
+                    }
+                }, 15_000L)
+            }
+        }, 3_000L)
+    }
+
+    private fun isAzamGatewayPlayback(): Boolean {
+        val url = currentSession?.mpdUrl.orEmpty()
+        val manifest = capturedManifestUrl.orEmpty()
+        return StreamUrlClassifier.likelyRequiresWidevine(manifest) ||
+            url.contains("mpilalivetv", ignoreCase = true) ||
+            url.contains("azamtvltd", ignoreCase = true)
     }
 
     private fun cancelPlaybackWatchdog() {

@@ -86,8 +86,27 @@ object StreamProbe {
             return r
         }
 
+        // ── Obvious manifests first — must beat gateway heuristics (/stream/, /play/ in path).
+        if (StreamUrlClassifier.hasObviousM3u8(original)) {
+            Log.d(TAG, "fast-path HLS (m3u8 extension): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
+        }
+
+        if (StreamUrlClassifier.hasObviousMpd(original)) {
+            Log.d(TAG, "fast-path DASH (mpd extension): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_DASH, original, original, refererOverlay(original, headers)))
+        }
+
+        if (StreamUrlClassifier.hasObviousProgressiveExtension(original)) {
+            return cache(Result(ResolvedKind.EXO_PROGRESSIVE, original, original, refererOverlay(original, headers)))
+        }
+
+        if (StreamUrlClassifier.isLikelyIptvLiveUrl(original)) {
+            Log.d(TAG, "fast-path HLS (IPTV/live URL): ${original.take(80)}")
+            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
+        }
+
         // ── Gateway pages: start WebView immediately (WebViewEngine decrypts in parallel).
-        // Blocking HTML fetch here duplicated WebView work and added seconds before playback.
         if (StreamUrlClassifier.isPhpLikeUrl(original) ||
             StreamUrlClassifier.isLikelyGatewayUrl(original)
         ) {
@@ -98,36 +117,6 @@ object StreamProbe {
                 original,
                 refererOverlay(original, headers),
             )
-        }
-
-        // ── Obvious .m3u8 → HLS, no network probe needed ─────────────────────
-        // If ExoPlayer fails (e.g. login page disguised as .m3u8), the existing
-        // malformed-manifest recovery falls through to SNIFFING automatically.
-        if (StreamUrlClassifier.hasObviousM3u8(original)) {
-            Log.d(TAG, "fast-path HLS (m3u8 extension): ${original.take(80)}")
-            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
-        }
-
-        // ── Obvious .mpd → DASH, no network probe needed ──────────────────────
-        if (StreamUrlClassifier.hasObviousMpd(original) && !StreamUrlClassifier.isLikelyGatewayUrl(original)) {
-            Log.d(TAG, "fast-path DASH (mpd extension): ${original.take(80)}")
-            return cache(Result(ResolvedKind.EXO_DASH, original, original, refererOverlay(original, headers)))
-        }
-
-        // ── Obvious progressive media ─────────────────────────────────────────
-        if (StreamUrlClassifier.hasObviousProgressiveExtension(original)) {
-            return cache(Result(ResolvedKind.EXO_PROGRESSIVE, original, original, refererOverlay(original, headers)))
-        }
-
-        // ── IPTV / Xtream Codes port-based URLs → HLS fast-path ──────────────
-        // Pattern: host:port/live/... or host:port/user/pass/id (no extension)
-        // These are always HLS; probing them costs 500ms+ for no benefit.
-        val lowerOriginal = original.lowercase()
-        val isIptvPortUrl = Regex("""^https?://[^/]+:\d{2,5}/(live|stream|play|hls|iptv|channel|ch)/""").containsMatchIn(lowerOriginal) ||
-            Regex("""^https?://[^/]+:\d{2,5}/[^/]+/[^/]+/[^/?#]+$""").containsMatchIn(lowerOriginal.split("#")[0])
-        if (isIptvPortUrl) {
-            Log.d(TAG, "fast-path HLS (IPTV/Xtream port URL): ${original.take(80)}")
-            return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
         }
 
         // ── Ambiguous URLs: probe HTTP to determine format ────────────────────

@@ -47,21 +47,24 @@ class WebStreamProbe {
 
     final headers = _buildRequestHeaders(config);
 
-    // PHP / HTML gateways — decrypt embedded stream when possible.
-    if (isGatewayUrl(original) || useWebViewForUrl(original)) {
-      return _resolveGateway(original, config, headers);
-    }
-
-    // Fast paths (no network).
-    if (RegExp(r'\.m3u8(\?|#|$)', caseSensitive: false).hasMatch(original)) {
+    // Fast paths first — manifest URLs must not be treated as gateways (/stream/ in path).
+    if (RegExp(r'\.m3u8?(\?|#|$)', caseSensitive: false).hasMatch(original) ||
+        RegExp(r'[?&](format|type)=m3u8?(\b|&|$)', caseSensitive: false).hasMatch(original)) {
       return _direct(original, config, WebResolvedKind.hls, headers);
     }
-    if (RegExp(r'\.mpd(\?|#|$)', caseSensitive: false).hasMatch(original) &&
-        !isGatewayUrl(original)) {
+    if (RegExp(r'\.mpd(\?|#|$)', caseSensitive: false).hasMatch(original)) {
       return _direct(original, config, WebResolvedKind.dash, headers);
     }
     if (RegExp(r'\.(mp4|m4v|webm|mkv|mov)(\?|#|$)', caseSensitive: false).hasMatch(original)) {
       return _direct(original, config, WebResolvedKind.progressive, headers);
+    }
+    if (isLikelyIptvLiveUrl(original)) {
+      return _direct(original, config, WebResolvedKind.hls, headers);
+    }
+
+    // PHP / HTML gateways — decrypt embedded stream when possible.
+    if (isGatewayUrl(original) || useWebViewForUrl(original)) {
+      return _resolveGateway(original, config, headers);
     }
 
     final lower = original.toLowerCase();

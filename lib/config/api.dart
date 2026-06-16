@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../interceptors/app_update_interceptor.dart';
 import '../models/api_exceptions.dart';
+import '../models/channel_playback.dart';
 import 'app_version.dart';
 
 const String apiBaseUrl = 'https://eamax-production.up.railway.app';
@@ -225,6 +226,12 @@ class ChannelsApi {
   Future<Map<String, dynamic>> getChannel(int channelId) async {
     final r = await apiRequest('/api/channels/$channelId');
     return Map<String, dynamic>.from(r as Map);
+  }
+
+  /// Server-driven playback with ordered failover streams.
+  Future<ChannelPlaybackBundle> getChannelPlayback(int channelId) async {
+    final r = await apiRequest('/api/v2/channels/$channelId/playback');
+    return ChannelPlaybackBundle.fromJson(Map<String, dynamic>.from(r as Map));
   }
 }
 

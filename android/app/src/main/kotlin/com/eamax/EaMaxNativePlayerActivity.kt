@@ -89,18 +89,20 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             return
         }
 
-        val session = try {
-            StreamSessionBuilder.fromFlutterBundle(extras)
+        val sessions = try {
+            StreamSessionBuilder.fromFlutterBundleWithFallbacks(extras)
         } catch (e: Exception) {
             Log.e(TAG, "Invalid playback bundle", e)
             showChannelUnavailableAndFinish()
             return
         }
 
-        if (session.mpdUrl.isEmpty()) {
+        if (sessions.isEmpty() || sessions.first().mpdUrl.isEmpty()) {
             showChannelUnavailableAndFinish()
             return
         }
+
+        val session = sessions.first()
 
         val playerView = findViewById<PlayerView>(R.id.player_view).apply {
             applyResizeModeForOrientation()
@@ -144,7 +146,15 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 playerManager.getWebView()?.alpha = 1f
                             }
-                            PlaybackState.ENDED -> showChannelUnavailableAndFinish()
+                            PlaybackState.ENDED -> {
+                                // Ignore ENDED from WebView when Exo took over (live TV handoff).
+                                if (playerManager.getExoPlayer() != null) {
+                                    Log.d(TAG, "Ignoring WebView ENDED — Exo player active")
+                                    return@runOnUiThread
+                                }
+                                if (playerManager.shouldSuppressPlaybackError()) return@runOnUiThread
+                                showChannelUnavailableAndFinish()
+                            }
                             else -> { }
                         }
                         return@runOnUiThread
@@ -164,8 +174,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             },
             onError = { msg ->
                 runOnUiThread {
-                    if (isFinishing) return@runOnUiThread
+                    if (isFinishing || unavailableDialogShown) return@runOnUiThread
                     Log.w(TAG, "Playback error: $msg")
+                    if (playerManager.shouldSuppressPlaybackError()) {
+                        Log.i(TAG, "Suppressing unavailable dialog — playback still active")
+                        hideWebLoadingOverlay()
+                        return@runOnUiThread
+                    }
                     if (playerManager.tryRevertToWebViewPlayback()) {
                         Log.i(TAG, "Reverted to WebView — suppressing unavailable dialog")
                         attachWebViewIfNeeded(webContainer, playerView)
@@ -189,6 +204,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
                     playbackReady = true
+                    exoBoundToView = false
+                    okoaAppliedOnTracks = false
                     try {
                         close.bringToFront()
                         okoaBundle.bringToFront()
@@ -218,7 +235,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 }
             },
         )
-        playerManager.initialize(session)
+        playerManager.initializeWithFailover(sessions)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -399,7 +416,19 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         val p = playerManager.getExoPlayer()
         if (p == null) {
             if (strictNull) {
-                showChannelUnavailableAndFinish()
+                playerView.postDelayed({
+                    if (isFinishing || unavailableDialogShown || exoBoundToView) return@postDelayed
+                    if (playerManager.shouldSuppressPlaybackError()) {
+                        bindExoToPlayerViewIfNeeded(playerView, strictNull = false)
+                        return@postDelayed
+                    }
+                    val retry = playerManager.getExoPlayer()
+                    if (retry != null) {
+                        bindExoToPlayerViewIfNeeded(playerView, strictNull = false)
+                    } else if (!playerManager.shouldSuppressPlaybackError()) {
+                        showChannelUnavailableAndFinish()
+                    }
+                }, 500)
             }
             return
         }

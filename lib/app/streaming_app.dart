@@ -17,6 +17,8 @@ import '../screens/maintenance_screen.dart';
 import '../services/promotion_service.dart';
 import '../widgets/promotion_popup.dart';
 import '../services/app_config_service.dart';
+import '../services/remote_config_service.dart';
+import '../services/realtime_service.dart';
 import '../services/home_data_cache.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
@@ -80,6 +82,32 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   static const _channelsPremiumOnlyCacheKey = 'channels_premium_only_cached_v1';
   static const _maxAdLoadAttempts = 3;
 
+  RealtimeEventHandler? _premiumRealtimeHandler;
+  RealtimeEventHandler? _pointsRealtimeHandler;
+  RealtimeEventHandler? _paymentRealtimeHandler;
+
+  Future<void> _setupRealtime(String uid) async {
+    if (kIsWeb) return;
+    final rt = RealtimeService.instance;
+
+    _premiumRealtimeHandler ??= (data) {
+      unawaited(_applyUserPremiumData(data, uid: uid));
+    };
+    _pointsRealtimeHandler ??= (data) {
+      if (!mounted) return;
+      final pts = int.tryParse('${data['points']}');
+      if (pts != null) setState(() => _points = pts);
+    };
+    _paymentRealtimeHandler ??= (_) {
+      unawaited(_checkPendingPayment());
+    };
+
+    rt.subscribe(kRealtimePremiumChannel, _premiumRealtimeHandler!);
+    rt.subscribe(kRealtimePointsChannel, _pointsRealtimeHandler!);
+    rt.subscribe(kRealtimePaymentChannel, _paymentRealtimeHandler!);
+    await rt.connect(uid);
+  }
+
   Future<void> _hydrateChannelsPremiumOnlyFromCache() async {
     final prefs = await SharedPreferences.getInstance();
     final cached = prefs.getBool(_channelsPremiumOnlyCacheKey);
@@ -91,6 +119,13 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   /// Persists on success; on failure restores last known value so offline / failed bootstrap
   /// does not default to “points mode” when the real mode is premium-only.
   Future<void> refreshChannelsPremiumOnlySetting() async {
+    final fromBundle = RemoteConfigService.cached?.featureFlags.channelsPremiumOnly;
+    if (fromBundle != null && mounted) {
+      setState(() => _channelsPremiumOnly = fromBundle);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_channelsPremiumOnlyCacheKey, fromBundle);
+      return;
+    }
     try {
       final s = await settingsApi.getChannelsPremiumOnly();
       if (!mounted) return;
@@ -246,6 +281,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _premiumRefreshTimer?.cancel();
     _registrationRetryTimer?.cancel();
     _configRefreshTimer?.cancel();
+    unawaited(RealtimeService.instance.disconnect());
     onPremiumUnlockRequested = null;
     super.dispose();
   }
@@ -255,6 +291,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshUser());
       unawaited(_syncFcmIfAllowed());
+      unawaited(ensureLocalUserId().then((uid) => RealtimeService.instance.connect(uid)));
       unawaited(_maybePromptNotificationPermission());
       if (_splashDone && _appConfigChecked && _appConfig?.shouldBlockAccess != true) {
         unawaited(_loadPromotions());
@@ -326,6 +363,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _fetchRemoteConfig({bool forceRefresh = false}) async {
+    try {
+      await RemoteConfigService.fetch(forceRefresh: forceRefresh);
+      if (mounted) {
+        await refreshChannelsPremiumOnlySetting();
+      }
+    } catch (_) {}
+  }
+
   Future<void> _fetchAppConfig({bool forceRefresh = false}) async {
     try {
       final config = await AppConfigService.fetch(forceRefresh: forceRefresh);
@@ -342,7 +388,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     if (_maintenanceRetrying) return;
     setState(() => _maintenanceRetrying = true);
     AppConfigService.invalidateCache();
+    RemoteConfigService.invalidateCache();
     await _fetchAppConfig(forceRefresh: true);
+    await _fetchRemoteConfig(forceRefresh: true);
   }
 
   void _onGlobalUpdateStateChanged() {
@@ -369,8 +417,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
 
     final configFuture = _fetchAppConfig(forceRefresh: true);
+    final remoteFuture = _fetchRemoteConfig(forceRefresh: true);
     await Future.any([
-      configFuture.then((_) {}),
+      Future.wait([configFuture, remoteFuture]).then((_) {}),
       Future<void>.delayed(const Duration(milliseconds: 1200)),
     ]);
 
@@ -417,7 +466,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     _configRefreshTimer?.cancel();
     _configRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
       unawaited(_fetchAppConfig(forceRefresh: true));
+      unawaited(_fetchRemoteConfig(forceRefresh: true));
     });
+    unawaited(_setupRealtime(uid));
     if (mounted) setState(() => _bootstrapReady = true);
   }
 

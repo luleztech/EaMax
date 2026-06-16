@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
+import ChannelStreamsModal from './ChannelStreamsModal';
 
 const { width } = Dimensions.get('window');
 
@@ -217,6 +218,7 @@ const ContentSection = () => {
   const [unlockToFree, setUnlockToFree] = useState(false);
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
+  const [streamsChannel, setStreamsChannel] = useState(null);
   const [deletingChannel, setDeletingChannel] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
@@ -613,6 +615,7 @@ const ContentSection = () => {
                 canReorder={canReorder}
                 savingOrder={savingOrder}
                 onEdit={openEditChannel}
+                onStreams={setStreamsChannel}
                 onDelete={handleDeleteChannel}
                 onMoveUp={
                   canReorder && index > 0
@@ -1093,6 +1096,12 @@ const ContentSection = () => {
           </View>
         </SafeAreaView>
       </Modal>
+
+      <ChannelStreamsModal
+        visible={!!streamsChannel}
+        channel={streamsChannel}
+        onClose={() => setStreamsChannel(null)}
+      />
 
       {/* Delete Channel Confirm Modal */}
       <Modal
@@ -1876,6 +1885,7 @@ const ChannelRow = memo(function ChannelRow({
   canReorder,
   savingOrder,
   onEdit,
+  onStreams,
   onDelete,
   onMoveUp,
   onMoveDown,
@@ -1958,6 +1968,12 @@ const ChannelRow = memo(function ChannelRow({
         </View>
       </View>
       <View style={styles.channelRowActions}>
+        <TouchableOpacity
+          style={styles.channelIconBtn}
+          onPress={() => onStreams?.(channel)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Icon name="play-network" size={20} color="#a78bfa" />
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.channelIconBtn}
           onPress={() => onEdit(channel)}

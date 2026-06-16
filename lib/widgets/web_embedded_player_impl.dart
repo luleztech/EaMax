@@ -87,6 +87,7 @@ class _WebEmbeddedPlayerState extends State<WebEmbeddedPlayer> {
 
   Future<void> _tryNextFallback() async {
     if (!mounted) return;
+    if (_playingNotified) return;
     if (_attemptIndex + 1 >= _fallbackChain.length) {
       widget.onError?.call('');
       return;
@@ -118,7 +119,7 @@ class _WebEmbeddedPlayerState extends State<WebEmbeddedPlayer> {
       await _mountPlayer(_fallbackChain.first);
       if (!mounted || gen != _prepareGeneration) return;
 
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await Future<void>.delayed(const Duration(milliseconds: 150));
       if (mounted && gen == _prepareGeneration) _setLoading(false);
     } catch (e) {
       if (mounted && gen == _prepareGeneration) {

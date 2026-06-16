@@ -7,6 +7,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
+import '../models/remote_config_bundle.dart';
+import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 
@@ -85,35 +87,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   _PaymentUiPhase _paymentUiPhase = _PaymentUiPhase.none;
   String? _sessionEndDetail;
 
-  final _bundles = const [
-    _Bundle(
-      id: 'week',
-      name: 'Kwa Wiki',
-      price: '2,000',
-      duration: '7 siku',
-      value: 2000,
-      popular: false,
-      priceLine: 'Tsh.2,000/= wiki moja',
-    ),
-    _Bundle(
-      id: 'month',
-      name: 'Mwezi',
-      price: '5,000',
-      duration: '30 siku',
-      value: 5000,
-      popular: true,
-      priceLine: 'Tsh.5,000/= mwezi mmoja',
-    ),
-    _Bundle(
-      id: 'year',
-      name: 'Miezi 3',
-      price: '12,000',
-      duration: 'miezi 3',
-      value: 12000,
-      popular: false,
-      priceLine: 'Tsh.12,000/= miezi mitatu',
-    ),
-  ];
+  List<RemoteSubscriptionPlan> _plans = defaultSubscriptionPlans();
 
   /// Tanzania local MSISDN only (`0` + 8–9 digits). Converts pasted +255/255 to 0…
   String _normalizeToLocal(String raw) {
@@ -146,6 +120,10 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     final prefs = await SharedPreferences.getInstance();
     final pending = prefs.getString('pendingPaymentOrderId')?.trim();
 
+    // Load server-driven plans (cached or fallback defaults).
+    final plans = RemoteConfigService.paymentPlans;
+    if (mounted) setState(() => _plans = plans);
+
     // Show username instantly from local storage (generate if missing).
     final localUid = await ensureLocalUserId();
     if (mounted) setState(() => _userId = localUid);
@@ -154,14 +132,23 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     String? uid;
     try {
       final parts = await Future.wait([
+        RemoteConfigService.fetch().catchError((_) => null),
         settingsApi.getWhatsAppNumber().catchError((_) => <String, dynamic>{}),
         getOrCreateUserId().catchError((_) => localUid),
       ]);
-      wMap = parts[0] as Map<String, dynamic>;
-      uid = parts[1] as String?;
+      final bundle = parts[0] as RemoteConfigBundle?;
+      if (bundle != null && bundle.paymentConfig.plans.isNotEmpty && mounted) {
+        setState(() => _plans = bundle.paymentConfig.plans);
+      }
+      wMap = parts[1] as Map<String, dynamic>;
+      uid = parts[2] as String?;
     } catch (_) {}
 
     if (!mounted) return;
+    final remoteWa = RemoteConfigService.cached?.paymentConfig.whatsappNumber;
+    if (remoteWa != null && remoteWa.isNotEmpty) {
+      setState(() => _whatsapp = remoteWa.replaceAll(RegExp(r'\s+'), ''));
+    }
     final n = wMap['number']?.toString();
     if (n != null && n.isNotEmpty) {
       setState(() => _whatsapp = n.replaceAll(RegExp(r'\s+'), ''));
@@ -529,7 +516,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       return;
     }
 
-    final bundle = _bundles.firstWhere((b) => b.id == _selectedBundle);
+    final bundle = _plans.firstWhere((b) => b.slug == _selectedBundle);
     setState(() => _submitting = true);
     // Let release builds paint “Tunatuma ombi…” before the HTTP work schedules; avoids a dead UI until the waiting modal.
     await WidgetsBinding.instance.endOfFrame;
@@ -539,8 +526,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       // The backend decides whether to route to Zeno or SonicPesa based on current settings.
       final result = await paymentsApi.startPayment(
         externalId: _userId!,
-        bundle: bundle.id,
-        amount: bundle.value,
+        bundle: bundle.slug,
+        amount: bundle.priceTzs,
         phone: clean,
         email: '$_userId@eamax.app',
         name: _userId!,
@@ -563,7 +550,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         setState(() {
           _pollingOrderId = orderId;
           _notFoundStreak = 0;
-          _pendingBundleLabel = bundle.name;
+          _pendingBundleLabel = bundle.nameSw;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
@@ -572,7 +559,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       } else {
         final msg = serverMsg.isNotEmpty
             ? serverMsg
-            : 'Ombi la malipo la Tsh.${bundle.price} (${bundle.name}) limepokelewa kwa $clean. '
+            : 'Ombi la malipo la Tsh.${bundle.formattedPrice} (${bundle.nameSw}) limepokelewa kwa $clean. '
                   'Ikiwa hutooni ujumbe kwenye simu, jaribu tena au wasiliana na msaada.';
         _showStatus(
           'Tumepokea ombi',
@@ -813,15 +800,15 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                             ),
                           ),
                           const SizedBox(height: 16),
-                          ..._bundles.map(
+                          ..._plans.map(
                             (b) => Padding(
                               padding: const EdgeInsets.only(bottom: 12),
                               child: _PriceOptionTile(
-                                bundle: b,
+                                plan: b,
                                 accent: ac,
-                                selected: _selectedBundle == b.id,
+                                selected: _selectedBundle == b.slug,
                                 onTap: () =>
-                                    setState(() => _selectedBundle = b.id),
+                                    setState(() => _selectedBundle = b.slug),
                               ),
                             ),
                           ),
@@ -1989,13 +1976,13 @@ class _PayStepTitle extends StatelessWidget {
 
 class _PriceOptionTile extends StatelessWidget {
   const _PriceOptionTile({
-    required this.bundle,
+    required this.plan,
     required this.accent,
     required this.selected,
     required this.onTap,
   });
 
-  final _Bundle bundle;
+  final RemoteSubscriptionPlan plan;
   final Color accent;
   final bool selected;
   final VoidCallback onTap;
@@ -2070,7 +2057,7 @@ class _PriceOptionTile extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (bundle.popular) ...[
+                              if (plan.isPopular) ...[
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 8,
@@ -2099,7 +2086,7 @@ class _PriceOptionTile extends StatelessWidget {
                                 const SizedBox(height: 10),
                               ],
                               Text(
-                                bundle.priceLine,
+                                plan.priceLineSw,
                                 style: const TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w800,
@@ -2110,7 +2097,7 @@ class _PriceOptionTile extends StatelessWidget {
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                '${bundle.name}  ·  ${bundle.duration}',
+                                '${plan.nameSw}  ·  ${plan.durationLabelSw}',
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   fontWeight: FontWeight.w500,
@@ -2153,23 +2140,4 @@ class _PriceOptionTile extends StatelessWidget {
       ),
     );
   }
-}
-
-class _Bundle {
-  const _Bundle({
-    required this.id,
-    required this.name,
-    required this.price,
-    required this.duration,
-    required this.value,
-    required this.popular,
-    required this.priceLine,
-  });
-  final String id;
-  final String name;
-  final String price;
-  final String duration;
-  final int value;
-  final bool popular;
-  final String priceLine;
 }

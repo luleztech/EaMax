@@ -206,7 +206,11 @@ object PhpWebViewSupport {
                 }
                 var authToken = pick('encryptedToken') ? xorDecrypt(pick('encryptedToken'), keyPart) : '';
                 var clearKeyRaw = pick('encryptedClearKey') ? xorDecrypt(pick('encryptedClearKey'), keyPart) : '';
-                window.__eaMaxExtractSent = true;
+                var needsLicense = streamUrl.indexOf('azamtvltd') >= 0 ||
+                  streamUrl.indexOf('widevine') >= 0 || streamUrl.indexOf('cdntoken=') >= 0;
+                if (!needsLicense || licenseUrl) {
+                  window.__eaMaxExtractSent = true;
+                }
                 var payload = {
                   streamUrl: streamUrl,
                   isHls: streamUrl.indexOf('.m3u8') >= 0,
@@ -447,11 +451,162 @@ object PhpWebViewSupport {
         """.trimIndent()
     }
 
-    /** Combined early injection: configure hook + network capture (document-start). */
-    fun gatewayDocumentStartScript(androidInterfaceName: String = "ShakaPlayerBridge"): String =
+    /** Combined early injection: configure hook + network capture + CDN referer fix (document-start). */
+    fun gatewayDocumentStartScript(
+        androidInterfaceName: String = "ShakaPlayerBridge",
+        gatewayUrl: String = "",
+    ): String =
         gatewayShakaConfigureHookScript(androidInterfaceName) +
             "\n" +
-            gatewayNetworkCaptureScript(androidInterfaceName)
+            gatewayNetworkCaptureScript(androidInterfaceName) +
+            "\n" +
+            gatewayCdnRefererFixScript(gatewayUrl)
+
+    /**
+     * Adds Referer/Origin on Azam/tokenized CDN requests from the gateway page context.
+     * Fixes HTTP 403 when the embedded Shaka player loads azamtvltd manifests.
+     */
+    fun gatewayCdnRefererFixScript(gatewayUrl: String): String {
+        val gatewayJson = org.json.JSONObject.quote(gatewayUrl.trim())
+        return """
+            (function () {
+              if (window.__eaMaxCdnRefererFix) return true;
+              window.__eaMaxCdnRefererFix = true;
+              var gateway = $gatewayJson;
+              if (!gateway || gateway.indexOf('http') !== 0) return true;
+              var origin = '';
+              try {
+                var a = document.createElement('a');
+                a.href = gateway;
+                origin = a.protocol + '//' + a.host;
+              } catch (e) {}
+              function needsFix(u) {
+                u = String(u || '').toLowerCase();
+                return u.indexOf('azamtvltd') >= 0 || u.indexOf('mpilalivetv') >= 0 ||
+                       u.indexOf('cdntoken=') >= 0 || u.indexOf('cdnblncr') >= 0;
+              }
+              function applyHeaders(hdrs) {
+                if (!hdrs) hdrs = {};
+                if (!hdrs['Referer'] && !hdrs['referer']) hdrs['Referer'] = gateway;
+                if (!hdrs['Origin'] && !hdrs['origin'] && origin) hdrs['Origin'] = origin;
+                return hdrs;
+              }
+              function refererForUrl(u) {
+                u = String(u || '');
+                if (u.indexOf('.mpd') >= 0 || u.indexOf('.m3u8') >= 0) {
+                  var q = u.indexOf('?');
+                  return q >= 0 ? u.substring(0, q) : u;
+                }
+                return gateway;
+              }
+              function patchRequestHeaders(request) {
+                if (!request || !request.uris) return;
+                for (var i = 0; i < request.uris.length; i++) {
+                  var u = String(request.uris[i] || '');
+                  if (!needsFix(u)) continue;
+                  request.headers = request.headers || {};
+                  var ref = refererForUrl(u);
+                  if (!request.headers['Referer'] && !request.headers['referer']) {
+                    request.headers['Referer'] = ref;
+                  }
+                  if (origin && !request.headers['Origin'] && !request.headers['origin']) {
+                    request.headers['Origin'] = origin;
+                  }
+                  request.allowCrossSiteCredentials = true;
+                }
+              }
+              function hookShakaNetworking() {
+                if (window.__eaMaxShakaNetReferer) return;
+                if (typeof shaka === 'undefined' || !shaka.net || !shaka.net.NetworkingEngine) return;
+                window.__eaMaxShakaNetReferer = true;
+                try {
+                  var RT = shaka.net.NetworkingEngine.RequestType;
+                  var origReq = shaka.net.NetworkingEngine.prototype.request;
+                  shaka.net.NetworkingEngine.prototype.request = function(type, request) {
+                    try { patchRequestHeaders(request); } catch (e) {}
+                    return origReq.call(this, type, request);
+                  };
+                } catch (e) {}
+                try {
+                  if (typeof shaka.Player === 'undefined' || shaka.Player.__eaMaxRefererWrapped) return;
+                  var Orig = shaka.Player;
+                  var Wrapped = function(video) {
+                    var p = new Orig(video);
+                    try {
+                      var eng = p.getNetworkingEngine && p.getNetworkingEngine();
+                      if (eng && eng.registerRequestFilter) {
+                        eng.registerRequestFilter(function(type, request) {
+                          patchRequestHeaders(request);
+                        });
+                      }
+                    } catch (e2) {}
+                    return p;
+                  };
+                  Wrapped.prototype = Orig.prototype;
+                  shaka.Player = Wrapped;
+                  shaka.Player.__eaMaxRefererWrapped = true;
+                } catch (e3) {}
+              }
+              function patchFetch() {
+                if (window.__eaMaxCdnFetchFix) return;
+                window.__eaMaxCdnFetchFix = true;
+                try {
+                  var orig = window.fetch;
+                  if (!orig) return;
+                  window.fetch = function(input, init) {
+                    try {
+                      var u = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+                      if (needsFix(u)) {
+                        init = init || {};
+                        init.credentials = init.credentials || 'include';
+                        var h = new Headers(init.headers || {});
+                        if (!h.has('Referer')) h.set('Referer', refererForUrl(u));
+                        if (origin && !h.has('Origin')) h.set('Origin', origin);
+                        init.headers = h;
+                      }
+                    } catch (e) {}
+                    return orig.apply(this, arguments);
+                  };
+                } catch (e) {}
+              }
+              function patchXhr() {
+                if (window.__eaMaxCdnXhrFix) return;
+                window.__eaMaxCdnXhrFix = true;
+                try {
+                  var origSet = XMLHttpRequest.prototype.setRequestHeader;
+                  XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+                    try {
+                      if (this.__eaMaxCdnUrl && needsFix(this.__eaMaxCdnUrl)) {
+                        if (String(name).toLowerCase() === 'referer') this.__eaMaxHasReferer = true;
+                        if (String(name).toLowerCase() === 'origin') this.__eaMaxHasOrigin = true;
+                      }
+                    } catch (e) {}
+                    return origSet.apply(this, arguments);
+                  };
+                  var origOpen = XMLHttpRequest.prototype.open;
+                  XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__eaMaxCdnUrl = String(url || '');
+                    this.__eaMaxHasReferer = false;
+                    this.__eaMaxHasOrigin = false;
+                    var r = origOpen.apply(this, arguments);
+                    try {
+                      if (needsFix(this.__eaMaxCdnUrl)) {
+                        if (!this.__eaMaxHasReferer) origSet.call(this, 'Referer', refererForUrl(this.__eaMaxCdnUrl));
+                        if (origin && !this.__eaMaxHasOrigin) origSet.call(this, 'Origin', origin);
+                      }
+                    } catch (e) {}
+                    return r;
+                  };
+                } catch (e) {}
+              }
+              patchFetch();
+              patchXhr();
+              setInterval(hookShakaNetworking, 40);
+              hookShakaNetworking();
+              return true;
+            })();
+        """.trimIndent()
+    }
 
     /** Exo Widevine license POST via WebView fetch (Nagra/Azam — uses page cookies + origin). */
     fun webViewLicenseFetchScript(
@@ -495,6 +650,44 @@ object PhpWebViewSupport {
                 }
               };
               return true;
+            })();
+        """.trimIndent()
+    }
+
+    /** Reads live Shaka DRM config from the gateway page (returns JSON string). */
+    fun readGatewayShakaDrmScript(): String {
+        return """
+            (function () {
+              var out = { streamUrl: '', licenseUrl: '', authToken: '' };
+              try {
+                out.streamUrl = window.__eaMaxCapturedManifest || '';
+                out.licenseUrl = window.__eaMaxCapturedLicense || '';
+                if (typeof shaka !== 'undefined' && shaka.Player) {
+                  var videos = document.querySelectorAll('video');
+                  for (var i = 0; i < videos.length; i++) {
+                    var p = null;
+                    try {
+                      if (shaka.Player.getPlayerInstance) {
+                        p = shaka.Player.getPlayerInstance(videos[i]);
+                      }
+                    } catch (e1) {}
+                    if (!p) continue;
+                    try {
+                      if (p.getAssetUri) out.streamUrl = p.getAssetUri() || out.streamUrl;
+                    } catch (e2) {}
+                    try {
+                      var cfg = p.getConfiguration ? p.getConfiguration() : null;
+                      if (cfg && cfg.drm && cfg.drm.servers) {
+                        var s = cfg.drm.servers;
+                        out.licenseUrl = s['com.widevine.alpha'] || s['com.widevine'] ||
+                          s['org.w3.clearkey'] || out.licenseUrl;
+                      }
+                    } catch (e3) {}
+                    break;
+                  }
+                }
+              } catch (e) {}
+              return JSON.stringify(out);
             })();
         """.trimIndent()
     }

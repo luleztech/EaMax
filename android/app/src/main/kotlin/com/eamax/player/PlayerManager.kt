@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
+import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import com.eamax.domain.model.DrmData
 import com.eamax.domain.model.StreamSession
@@ -37,6 +38,8 @@ class PlayerManager(
     private var engine: ExoPlayerEngine? = null
     private var webViewEngine: WebViewEngine? = null
     private var currentSession: StreamSession? = null
+    private var allSessions: List<StreamSession> = emptyList()
+    private var sessionIndex: Int = 0
     private var isInitialized = false
     /** If Exo fails with HTML/manifest errors, try WebView once with the original session URL. */
     private var webViewFallbackAttempted = false
@@ -54,15 +57,40 @@ class PlayerManager(
      * or [WebViewEngine] when the page must play in-browser.
      */
     fun initialize(streamSession: StreamSession) {
-        Log.d(TAG, "Initializing player with session: ${streamSession.sessionId}, url=${streamSession.mpdUrl}")
-        
-        if (isInitialized) {
-            release()
-        }
+        initializeWithFailover(listOf(streamSession))
+    }
 
-        currentSession = streamSession
+    /** Try primary stream first, then backup streams from v2 playback API on fatal errors. */
+    fun initializeWithFailover(sessions: List<StreamSession>) {
+        val valid = sessions.filter { it.mpdUrl.isNotBlank() }
+        if (valid.isEmpty()) {
+            onError("No stream URL")
+            return
+        }
+        allSessions = valid
+        sessionIndex = 0
+        if (valid.size > 1) {
+            Log.d(TAG, "Failover enabled: ${valid.size} streams")
+        }
+        startCurrentSession()
+    }
+
+    private fun startCurrentSession() {
+        val streamSession = allSessions.getOrNull(sessionIndex) ?: run {
+            dispatchFatalError("Playback failed for this stream")
+            return
+        }
+        Log.d(TAG, "Starting stream ${sessionIndex + 1}/${allSessions.size}: session=${streamSession.sessionId}, url=${streamSession.mpdUrl}")
+
+        engine?.release()
+        engine = null
+        webViewEngine?.release()
+        webViewEngine = null
+        isInitialized = false
         webViewFallbackAttempted = false
         gatewayExoPromotionAttempted = false
+
+        currentSession = streamSession
 
         probeExecutor.execute {
             val resolved = StreamProbe.resolveForSession(streamSession)
@@ -75,7 +103,7 @@ class PlayerManager(
                             webViewEngine = createWebViewEngine(streamSession)
                             webViewEngine?.initialize(streamSession)
                             if (webViewEngine?.getWebView() == null) {
-                                onError("WebView init failed")
+                                dispatchFatalError("WebView init failed")
                                 return@post
                             }
                             isInitialized = true
@@ -112,17 +140,17 @@ class PlayerManager(
                                                 webViewEngine = createWebViewEngine(session)
                                                 webViewEngine?.initialize(session)
                                                 if (webViewEngine?.getWebView() == null) {
-                                                    onError(error)
+                                                    dispatchFatalError(error)
                                                 } else {
                                                     isInitialized = true
                                                     onReady()
                                                 }
                                             } catch (e: Exception) {
                                                 Log.e(TAG, "WebView fallback failed", e)
-                                                onError(error)
+                                                dispatchFatalError(error)
                                             }
                                         } else {
-                                            onError(error)
+                                            dispatchFatalError(error)
                                         }
                                     }
                                 },
@@ -141,11 +169,11 @@ class PlayerManager(
                                     webViewEngine = createWebViewEngine(streamSession)
                                     webViewEngine?.initialize(streamSession)
                                     if (webViewEngine?.getWebView() == null) {
-                                        onError("Playback failed for this stream")
+                                        dispatchFatalError("Playback failed for this stream")
                                         return@post
                                     }
                                 } else {
-                                    onError("Player could not start")
+                                    dispatchFatalError("Player could not start")
                                     return@post
                                 }
                             }
@@ -155,10 +183,25 @@ class PlayerManager(
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "initialize failed", e)
-                    onError("Player init failed: ${e.message}")
+                    dispatchFatalError("Player init failed: ${e.message}")
                 }
             }
         }
+    }
+
+    private fun dispatchFatalError(message: String) {
+        if (tryAdvanceToNextStream()) {
+            Log.w(TAG, "Failover → stream ${sessionIndex + 1}/${allSessions.size}")
+            return
+        }
+        onError(message)
+    }
+
+    private fun tryAdvanceToNextStream(): Boolean {
+        if (sessionIndex + 1 >= allSessions.size) return false
+        sessionIndex++
+        startCurrentSession()
+        return true
     }
 
     /**
@@ -210,6 +253,8 @@ class PlayerManager(
         webViewFallbackAttempted = false
         gatewayExoPromotionAttempted = false
         currentSession = null
+        allSessions = emptyList()
+        sessionIndex = 0
     }
 
     private fun createWebViewEngine(baseSession: StreamSession): WebViewEngine {
@@ -221,7 +266,7 @@ class PlayerManager(
             },
             onError = { err ->
                 Log.e(TAG, "WebView error: $err")
-                onError(err)
+                dispatchFatalError(err)
             },
             onStreamExtracted = { extracted ->
                 mainHandler.post {
@@ -234,6 +279,10 @@ class PlayerManager(
             },
             onShakaFailed = { extracted ->
                 mainHandler.post {
+                    if (shouldSuppressPlaybackError()) {
+                        Log.d(TAG, "Ignoring Shaka failure — native playback active or starting")
+                        return@post
+                    }
                     if (!gatewayExoPromotionAttempted) {
                         if (StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted)) {
                             promoteGatewayToExo(baseSession, extracted)
@@ -241,10 +290,10 @@ class PlayerManager(
                             gatewayExoPromotionAttempted = true
                             Log.d(TAG, "Shaka failed native path — keeping WebView playback")
                         } else {
-                            onError("unavailable")
+                            dispatchFatalError("unavailable")
                         }
-                    } else if (webViewEngine?.wasPlaybackStarted() != true) {
-                        onError("unavailable")
+                    } else if (!shouldSuppressPlaybackError()) {
+                        dispatchFatalError("unavailable")
                     }
                 }
             },
@@ -372,7 +421,7 @@ class PlayerManager(
                             onStateChanged(PlaybackState.PLAYING)
                             return@post
                         }
-                        onError(error)
+                        dispatchFatalError(error)
                     }
                 },
                 onTracksChangedCallback = { tracks ->
@@ -391,7 +440,7 @@ class PlayerManager(
                 webViewLicenseBridge = licenseBridge,
             )
             if (engine?.getPlayer() == null) {
-                onError("Playback failed for this stream")
+                dispatchFatalError("Playback failed for this stream")
                 return
             }
             isInitialized = true
@@ -479,6 +528,23 @@ class PlayerManager(
     fun getWebView(): WebView? = webViewEngine?.getWebView()
 
     fun isWebViewPlayback(): Boolean = webViewEngine != null
+
+    /**
+     * True when playback is active or Exo is still starting after a WebView→Exo handoff.
+     * Prevents false "channel unavailable" dialogs from stale WebView/Shaka errors.
+     */
+    fun shouldSuppressPlaybackError(): Boolean {
+        if (engine?.isPlaying() == true) return true
+        val p = engine?.getPlayer()
+        if (p != null) {
+            when (p.playbackState) {
+                Player.STATE_BUFFERING, Player.STATE_READY -> return true
+            }
+        }
+        if (webViewEngine?.wasPlaybackStarted() == true) return true
+        if (gatewayExoPromotionAttempted && engine != null) return true
+        return false
+    }
 
     /**
      * After a failed Exo promotion, restore in-WebView Shaka playback if it was working.

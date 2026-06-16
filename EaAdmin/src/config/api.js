@@ -235,6 +235,15 @@ export const adminChannelsAPI = {
     }
     return { ok: true, count: orderIds.length, fallback: true };
   },
+
+  getChannelStreams: async (channelId) =>
+    apiRequest(`/api/admin/channels/${channelId}/streams`),
+
+  updateChannelStream: async (channelId, priority, payload) =>
+    apiRequest(`/api/admin/channels/${channelId}/streams/${priority}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
 };
 
 /**
@@ -527,9 +536,6 @@ export const dashboardAPI = {
   },
 };
 
-/**
- * Promotion Center API
- */
 export const adminPromotionsAPI = {
   getStats: async () => apiRequest('/api/admin/promotions/stats'),
 
@@ -557,6 +563,19 @@ export const adminPromotionsAPI = {
     apiRequest(`/api/admin/promotions/${id}`, { method: 'DELETE' }),
 };
 
+/**
+ * Subscription plans (server-driven pricing)
+ */
+export const adminSubscriptionPlansAPI = {
+  list: async () => apiRequest('/api/admin/subscription-plans'),
+
+  update: async (slug, payload) =>
+    apiRequest(`/api/admin/subscription-plans/${encodeURIComponent(slug)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+};
+
 export default {
   API_BASE_URL,
   ADMIN_API_KEY,
@@ -569,4 +588,5 @@ export default {
   adminMatchesAPI,
   adminAdsAPI,
   adminPromotionsAPI,
+  adminSubscriptionPlansAPI,
 };

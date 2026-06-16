@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../models/carousel_slide.dart';
+import '../models/channel_playback.dart';
 import '../models/channel_ui.dart';
 import '../screens/fullscreen_video_page.dart';
 import '../screens/payments_screen.dart';
@@ -15,6 +16,7 @@ import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/home_data_cache.dart';
 import '../services/native_android_player.dart';
+import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 import '../widgets/channel_card.dart';
@@ -144,6 +146,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   // are instant without a network round-trip.
   final Map<int, Map<String, dynamic>> _channelDataCache = {};
   final Map<int, DateTime> _channelDataCacheTime = {};
+  final Map<int, ChannelPlaybackBundle> _playbackCache = {};
+  final Map<int, DateTime> _playbackCacheTime = {};
 
   bool _searchOpen = false;
   String _searchQuery = '';
@@ -422,6 +426,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     _setRefreshing(true);
     _channelDataCache.clear();
     _channelDataCacheTime.clear();
+    _playbackCache.clear();
+    _playbackCacheTime.clear();
     if (mounted) setState(() => _channelsLoadFailed = false);
     try {
       unawaited(widget.syncPremiumSetting().catchError((_) {}));
@@ -549,6 +555,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     required String url,
     String? channelName,
     Map<String, dynamic>? channelData,
+    List<PlaybackStream>? fallbackStreams,
   }) async {
     if (url.isEmpty) return;
     if (kIsWeb) {
@@ -591,6 +598,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         drmType: drm,
         clearKeyHex: ck,
         headers: playbackHeaders.isEmpty ? null : playbackHeaders,
+        fallbackStreams: fallbackStreams,
       );
       return;
     }
@@ -722,30 +730,113 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   static const Duration _channelCacheTtl = Duration(minutes: 5);
 
-  bool _isCacheValid(int channelId) {
-    final t = _channelDataCacheTime[channelId];
-    return t != null && DateTime.now().difference(t) < _channelCacheTtl;
+  bool _isChannelDisabledByEmergency(int channelId) {
+    final disabled =
+        RemoteConfigService.cached?.emergency.disabledChannelIds ?? const [];
+    return disabled.contains(channelId);
   }
 
-  Future<void> _refreshChannelDataInBackground(ChannelUi ch) async {
+  Future<ChannelPlaybackBundle?> _resolveChannelPlayback(ChannelUi ch) async {
+    if (_isChannelDisabledByEmergency(ch.id)) return null;
+
+    final cachedPlayback = _playbackCache[ch.id];
+    final cachedAt = _playbackCacheTime[ch.id];
+    if (cachedPlayback != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _channelCacheTtl) {
+      return cachedPlayback;
+    }
+
+    try {
+      final playback = await channelsApi.getChannelPlayback(ch.id);
+      if (playback.streams.isEmpty) return null;
+      _playbackCache[ch.id] = playback;
+      _playbackCacheTime[ch.id] = DateTime.now();
+      return playback;
+    } catch (_) {
+      return cachedPlayback;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _legacyChannelData(ChannelUi ch) async {
+    if (_isCacheValid(ch.id) && _channelDataCache[ch.id] != null) {
+      return Map<String, dynamic>.from(_channelDataCache[ch.id]!);
+    }
     try {
       final data = await channelsApi.getChannel(ch.id);
       _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
       _channelDataCacheTime[ch.id] = DateTime.now();
+      return Map<String, dynamic>.from(data);
     } catch (_) {
-      // Non-blocking — list URL was enough to start playback.
+      return null;
     }
+  }
+
+  Future<void> _launchChannelPlayback(ChannelUi ch) async {
+    final playback = await _resolveChannelPlayback(ch);
+    if (playback != null && playback.streams.isNotEmpty) {
+      final stream = playback.primary!;
+      final channelData = playback.channelDataForStream(stream);
+      final backups = playback.streams.length > 1
+          ? playback.streams.sublist(1)
+          : null;
+      await _openVideoPlayback(
+        url: stream.url,
+        channelName: ch.name,
+        channelData: channelData,
+        fallbackStreams: backups,
+      );
+      return;
+    }
+
+    final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
+    final quickData = cachedData ?? ch.apiRow;
+    final quickUrl = _channelExternalUrl(ch, quickData);
+    if (quickUrl.isNotEmpty) {
+      final channelData = quickData != null
+          ? Map<String, dynamic>.from(quickData)
+          : ch.apiRow;
+      await _openVideoPlayback(
+        url: quickUrl,
+        channelName: ch.name,
+        channelData: channelData,
+      );
+      return;
+    }
+
+    final legacy = await _legacyChannelData(ch);
+    final legacyUrl = _channelExternalUrl(ch, legacy);
+    if (legacyUrl.isNotEmpty && mounted) {
+      await _openVideoPlayback(
+        url: legacyUrl,
+        channelName: ch.name,
+        channelData: legacy ?? ch.apiRow,
+      );
+      return;
+    }
+
+    if (mounted) await showChannelUnavailableModal(context);
+  }
+
+  bool _isCacheValid(int channelId) {
+    final t = _channelDataCacheTime[channelId];
+    return t != null && DateTime.now().difference(t) < _channelCacheTtl;
   }
 
   Future<void> _openChannel(ChannelUi ch) async {
     final canPlay = widget.isPremium ||
         (widget.channelsPremiumOnly ? ch.unlockToFree : ch.pointsRequired == 0);
     if (canPlay) {
+      if (_isChannelDisabledByEmergency(ch.id)) {
+        if (mounted) await showChannelUnavailableModal(context);
+        return;
+      }
+
       final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
       final quickData = cachedData ?? ch.apiRow;
       final quickUrl = _channelExternalUrl(ch, quickData);
 
-      // Open player immediately when the channel list already has a stream URL.
+      // Instant open when list already has URL — v2 fetch runs in parallel for DRM/headers.
       if (quickUrl.isNotEmpty) {
         final channelData = quickData != null
             ? Map<String, dynamic>.from(quickData)
@@ -755,27 +846,13 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
           channelName: ch.name,
           channelData: channelData,
         ));
-        unawaited(_refreshChannelDataInBackground(ch));
+        unawaited(_resolveChannelPlayback(ch));
         return;
       }
 
       setState(() => _loadingChannelId = ch.id);
       try {
-        final data = cachedData ?? await channelsApi.getChannel(ch.id);
-        _channelDataCache[ch.id] = Map<String, dynamic>.from(data);
-        _channelDataCacheTime[ch.id] = DateTime.now();
-
-        final url = _channelExternalUrl(ch, data);
-        if (url.isNotEmpty && mounted) {
-          await _openVideoPlayback(
-            url: url,
-            channelName: ch.name,
-            channelData: Map<String, dynamic>.from(data),
-          );
-          return;
-        }
-
-        if (mounted) await showChannelUnavailableModal(context);
+        await _launchChannelPlayback(ch);
       } catch (_) {
         if (mounted) await showChannelUnavailableModal(context);
       } finally {
@@ -808,27 +885,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       });
       setState(() => _loadingChannelId = ch.id);
       try {
-        final data = await channelsApi.getChannel(ch.id);
-        final rawUrl = data['streamUrl'] ?? data['stream_url'];
-        final url = rawUrl != null && '$rawUrl'.trim().isNotEmpty
-            ? '$rawUrl'.trim()
-            : ch.streamUrl?.trim();
-        if (url != null && url.isNotEmpty && mounted) {
-          await _openVideoPlayback(
-            url: url,
-            channelName: ch.name,
-            channelData: Map<String, dynamic>.from(data),
-          );
-        }
+        await _launchChannelPlayback(ch);
       } catch (_) {
-        final fastUrl = ch.streamUrl?.trim();
-        if (fastUrl != null && fastUrl.isNotEmpty && mounted) {
-          await _openVideoPlayback(
-            url: fastUrl,
-            channelName: ch.name,
-            channelData: ch.apiRow,
-          );
-        }
+        if (mounted) await showChannelUnavailableModal(context);
       } finally {
         if (mounted) setState(() => _loadingChannelId = null);
       }
