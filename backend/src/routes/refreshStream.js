@@ -1,8 +1,8 @@
-const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const { getChannelPlayback } = require('../services/channelPlaybackService');
 
-const router = express.Router();
+const router = require('express').Router();
 
 /**
  * Refresh playback URL/token for expiring streams (RN StreamEngine retry path).
@@ -18,30 +18,20 @@ router.post('/', async (req, res, next) => {
     const body = bodySchema.parse(req.body || {});
 
     if (body.channelId) {
-      const result = await query(
-        `SELECT
-           COALESCE(c.stream_url, t.stream_url) AS stream_url,
-           c.license_url,
-           c.drm_type,
-           c.drm_clear_key
-         FROM channels c
-         LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
-         LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
-         WHERE c.id = $1 AND c.is_active = TRUE
-         LIMIT 1`,
-        [body.channelId],
-      );
-      if (!result.rows.length) {
+      const playback = await getChannelPlayback(body.channelId);
+      if (!playback) {
         return res.status(404).json({ error: 'Channel not found' });
       }
-      const row = result.rows[0];
-      const streamUrl = row.stream_url ? String(row.stream_url).trim() : '';
+      const primary = playback.streams.find((s) => s.priority === 0) || playback.streams[0];
+      if (!primary?.url) {
+        return res.status(404).json({ error: 'No stream URL for channel' });
+      }
       return res.json({
-        url: streamUrl,
-        streamUrl,
-        licenseUrl: row.license_url || null,
-        drmType: (row.drm_type || 'NONE').toUpperCase(),
-        drmClearKey: row.drm_clear_key || null,
+        url: primary.url,
+        streamUrl: primary.url,
+        licenseUrl: primary.licenseUrl || null,
+        drmType: (primary.drmType || 'NONE').toUpperCase(),
+        drmClearKey: primary.drmClearKey || null,
       });
     }
 

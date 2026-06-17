@@ -141,16 +141,39 @@ function hexToBase64Url(hexString) {
 
 // Helper: build ClearKey license JSON from channel row (only for drm_type = CLEARKEY)
 async function getDrmLicenseResponse(id) {
-  const result = await query(
-    'SELECT COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
-    [id]
-  );
-  if (!result.rows || result.rows.length === 0) return { status: 404 };
-  const row = result.rows[0];
-  const drmType = (row.drm_type || 'NONE').toUpperCase();
-  if (drmType !== 'CLEARKEY' || !row.drm_clear_key) return { status: 400 };
+  let drmType = 'NONE';
+  let drmClearKey = null;
+  try {
+    const streamResult = await query(
+      `SELECT COALESCE(drm_type, 'NONE') AS drm_type, drm_clear_key
+         FROM channel_streams
+        WHERE channel_id = $1 AND priority = 0 AND is_active = TRUE
+        LIMIT 1`,
+      [id],
+    );
+    if (streamResult.rows?.length) {
+      const row = streamResult.rows[0];
+      const streamDrmType = (row.drm_type || 'NONE').toUpperCase();
+      if (streamDrmType !== 'NONE' || row.drm_clear_key) {
+        drmType = streamDrmType;
+        drmClearKey = row.drm_clear_key;
+      }
+    }
+  } catch (_) {
+    // channel_streams table may not exist on older deployments
+  }
+  if (drmType === 'NONE' && !drmClearKey) {
+    const result = await query(
+      'SELECT COALESCE(drm_type, \'NONE\') AS drm_type, drm_clear_key FROM channels WHERE id = $1 AND is_active = TRUE',
+      [id],
+    );
+    if (!result.rows || result.rows.length === 0) return { status: 404 };
+    drmType = (result.rows[0].drm_type || 'NONE').toUpperCase();
+    drmClearKey = result.rows[0].drm_clear_key;
+  }
+  if (drmType !== 'CLEARKEY' || !drmClearKey) return { status: 400 };
 
-  const raw = String(row.drm_clear_key).trim();
+  const raw = String(drmClearKey).trim();
 
   if (raw.startsWith('{') && raw.endsWith('}')) {
     try {

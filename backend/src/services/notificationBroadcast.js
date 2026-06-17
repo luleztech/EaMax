@@ -1,15 +1,17 @@
 const { query } = require('../db');
 const {
   isInitialized,
-  sendReliablePushNotificationToTopic,
-  sendReliablePushNotificationToMultiple,
+  sendPushNotificationToTopic,
 } = require('./firebase');
 
-const FCM_BATCH_SIZE = 500;
-/** Run several FCM batches at once (faster than serial + sleep). */
-const PARALLEL_BATCHES = 4;
-
 const inFlightJobs = new Set();
+const broadcastQueue = [];
+let drainingQueue = false;
+
+/** Gap between back-to-back admin broadcasts so devices show alerts one-by-one. */
+const BROADCAST_GAP_MS = 6000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Active installs with a stored FCM token (one row per user). */
 async function fetchActiveUserTokens() {
@@ -72,63 +74,24 @@ async function clearInvalidFcmTokens(tokens) {
 }
 
 /**
- * Send FCM in parallel batches. Topic runs in parallel when enabled.
+ * One FCM path per broadcast: data-only topic `all_users`.
+ * Avoids duplicate alerts from topic + per-token multicast on the same device.
  */
-async function broadcastNotificationToAllUsers(title, body, data = {}, options = {}) {
+async function broadcastNotificationToAllUsers(title, body, data = {}) {
   if (!isInitialized()) {
     throw new Error('Firebase Admin not initialized');
   }
 
-  const useTopic = options.useTopic !== false;
-  const useTokenMulticast = options.useTokenMulticast !== false;
-
-  const topicPromise = useTopic
-    ? sendReliablePushNotificationToTopic('all_users', title, body, data)
-        .then(() => true)
-        .catch((err) => {
-          console.error('[FCM] Topic all_users failed:', err.message || err);
-          return false;
-        })
-    : Promise.resolve(false);
-
-  let tokensAttempted = 0;
-  let tokensSent = 0;
-  let tokensFailed = 0;
-  const invalidTokens = [];
-
-  if (useTokenMulticast) {
-    const userTokenMap = await fetchActiveUserTokens();
-    const tokens = [...new Set(userTokenMap.values())];
-    tokensAttempted = tokens.length;
-
-    const batches = [];
-    for (let i = 0; i < tokens.length; i += FCM_BATCH_SIZE) {
-      batches.push(tokens.slice(i, i + FCM_BATCH_SIZE));
-    }
-
-    for (let i = 0; i < batches.length; i += PARALLEL_BATCHES) {
-      const chunk = batches.slice(i, i + PARALLEL_BATCHES);
-      const results = await Promise.all(
-        chunk.map((batch) =>
-          sendReliablePushNotificationToMultiple(batch, title, body, data),
-        ),
-      );
-      for (let j = 0; j < results.length; j += 1) {
-        const pushResult = results[j];
-        const batch = chunk[j];
-        tokensSent += Number(pushResult?.sent || 0);
-        tokensFailed += Number(pushResult?.failed || 0);
-        invalidTokens.push(...collectInvalidTokens(pushResult?.responses, batch));
-      }
-    }
-
-    if (invalidTokens.length > 0) {
-      await clearInvalidFcmTokens(invalidTokens);
-    }
+  let topicSent = false;
+  try {
+    await sendPushNotificationToTopic('all_users', title, body, data);
+    topicSent = true;
+  } catch (err) {
+    console.error('[FCM] Topic all_users failed:', err.message || err);
+    throw err;
   }
 
-  const topicSent = await topicPromise;
-
+  const usersWithToken = await countUsersWithFcmToken();
   const audienceResult = await query(
     `SELECT COUNT(*)::int AS count
        FROM users
@@ -138,13 +101,13 @@ async function broadcastNotificationToAllUsers(title, body, data = {}, options =
   const registeredUsers = Number(audienceResult.rows?.[0]?.count || 0);
 
   return {
-    tokensAttempted,
-    tokensSent,
-    tokensFailed,
+    tokensAttempted: usersWithToken,
+    tokensSent: topicSent ? usersWithToken : 0,
+    tokensFailed: topicSent ? 0 : usersWithToken,
     topicSent,
     registeredUsers,
-    usersWithToken: tokensAttempted,
-    invalidTokensCleared: invalidTokens.length,
+    usersWithToken,
+    invalidTokensCleared: 0,
   };
 }
 
@@ -161,17 +124,8 @@ async function runNotificationBroadcastJob(notificationId, title, body, data) {
 
   try {
     const usersWithToken = await countUsersWithFcmToken();
-    // Large audiences: topic only (instant). Small: tokens for precise FCM counts.
-    const useTokenMulticast = usersWithToken < 800;
-
-    const broadcast = await broadcastNotificationToAllUsers(title, body, data, {
-      useTopic: true,
-      useTokenMulticast,
-    });
-
-    const sentCount = useTokenMulticast
-      ? broadcast.tokensSent
-      : usersWithToken;
+    const broadcast = await broadcastNotificationToAllUsers(title, body, data);
+    const sentCount = broadcast.topicSent ? usersWithToken : 0;
 
     await query(
       `UPDATE notifications
@@ -183,7 +137,7 @@ async function runNotificationBroadcastJob(notificationId, title, body, data) {
     );
 
     console.log(
-      `[FCM] Notification ${id} done: sent_count=${sentCount} topic=${broadcast.topicSent} tokens=${broadcast.tokensSent}/${broadcast.tokensAttempted}`,
+      `[FCM] Notification ${id} done: sent_count=${sentCount} topic=${broadcast.topicSent} audience=${usersWithToken}`,
     );
   } catch (err) {
     const msg = String(err?.message || err);
@@ -198,21 +152,44 @@ async function runNotificationBroadcastJob(notificationId, title, body, data) {
   }
 }
 
-/** Queue broadcast so admin API returns immediately. */
+async function drainBroadcastQueue() {
+  if (drainingQueue) return;
+  drainingQueue = true;
+  try {
+    while (broadcastQueue.length > 0) {
+      const job = broadcastQueue.shift();
+      const id = Number(job.notificationId);
+      if (!Number.isFinite(id) || inFlightJobs.has(id)) continue;
+
+      inFlightJobs.add(id);
+      try {
+        await runNotificationBroadcastJob(id, job.title, job.body, job.data);
+      } finally {
+        inFlightJobs.delete(id);
+      }
+
+      if (broadcastQueue.length > 0) {
+        await sleep(BROADCAST_GAP_MS);
+      }
+    }
+  } finally {
+    drainingQueue = false;
+    if (broadcastQueue.length > 0) {
+      setImmediate(() => drainBroadcastQueue());
+    }
+  }
+}
+
+/** Queue broadcast so admin API returns immediately; sends one alert at a time. */
 function scheduleNotificationBroadcast(notificationId, title, body, data) {
   const id = Number(notificationId);
-  if (!Number.isFinite(id) || inFlightJobs.has(id)) return;
-  inFlightJobs.add(id);
+  if (!Number.isFinite(id)) return;
 
-  setImmediate(() => {
-    runNotificationBroadcastJob(id, title, body, data)
-      .catch((err) => {
-        console.error('[FCM] Background job error:', err?.message || err);
-      })
-      .finally(() => {
-        inFlightJobs.delete(id);
-      });
-  });
+  const alreadyQueued = broadcastQueue.some((j) => Number(j.notificationId) === id);
+  if (alreadyQueued || inFlightJobs.has(id)) return;
+
+  broadcastQueue.push({ notificationId: id, title, body, data });
+  setImmediate(() => drainBroadcastQueue());
 }
 
 /** Keep notifications.delivered_count and clicks in sync with detail tables. */

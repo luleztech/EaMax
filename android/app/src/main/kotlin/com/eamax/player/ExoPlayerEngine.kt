@@ -117,8 +117,8 @@ class ExoPlayerEngine(
         // Buffer configuration tuned for live IPTV on mobile networks.
         private const val MIN_BUFFER_MS = 10000       // maintain 10s buffer
         private const val MAX_BUFFER_MS = 30000       // cap at 30s to save memory
-        private const val BUFFER_FOR_PLAYBACK_MS = 1000        // start after 1s
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 1500 // resume after 1.5s (was 5s)
+        private const val BUFFER_FOR_PLAYBACK_MS = 250
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 500
 
         // Timeouts: fail fast → surface error → retry rather than hanging silently.
         private const val CONNECT_TIMEOUT_MS = 10000  // 10s connect (was 30s)
@@ -199,10 +199,11 @@ class ExoPlayerEngine(
                 .build()
                 .apply {
                     val ts = this@ExoPlayerEngine.trackSelector
-                    // Default “Okoa bando”: cap ABR to ~360p until user picks Auto or higher in the UI.
+                    selectedQuality = RemotePlayerConfigHolder.defaultStreamQuality()
+                    val maxHeight = RemotePlayerConfigHolder.defaultQualityMaxHeight()
                     ts.parameters = ts.buildUponParameters()
-                        .setMaxVideoSize(Int.MAX_VALUE, StreamQuality.QUALITY_360P.height)
-                        .setForceHighestSupportedBitrate(false)
+                        .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+                        .setForceHighestSupportedBitrate(selectedQuality == StreamQuality.AUTO)
                         .build()
 
                     setAudioAttributes(
@@ -218,8 +219,8 @@ class ExoPlayerEngine(
                     addListener(PlayerEventListener())
                     setMediaSource(mediaSource)
                     prepare()
-                    playWhenReady = true
-                    Log.d(TAG, "✅ Player prepared with playWhenReady=true")
+                    playWhenReady = RemotePlayerConfigHolder.autoPlay
+                    Log.d(TAG, "✅ Player prepared with playWhenReady=${RemotePlayerConfigHolder.autoPlay}")
                 }
 
         } catch (e: Exception) {

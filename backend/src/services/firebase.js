@@ -38,6 +38,9 @@ const initializeFirebase = () => {
 // No collapseKey so every notification is delivered (not replaced by a newer one).
 const FCM_TTL_MS = 28 * 24 * 60 * 60 * 1000; // 28 days in milliseconds
 
+/** Android replaces the previous EaMax tray alert (one visible at a time on device). */
+const FCM_ANDROID_COLLAPSE_KEY = 'eamax_broadcast_v1';
+
 /** Must match Flutter `kFcmAndroidChannelId` / AndroidManifest `default_notification_channel_id`. */
 const FCM_ANDROID_CHANNEL_ID =
   process.env.FCM_ANDROID_CHANNEL_ID || 'eamax_high_priority';
@@ -112,6 +115,7 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
       android: {
         priority: 'high',
         ttl: FCM_TTL_MS,
+        collapseKey: FCM_ANDROID_COLLAPSE_KEY,
       },
       apns: {
         payload: {
@@ -138,12 +142,14 @@ const sendPushNotification = async (fcmToken, title, body, data = {}) => {
 const buildReliableAndroidConfig = () => ({
   priority: 'high',
   ttl: FCM_TTL_MS,
+  collapseKey: FCM_ANDROID_COLLAPSE_KEY,
   notification: {
     channelId: FCM_ANDROID_CHANNEL_ID,
     sound: 'default',
     priority: 'high',
     defaultSound: true,
     visibility: 'public',
+    tag: FCM_ANDROID_COLLAPSE_KEY,
   },
 });
 
@@ -280,6 +286,7 @@ const sendPushNotificationToTopic = async (topic, title, body, data = {}) => {
     android: {
       priority: 'high',
       ttl: FCM_TTL_MS,
+      collapseKey: FCM_ANDROID_COLLAPSE_KEY,
     },
     apns: {
       payload: {

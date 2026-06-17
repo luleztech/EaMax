@@ -84,12 +84,15 @@ async function getChannelPlayback(channelId) {
   }
 
   if (streams.length === 0 && channel.legacy_url) {
+    const legacyDrmType = (channel.drm_type || 'NONE').toUpperCase();
     streams.push({
       priority: 0,
       url: String(channel.legacy_url).trim(),
       streamAlias: channel.stream_alias || null,
-      drmType: (channel.drm_type || 'NONE').toUpperCase(),
-      drmClearKey: channel.drm_clear_key ? String(channel.drm_clear_key).trim() : null,
+      drmType: legacyDrmType,
+      drmClearKey: legacyDrmType === 'CLEARKEY' && channel.drm_clear_key
+        ? String(channel.drm_clear_key).trim()
+        : null,
       licenseUrl: channel.license_url || null,
       headers: {},
       isActive: true,
@@ -136,7 +139,26 @@ async function upsertChannelStream(channelId, priority, data) {
   );
 }
 
+async function syncPrimaryChannelStreamFromChannel(channelRow) {
+  if (!channelRow?.id) return;
+  const streamUrl = channelRow.stream_url ? String(channelRow.stream_url).trim() : '';
+  const streamAlias = channelRow.stream_alias ? String(channelRow.stream_alias).trim() : '';
+  if (!streamUrl && !streamAlias) return;
+  const drmType = (channelRow.drm_type || 'NONE').toUpperCase();
+  await upsertChannelStream(channelRow.id, 0, {
+    streamUrl: streamUrl || null,
+    streamAlias: streamAlias || null,
+    drmType,
+    drmClearKey: drmType === 'CLEARKEY' && channelRow.drm_clear_key
+      ? String(channelRow.drm_clear_key).trim()
+      : null,
+    licenseUrl: channelRow.license_url ? String(channelRow.license_url).trim() : null,
+    isActive: channelRow.is_active !== false,
+  });
+}
+
 module.exports = {
   getChannelPlayback,
   upsertChannelStream,
+  syncPrimaryChannelStreamFromChannel,
 };

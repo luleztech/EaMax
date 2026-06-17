@@ -132,7 +132,6 @@ const SettingsSection = () => {
           <View style={styles.headerSection}>
             <Text style={styles.settingsTitle}>WhatsApp</Text>
           </View>
-          <Text style={styles.settingsDescription}>Support line shown in the app</Text>
 
           <View style={styles.contactsList}>
             <View style={styles.contactItem}>
@@ -176,9 +175,6 @@ const SettingsSection = () => {
           <View style={styles.headerSection}>
             <Text style={styles.settingsTitle}>Channels access</Text>
           </View>
-          <Text style={styles.settingsDescription}>
-            Premium-only vs points &amp; ads (global)
-          </Text>
           <View style={styles.contactItem}>
             <View style={styles.contactHeader}>
               <View style={styles.contactIconContainer}>
@@ -206,9 +202,6 @@ const SettingsSection = () => {
           <View style={styles.headerSection}>
             <Text style={styles.settingsTitle}>Payment provider</Text>
           </View>
-          <Text style={styles.settingsDescription}>
-            Pick which API receives new checkouts. This does not affect old pending orders.
-          </Text>
           <View style={styles.contactItem}>
             <View style={styles.contactHeader}>
               <View style={styles.contactIconContainer}>
@@ -216,9 +209,6 @@ const SettingsSection = () => {
               </View>
               <View style={styles.contactInfo}>
                 <Text style={styles.singleLabel}>Active provider</Text>
-                <Text style={styles.singleLabelSmall}>
-                  {paymentProvider === 'sonicpesa' ? 'SonicPesa' : 'ZenoPay'} is live for the app
-                </Text>
               </View>
               {paymentProviderSaving ? (
                 <ActivityIndicator size="small" color="#22c55e" />

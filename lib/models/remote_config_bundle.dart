@@ -165,6 +165,55 @@ class RemoteSubscriptionPlan {
     }
     return buf.toString();
   }
+
+  /// Human-readable period when server label is missing.
+  String get displayDurationLabel {
+    if (durationLabelSw.isNotEmpty) return durationLabelSw;
+    switch (durationDays) {
+      case 7:
+        return '7 siku';
+      case 30:
+        return '30 siku';
+      case 90:
+        return 'miezi 3';
+      case 365:
+        return 'mwaka 1';
+      case 1:
+        return 'siku 1';
+      default:
+        return '$durationDays siku';
+    }
+  }
+
+  /// Price line shown on the payments screen (auto-built from amount + period).
+  String get displayPriceLine {
+    if (priceLineSw.isNotEmpty) return priceLineSw;
+    final period = switch (durationDays) {
+      7 => 'wiki moja',
+      30 => 'mwezi mmoja',
+      90 => 'miezi mitatu',
+      365 => 'mwaka mmoja',
+      1 => 'siku moja',
+      _ => displayDurationLabel,
+    };
+    return 'Tsh.$formattedPrice/= $period';
+  }
+
+  String get displayName {
+    if (nameSw.isNotEmpty) return nameSw;
+    switch (durationDays) {
+      case 7:
+        return 'Kwa Wiki';
+      case 30:
+        return 'Mwezi';
+      case 90:
+        return 'Miezi 3';
+      case 365:
+        return 'Mwaka';
+      default:
+        return slug.isNotEmpty ? slug : displayDurationLabel;
+    }
+  }
 }
 
 class RemotePlayerConfig {

@@ -15,6 +15,63 @@ import {
 import { userAPI, notificationsAPI } from '../config/api';
 
 const NOTIFICATION_PERMISSION_ASKED_KEY = 'notificationPermissionAsked';
+const TRAY_NOTIFICATION_ID = '9001';
+const MAX_QUEUED_NOTIFICATIONS = 4;
+const GAP_BETWEEN_NOTIFICATIONS_MS = 5000;
+
+/** One tray alert at a time; dedupe by notificationId. */
+const _pendingTray = [];
+const _recentNotificationIds = [];
+let _drainingTray = false;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const shouldSkipDuplicateNotification = (notificationId) => {
+  if (!notificationId) return false;
+  const id = String(notificationId);
+  if (_recentNotificationIds.includes(id)) return true;
+  _recentNotificationIds.push(id);
+  while (_recentNotificationIds.length > 32) _recentNotificationIds.shift();
+  return false;
+};
+
+const drainNotificationQueue = async (externalId) => {
+  if (_drainingTray || _pendingTray.length === 0) return;
+  _drainingTray = true;
+  try {
+    const notifee = require('@notifee/react-native').default;
+    while (_pendingTray.length > 0) {
+      const item = _pendingTray.shift();
+      await displayNotificationNow(item.title, item.body, item.data, externalId);
+      if (_pendingTray.length > 0) {
+        await sleep(GAP_BETWEEN_NOTIFICATIONS_MS);
+        try {
+          await notifee.cancelNotification(TRAY_NOTIFICATION_ID);
+        } catch (_) {}
+      }
+    }
+  } finally {
+    _drainingTray = false;
+    if (_pendingTray.length > 0) {
+      drainNotificationQueue(externalId).catch(() => {});
+    }
+  }
+};
+
+const enqueueNotification = (title, body, data = {}, externalId = null) => {
+  const notificationId = data?.notificationId || data?.notification_id;
+  if (shouldSkipDuplicateNotification(notificationId)) {
+    console.log('[FCM] Skip duplicate notification', notificationId);
+    return;
+  }
+  _pendingTray.push({ title, body, data: data || {} });
+  while (_pendingTray.length > MAX_QUEUED_NOTIFICATIONS) {
+    _pendingTray.shift();
+  }
+  drainNotificationQueue(externalId).catch((e) => {
+    console.warn('[FCM] drain queue error:', e?.message || e);
+  });
+};
 
 function getMessagingInstance() {
   return getMessaging(getApp());
@@ -210,8 +267,8 @@ const confirmNotificationDelivery = async (notificationId, externalId) => {
   }
 };
 
-// Display local notification using Notifee
-export const displayNotification = async (title, body, data = {}, externalId = null) => {
+// Display local notification using Notifee (internal — use enqueueNotification from handlers)
+const displayNotificationNow = async (title, body, data = {}, externalId = null) => {
   try {
     const notifee = require('@notifee/react-native').default;
     const { AndroidImportance } = require('@notifee/react-native');
@@ -224,6 +281,7 @@ export const displayNotification = async (title, body, data = {}, externalId = n
     
     if (Platform.OS === 'android') {
       await notifee.displayNotification({
+        id: TRAY_NOTIFICATION_ID,
         title: title || 'EaMax',
         body: body || '',
         android: {
@@ -235,6 +293,7 @@ export const displayNotification = async (title, body, data = {}, externalId = n
           showTimestamp: true,
           autoCancel: true,
           ongoing: false,
+          tag: 'eamax_broadcast',
         },
         data: data || {},
       });
@@ -249,6 +308,11 @@ export const displayNotification = async (title, body, data = {}, externalId = n
   } catch (error) {
     console.warn('Display notification error:', error?.message || error);
   }
+};
+
+/** Public API — queues tray alerts one-by-one (max 4 pending). */
+export const displayNotification = async (title, body, data = {}, externalId = null) => {
+  enqueueNotification(title, body, data, externalId);
 };
 
 // Initialize notifications (create channel, request permission if needed, get token, register, setup handlers)
@@ -346,18 +410,28 @@ export const setupNotificationHandlers = (onNotificationReceived, externalId = n
       try {
         const { notification, data } = remoteMessage || {};
         if (notification) {
-          await displayNotification(
-            notification.title || 'EaMax',
-            notification.body || '',
-            data || {},
-            _cachedExternalId
-          );
+          // Data-only FCM from admin — avoid double tray if OS also renders notification block.
+          if (!data?.notificationId && !data?.notification_id) {
+            await displayNotification(
+              notification.title || 'EaMax',
+              notification.body || '',
+              data || {},
+              _cachedExternalId,
+            );
+          } else {
+            await displayNotification(
+              data.title || notification.title || 'EaMax',
+              data.body || data.message || notification.body || '',
+              data,
+              _cachedExternalId,
+            );
+          }
         } else if (data && (data.title || data.body || data.message)) {
           await displayNotification(
             data.title || 'EaMax',
             data.body || data.message || '',
             data,
-            _cachedExternalId
+            _cachedExternalId,
           );
         }
         if (onNotificationReceived) onNotificationReceived(remoteMessage);

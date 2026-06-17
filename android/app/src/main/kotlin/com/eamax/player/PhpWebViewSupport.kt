@@ -89,7 +89,7 @@ object PhpWebViewSupport {
                     tryPlay(video);
                     waitingSince = now;
                   }
-                }, 2500);
+                }, 1000);
               }
 
               try {
@@ -345,11 +345,16 @@ object PhpWebViewSupport {
               }
               function tryHook() {
                 if (typeof shaka === 'undefined' || !shaka.Player) return;
+                if (typeof shaka.Player.isBrowserSupported !== 'function') {
+                  shaka.Player.isBrowserSupported = function () {
+                    try { return Promise.resolve(true); } catch (e) { return true; }
+                  };
+                }
                 if (shaka.Player.__eaMaxHooked) return;
                 shaka.Player = wrapPlayer(shaka.Player);
                 shaka.Player.__eaMaxHooked = true;
               }
-              setInterval(tryHook, 40);
+              setInterval(tryHook, 15);
               return true;
             })();
         """.trimIndent()
@@ -456,12 +461,113 @@ object PhpWebViewSupport {
         """.trimIndent()
     }
 
+    /** Polyfill Shaka on third-party gateway pages before their init scripts run. */
+    fun gatewayShakaPolyfillScript(): String {
+        return """
+            (function () {
+              if (window.__eaMaxShakaPolyfill) return true;
+              window.__eaMaxShakaPolyfill = true;
+
+              function browserSupported() {
+                try { return Promise.resolve(true); } catch (e) { return true; }
+              }
+
+              function ensurePlayer(P) {
+                if (!P) return false;
+                try {
+                  if (typeof P.isBrowserSupported !== 'function') {
+                    P.isBrowserSupported = browserSupported;
+                  }
+                } catch (e) {}
+                return typeof P.isBrowserSupported === 'function';
+              }
+
+              function watchShakaObject(obj) {
+                if (!obj || typeof obj !== 'object' || obj.__eaMaxWatched) return;
+                obj.__eaMaxWatched = true;
+                ensurePlayer(obj.Player);
+                try {
+                  var _Player = obj.Player;
+                  Object.defineProperty(obj, 'Player', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function () { return _Player; },
+                    set: function (v) {
+                      _Player = v;
+                      ensurePlayer(v);
+                    }
+                  });
+                } catch (e) {}
+                try {
+                  if (obj.polyfill && typeof obj.polyfill.installAll === 'function') {
+                    obj.polyfill.installAll();
+                  }
+                } catch (e) {}
+              }
+
+              function retryGatewayInit() {
+                ['initPlayer', 'startPlayer', 'initShaka', 'loadStream', 'playChannel', 'startStream']
+                  .forEach(function (fn) {
+                    try {
+                      if (typeof window[fn] === 'function') window[fn]();
+                    } catch (e) {}
+                  });
+              }
+
+              try {
+                var stub = function () {};
+                stub.isBrowserSupported = browserSupported;
+                if (!window.shaka) {
+                  window.shaka = { Player: stub, polyfill: { installAll: function () {} } };
+                } else {
+                  watchShakaObject(window.shaka);
+                }
+              } catch (e) {}
+
+              try {
+                var stored = window.shaka;
+                watchShakaObject(stored);
+                Object.defineProperty(window, 'shaka', {
+                  configurable: true,
+                  enumerable: true,
+                  get: function () { return stored; },
+                  set: function (val) {
+                    stored = val;
+                    watchShakaObject(val);
+                  }
+                });
+              } catch (e) {}
+
+              var n = 0;
+              var fast = setInterval(function () {
+                try {
+                  if (window.shaka) watchShakaObject(window.shaka);
+                  ensurePlayer(window.shaka && window.shaka.Player);
+                } catch (e) {}
+                if (++n > 400) clearInterval(fast);
+              }, 5);
+
+              window.addEventListener('error', function (ev) {
+                var msg = (ev && ev.message) ? String(ev.message) : '';
+                if (msg.indexOf('isBrowserSupported') >= 0) {
+                  if (window.shaka) ensurePlayer(window.shaka.Player);
+                  setTimeout(retryGatewayInit, 0);
+                }
+              });
+
+              return true;
+            })();
+        """.trimIndent()
+    }
+
     /** Combined early injection: configure hook + network capture + CDN referer fix (document-start). */
     fun gatewayDocumentStartScript(
         androidInterfaceName: String = "ShakaPlayerBridge",
         gatewayUrl: String = "",
     ): String =
-        gatewayShakaConfigureHookScript(androidInterfaceName) +
+        gatewayShakaPolyfillScript() +
+            "\n" +
+            gatewayShakaConfigureHookScript(androidInterfaceName) +
             "\n" +
             gatewayNetworkCaptureScript(androidInterfaceName) +
             "\n" +
@@ -1085,7 +1191,7 @@ video::-webkit-media-controls-timeline{display:none!important}
   var licenseUrl=$licenseJson, maxH=$maxHeight, maxW=$maxW;
   function postPlaying(){ try{ window[BR]&&window[BR].onPlaybackStarted&&window[BR].onPlaybackStarted(); }catch(e){} }
   function postError(){ try{ window[BR]&&window[BR].onPlaybackError&&window[BR].onPlaybackError('unavailable'); }catch(e){} }
-  function waitShaka(cb){ var n=0;(function t(){ if(typeof shaka!=='undefined'){ cb(true); return; } if(++n>40){ cb(false); return; } setTimeout(t,150); })(); }
+  function waitShaka(cb){ var n=0;(function t(){ if(typeof shaka!=='undefined'){ cb(true); return; } if(++n>80){ cb(false); return; } setTimeout(t,50); })(); }
   waitShaka(function(ok){
     if(!ok){ postError(); return; }
     var v=document.getElementById('v');
@@ -1102,7 +1208,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     if(clearKeys&&Object.keys(clearKeys).length) drmCfg.clearKeys=clearKeys;
     if(licenseUrl) drmCfg.servers={'com.widevine.alpha':licenseUrl,'org.w3.clearkey':licenseUrl};
     player.configure({
-      streaming:{bufferingGoal:20,rebufferingGoal:3,retryParameters:{maxAttempts:5,baseDelay:1000,timeout:30000}},
+      streaming:{bufferingGoal:10,rebufferingGoal:2,retryParameters:{maxAttempts:5,baseDelay:500,timeout:20000}},
       drm:drmCfg,
       abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
     });

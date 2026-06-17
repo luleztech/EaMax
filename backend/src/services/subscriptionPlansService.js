@@ -43,6 +43,100 @@ const DEFAULT_PLANS = [
   },
 ];
 
+function formatTzs(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString('en-US');
+}
+
+/** Auto-generate Swahili/English labels from slug + amount + period (days). */
+function buildPlanDisplayFields(slug, priceTzs, durationDays, nameSwOverride) {
+  const key = String(slug || '').toLowerCase();
+  const days = Number(durationDays) || 0;
+  const priceFmt = formatTzs(priceTzs);
+
+  let nameSw = 'Mpango';
+  let nameEn = 'Plan';
+  let durationLabelSw = `${days} siku`;
+  let periodPhrase = `${days} siku`;
+
+  if (days === 7) {
+    durationLabelSw = '7 siku';
+    periodPhrase = 'wiki moja';
+    if (key === 'week') {
+      nameSw = 'Kwa Wiki';
+      nameEn = 'Weekly';
+    }
+  } else if (days === 14) {
+    durationLabelSw = 'wiki 2';
+    periodPhrase = 'wiki mbili';
+  } else if (days === 30) {
+    durationLabelSw = '30 siku';
+    periodPhrase = 'mwezi mmoja';
+    if (key === 'month') {
+      nameSw = 'Mwezi';
+      nameEn = 'Monthly';
+    }
+  } else if (days === 90) {
+    durationLabelSw = 'miezi 3';
+    periodPhrase = 'miezi mitatu';
+    if (key === 'year' || key === 'quarter') {
+      nameSw = 'Miezi 3';
+      nameEn = 'Quarter';
+    }
+  } else if (days === 180) {
+    durationLabelSw = 'miezi 6';
+    periodPhrase = 'miezi sita';
+  } else if (days === 365) {
+    durationLabelSw = 'mwaka 1';
+    periodPhrase = 'mwaka mmoja';
+    if (key === 'year' || key === 'mwaka') {
+      nameSw = 'Mwaka';
+      nameEn = 'Yearly';
+    }
+  } else if (days === 1) {
+    durationLabelSw = 'siku 1';
+    periodPhrase = 'siku moja';
+  }
+
+  if (nameSwOverride && String(nameSwOverride).trim()) {
+    nameSw = String(nameSwOverride).trim();
+    nameEn = String(nameSwOverride).trim();
+  }
+
+  const priceLineSw = `Tsh.${priceFmt}/= ${periodPhrase}`;
+
+  return { nameSw, nameEn, durationLabelSw, priceLineSw };
+}
+
+function slugifyPlanName(name) {
+  const base = String(name || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 28);
+  return base || 'plan';
+}
+
+async function nextPlanSortOrder() {
+  try {
+    const result = await query(
+      `SELECT COALESCE(MAX(sort_order), -1)::int AS max_order FROM subscription_plans`,
+    );
+    return Number(result.rows?.[0]?.max_order ?? -1) + 1;
+  } catch (_) {
+    return DEFAULT_PLANS.length;
+  }
+}
+
+async function clearPopularExcept(slug) {
+  await query(
+    `UPDATE subscription_plans SET is_popular = FALSE, updated_at = NOW()
+      WHERE slug <> $1 AND is_popular = TRUE`,
+    [slug],
+  ).catch(() => {});
+}
+
 function mapRow(row) {
   if (!row) return null;
   return {
@@ -142,6 +236,53 @@ async function listAllPlansAdmin() {
 }
 
 async function upsertPlanAdmin(slug, data) {
+  const key = String(slug || '').toLowerCase();
+  const priceTzs = Number(data.priceTzs);
+  const durationDays = Number(data.durationDays);
+  const display = buildPlanDisplayFields(
+    key,
+    priceTzs,
+    durationDays,
+    data.nameSw,
+  );
+
+  let existing = null;
+  try {
+    const existingResult = await query(
+      `SELECT is_active, is_popular, sort_order, badge_text
+         FROM subscription_plans
+        WHERE slug = $1
+        LIMIT 1`,
+      [key],
+    );
+    existing = existingResult.rows[0] || null;
+  } catch (_) {
+    existing = null;
+  }
+  if (!existing) {
+    const err = new Error('Plan not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  const fallback = DEFAULT_PLANS.find((p) => p.slug === key);
+
+  const isActive = data.isActive !== undefined
+    ? data.isActive !== false
+    : (existing?.is_active !== false);
+  const isPopular = data.isPopular !== undefined
+    ? data.isPopular === true
+    : (existing?.is_popular === true || fallback?.is_popular === true);
+  const sortOrder = data.sortOrder !== undefined
+    ? Number(data.sortOrder) || 0
+    : (Number(existing?.sort_order) || fallback?.sort_order || 0);
+  const badgeText = data.badgeText !== undefined
+    ? (data.badgeText || null)
+    : (existing?.badge_text || fallback?.badge_text || null);
+
+  if (isPopular) {
+    await clearPopularExcept(key);
+  }
+
   const result = await query(
     `INSERT INTO subscription_plans
        (slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
@@ -162,20 +303,106 @@ async function upsertPlanAdmin(slug, data) {
      RETURNING slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
                price_line_sw, is_active, is_popular, sort_order, badge_text`,
     [
-      slug,
-      data.nameSw,
-      data.nameEn || null,
-      data.priceTzs,
-      data.durationDays,
-      data.durationLabelSw || null,
-      data.priceLineSw || null,
-      data.isActive !== false,
-      data.isPopular === true,
-      Number(data.sortOrder) || 0,
+      key,
+      display.nameSw,
+      display.nameEn,
+      priceTzs,
+      durationDays,
+      display.durationLabelSw,
+      display.priceLineSw,
+      isActive,
+      isPopular,
+      sortOrder,
+      badgeText,
+    ],
+  );
+  return mapRow(result.rows[0]);
+}
+
+async function createPlanAdmin(data) {
+  const priceTzs = Number(data.priceTzs);
+  const durationDays = Number(data.durationDays);
+  if (!(priceTzs > 0) || !(durationDays > 0)) {
+    const err = new Error('Invalid price or duration');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let key = data.slug ? String(data.slug).toLowerCase().trim() : slugifyPlanName(data.nameSw);
+  if (!/^[a-z0-9_]{2,32}$/.test(key)) {
+    const err = new Error('Invalid plan slug');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const taken = await query(
+    `SELECT slug FROM subscription_plans WHERE slug = $1 LIMIT 1`,
+    [key],
+  );
+  if (taken.rows?.length) {
+    key = `${key}_${Date.now().toString(36).slice(-4)}`.slice(0, 32);
+  }
+
+  const display = buildPlanDisplayFields(key, priceTzs, durationDays, data.nameSw);
+  const sortOrder = data.sortOrder !== undefined
+    ? Number(data.sortOrder) || 0
+    : await nextPlanSortOrder();
+  const isActive = data.isActive !== false;
+  const isPopular = data.isPopular === true;
+
+  if (isPopular) {
+    await clearPopularExcept(key);
+  }
+
+  const result = await query(
+    `INSERT INTO subscription_plans
+       (slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
+        price_line_sw, is_active, is_popular, sort_order, badge_text, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+     RETURNING slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
+               price_line_sw, is_active, is_popular, sort_order, badge_text`,
+    [
+      key,
+      display.nameSw,
+      display.nameEn,
+      priceTzs,
+      durationDays,
+      display.durationLabelSw,
+      display.priceLineSw,
+      isActive,
+      isPopular,
+      sortOrder,
       data.badgeText || null,
     ],
   );
   return mapRow(result.rows[0]);
+}
+
+async function deletePlanAdmin(slug) {
+  const key = String(slug || '').toLowerCase().trim();
+  if (!key) {
+    const err = new Error('Missing plan slug');
+    err.statusCode = 400;
+    throw err;
+  }
+  const activeCount = await query(
+    `SELECT COUNT(*)::int AS count FROM subscription_plans WHERE is_active = TRUE`,
+  );
+  if (Number(activeCount.rows?.[0]?.count || 0) <= 1) {
+    const err = new Error('Cannot delete the last active plan');
+    err.statusCode = 400;
+    throw err;
+  }
+  const result = await query(
+    `DELETE FROM subscription_plans WHERE slug = $1 RETURNING slug`,
+    [key],
+  );
+  if (!result.rows?.length) {
+    const err = new Error('Plan not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return { slug: result.rows[0].slug, deleted: true };
 }
 
 module.exports = {
@@ -187,4 +414,9 @@ module.exports = {
   intervalForPlan,
   listAllPlansAdmin,
   upsertPlanAdmin,
+  createPlanAdmin,
+  deletePlanAdmin,
+  buildPlanDisplayFields,
+  formatTzs,
+  slugifyPlanName,
 };

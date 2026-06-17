@@ -47,6 +47,8 @@ class PlayerManager(
     private var gatewayExoPromotionAttempted = false
     private val probeExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var errorRetryCount = 0
+    private var pendingRetryRunnable: Runnable? = null
 
     companion object {
         private const val TAG = "PlayerManager"
@@ -69,10 +71,22 @@ class PlayerManager(
         }
         allSessions = valid
         sessionIndex = 0
+        errorRetryCount = 0
+        cancelPendingRetry()
         if (valid.size > 1) {
             Log.d(TAG, "Failover enabled: ${valid.size} streams")
         }
         startCurrentSession()
+    }
+
+    private fun cancelPendingRetry() {
+        pendingRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingRetryRunnable = null
+    }
+
+    private fun notifyReady() {
+        errorRetryCount = 0
+        onReady()
     }
 
     private fun startCurrentSession() {
@@ -92,6 +106,30 @@ class PlayerManager(
 
         currentSession = streamSession
 
+        // Gateway pages: skip probe thread unless admin prefers native Exo first.
+        val gatewayUrl = streamSession.mpdUrl.trim()
+        val isGateway = StreamUrlClassifier.isPhpLikeUrl(gatewayUrl) ||
+            StreamUrlClassifier.isLikelyGatewayUrl(gatewayUrl)
+        val preferExo = RemotePlayerConfigHolder.preferredEngine == "exo"
+        if (isGateway && !preferExo) {
+            Log.d(TAG, "Fast-start WEB_VIEW (skip probe thread): ${gatewayUrl.take(80)}")
+            mainHandler.post {
+                try {
+                    webViewEngine = createWebViewEngine(streamSession)
+                    webViewEngine?.initialize(streamSession)
+                    if (webViewEngine?.getWebView() == null) {
+                        dispatchFatalError("WebView init failed")
+                        return@post
+                    }
+                    isInitialized = true
+                    notifyReady()
+                } catch (e: Exception) {
+                    dispatchFatalError("Player init failed: ${e.message}")
+                }
+            }
+            return
+        }
+
         probeExecutor.execute {
             val resolved = StreamProbe.resolveForSession(streamSession)
             Log.d(TAG, "StreamProbe → ${resolved.kind} playbackUri=${resolved.playbackUri.take(80)}")
@@ -107,7 +145,7 @@ class PlayerManager(
                                 return@post
                             }
                             isInitialized = true
-                            onReady()
+                            notifyReady()
                         }
                         else -> {
                             val forced = when (resolved.kind) {
@@ -144,7 +182,7 @@ class PlayerManager(
                                                     dispatchFatalError(error)
                                                 } else {
                                                     isInitialized = true
-                                                    onReady()
+                                                    notifyReady()
                                                 }
                                             } catch (e: Exception) {
                                                 Log.e(TAG, "WebView fallback failed", e)
@@ -179,7 +217,7 @@ class PlayerManager(
                                 }
                             }
                             isInitialized = true
-                            onReady()
+                            notifyReady()
                         }
                     }
                 } catch (e: Exception) {
@@ -191,6 +229,23 @@ class PlayerManager(
     }
 
     private fun dispatchFatalError(message: String) {
+        if (RemotePlayerConfigHolder.reconnectEnabled &&
+            errorRetryCount < RemotePlayerConfigHolder.retryMax
+        ) {
+            errorRetryCount++
+            Log.w(
+                TAG,
+                "Retry $errorRetryCount/${RemotePlayerConfigHolder.retryMax} in ${RemotePlayerConfigHolder.retryDelayMs}ms",
+            )
+            cancelPendingRetry()
+            val retry = Runnable {
+                pendingRetryRunnable = null
+                startCurrentSession()
+            }
+            pendingRetryRunnable = retry
+            mainHandler.postDelayed(retry, RemotePlayerConfigHolder.retryDelayMs)
+            return
+        }
         if (tryAdvanceToNextStream()) {
             Log.w(TAG, "Failover → stream ${sessionIndex + 1}/${allSessions.size}")
             return
@@ -201,6 +256,8 @@ class PlayerManager(
     private fun tryAdvanceToNextStream(): Boolean {
         if (sessionIndex + 1 >= allSessions.size) return false
         sessionIndex++
+        errorRetryCount = 0
+        cancelPendingRetry()
         startCurrentSession()
         return true
     }
@@ -246,6 +303,8 @@ class PlayerManager(
      */
     fun release() {
         Log.d(TAG, "Releasing player")
+        cancelPendingRetry()
+        errorRetryCount = 0
         engine?.release()
         engine = null
         webViewEngine?.release()
@@ -459,11 +518,16 @@ class PlayerManager(
                 return
             }
             isInitialized = true
-            onReady()
+            notifyReady()
             engine?.play()
         } catch (e: Exception) {
             Log.e(TAG, "promoteGatewayToExo failed", e)
             gatewayExoPromotionAttempted = false
+            if (webViewEngine?.wasPlaybackStarted() == true) {
+                onStateChanged(PlaybackState.PLAYING)
+            } else {
+                dispatchFatalError("Playback failed for this stream")
+            }
         }
     }
 
@@ -510,7 +574,8 @@ class PlayerManager(
      * Get current playback position (in milliseconds)
      */
     fun getCurrentPosition(): Long {
-        return engine?.getCurrentPosition() ?: 0L
+        engine?.getCurrentPosition()?.takeIf { it > 0L }?.let { return it }
+        return if (webViewEngine?.wasPlaybackStarted() == true) 0L else 0L
     }
 
     /**
@@ -524,7 +589,9 @@ class PlayerManager(
      * Check if player is currently playing
      */
     fun isPlaying(): Boolean {
-        return engine?.isPlaying() ?: false
+        if (engine?.isPlaying() == true) return true
+        if (webViewEngine?.wasPlaybackStarted() == true) return true
+        return false
     }
 
     /**

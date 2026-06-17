@@ -157,7 +157,7 @@ const ChannelStreamsModal = ({ visible, channel, onClose }) => {
                         />
                         <Text style={styles.label}>DRM type</Text>
                         <View style={styles.chipRow}>
-                          {['NONE', 'CLEARKEY', 'WIDEVINE'].map((t) => (
+                          {['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY'].map((t) => (
                             <TouchableOpacity
                               key={t}
                               style={[styles.chip, form.drmType === t && styles.chipActive]}

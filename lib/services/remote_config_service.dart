@@ -134,12 +134,15 @@ class RemoteConfigService {
     final pc = playerConfig;
     try {
       await NativeAndroidPlayer.syncPlayerConfig(
+        preferredEngine: pc.preferredEngine,
         bufferMinMs: pc.bufferMinMs,
         bufferMaxMs: pc.bufferMaxMs,
         retryMax: pc.retryMax,
         retryDelayMs: pc.retryDelayMs,
-        failoverToWebview: pc.failoverToWebview,
         reconnectEnabled: pc.reconnectEnabled,
+        autoPlay: pc.autoPlay,
+        defaultQuality: pc.defaultQuality,
+        failoverToWebview: pc.failoverToWebview,
       );
     } catch (e) {
       debugPrint('[RemoteConfigService] native player config sync: $e');

@@ -790,7 +790,7 @@ async function handlePaymentStart(req, res, next) {
     const bodySchema = z
       .object({
         externalId: z.string().min(1),
-        bundle: z.enum(['week', 'month', 'year']).optional(),
+        bundle: z.string().min(1).max(32).optional(),
         promotionId: z.coerce.number().int().positive().optional(),
         amount: z.number().int().min(1).optional(),
         phone: z.string().min(9).max(15),

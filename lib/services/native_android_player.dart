@@ -42,21 +42,27 @@ class NativeAndroidPlayer {
 
   /// Push server-driven player settings to Kotlin [RemotePlayerConfigHolder].
   static Future<void> syncPlayerConfig({
+    required String preferredEngine,
     required int bufferMinMs,
     required int bufferMaxMs,
     required int retryMax,
     required int retryDelayMs,
-    required bool failoverToWebview,
     required bool reconnectEnabled,
+    required bool autoPlay,
+    required String defaultQuality,
+    required bool failoverToWebview,
   }) async {
     if (!supported) return;
     await _channel.invokeMethod<void>('updatePlayerConfig', <String, dynamic>{
+      'preferredEngine': preferredEngine,
       'bufferMinMs': bufferMinMs,
       'bufferMaxMs': bufferMaxMs,
       'retryMax': retryMax,
       'retryDelayMs': retryDelayMs,
-      'failoverToWebview': failoverToWebview,
       'reconnectEnabled': reconnectEnabled,
+      'autoPlay': autoPlay,
+      'defaultQuality': defaultQuality,
+      'failoverToWebview': failoverToWebview,
     });
   }
 

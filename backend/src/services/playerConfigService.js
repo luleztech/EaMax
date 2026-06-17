@@ -2,8 +2,8 @@ const { query } = require('../db');
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
-  bufferMinMs: 1500,
-  bufferMaxMs: 30000,
+  bufferMinMs: 800,
+  bufferMaxMs: 12000,
   retryMax: 4,
   retryDelayMs: 1200,
   reconnectEnabled: true,
@@ -16,8 +16,8 @@ function mapRow(row) {
   if (!row) return { ...DEFAULT_PLAYER_CONFIG };
   return {
     preferredEngine: row.preferred_engine || 'auto',
-    bufferMinMs: Number(row.buffer_min_ms) || 1500,
-    bufferMaxMs: Number(row.buffer_max_ms) || 30000,
+    bufferMinMs: Number(row.buffer_min_ms) || 800,
+    bufferMaxMs: Number(row.buffer_max_ms) || 12000,
     retryMax: Number(row.retry_max) || 4,
     retryDelayMs: Number(row.retry_delay_ms) || 1200,
     reconnectEnabled: row.reconnect_enabled !== false,
@@ -44,7 +44,11 @@ async function getGlobalPlayerConfig() {
 
 async function updateGlobalPlayerConfig(patch) {
   const current = await getGlobalPlayerConfig();
-  const next = { ...current, ...patch };
+  const sanitized = sanitizePlayerConfigPatch(patch);
+  const next = { ...current, ...sanitized };
+  if (next.bufferMaxMs < next.bufferMinMs + 500) {
+    next.bufferMaxMs = Math.max(next.bufferMinMs + 500, 2000);
+  }
   await query(
     `INSERT INTO player_config_global
        (id, preferred_engine, buffer_min_ms, buffer_max_ms, retry_max, retry_delay_ms,
@@ -76,8 +80,45 @@ async function updateGlobalPlayerConfig(patch) {
   return next;
 }
 
+const VALID_ENGINES = new Set(['auto', 'exo', 'webview']);
+const VALID_QUALITIES = new Set(['auto', '240p', '360p', '480p', '720p', '1080p']);
+
+function sanitizePlayerConfigPatch(patch) {
+  if (!patch || typeof patch !== 'object') return {};
+  const out = {};
+  if (patch.preferredEngine != null) {
+    const e = String(patch.preferredEngine).trim().toLowerCase();
+    if (VALID_ENGINES.has(e)) out.preferredEngine = e;
+  }
+  if (patch.bufferMinMs != null) {
+    const n = Number(patch.bufferMinMs);
+    if (Number.isFinite(n)) out.bufferMinMs = Math.min(60_000, Math.max(500, Math.round(n)));
+  }
+  if (patch.bufferMaxMs != null) {
+    const n = Number(patch.bufferMaxMs);
+    if (Number.isFinite(n)) out.bufferMaxMs = Math.min(120_000, Math.max(2000, Math.round(n)));
+  }
+  if (patch.retryMax != null) {
+    const n = Number(patch.retryMax);
+    if (Number.isFinite(n)) out.retryMax = Math.min(12, Math.max(1, Math.round(n)));
+  }
+  if (patch.retryDelayMs != null) {
+    const n = Number(patch.retryDelayMs);
+    if (Number.isFinite(n)) out.retryDelayMs = Math.min(15_000, Math.max(200, Math.round(n)));
+  }
+  if (patch.reconnectEnabled != null) out.reconnectEnabled = !!patch.reconnectEnabled;
+  if (patch.autoPlay != null) out.autoPlay = !!patch.autoPlay;
+  if (patch.defaultQuality != null) {
+    const q = String(patch.defaultQuality).trim().toLowerCase();
+    if (VALID_QUALITIES.has(q)) out.defaultQuality = q;
+  }
+  if (patch.failoverToWebview != null) out.failoverToWebview = !!patch.failoverToWebview;
+  return out;
+}
+
 module.exports = {
   DEFAULT_PLAYER_CONFIG,
   getGlobalPlayerConfig,
   updateGlobalPlayerConfig,
+  sanitizePlayerConfigPatch,
 };

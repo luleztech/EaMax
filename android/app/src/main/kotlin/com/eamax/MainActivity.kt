@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 import com.eamax.player.RemotePlayerConfigHolder
 
 class MainActivity : FlutterActivity() {
@@ -95,12 +96,15 @@ class MainActivity : FlutterActivity() {
                         else -> v?.toString()?.equals("true", ignoreCase = true)
                     }
                     RemotePlayerConfigHolder.update(
+                        preferredEngine = args["preferredEngine"]?.toString(),
                         bufferMinMs = intArg("bufferMinMs"),
                         bufferMaxMs = intArg("bufferMaxMs"),
                         retryMax = intArg("retryMax"),
                         retryDelayMs = intArg("retryDelayMs"),
                         failoverToWebview = boolArg("failoverToWebview"),
                         reconnectEnabled = boolArg("reconnectEnabled"),
+                        autoPlay = boolArg("autoPlay"),
+                        defaultQuality = args["defaultQuality"]?.toString(),
                     )
                     result.success(null)
                 }

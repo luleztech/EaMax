@@ -113,7 +113,24 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   @override
   void initState() {
     super.initState();
+    RemoteConfigService.configVersion.addListener(_onRemoteConfigChanged);
     _load();
+  }
+
+  void _onRemoteConfigChanged() {
+    if (!mounted) return;
+    RemoteConfigService.invalidateCache();
+    RemoteConfigService.fetch(forceRefresh: true).then((_) {
+      if (!mounted) return;
+      final plans = RemoteConfigService.paymentPlans;
+      setState(() {
+        _plans = plans;
+        if (_selectedBundle != null &&
+            !plans.any((p) => p.slug == _selectedBundle)) {
+          _selectedBundle = plans.isNotEmpty ? plans.first.slug : null;
+        }
+      });
+    });
   }
 
   Future<void> _load() async {
@@ -196,6 +213,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   @override
   void dispose() {
+    RemoteConfigService.configVersion.removeListener(_onRemoteConfigChanged);
     _pollTimer?.cancel();
     _waitingTimer?.cancel();
     _phoneCtrl.dispose();
@@ -550,7 +568,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         setState(() {
           _pollingOrderId = orderId;
           _notFoundStreak = 0;
-          _pendingBundleLabel = bundle.nameSw;
+          _pendingBundleLabel = bundle.displayName;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
@@ -559,7 +577,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       } else {
         final msg = serverMsg.isNotEmpty
             ? serverMsg
-            : 'Ombi la malipo la Tsh.${bundle.formattedPrice} (${bundle.nameSw}) limepokelewa kwa $clean. '
+            : 'Ombi la malipo la Tsh.${bundle.formattedPrice} (${bundle.displayName}) limepokelewa kwa $clean. '
                   'Ikiwa hutooni ujumbe kwenye simu, jaribu tena au wasiliana na msaada.';
         _showStatus(
           'Tumepokea ombi',
@@ -2115,7 +2133,7 @@ class _PriceOptionTile extends StatelessWidget {
                                 const SizedBox(height: 10),
                               ],
                               Text(
-                                plan.priceLineSw,
+                                plan.displayPriceLine,
                                 style: const TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w800,
@@ -2126,7 +2144,7 @@ class _PriceOptionTile extends StatelessWidget {
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                '${plan.nameSw}  ·  ${plan.durationLabelSw}',
+                                '${plan.displayName}  ·  ${plan.displayDurationLabel}',
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   fontWeight: FontWeight.w500,

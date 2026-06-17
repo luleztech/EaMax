@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../firebase_options.dart';
+import 'eamax_notification_queue.dart';
 import 'supasoka_fcm_sync.dart';
 import 'user_id.dart' as user_id;
 
@@ -105,6 +106,78 @@ Future<void> _trackRemoteMessage(RemoteMessage message, {required bool openedFro
   }
 }
 
+Future<void> _reportQueuedDelivered(QueuedEamaxNotification item) async {
+  final nid = item.notificationId;
+  if (nid == null) return;
+
+  String? uid;
+  try {
+    uid = await user_id.getStoredUserId();
+  } catch (_) {
+    uid = await _readExternalIdFromPrefsOnly();
+  }
+  if (uid == null || uid.isEmpty) return;
+
+  String? tok;
+  try {
+    tok = await FirebaseMessaging.instance.getToken();
+  } catch (_) {}
+
+  try {
+    await notificationsApi.reportDelivered(nid, uid, fcmToken: tok);
+    _logFcm('Reported delivery nid=$nid uid=$uid');
+  } catch (e, st) {
+    _logFcm('Failed to report delivery nid=$nid: $e\n$st');
+  }
+}
+
+Future<void> _cancelTrayNotification() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  try {
+    await _local.cancel(kEamaxTrayNotificationId);
+  } catch (_) {}
+}
+
+Future<void> _enqueueRemoteTrayNotification({
+  required String title,
+  required String body,
+  int? notificationId,
+  String? messageId,
+  RemoteMessage? message,
+}) async {
+  if (body.isEmpty) return;
+  if (message?.notification != null) {
+    _logFcm('Skip local tray — OS notification payload nid=$notificationId');
+    if (notificationId != null) {
+      unawaited(_reportQueuedDelivered(QueuedEamaxNotification(
+        title: title,
+        body: body,
+        notificationId: notificationId,
+        messageId: messageId,
+      )));
+    }
+    return;
+  }
+
+  await enqueueEamaxNotification(
+    QueuedEamaxNotification(
+      title: title,
+      body: body,
+      notificationId: notificationId,
+      messageId: messageId,
+    ),
+    show: (item) => showEamaxLocalNotification(
+      title: item.title,
+      body: item.body,
+      notificationId: item.notificationId,
+      messageId: item.messageId,
+      androidId: kEamaxTrayNotificationId,
+    ),
+    reportDelivered: _reportQueuedDelivered,
+    cancelTray: _cancelTrayNotification,
+  );
+}
+
 /// Background isolate — EaMax Firebase project (EaAdmin pushes).
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -138,15 +211,16 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       message.data['message'] ??
       '';
   if (body.isEmpty) return;
-  // OS may already show notification payload; still show local for consistent channel + tap payload.
   if (message.notification != null) {
-    _logFcm('Background handler: notification payload present nid=$nid');
+    _logFcm('Background handler: OS notification payload nid=$nid');
+    return;
   }
   await showEamaxLocalNotification(
     title: title,
     body: body,
     notificationId: nid,
     messageId: message.messageId,
+    androidId: kEamaxTrayNotificationId,
   );
 }
 
@@ -310,18 +384,20 @@ Future<void> showEamaxLocalNotification({
   required String body,
   int? notificationId,
   String? messageId,
+  int? androidId,
 }) async {
   await ensureAndroidNotificationChannel();
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
-  final id = messageId != null && messageId.isNotEmpty
-      ? messageId.hashCode & 0x7fffffff
-      : DateTime.now().millisecondsSinceEpoch & 0x7fffffff;
+  final id = androidId ??
+      (messageId != null && messageId.isNotEmpty
+          ? messageId.hashCode & 0x7fffffff
+          : DateTime.now().millisecondsSinceEpoch & 0x7fffffff);
   await _local.show(
     id: id,
     title: title,
     body: body,
     payload: notificationId != null ? '$notificationId' : null,
-    notificationDetails: const NotificationDetails(
+    notificationDetails: NotificationDetails(
       android: AndroidNotificationDetails(
         kFcmAndroidChannelId,
         kFcmAndroidChannelName,
@@ -331,6 +407,7 @@ Future<void> showEamaxLocalNotification({
         playSound: true,
         enableVibration: true,
         icon: '@mipmap/ic_launcher',
+        tag: androidId != null ? 'eamax_broadcast' : null,
       ),
     ),
   );
@@ -342,14 +419,13 @@ Future<void> bindEamaxFcmForegroundListener() async {
   _eamaxListenersBound = true;
 
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
-    alert: true,
+    alert: false,
     badge: true,
-    sound: true,
+    sound: false,
   );
 
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
     _logFcm('Foreground message received id=${message.messageId} data=${message.data}');
-    unawaited(_trackRemoteMessage(message, openedFromTray: false));
     _maybeRequestPremiumUnlock(message);
 
     final n = message.notification;
@@ -357,11 +433,12 @@ Future<void> bindEamaxFcmForegroundListener() async {
     final body = n?.body ?? message.data['body'] ?? message.data['message'] ?? '';
     if (body.isEmpty) return;
     final nid = int.tryParse(message.data['notificationId'] ?? '');
-    await showEamaxLocalNotification(
+    await _enqueueRemoteTrayNotification(
       title: title,
       body: body,
       notificationId: nid,
       messageId: message.messageId,
+      message: message,
     );
   });
 

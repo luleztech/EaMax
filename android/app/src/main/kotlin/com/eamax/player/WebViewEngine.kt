@@ -121,7 +121,7 @@ class WebViewEngine(
         cancelUiInjectionRunnables()
         usingShakaEmbed = true
         playbackStarted = false
-        w.alpha = 0f
+        w.alpha = 1f
         cancelPlaybackWatchdog()
 
         val headers = buildHeaders(session, extracted)
@@ -131,7 +131,9 @@ class WebViewEngine(
             headers = headers,
             clearKeys = clearKeysForShaka(session, extracted),
             licenseUrl = license,
-            maxHeight = 360,
+            maxHeight = RemotePlayerConfigHolder.defaultQualityMaxHeight().let {
+                if (it == Int.MAX_VALUE) 720 else it
+            },
         )
         w.loadDataWithBaseURL(
             "https://player.eamax.local/",
@@ -147,9 +149,22 @@ class WebViewEngine(
         cancelUiInjectionRunnables()
         usingShakaEmbed = false
         playbackStarted = false
-        webView?.alpha = 0f
+        scheduleGatewayHtmlPrefetch(gatewayUrl)
         webView?.loadUrl(gatewayUrl)
         schedulePlaybackWatchdog()
+    }
+
+    /** Fire stream/DRM extract scripts ASAP (gateway pages). */
+    private fun fireGatewayExtractBurst(webView: WebView, includeHtmlProbe: Boolean = true) {
+        if (released || usingShakaEmbed) return
+        webView.evaluateJavascript(PhpWebViewSupport.gatewayShakaPolyfillScript(), null)
+        webView.evaluateJavascript(PhpWebViewSupport.gatewayShakaConfigureHookScript(), null)
+        webView.evaluateJavascript(PhpWebViewSupport.gatewayShakaHookScript(), null)
+        webView.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
+        webView.evaluateJavascript(PhpWebViewSupport.readGatewayShakaDrmScript(), null)
+        if (includeHtmlProbe) {
+            webView.evaluateJavascript(PhpWebViewSupport.gatewayHtmlProbeScript(), null)
+        }
     }
 
     private fun ensureWebView() {
@@ -184,8 +199,15 @@ class WebViewEngine(
                     super.onPageStarted(view, startedUrl, favicon)
                     if (!usingShakaEmbed) {
                         view?.alpha = 0f
+                        view?.evaluateJavascript(PhpWebViewSupport.gatewayShakaPolyfillScript(), null)
                         view?.evaluateJavascript(PhpWebViewSupport.gatewayShakaConfigureHookScript(), null)
                         view?.evaluateJavascript(PhpWebViewSupport.gatewayShakaHookScript(), null)
+                        val startedView = view
+                        startedView?.post {
+                            if (!released && !usingShakaEmbed && startedView != null) {
+                                fireGatewayExtractBurst(startedView, includeHtmlProbe = false)
+                            }
+                        }
                     }
                 }
 
@@ -201,23 +223,12 @@ class WebViewEngine(
                         w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
                     }
                     w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
-                    w.evaluateJavascript(PhpWebViewSupport.gatewayShakaConfigureHookScript(), null)
-                    w.evaluateJavascript(PhpWebViewSupport.gatewayShakaHookScript(), null)
-                    w.evaluateJavascript(PhpWebViewSupport.gatewayHtmlProbeScript(), null)
+                    fireGatewayExtractBurst(w)
                     licenseBridge?.injectScript()
-                    scheduleGatewayHtmlPrefetch(currentSession?.mpdUrl ?: finishedUrl.orEmpty())
-                    listOf(50L, 150L, 350L, 700L, 1500L, 2500L).forEach { delayMs ->
+                    listOf(0L, 60L, 150L, 320L, 650L, 1200L).forEach { delayMs ->
                         w.postDelayed({
                             if (!released && !usingShakaEmbed && !streamDelivered) {
-                                w.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
-                            }
-                        }, delayMs)
-                    }
-                    listOf(2500L, 5000L, 8000L).forEach { delayMs ->
-                        w.postDelayed({
-                            if (!released && !usingShakaEmbed) {
-                                w.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
-                                w.evaluateJavascript(PhpWebViewSupport.gatewayHtmlProbeScript(), null)
+                                fireGatewayExtractBurst(w, includeHtmlProbe = delayMs >= 150L)
                             }
                         }, delayMs)
                     }
@@ -260,6 +271,16 @@ class WebViewEngine(
                                 capturedManifestUrl = url
                                 Log.d(TAG, "Captured gateway manifest (awaiting DRM): ${url.take(100)}")
                                 scheduleManifestDrmProbe(url)
+                                if (!StreamUrlClassifier.likelyRequiresWidevine(url)) {
+                                    mainHandler.post {
+                                        deliverExtractedStream(
+                                            PhpGatewayExtractor.Extracted(
+                                                streamUrl = url,
+                                                isHls = url.contains(".m3u8", ignoreCase = true),
+                                            ),
+                                        )
+                                    }
+                                }
                             }
                         } else if (url.startsWith("http", ignoreCase = true) &&
                             StreamUrlClassifier.isLikelyLicenseServerUrl(url)
@@ -280,6 +301,36 @@ class WebViewEngine(
                     ) {
                         shakaDrmSignaled = true
                     }
+                    if (msg.contains("isBrowserSupported", ignoreCase = true) &&
+                        !usingShakaEmbed && !released
+                    ) {
+                        webView?.evaluateJavascript(PhpWebViewSupport.gatewayShakaPolyfillScript(), null)
+                        webView?.evaluateJavascript(
+                            """
+                            (function(){
+                              try {
+                                if (window.shaka && window.shaka.Player &&
+                                    typeof window.shaka.Player.isBrowserSupported !== 'function') {
+                                  window.shaka.Player.isBrowserSupported = function(){
+                                    try { return Promise.resolve(true); } catch(e) { return true; }
+                                  };
+                                }
+                                ['initPlayer','startPlayer','initShaka','loadStream'].forEach(function(fn){
+                                  try { if (typeof window[fn]==='function') window[fn](); } catch(e){}
+                                });
+                              } catch(e) {}
+                              true;
+                            })();
+                            """.trimIndent(),
+                            null,
+                        )
+                        val recoveryView = webView
+                        recoveryView?.post {
+                            if (!released && !usingShakaEmbed && recoveryView != null) {
+                                fireGatewayExtractBurst(recoveryView)
+                            }
+                        }
+                    }
                     Log.d(TAG, "[WebView] $msg")
                     return true
                 }
@@ -289,6 +340,9 @@ class WebViewEngine(
                     if (state == PlaybackState.PLAYING) {
                         playbackStarted = true
                         cancelPlaybackWatchdog()
+                        webView?.alpha = 1f
+                    } else if (state == PlaybackState.BUFFERING && usingShakaEmbed) {
+                        // Show picture sooner on direct Shaka embed while buffering.
                         webView?.alpha = 1f
                     }
                     onPlaybackStateChanged(state)
@@ -489,7 +543,7 @@ class WebViewEngine(
             licenseHeadersWaitExpired = true
             Log.d(TAG, "License header wait timeout — promoting with CDN Origin/Referer defaults")
             lastExtracted?.let { deliverExtractedStream(it) }
-        }.also { mainHandler.postDelayed(it, 700L) }
+        }.also { mainHandler.postDelayed(it, 200L) }
     }
 
     private fun cancelLicenseHeadersWait() {
@@ -512,7 +566,7 @@ class WebViewEngine(
         manifestFallbackRunnable = Runnable {
             if (released || streamDelivered) return@Runnable
             tryManifestFallback(extended = false)
-        }.also { mainHandler.postDelayed(it, 2_000L) }
+        }.also { mainHandler.postDelayed(it, 400L) }
     }
 
     private fun scheduleExtendedManifestFallback() {
@@ -520,7 +574,7 @@ class WebViewEngine(
         manifestExtendedFallbackRunnable = Runnable {
             if (released || streamDelivered) return@Runnable
             tryManifestFallback(extended = true)
-        }.also { mainHandler.postDelayed(it, 9_000L) }
+        }.also { mainHandler.postDelayed(it, 2_200L) }
     }
 
     private fun shouldWaitForLicense(streamUrl: String): Boolean {
@@ -546,7 +600,7 @@ class WebViewEngine(
     private fun scheduleManifestDrmProbe(manifestUrl: String) {
         mainHandler.postDelayed({
             if (!released) probeManifestDrmAsync(manifestUrl)
-        }, 350L)
+        }, 40L)
     }
 
     private fun manifestProbeHeaders(session: StreamSession, manifestUrl: String): Map<String, String> {
@@ -616,7 +670,7 @@ class WebViewEngine(
             var probe = DashDrmProbe.probe(manifestUrl, headers)
             if (!probe.hasWidevine && probe.licenseUrl.isEmpty()) {
                 try {
-                    Thread.sleep(900)
+                    Thread.sleep(100)
                     CookieManager.getInstance().flush()
                 } catch (_: InterruptedException) {
                 }
@@ -788,7 +842,7 @@ class WebViewEngine(
     }
 
     private fun schedulePlaybackWatchdogInternal(initial: Boolean) {
-        val delayMs = if (initial) 22_000L else 18_000L
+        val delayMs = if (initial) 12_000L else 10_000L
         playbackWatchdog = Runnable {
             if (released || playbackStarted) return@Runnable
             if (streamDelivered) {
@@ -823,6 +877,7 @@ class WebViewEngine(
     private fun reinjectGatewayPlaybackHelpers() {
         val w = webView ?: return
         val gateway = currentSession?.mpdUrl.orEmpty()
+        w.evaluateJavascript(PhpWebViewSupport.gatewayShakaPolyfillScript(), null)
         w.evaluateJavascript(PhpWebViewSupport.gatewayCdnRefererFixScript(gateway), null)
         w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
         w.evaluateJavascript(PhpWebViewSupport.gatewayStreamExtractScript(), null)
@@ -958,7 +1013,10 @@ class WebViewEngine(
 
     private fun applyDefaultOkoa360(target: WebView) {
         if (userPickedOkoaQuality) return
-        val js = "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('360');}catch(e){}"
+        val q = RemotePlayerConfigHolder.defaultStreamQuality()
+        if (q == StreamQuality.AUTO) return
+        val mode = q.height.toString()
+        val js = "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode');}catch(e){}"
         listOf(450L, 2200L, 5500L).forEach { delayMs ->
             val r = Runnable {
                 if (userPickedOkoaQuality || released || usingShakaEmbed) return@Runnable

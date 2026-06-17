@@ -569,10 +569,21 @@ export const adminPromotionsAPI = {
 export const adminSubscriptionPlansAPI = {
   list: async () => apiRequest('/api/admin/subscription-plans'),
 
+  create: async (payload) =>
+    apiRequest('/api/admin/subscription-plans', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   update: async (slug, payload) =>
     apiRequest(`/api/admin/subscription-plans/${encodeURIComponent(slug)}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }),
+
+  remove: async (slug) =>
+    apiRequest(`/api/admin/subscription-plans/${encodeURIComponent(slug)}`, {
+      method: 'DELETE',
     }),
 };
 

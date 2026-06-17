@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const { notifyConfigUpdated } = require('../services/realtimeServer');
 
 const router = express.Router();
 
@@ -71,6 +72,10 @@ router.put('/whatsapp', async (req, res, next) => {
        RETURNING key, value`,
       [number],
     );
+
+    try {
+      notifyConfigUpdated();
+    } catch (_) {}
 
     return res.json({ number: result.rows[0].value });
   } catch (err) {

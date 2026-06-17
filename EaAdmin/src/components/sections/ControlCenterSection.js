@@ -24,21 +24,16 @@ const cardStyles = StyleSheet.create({
     marginBottom: 16,
   },
   title: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
     color: '#fff',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#9ca3af',
-    marginBottom: 16,
+    marginBottom: 14,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#1f2937',
   },
@@ -48,10 +43,11 @@ const cardStyles = StyleSheet.create({
     color: '#e5e7eb',
     marginRight: 12,
   },
-  rowHint: {
-    fontSize: 12,
-    color: '#6b7280',
-    marginTop: 2,
+  fieldLabel: {
+    fontSize: 14,
+    color: '#d1d5db',
+    marginBottom: 8,
+    marginTop: 4,
   },
   input: {
     backgroundColor: 'rgba(3, 7, 18, 0.8)',
@@ -64,40 +60,33 @@ const cardStyles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 12,
   },
+  inputRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  inputHalf: {
+    flex: 1,
+  },
   saveBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     backgroundColor: '#7c3aed',
-    paddingVertical: 12,
+    paddingVertical: 13,
     borderRadius: 10,
-    marginTop: 4,
+    marginTop: 8,
   },
   saveBtnText: {
     color: '#fff',
     fontWeight: '600',
     fontSize: 14,
   },
-  badge: {
-    fontSize: 11,
-    color: '#22c55e',
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    overflow: 'hidden',
-    marginBottom: 8,
-    alignSelf: 'flex-start',
-  },
 });
 
-const ToggleRow = ({ label, hint, value, onChange, disabled }) => (
+const ToggleRow = ({ label, value, onChange, disabled }) => (
   <View style={cardStyles.row}>
-    <View style={{ flex: 1 }}>
-      <Text style={cardStyles.rowLabel}>{label}</Text>
-      {hint ? <Text style={cardStyles.rowHint}>{hint}</Text> : null}
-    </View>
+    <Text style={cardStyles.rowLabel}>{label}</Text>
     {disabled ? (
       <ActivityIndicator size="small" color="#a855f7" />
     ) : (
@@ -114,10 +103,8 @@ const ToggleRow = ({ label, hint, value, onChange, disabled }) => (
 const ControlCenterSection = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [savingEmergency, setSavingEmergency] = useState(false);
+  const [savingApp, setSavingApp] = useState(false);
   const [savingPlayer, setSavingPlayer] = useState(false);
-  const [savingFlags, setSavingFlags] = useState(false);
-  const [savingAds, setSavingAds] = useState(false);
 
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
@@ -126,10 +113,14 @@ const ControlCenterSection = () => {
   const [disabledChannelIdsText, setDisabledChannelIdsText] = useState('');
 
   const [playerConfig, setPlayerConfig] = useState({
+    preferredEngine: 'auto',
     retryMax: '4',
     retryDelayMs: '1200',
-    bufferMinMs: '1500',
-    bufferMaxMs: '30000',
+    bufferMinMs: '800',
+    bufferMaxMs: '12000',
+    reconnectEnabled: true,
+    autoPlay: true,
+    defaultQuality: '360p',
     failoverToWebview: true,
   });
 
@@ -161,10 +152,14 @@ const ControlCenterSection = () => {
 
       const pc = playerRes?.config || {};
       setPlayerConfig({
+        preferredEngine: pc.preferredEngine || 'auto',
         retryMax: String(pc.retryMax ?? 4),
         retryDelayMs: String(pc.retryDelayMs ?? 1200),
-        bufferMinMs: String(pc.bufferMinMs ?? 1500),
-        bufferMaxMs: String(pc.bufferMaxMs ?? 30000),
+        bufferMinMs: String(pc.bufferMinMs ?? 800),
+        bufferMaxMs: String(pc.bufferMaxMs ?? 12000),
+        reconnectEnabled: pc.reconnectEnabled !== false,
+        autoPlay: pc.autoPlay !== false,
+        defaultQuality: pc.defaultQuality || '360p',
         failoverToWebview: pc.failoverToWebview !== false,
       });
 
@@ -172,7 +167,7 @@ const ControlCenterSection = () => {
       setRatibaTab(flagsRes.ratibaTab !== false);
       setAdRewardPoints(String(adsRes.rewardPoints ?? 20));
     } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kupakia mipangilio');
+      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kupakia');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -183,35 +178,54 @@ const ControlCenterSection = () => {
     load();
   }, [load]);
 
-  const saveEmergency = async () => {
-    setSavingEmergency(true);
+  const saveApp = async () => {
+    const pts = Number(adRewardPoints);
+    if (!(pts > 0)) {
+      Alert.alert('Thibitisha', 'Weka pointi halali');
+      return;
+    }
+    setSavingApp(true);
     try {
-      await adminControlAPI.updateEmergencyControls({
-        maintenanceMode,
-        maintenanceMessageSw: maintenanceMessage.trim(),
-        disablePayments,
-        disableChannels,
-        disabledChannelIds: parseChannelIds(disabledChannelIdsText),
-      });
-      Alert.alert('Imefanikiwa', 'Mipangilio ya dharura imehifadhiwa. Wateja wataona mabadiliko bila kusasisha app.');
+      await Promise.all([
+        adminControlAPI.updateEmergencyControls({
+          maintenanceMode,
+          maintenanceMessageSw: maintenanceMessage.trim(),
+          disablePayments,
+          disableChannels,
+          disabledChannelIds: parseChannelIds(disabledChannelIdsText),
+        }),
+        adminControlAPI.updateFeatureFlags({ adsEnabled, ratibaTab }),
+        adminControlAPI.updateAdRewardPoints(pts),
+      ]);
+      Alert.alert('Imefanikiwa', 'Mipangilio imehifadhiwa.');
     } catch (e) {
       Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
     } finally {
-      setSavingEmergency(false);
+      setSavingApp(false);
     }
   };
 
   const savePlayer = async () => {
+    const minBuf = Number(playerConfig.bufferMinMs) || 800;
+    const maxBuf = Number(playerConfig.bufferMaxMs) || 12000;
+    if (maxBuf < minBuf + 500) {
+      Alert.alert('Thibitisha', 'Buffer max lazima iwe kubwa kuliko buffer min angalau 500ms');
+      return;
+    }
     setSavingPlayer(true);
     try {
       await adminControlAPI.updatePlayerConfig({
+        preferredEngine: playerConfig.preferredEngine || 'auto',
         retryMax: Number(playerConfig.retryMax) || 4,
         retryDelayMs: Number(playerConfig.retryDelayMs) || 1200,
-        bufferMinMs: Number(playerConfig.bufferMinMs) || 1500,
-        bufferMaxMs: Number(playerConfig.bufferMaxMs) || 30000,
+        bufferMinMs: minBuf,
+        bufferMaxMs: maxBuf,
+        reconnectEnabled: playerConfig.reconnectEnabled,
+        autoPlay: playerConfig.autoPlay,
+        defaultQuality: playerConfig.defaultQuality || '360p',
         failoverToWebview: playerConfig.failoverToWebview,
       });
-      Alert.alert('Imefanikiwa', 'Mipangilio ya player imehifadhiwa.');
+      Alert.alert('Imefanikiwa', 'Player imehifadhiwa.');
     } catch (e) {
       Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
     } finally {
@@ -219,40 +233,10 @@ const ControlCenterSection = () => {
     }
   };
 
-  const saveFlags = async () => {
-    setSavingFlags(true);
-    try {
-      await adminControlAPI.updateFeatureFlags({ adsEnabled, ratibaTab });
-      Alert.alert('Imefanikiwa', 'Feature flags zimehifadhiwa.');
-    } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
-    } finally {
-      setSavingFlags(false);
-    }
-  };
-
-  const saveAdPoints = async () => {
-    const pts = Number(adRewardPoints);
-    if (!(pts > 0)) {
-      Alert.alert('Thibitisha', 'Weka pointi halali');
-      return;
-    }
-    setSavingAds(true);
-    try {
-      await adminControlAPI.updateAdRewardPoints(pts);
-      Alert.alert('Imefanikiwa', `Pointi za tangazo: ${pts}`);
-    } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
-    } finally {
-      setSavingAds(false);
-    }
-  };
-
   if (loading) {
     return (
       <View style={styles.loadingWrap}>
         <ActivityIndicator size="large" color="#7c3aed" />
-        <Text style={styles.loadingText}>Inapakia kituo cha udhibiti...</Text>
       </View>
     );
   }
@@ -264,21 +248,11 @@ const ControlCenterSection = () => {
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor="#7c3aed" />
       }>
-      <Text style={cardStyles.badge}>Server-driven · hakuna APK mpya inahitajika</Text>
-
       <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>Dharura &amp; Matengenezo</Text>
-        <Text style={cardStyles.subtitle}>
-          Zima app kwa wateja wote, au zima malipo/channels kwa muda.
-        </Text>
+        <Text style={cardStyles.title}>App &amp; Features</Text>
 
-        <ToggleRow
-          label="Maintenance mode"
-          hint="Wateja wataona skrini ya matengenezo (bila kusasisha app)"
-          value={maintenanceMode}
-          onChange={setMaintenanceMode}
-        />
-        <Text style={cardStyles.rowLabel}>Ujumbe wa matengenezo</Text>
+        <ToggleRow label="Maintenance mode" value={maintenanceMode} onChange={setMaintenanceMode} />
+        <Text style={cardStyles.fieldLabel}>Ujumbe wa matengenezo</Text>
         <TextInput
           style={cardStyles.input}
           value={maintenanceMessage}
@@ -288,74 +262,141 @@ const ControlCenterSection = () => {
           multiline
         />
 
-        <ToggleRow
-          label="Zima malipo"
-          hint="Kuzuia malipo ya premium kwa muda"
-          value={disablePayments}
-          onChange={setDisablePayments}
-        />
-        <ToggleRow
-          label="Zima channels"
-          hint="Kuzuia kufungua channels kwa muda"
-          value={disableChannels}
-          onChange={setDisableChannels}
-        />
+        <ToggleRow label="Zima malipo" value={disablePayments} onChange={setDisablePayments} />
+        <ToggleRow label="Zima channels" value={disableChannels} onChange={setDisableChannels} />
 
-        <Text style={[cardStyles.rowLabel, { marginTop: 8 }]}>Channel IDs zilizozimwa</Text>
-        <Text style={cardStyles.rowHint}>Mfano: 48, 12, 7 — wateja hawataweza kufungua hizi</Text>
+        <Text style={cardStyles.fieldLabel}>Channel IDs zilizozimwa</Text>
         <TextInput
           style={cardStyles.input}
           value={disabledChannelIdsText}
           onChangeText={setDisabledChannelIdsText}
-          placeholder="48, 12"
+          placeholder="48, 12, 7"
           placeholderTextColor="#6b7280"
           keyboardType="numbers-and-punctuation"
         />
 
-        <TouchableOpacity style={cardStyles.saveBtn} onPress={saveEmergency} disabled={savingEmergency}>
-          {savingEmergency ? (
+        <ToggleRow label="Matangazo" value={adsEnabled} onChange={setAdsEnabled} disabled={savingApp} />
+        <ToggleRow label="Tab ya Ratiba" value={ratibaTab} onChange={setRatibaTab} disabled={savingApp} />
+
+        <Text style={cardStyles.fieldLabel}>Pointi kwa tangazo</Text>
+        <TextInput
+          style={cardStyles.input}
+          value={adRewardPoints}
+          onChangeText={setAdRewardPoints}
+          keyboardType="number-pad"
+        />
+
+        <TouchableOpacity style={cardStyles.saveBtn} onPress={saveApp} disabled={savingApp}>
+          {savingApp ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
             <>
               <Icon name="content-save" size={18} color="#fff" />
-              <Text style={cardStyles.saveBtnText}>Hifadhi dharura</Text>
+              <Text style={cardStyles.saveBtnText}>Hifadhi</Text>
             </>
           )}
         </TouchableOpacity>
       </View>
 
       <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>Player (server)</Text>
-        <Text style={cardStyles.subtitle}>Retry, buffer, na failover — inaendeshwa na server</Text>
+        <Text style={cardStyles.title}>Player</Text>
 
-        <Text style={cardStyles.rowLabel}>Retry max</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={playerConfig.retryMax}
-          onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryMax: v }))}
-          keyboardType="number-pad"
+        <Text style={cardStyles.fieldLabel}>Preferred engine</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {['auto', 'exo', 'webview'].map((engine) => (
+            <TouchableOpacity
+              key={engine}
+              style={[
+                styles.chip,
+                playerConfig.preferredEngine === engine && styles.chipActive,
+              ]}
+              onPress={() => setPlayerConfig((p) => ({ ...p, preferredEngine: engine }))}>
+              <Text
+                style={[
+                  styles.chipText,
+                  playerConfig.preferredEngine === engine && styles.chipTextActive,
+                ]}>
+                {engine}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={cardStyles.fieldLabel}>Default quality</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {['auto', '240p', '360p', '480p', '720p', '1080p'].map((q) => (
+            <TouchableOpacity
+              key={q}
+              style={[
+                styles.chip,
+                playerConfig.defaultQuality === q && styles.chipActive,
+              ]}
+              onPress={() => setPlayerConfig((p) => ({ ...p, defaultQuality: q }))}>
+              <Text
+                style={[
+                  styles.chipText,
+                  playerConfig.defaultQuality === q && styles.chipTextActive,
+                ]}>
+                {q}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <View style={cardStyles.inputRow}>
+          <View style={cardStyles.inputHalf}>
+            <Text style={cardStyles.fieldLabel}>Retry max</Text>
+            <TextInput
+              style={cardStyles.input}
+              value={playerConfig.retryMax}
+              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryMax: v }))}
+              keyboardType="number-pad"
+            />
+          </View>
+          <View style={cardStyles.inputHalf}>
+            <Text style={cardStyles.fieldLabel}>Retry delay (ms)</Text>
+            <TextInput
+              style={cardStyles.input}
+              value={playerConfig.retryDelayMs}
+              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryDelayMs: v }))}
+              keyboardType="number-pad"
+            />
+          </View>
+        </View>
+
+        <View style={cardStyles.inputRow}>
+          <View style={cardStyles.inputHalf}>
+            <Text style={cardStyles.fieldLabel}>Buffer min (ms)</Text>
+            <TextInput
+              style={cardStyles.input}
+              value={playerConfig.bufferMinMs}
+              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMinMs: v }))}
+              keyboardType="number-pad"
+            />
+          </View>
+          <View style={cardStyles.inputHalf}>
+            <Text style={cardStyles.fieldLabel}>Buffer max (ms)</Text>
+            <TextInput
+              style={cardStyles.input}
+              value={playerConfig.bufferMaxMs}
+              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMaxMs: v }))}
+              keyboardType="number-pad"
+            />
+          </View>
+        </View>
+
+        <ToggleRow
+          label="Reconnect / retry on error"
+          value={playerConfig.reconnectEnabled}
+          onChange={(v) => setPlayerConfig((p) => ({ ...p, reconnectEnabled: v }))}
         />
-        <Text style={cardStyles.rowLabel}>Retry delay (ms)</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={playerConfig.retryDelayMs}
-          onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryDelayMs: v }))}
-          keyboardType="number-pad"
+
+        <ToggleRow
+          label="Auto-play on start"
+          value={playerConfig.autoPlay}
+          onChange={(v) => setPlayerConfig((p) => ({ ...p, autoPlay: v }))}
         />
-        <Text style={cardStyles.rowLabel}>Buffer min (ms)</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={playerConfig.bufferMinMs}
-          onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMinMs: v }))}
-          keyboardType="number-pad"
-        />
-        <Text style={cardStyles.rowLabel}>Buffer max (ms)</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={playerConfig.bufferMaxMs}
-          onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMaxMs: v }))}
-          keyboardType="number-pad"
-        />
+
         <ToggleRow
           label="Failover to WebView"
           value={playerConfig.failoverToWebview}
@@ -373,46 +414,6 @@ const ControlCenterSection = () => {
           )}
         </TouchableOpacity>
       </View>
-
-      <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>Feature flags</Text>
-        <Text style={cardStyles.subtitle}>Matangazo na tab ya Ratiba</Text>
-
-        <ToggleRow label="Matangazo (ads)" value={adsEnabled} onChange={setAdsEnabled} disabled={savingFlags} />
-        <ToggleRow label="Tab ya Ratiba" value={ratibaTab} onChange={setRatibaTab} disabled={savingFlags} />
-
-        <TouchableOpacity style={cardStyles.saveBtn} onPress={saveFlags} disabled={savingFlags}>
-          {savingFlags ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Icon name="flag" size={18} color="#fff" />
-              <Text style={cardStyles.saveBtnText}>Hifadhi flags</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>Pointi za tangazo</Text>
-        <Text style={cardStyles.subtitle}>Pointi wateja wanapata baada ya kutazama tangazo</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={adRewardPoints}
-          onChangeText={setAdRewardPoints}
-          keyboardType="number-pad"
-        />
-        <TouchableOpacity style={cardStyles.saveBtn} onPress={saveAdPoints} disabled={savingAds}>
-          {savingAds ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Icon name="star" size={18} color="#fff" />
-              <Text style={cardStyles.saveBtnText}>Hifadhi pointi</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
     </ScrollView>
   );
 };
@@ -424,15 +425,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 15,
-    color: '#9ca3af',
-  },
   container: {
     flex: 1,
     padding: 16,
     paddingBottom: 100,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#374151',
+    backgroundColor: 'rgba(3, 7, 18, 0.8)',
+  },
+  chipActive: {
+    borderColor: '#7c3aed',
+    backgroundColor: 'rgba(124, 58, 237, 0.25)',
+  },
+  chipText: {
+    color: '#9ca3af',
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  chipTextActive: {
+    color: '#fff',
   },
 });
 

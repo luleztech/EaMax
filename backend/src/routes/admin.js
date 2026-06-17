@@ -9,6 +9,8 @@ const promotionsAdminRouter = require('./promotionsAdmin');
 const {
   listAllPlansAdmin,
   upsertPlanAdmin,
+  createPlanAdmin,
+  deletePlanAdmin,
 } = require('../services/subscriptionPlansService');
 const {
   getGlobalPlayerConfig,
@@ -17,6 +19,7 @@ const {
 const {
   getChannelPlayback,
   upsertChannelStream,
+  syncPrimaryChannelStreamFromChannel,
 } = require('../services/channelPlaybackService');
 const { notifyConfigUpdated } = require('../services/realtimeServer');
 const {
@@ -656,6 +659,7 @@ router.post('/channels', async (req, res, next) => {
         [aliasValue, row.id],
       ).catch(() => {});
     }
+    await syncPrimaryChannelStreamFromChannel(row).catch(() => {});
     return res.status(201).json({
       ...row,
       drm_type: drmType,
@@ -794,6 +798,7 @@ router.put('/channels/:id', async (req, res, next) => {
         ).catch(() => {});
       }
     }
+    await syncPrimaryChannelStreamFromChannel(row).catch(() => {});
     return res.json({
       ...row,
       drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
@@ -1789,6 +1794,7 @@ router.put('/settings/payment-provider', async (req, res, next) => {
     }
 
     console.log('[Admin] Payment provider updated successfully to:', paymentProvider);
+    pushConfigRefresh();
     return res.json({ paymentProvider, configured: true });
   } catch (err) {
     console.error('[Admin] payment-provider update error:', err?.message || err);
@@ -1807,30 +1813,72 @@ router.get('/subscription-plans', async (req, res, next) => {
   }
 });
 
+router.post('/subscription-plans', async (req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const schema = z.object({
+      slug: z.string().min(2).max(32).regex(/^[a-z0-9_]+$/).optional(),
+      nameSw: z.string().min(1).max(128),
+      priceTzs: z.number().int().positive(),
+      durationDays: z.number().int().positive(),
+      isActive: z.boolean().optional(),
+      isPopular: z.boolean().optional(),
+    });
+    const data = schema.parse(body);
+    const plan = await createPlanAdmin(data);
+    pushConfigRefresh();
+    return res.status(201).json({ plan });
+  } catch (err) {
+    if (err.statusCode === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    }
+    return next(err);
+  }
+});
+
 router.put('/subscription-plans/:slug', async (req, res, next) => {
   try {
     const slug = String(req.params.slug || '').toLowerCase().trim();
     if (!slug) return res.status(400).json({ error: 'Missing plan slug' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const schema = z.object({
-      nameSw: z.string().min(1),
-      nameEn: z.string().optional(),
       priceTzs: z.number().int().positive(),
       durationDays: z.number().int().positive(),
-      durationLabelSw: z.string().optional(),
-      priceLineSw: z.string().optional(),
+      nameSw: z.string().min(1).max(128).optional(),
       isActive: z.boolean().optional(),
       isPopular: z.boolean().optional(),
-      sortOrder: z.number().int().optional(),
-      badgeText: z.string().nullable().optional(),
     });
     const data = schema.parse(body);
     const plan = await upsertPlanAdmin(slug, data);
     pushConfigRefresh();
     return res.json({ plan });
   } catch (err) {
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: err.message || 'Plan not found' });
+    }
     if (err.name === 'ZodError') {
       return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    }
+    return next(err);
+  }
+});
+
+router.delete('/subscription-plans/:slug', async (req, res, next) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().trim();
+    if (!slug) return res.status(400).json({ error: 'Missing plan slug' });
+    const result = await deletePlanAdmin(slug);
+    pushConfigRefresh();
+    return res.json(result);
+  } catch (err) {
+    if (err.statusCode === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: err.message || 'Plan not found' });
     }
     return next(err);
   }

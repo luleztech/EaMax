@@ -16,59 +16,43 @@ const AdminApp = () => {
   const [notificationsPanelVisible, setNotificationsPanelVisible] = useState(false);
   const [dashboardRefreshTrigger, setDashboardRefreshTrigger] = useState(0);
 
-  const navItems = useMemo(
+  const primaryNavItems = useMemo(
     () => [
       { id: 'overview', label: 'Overview', shortLabel: 'Home', icon: 'view-dashboard' },
       { id: 'users', label: 'Users', shortLabel: 'Users', icon: 'account-group' },
       { id: 'channels', label: 'Channels', shortLabel: 'Channels', icon: 'movie-open' },
-      { id: 'promotions', label: 'Promotion Center', shortLabel: 'Promo', icon: 'bullhorn-variant' },
-      { id: 'plans', label: 'Subscription Plans', shortLabel: 'Plans', icon: 'cash-multiple' },
       { id: 'control', label: 'Control Center', shortLabel: 'Control', icon: 'shield-alert' },
-      { id: 'ads', label: 'Ads & Points', shortLabel: 'Ads', icon: 'bullhorn' },
-      { id: 'analytics', label: 'Analytics', shortLabel: 'Stats', icon: 'chart-bar' },
-      { id: 'settings', label: 'Settings', shortLabel: 'Settings', icon: 'cog' },
     ],
     []
   );
 
+  const menuNavItems = useMemo(
+    () => [
+      { id: 'promotions', label: 'Promotion Center', icon: 'bullhorn-variant' },
+      { id: 'plans', label: 'Vifurushi', icon: 'cash-multiple' },
+      { id: 'ads', label: 'Ads & Points', icon: 'bullhorn' },
+      { id: 'analytics', label: 'Analytics', icon: 'chart-bar' },
+      { id: 'settings', label: 'Settings', icon: 'cog' },
+    ],
+    []
+  );
+
+  const navItems = useMemo(
+    () => [...primaryNavItems, ...menuNavItems],
+    [primaryNavItems, menuNavItems]
+  );
+
   const activeMeta = useMemo(() => {
     const map = {
-      overview: {
-        title: 'Overview',
-        subtitle: '',
-      },
-      users: {
-        title: 'Users Management',
-        subtitle: 'Search, block, and grant premium access quickly',
-      },
-      channels: {
-        title: 'Channels Management',
-        subtitle: 'Drag to reorder · Premium · Active — tap to edit',
-      },
-      promotions: {
-        title: 'Promotion Center',
-        subtitle: 'Picha · Ujumbe · Tangazo · Ofa',
-      },
-      plans: {
-        title: 'Subscription Plans',
-        subtitle: 'Bei na muda wa malipo — inaonekana kwenye app ya wateja',
-      },
-      control: {
-        title: 'Control Center',
-        subtitle: 'Dharura, player, flags — wateja hawahitaji kusasisha app',
-      },
-      ads: {
-        title: 'Ads & Points',
-        subtitle: 'Matangazo',
-      },
-      analytics: {
-        title: 'Analytics',
-        subtitle: 'data kwa ujumla ',
-      },
-      settings: {
-        title: 'Platform Settings',
-        subtitle: 'mpangilioo',
-      },
+      overview: { title: 'Overview' },
+      users: { title: 'Users' },
+      channels: { title: 'Channels' },
+      promotions: { title: 'Promotion Center' },
+      plans: { title: 'Vifurushi' },
+      control: { title: 'Control Center' },
+      ads: { title: 'Ads & Points' },
+      analytics: { title: 'Analytics' },
+      settings: { title: 'Settings' },
     };
     return map[activeTab] || map.overview;
   }, [activeTab]);
@@ -105,13 +89,13 @@ const AdminApp = () => {
   return (
     <AppShell
       navItems={navItems}
+      primaryNavItems={primaryNavItems}
+      menuNavItems={menuNavItems}
       activeTab={activeTab}
       onSelectTab={(tabId) => setActiveTab(tabId)}
       title={activeMeta.title}
-      subtitle={activeMeta.subtitle}
       onOpenNotifications={() => setNotificationsPanelVisible(true)}>
       {renderSection()}
-      {/* Notifications Panel */}
       <NotificationsPanel
         visible={notificationsPanelVisible}
         onClose={() => setNotificationsPanelVisible(false)}
