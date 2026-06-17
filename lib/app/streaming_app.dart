@@ -234,7 +234,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
           final notFound = msg.contains('not found') || msg.contains('404');
           debugPrint('[Premium] getUser failed ($attempt/$maxAttempts): $e');
           if (notFound) {
-            await ensureUserRegistered(uid);
+            await registerUserInDatabase(id: uid, maxRetries: 5);
             if (attempt < maxAttempts) continue;
           }
           if (attempt < maxAttempts) {
@@ -302,6 +302,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(retryPendingRegistrations());
       unawaited(_refreshUser());
       unawaited(_syncFcmIfAllowed());
       unawaited(ensureLocalUserId().then((uid) => RealtimeService.instance.connect(uid)));

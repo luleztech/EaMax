@@ -2,7 +2,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 /// Fallback semver — keep in sync with `version:` in pubspec.yaml.
 /// After [initAppVersion], [appVersion] comes from the installed build.
-const String kAppVersion = '1.3.14';
+const String kAppVersion = '1.3.16';
 const String kAppBundleId = 'com.eamax';
 
 String _installedVersion = kAppVersion;

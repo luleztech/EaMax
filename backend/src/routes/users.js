@@ -29,6 +29,7 @@ router.post('/register', async (req, res, next) => {
     const inserted = await query(
       `INSERT INTO users (external_id)
        VALUES ($1)
+       ON CONFLICT (external_id) DO UPDATE SET external_id = EXCLUDED.external_id
        RETURNING *`,
       [externalId],
     );

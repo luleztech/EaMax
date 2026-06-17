@@ -148,15 +148,21 @@ const paymentStartLimiter = rateLimit({
 });
 
 /**
- * Auth / registration limiter — prevents device-ID farming.
+ * Registration limiter — keyed by externalId so carrier NAT does not block
+ * legitimate new installs (shared IP used to exhaust the old IP-only cap).
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_REGISTER_MAX || 120),
+  max: Number(process.env.RATE_LIMIT_REGISTER_MAX || 300),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Maombi mengi ya usajili. Subiri kidogo.' },
   skip: shouldSkipRateLimit,
+  keyGenerator: (req) => {
+    const ext = req.body?.externalId;
+    if (ext && String(ext).trim()) return `register:${String(ext).trim()}`;
+    return `register-ip:${clientIp(req)}`;
+  },
 });
 
 module.exports = {

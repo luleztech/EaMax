@@ -134,7 +134,7 @@ Future<void> _reportQueuedDelivered(QueuedEamaxNotification item) async {
 Future<void> _cancelTrayNotification() async {
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
   try {
-    await _local.cancel(kEamaxTrayNotificationId);
+    await _local.cancel(id: kEamaxTrayNotificationId, tag: 'eamax_broadcast');
   } catch (_) {}
 }
 

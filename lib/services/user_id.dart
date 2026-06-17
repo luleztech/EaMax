@@ -214,17 +214,30 @@ Future<String?> getLocalUserId() async {
   }
 }
 
-/// Returns stored id instantly; generates and persists a unique one if missing.
-Future<String> ensureLocalUserId() async {
+/// Returns stored id instantly; generates, persists, and registers a unique one if missing.
+Future<String> ensureLocalUserId({bool registerInDatabase = true}) async {
   final existing = await getLocalUserId();
-  if (existing != null && existing.isNotEmpty) return existing;
+  if (existing != null && existing.isNotEmpty) {
+    if (registerInDatabase) {
+      final prefs = await SharedPreferences.getInstance();
+      final pending = prefs.getString(_registrationRetryKey)?.trim();
+      if (pending == existing) {
+        await registerUserInDatabase(id: existing, maxRetries: 5);
+      }
+    }
+    return existing;
+  }
 
   final id = generateUserId();
   await _persistUserIdEverywhere(id);
   debugPrint('[UserRegistration] Generated new local user id: $id');
   final prefs = await SharedPreferences.getInstance();
   await prefs.setString(_registrationRetryKey, id);
-  unawaited(registerUserInDatabase(id: id));
+  if (registerInDatabase) {
+    await registerUserInDatabase(id: id, maxRetries: 5);
+  } else {
+    unawaited(registerUserInDatabase(id: id, maxRetries: 5));
+  }
   return id;
 }
 
