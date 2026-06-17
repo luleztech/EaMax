@@ -12,8 +12,11 @@ object PhpWebViewSupport {
     fun gatewayPageRecoveryScript(androidInterfaceName: String = "ShakaPlayerBridge"): String {
         val postPlaying = """
           try {
-            if (typeof $androidInterfaceName !== 'undefined' && $androidInterfaceName.onPlaybackStarted) {
-              $androidInterfaceName.onPlaybackStarted();
+            if (!window.__eaMaxPlayingPosted) {
+              window.__eaMaxPlayingPosted = true;
+              if (typeof $androidInterfaceName !== 'undefined' && $androidInterfaceName.onPlaybackStarted) {
+                $androidInterfaceName.onPlaybackStarted();
+              }
             }
           } catch (e) {}
         """.trimIndent()
@@ -138,10 +141,38 @@ object PhpWebViewSupport {
         """.trimIndent()
     }
 
-    /**
-     * Defines [window.__eaMaxOkoaSetQuality] for hls.js / Shaka-style players inside gateway pages.
-     * mode: `"auto"` or height as string e.g. `"360"`.
-     */
+    /** Pause and tear down in-page players so native Exo does not double-audio with WebView. */
+    fun suspendWebViewPlaybackScript(): String {
+        return """
+            (function(){
+              try {
+                if (window.__eaMaxOkoaRetryInterval) {
+                  clearInterval(window.__eaMaxOkoaRetryInterval);
+                  window.__eaMaxOkoaRetryInterval = null;
+                }
+                document.querySelectorAll('video').forEach(function(v){
+                  try { v.pause(); v.muted = true; v.removeAttribute('src'); v.load(); } catch(e){}
+                });
+                if (window.shaka && shaka.Player && typeof shaka.Player.getPlayerInstance === 'function') {
+                  document.querySelectorAll('video').forEach(function(v){
+                    try {
+                      var p = shaka.Player.getPlayerInstance(v);
+                      if (p && typeof p.destroy === 'function') p.destroy();
+                    } catch(e){}
+                  });
+                }
+                [window.shakaPlayer, window.player, window.hls].forEach(function(obj){
+                  try {
+                    if (obj && typeof obj.destroy === 'function') obj.destroy();
+                    else if (obj && typeof obj.stopLoad === 'function') obj.stopLoad();
+                  } catch(e){}
+                });
+              } catch(e){}
+              true;
+            })();
+        """.trimIndent()
+    }
+
     /**
      * Reads XOR-encrypted constants from the loaded gateway page and posts decrypted
      * stream + DRM fields to [androidInterfaceName].onGatewayStreamExtracted(json).
@@ -295,14 +326,61 @@ object PhpWebViewSupport {
                   notify(uri || window.__eaMaxCapturedManifest, lic || window.__eaMaxCapturedLicense, '', window.__eaMaxLicenseHeaders);
                 } catch (e) {}
               }
+              function capQualityCfg(cfg) {
+                if (window.__eaMaxUserPickedQuality || !cfg) return cfg;
+                var maxH = window.__eaMaxDefaultMaxH || 360;
+                if (!cfg.abr) cfg.abr = {};
+                if (!cfg.abr.restrictions) cfg.abr.restrictions = {};
+                var r = cfg.abr.restrictions;
+                if (!r.maxHeight || r.maxHeight > maxH) r.maxHeight = maxH;
+                var bw = maxH <= 240 ? 400000 : maxH <= 360 ? 800000 :
+                  maxH <= 480 ? 1400000 : maxH <= 720 ? 2500000 : 4000000;
+                if (!r.maxBandwidth || r.maxBandwidth > bw) r.maxBandwidth = bw;
+                if (cfg.abr.enabled === undefined) cfg.abr.enabled = true;
+                return cfg;
+              }
+              function applyStartupCap(player) {
+                if (window.__eaMaxUserPickedQuality || !player) return;
+                if (window.__eaMaxStartupCapApplied) return;
+                try {
+                  var maxH = window.__eaMaxDefaultMaxH || 360;
+                  var tracks = player.getVariantTracks();
+                  if (!tracks || !tracks.length) return;
+                  var best = null, bestH = 0;
+                  for (var i = 0; i < tracks.length; i++) {
+                    var h = tracks[i].height || 0;
+                    if (h > 0 && h <= maxH && h >= bestH) { best = tracks[i]; bestH = h; }
+                  }
+                  if (!best) return;
+                  var active = null;
+                  for (var j = 0; j < tracks.length; j++) {
+                    if (tracks[j].active) { active = tracks[j]; break; }
+                  }
+                  if (active && best &&
+                      ((active.id != null && best.id != null && active.id === best.id) ||
+                       (active.height === best.height))) {
+                    window.__eaMaxStartupCapApplied = true;
+                    window.__eaMaxOkoaActiveMode = String(maxH);
+                    return;
+                  }
+                  player.configure({
+                    abr: { enabled: true, restrictions: { maxHeight: maxH, maxBandwidth: maxH <= 360 ? 800000 : 1400000 } }
+                  });
+                  player.selectVariantTrack(best, false);
+                  window.__eaMaxStartupCapApplied = true;
+                  window.__eaMaxOkoaActiveMode = String(maxH);
+                } catch (e) {}
+              }
               function wrapPlayer(Orig) {
                 var Wrapped = function (video) {
                   var p = new Orig(video);
+                  try { window.__eaMaxActiveShakaPlayer = p; } catch (eStore) {}
                   try {
                     var oc = p.configure;
                     if (typeof oc === 'function') {
                       p.configure = function (cfg, clear) {
                         captureCfg(cfg);
+                        if (!window.__eaMaxUserPickedQuality && cfg) cfg = capQualityCfg(cfg);
                         var ret = oc.call(this, cfg, clear);
                         try {
                           if (!p.__eaMaxLicFilter && typeof p.getNetworkingEngine === 'function') {
@@ -330,7 +408,16 @@ object PhpWebViewSupport {
                           window.__eaMaxCapturedManifest = String(uri);
                           notify(String(uri), window.__eaMaxCapturedLicense || '', '', window.__eaMaxLicenseHeaders);
                         }
-                        return ol.apply(this, arguments);
+                        var self = this;
+                        var ret = ol.apply(this, arguments);
+                        if (ret && typeof ret.then === 'function') {
+                          return ret.then(function (v) {
+                            applyStartupCap(self);
+                            return v;
+                          });
+                        }
+                        applyStartupCap(self);
+                        return ret;
                       };
                     }
                   } catch (e2) {}
@@ -565,8 +652,18 @@ object PhpWebViewSupport {
     fun gatewayDocumentStartScript(
         androidInterfaceName: String = "ShakaPlayerBridge",
         gatewayUrl: String = "",
+        defaultMaxHeight: Int = 360,
     ): String =
-        gatewayShakaPolyfillScript() +
+        """
+            (function(){
+              window.__eaMaxDefaultMaxH=$defaultMaxHeight;
+              window.__eaMaxUserPickedQuality=false;
+              window.__eaMaxPlayingPosted=false;
+              return true;
+            })();
+        """.trimIndent() +
+            "\n" +
+            gatewayShakaPolyfillScript() +
             "\n" +
             gatewayShakaConfigureHookScript(androidInterfaceName) +
             "\n" +
@@ -966,6 +1063,8 @@ object PhpWebViewSupport {
     fun eaMaxOkoaQualityApiScript(): String {
         return """
             (function() {
+              window.__eaMaxDefaultMaxH = window.__eaMaxDefaultMaxH || 360;
+              window.__eaMaxUserPickedQuality = window.__eaMaxUserPickedQuality || false;
               function parseTarget(mode) {
                 if (!mode || mode === 'auto') return 0;
                 var n = parseInt(mode, 10);
@@ -996,63 +1095,78 @@ object PhpWebViewSupport {
                 }
                 return minI;
               }
-              function collectShakaPlayers() {
-                var out = [];
-                var seen = [];
-                function add(p) {
-                  if (!p || typeof p.getVariantTracks !== 'function' ||
-                      typeof p.selectVariantTrack !== 'function') return;
-                  for (var s = 0; s < seen.length; s++) { if (seen[s] === p) return; }
-                  seen.push(p);
-                  out.push(p);
+              function getActiveShakaPlayer() {
+                function ok(p) {
+                  return p && typeof p.getVariantTracks === 'function' &&
+                         typeof p.selectVariantTrack === 'function';
                 }
                 try {
-                  [window.shakaPlayer, window.player, window.shaka_player].forEach(add);
+                  if (ok(window.__eaMaxActiveShakaPlayer)) {
+                    return window.__eaMaxActiveShakaPlayer;
+                  }
                 } catch (e0) {}
                 try {
-                  var vids = document.querySelectorAll('video');
-                  for (var i = 0; i < vids.length; i++) {
-                    var v = vids[i];
-                    if (window.shaka && shaka.Player &&
-                        typeof shaka.Player.getPlayerInstance === 'function') {
-                      add(shaka.Player.getPlayerInstance(v));
+                  if (window.shaka && shaka.Player &&
+                      typeof shaka.Player.getPlayerInstance === 'function') {
+                    var vids = document.querySelectorAll('video');
+                    var fallback = null;
+                    for (var i = 0; i < vids.length; i++) {
+                      var v = vids[i];
+                      var p = shaka.Player.getPlayerInstance(v);
+                      if (!ok(p)) {
+                        if (ok(v.shakaPlayer)) p = v.shakaPlayer;
+                        else if (ok(v.player)) p = v.player;
+                        else p = null;
+                      }
+                      if (!ok(p)) continue;
+                      window.__eaMaxActiveShakaPlayer = p;
+                      if (!v.paused && v.readyState >= 2) return p;
+                      if (v.currentTime > 0) fallback = p;
+                      if (!fallback) fallback = p;
                     }
-                    try {
-                      if (v['ui'] && v['ui'].getControls &&
-                          typeof v['ui'].getControls === 'function') {
-                        var controls = v['ui'].getControls();
-                        if (controls && typeof controls.getPlayer === 'function') {
-                          add(controls.getPlayer());
-                        }
-                      }
-                    } catch (uiErr) {}
-                    try {
-                      var container = v.closest('.shaka-video-container') || v.parentElement;
-                      if (container && container['ui'] &&
-                          typeof container['ui'].getPlayer === 'function') {
-                        add(container['ui'].getPlayer());
-                      }
-                    } catch (cErr) {}
+                    if (fallback) return fallback;
                   }
                 } catch (e1) {}
                 try {
-                  for (var k in window) {
-                    if (k === 'parent' || k === 'top' || k === 'frameElement') continue;
-                    try {
-                      var o = window[k];
-                      if (o && typeof o === 'object' &&
-                          typeof o.getVariantTracks === 'function' &&
-                          typeof o.selectVariantTrack === 'function') add(o);
-                    } catch (xe) {}
+                  var refs = [window.shakaPlayer, window.player, window.shaka_player];
+                  for (var j = 0; j < refs.length; j++) {
+                    if (ok(refs[j])) {
+                      window.__eaMaxActiveShakaPlayer = refs[j];
+                      return refs[j];
+                    }
                   }
                 } catch (e2) {}
-                return out;
+                return null;
+              }
+              function pickBestTrack(tracks, maxH) {
+                var best = null, bestH = 0;
+                for (var t = 0; t < tracks.length; t++) {
+                  var tr = tracks[t];
+                  if (tr.type && tr.type !== 'variant' && tr.type !== 'video') continue;
+                  var h = tr.height || 0;
+                  if (h > 0 && h <= maxH && h > bestH) { best = tr; bestH = h; }
+                }
+                if (!best && tracks.length) {
+                  var minTr = tracks[0], minHt = tracks[0].height || 99999;
+                  for (var u = 1; u < tracks.length; u++) {
+                    var hh = tracks[u].height || 99999;
+                    if (hh > 0 && hh < minHt) { minHt = hh; minTr = tracks[u]; }
+                  }
+                  best = minTr;
+                }
+                return best;
+              }
+              function tracksMatch(a, b) {
+                if (!a || !b) return false;
+                if (a.id != null && b.id != null && a.id === b.id) return true;
+                return a.height === b.height &&
+                  Math.abs((a.bandwidth || 0) - (b.bandwidth || 0)) < 5000;
               }
               function tryHls(maxH) {
-                var found = false;
+                var ok = false;
                 var tryOne = function(hls) {
                   if (!hls || !hls.levels || !hls.levels.length) return;
-                  found = true;
+                  ok = true;
                   if (maxH <= 0) {
                     hls.currentLevel = -1;
                     if (typeof hls.loadLevel === 'function') hls.loadLevel(-1);
@@ -1061,7 +1175,7 @@ object PhpWebViewSupport {
                   }
                   if (typeof hls.autoLevelEnabled !== 'undefined') hls.autoLevelEnabled = false;
                   var idx = pickLevel(hls.levels, maxH);
-                  if (idx >= 0) {
+                  if (idx >= 0 && hls.currentLevel !== idx) {
                     hls.currentLevel = idx;
                     if (typeof hls.loadLevel === 'function') hls.loadLevel(idx);
                   }
@@ -1075,67 +1189,91 @@ object PhpWebViewSupport {
                     if (v._hls) tryOne(v._hls);
                   }
                 } catch (e1) {}
-                return found;
+                return ok;
               }
-              function tryShaka(maxH) {
-                var candidates = collectShakaPlayers();
-                if (!candidates.length) return false;
-                for (var i = 0; i < candidates.length; i++) {
-                  var pl = candidates[i];
-                  try {
-                    if (maxH <= 0) {
-                      pl.configure({
-                        abr: { enabled: true },
+              function tryShaka(maxH, pl) {
+                pl = pl || getActiveShakaPlayer();
+                if (!pl) return false;
+                try {
+                  if (maxH <= 0) {
+                    pl.configure({
+                      abr: {
+                        enabled: true,
                         restrictions: {
                           minHeight: 0, maxHeight: Infinity,
                           minBandwidth: 0, maxBandwidth: Infinity
                         }
-                      });
-                      continue;
-                    }
-                    var cap = maxBitrateForHeight(maxH);
-                    pl.configure({
-                      abr: { enabled: false },
-                      restrictions: { maxHeight: maxH, maxBandwidth: cap }
-                    });
-                    var tracks = pl.getVariantTracks();
-                    var best = null, bestH = 0;
-                    for (var t = 0; t < tracks.length; t++) {
-                      var tr = tracks[t];
-                      if (tr.type && tr.type !== 'variant' && tr.type !== 'video') continue;
-                      var h = tr.height || 0;
-                      if (h > 0 && h <= maxH && h > bestH) { best = tr; bestH = h; }
-                    }
-                    if (best) {
-                      pl.selectVariantTrack(best, true);
-                    } else if (tracks.length) {
-                      var minTr = tracks[0], minHt = tracks[0].height || 99999;
-                      for (var u = 1; u < tracks.length; u++) {
-                        var hh = tracks[u].height || 99999;
-                        if (hh > 0 && hh < minHt) { minHt = hh; minTr = tracks[u]; }
                       }
-                      pl.selectVariantTrack(minTr, true);
+                    });
+                    return true;
+                  }
+                  var tracks = pl.getVariantTracks();
+                  if (!tracks || !tracks.length) return false;
+                  var active = null;
+                  for (var t = 0; t < tracks.length; t++) {
+                    if (tracks[t].active) { active = tracks[t]; break; }
+                  }
+                  var best = pickBestTrack(tracks, maxH);
+                  if (!best) return false;
+                  if (tracksMatch(active, best)) {
+                    try {
+                      var cfg = pl.getConfiguration();
+                      var r = cfg && cfg.abr && cfg.abr.restrictions;
+                      if (r && r.maxHeight === maxH) return true;
+                    } catch (e4) {}
+                  }
+                  var cap = maxBitrateForHeight(maxH);
+                  pl.configure({
+                    abr: {
+                      enabled: false,
+                      restrictions: { maxHeight: maxH, maxBandwidth: cap }
                     }
-                  } catch (e3) {}
+                  });
+                  if (!tracksMatch(active, best)) {
+                    pl.selectVariantTrack(best, false);
+                  }
+                  return true;
+                } catch (e3) {
+                  return false;
                 }
-                return true;
               }
               function applyOkoaQuality(mode) {
-                var maxH = parseTarget(String(mode));
-                var hlsOk = tryHls(maxH);
-                var shakaOk = tryShaka(maxH);
-                return hlsOk || shakaOk;
-              }
-              window.__eaMaxOkoaSetQuality = function(mode) {
-                window.__eaMaxOkoaLastMode = String(mode);
-                if (applyOkoaQuality(mode)) return true;
-                var tries = 0;
-                var id = setInterval(function() {
-                  if (applyOkoaQuality(window.__eaMaxOkoaLastMode) || ++tries >= 30) {
-                    clearInterval(id);
+                var modeStr = String(mode);
+                var maxH = parseTarget(modeStr);
+                var pl = getActiveShakaPlayer();
+                if (pl) {
+                  if (tryShaka(maxH, pl)) {
+                    window.__eaMaxOkoaActiveMode = modeStr;
+                    return true;
                   }
-                }, 300);
-                return true;
+                  return false;
+                }
+                if (tryHls(maxH)) {
+                  window.__eaMaxOkoaActiveMode = modeStr;
+                  return true;
+                }
+                return false;
+              }
+              window.__eaMaxOkoaSetQuality = function(mode, fromUser) {
+                fromUser = !!fromUser;
+                var modeStr = String(mode);
+                if (fromUser) window.__eaMaxUserPickedQuality = true;
+                if (window.__eaMaxOkoaActiveMode === modeStr) return true;
+                window.__eaMaxOkoaLastMode = modeStr;
+                window.__eaMaxOkoaActiveMode = null;
+                if (window.__eaMaxOkoaRetryInterval) {
+                  clearInterval(window.__eaMaxOkoaRetryInterval);
+                  window.__eaMaxOkoaRetryInterval = null;
+                }
+                if (applyOkoaQuality(modeStr)) return true;
+                var tries = 0;
+                window.__eaMaxOkoaRetryInterval = setInterval(function() {
+                  if (applyOkoaQuality(window.__eaMaxOkoaLastMode) || ++tries >= 4) {
+                    clearInterval(window.__eaMaxOkoaRetryInterval);
+                    window.__eaMaxOkoaRetryInterval = null;
+                  }
+                }, 400);
+                return false;
               };
               true;
             })();
@@ -1191,7 +1329,13 @@ video::-webkit-media-controls-timeline{display:none!important}
   var BR='$androidInterfaceName';
   var url=$urlJson, headers=$headerJson, clearKeys=$clearKeysJson;
   var licenseUrl=$licenseJson, maxH=$maxHeight, maxW=$maxW;
-  function postPlaying(){ try{ window[BR]&&window[BR].onPlaybackStarted&&window[BR].onPlaybackStarted(); }catch(e){} }
+  function postPlaying(){
+    try{
+      if(window.__eaMaxPlayingPosted) return;
+      window.__eaMaxPlayingPosted=true;
+      window[BR]&&window[BR].onPlaybackStarted&&window[BR].onPlaybackStarted();
+    }catch(e){}
+  }
   function postError(){ try{ window[BR]&&window[BR].onPlaybackError&&window[BR].onPlaybackError('unavailable'); }catch(e){} }
   function waitShaka(cb){ var n=0;(function t(){ if(typeof shaka!=='undefined'){ cb(true); return; } if(++n>80){ cb(false); return; } setTimeout(t,50); })(); }
   waitShaka(function(ok){
@@ -1210,7 +1354,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     if(clearKeys&&Object.keys(clearKeys).length) drmCfg.clearKeys=clearKeys;
     if(licenseUrl) drmCfg.servers={'com.widevine.alpha':licenseUrl,'org.w3.clearkey':licenseUrl};
     player.configure({
-      streaming:{bufferingGoal:10,rebufferingGoal:2,retryParameters:{maxAttempts:5,baseDelay:500,timeout:20000}},
+      streaming:{bufferingGoal:10,rebufferingGoal:2,retryParameters:{maxAttempts:4,baseDelay:400,timeout:15000}},
       drm:drmCfg,
       abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
     });

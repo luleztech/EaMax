@@ -80,13 +80,13 @@ const PLAYER_ENGINES = [
     id: 'vlc',
     label: 'VLC Player',
     icon: 'volume-high',
-    formats: 'External VLC · most stream URLs',
+    formats: 'In-app native · most stream URLs',
   },
   {
     id: 'mx',
     label: 'MX Player',
     icon: 'movie-open-play',
-    formats: 'External MX Player · most stream URLs',
+    formats: 'In-app native · most stream URLs',
   },
 ];
 

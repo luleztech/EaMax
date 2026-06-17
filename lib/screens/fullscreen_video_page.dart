@@ -168,6 +168,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     try {
       _webController!.setBackgroundColor(Colors.black);
     } on UnimplementedError {}
+    await _guardWebViewNavigation(_webController!);
 
     final config = WebPlaybackConfig(
       url: widget.videoUrl,
@@ -228,7 +229,31 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     } on UnimplementedError {
       // Some webview_flutter_web versions don't support background color.
     }
+    await _guardWebViewNavigation(_webController!);
     _webController!.loadRequest(Uri.parse(widget.videoUrl));
+  }
+
+  /// Keep stream/gateway URLs inside the app — never hand off to VLC/MX/system chooser.
+  Future<void> _guardWebViewNavigation(WebViewController controller) async {
+    if (kIsWeb) return;
+    try {
+      await controller.setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (request) {
+            final lower = request.url.toLowerCase();
+            if (lower.startsWith('intent:') ||
+                lower.startsWith('market:') ||
+                lower.startsWith('vlc:') ||
+                lower.startsWith('mx:') ||
+                lower.startsWith('file:') ||
+                lower.startsWith('content:')) {
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      );
+    } catch (_) {}
   }
 
   Future<void> _initMediaKitWithFallback() async {

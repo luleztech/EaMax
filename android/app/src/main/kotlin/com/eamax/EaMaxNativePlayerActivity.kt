@@ -51,6 +51,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     /** After landscape once, do not show rotate hint again this session. */
     private var hasBeenLandscapeThisSession = false
     private var playbackReady = false
+    private var webViewSurfaceAttached = false
     private lateinit var webLoadingOverlay: FrameLayout
     private var unavailableDialogShown = false
 
@@ -214,7 +215,6 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             attachWebViewIfNeeded(webContainer, playerView)
                             showWebLoadingOverlay()
                             playerManager.getWebView()?.alpha = 0f
-                            playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                         } else {
                             exoBoundToView = false
                             hideWebLoadingOverlay()
@@ -404,6 +404,12 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     }
 
     private fun attachWebViewIfNeeded(webContainer: FrameLayout, playerView: PlayerView) {
+        if (webViewSurfaceAttached && webContainer.childCount > 0) {
+            webContainer.visibility = View.VISIBLE
+            playerView.visibility = View.GONE
+            syncWebViewVideoFitForOrientation()
+            return
+        }
         val w = playerManager.getWebViewForReattach() ?: run {
             hideWebLoadingOverlay()
             showChannelUnavailableAndFinish()
@@ -423,6 +429,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             )
         }
         syncWebViewVideoFitForOrientation()
+        webViewSurfaceAttached = true
     }
 
     private fun bindExoToPlayerViewIfNeeded(playerView: PlayerView, strictNull: Boolean) {

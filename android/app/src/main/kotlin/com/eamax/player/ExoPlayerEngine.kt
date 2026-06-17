@@ -199,8 +199,8 @@ class ExoPlayerEngine(
                 .build()
                 .apply {
                     val ts = this@ExoPlayerEngine.trackSelector
-                    selectedQuality = RemotePlayerConfigHolder.defaultStreamQuality()
-                    val maxHeight = RemotePlayerConfigHolder.defaultQualityMaxHeight()
+                    selectedQuality = StreamQuality.QUALITY_360P
+                    val maxHeight = 360
                     ts.parameters = ts.buildUponParameters()
                         .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
                         .setForceHighestSupportedBitrate(selectedQuality == StreamQuality.AUTO)

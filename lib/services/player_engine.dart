@@ -67,6 +67,18 @@ class PlayerEngine {
     );
   }
 
+  /// Maps every admin engine to an in-app player — never VLC/MX / system "Open with".
+  static String resolveInAppEngine(String engine, {required bool gatewayPage}) {
+    final e = normalize(engine);
+    if (e == vlc || e == mx) {
+      return gatewayPage ? webview : auto;
+    }
+    if (gatewayPage && (e == exo || e == auto || e == kotlin)) {
+      return webview;
+    }
+    return e;
+  }
+
   /// Kotlin [PlayerManager] / [EaMaxNativePlayerActivity].
   static bool usesNativeStack(String engine) {
     final e = normalize(engine);
@@ -79,8 +91,8 @@ class PlayerEngine {
   }
 
   static bool usesExternalApp(String engine) {
-    final e = normalize(engine);
-    return e == vlc || e == mx;
+    // All engines play in-app; kept for API compatibility.
+    return false;
   }
 
   static bool usesFlutterStack(String engine) {

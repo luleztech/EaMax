@@ -136,7 +136,7 @@ class PlayerManager(
         if (engine?.getPlayer() == null) {
             val gateway = StreamUrlClassifier.isLikelyGatewayUrl(originalSession.mpdUrl) ||
                 StreamUrlClassifier.isPhpLikeUrl(originalSession.mpdUrl)
-            if (gateway && !PlayerEnginePolicy.forceExo()) {
+            if (gateway) {
                 engine?.release()
                 engine = null
                 webViewEngine = createWebViewEngine(originalSession)
@@ -195,13 +195,12 @@ class PlayerManager(
             return
         }
 
-        // Gateway pages: skip probe thread unless admin prefers native Exo first.
+        // Gateway pages must use WebView — Exo cannot render PHP/HTML player pages.
         val gatewayUrl = streamSession.mpdUrl.trim()
         val isGateway = StreamUrlClassifier.isPhpLikeUrl(gatewayUrl) ||
             StreamUrlClassifier.isLikelyGatewayUrl(gatewayUrl)
-        val preferExo = PlayerEnginePolicy.forceExo()
-        if (isGateway && !preferExo) {
-            Log.d(TAG, "Fast-start WEB_VIEW (skip probe thread): ${gatewayUrl.take(80)}")
+        if (isGateway) {
+            Log.d(TAG, "Fast-start WEB_VIEW (gateway): ${gatewayUrl.take(80)}")
             mainHandler.post {
                 try {
                     webViewEngine = createWebViewEngine(streamSession)
@@ -227,23 +226,14 @@ class PlayerManager(
                 try {
                     when (resolved.kind) {
                         StreamProbe.ResolvedKind.WEB_VIEW_PAGE -> {
-                            if (PlayerEnginePolicy.forceExo()) {
-                                val mergedSession = mergeResolvedSession(streamSession, resolved)
-                                launchExoPlayer(
-                                    mergedSession,
-                                    ExoPlayerEngine.StreamFormat.SNIFFING,
-                                    streamSession,
-                                )
-                            } else {
-                                webViewEngine = createWebViewEngine(streamSession)
-                                webViewEngine?.initialize(streamSession)
-                                if (webViewEngine?.getWebView() == null) {
-                                    dispatchFatalError("WebView init failed")
-                                    return@post
-                                }
-                                isInitialized = true
-                                notifyReady()
+                            webViewEngine = createWebViewEngine(streamSession)
+                            webViewEngine?.initialize(streamSession)
+                            if (webViewEngine?.getWebView() == null) {
+                                dispatchFatalError("WebView init failed")
+                                return@post
                             }
+                            isInitialized = true
+                            notifyReady()
                         }
                         else -> {
                             val forced = when (resolved.kind) {
@@ -540,6 +530,7 @@ class PlayerManager(
                     onTracksAvailable(tracks)
                 },
             )
+            webViewEngine?.suspendPlayback()
             webViewEngine?.getWebView()?.let { w ->
                 w.alpha = 0f
                 (w.parent as? android.view.ViewGroup)?.removeView(w)
@@ -585,8 +576,11 @@ class PlayerManager(
      * @param fromUser false when applying the default 360p cap on startup
      */
     fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
-        webViewEngine?.setQuality(quality, fromUser)
-        engine?.setQuality(quality)
+        when {
+            engine?.getPlayer() != null -> engine?.setQuality(quality)
+            webViewEngine != null -> webViewEngine?.setQuality(quality, fromUser)
+            else -> engine?.setQuality(quality)
+        }
         Log.d(TAG, "Quality changed to: $quality (fromUser=$fromUser)")
     }
 

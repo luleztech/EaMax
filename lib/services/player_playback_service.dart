@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/channel_playback.dart';
 import '../player/flutter_playback_mode.dart';
+import '../player/stream_url_utils.dart';
 import '../screens/fullscreen_video_page.dart';
 import 'native_android_player.dart';
 import 'player_engine.dart';
@@ -29,12 +30,16 @@ class PlayerPlaybackService {
   }) async {
     if (url.isEmpty) return;
 
-    final engine = playbackEngineOverride != null && playbackEngineOverride.isNotEmpty
+    final gatewayPage = isGatewayUrl(url) || useWebViewForUrl(url);
+
+    var engine = playbackEngineOverride != null && playbackEngineOverride.isNotEmpty
         ? PlayerEngine.resolve(
             channelEngine: playbackEngineOverride,
             globalEngine: activeEngine,
           )
         : PlayerEngine.resolveFromChannelData(channelData);
+
+    engine = PlayerEngine.resolveInAppEngine(engine, gatewayPage: gatewayPage);
 
     final ck = extractClearKey(channelData);
     final drm = normalizeDrm(channelData, ck, url);
@@ -45,19 +50,6 @@ class PlayerPlaybackService {
     if (token.isNotEmpty &&
         !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
       merged['Authorization'] = 'Bearer $token';
-    }
-
-    if (PlayerEngine.usesExternalApp(engine) && NativeAndroidPlayer.supported) {
-      final opened = await NativeAndroidPlayer.openExternal(
-        engine: engine,
-        url: url,
-        licenseUrl: license != null ? '$license' : '',
-        token: token,
-        drmType: drm,
-        clearKeyHex: ck,
-        headers: merged.isEmpty ? null : merged,
-      );
-      if (opened) return;
     }
 
     if (NativeAndroidPlayer.supported && PlayerEngine.usesNativeStack(engine)) {
@@ -76,6 +68,11 @@ class PlayerPlaybackService {
 
     final flutterMode = PlayerEngine.flutterModeFor(engine) ??
         (kIsWeb ? FlutterPlaybackMode.webEmbedded : FlutterPlaybackMode.mediaKit);
+    final effectiveFlutterMode = gatewayPage &&
+            flutterMode != FlutterPlaybackMode.webEmbedded &&
+            flutterMode != FlutterPlaybackMode.shaka
+        ? FlutterPlaybackMode.webEmbedded
+        : flutterMode;
 
     if (!context.mounted) return;
     await Navigator.of(context).push<void>(
@@ -88,7 +85,7 @@ class PlayerPlaybackService {
           licenseUrl: license != null ? '$license' : '',
           clearKeyRaw: ck,
           playbackToken: token,
-          playbackMode: flutterMode,
+          playbackMode: effectiveFlutterMode,
         ),
       ),
     );

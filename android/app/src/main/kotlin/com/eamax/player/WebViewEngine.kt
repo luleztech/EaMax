@@ -38,7 +38,6 @@ class WebViewEngine(
     private var jsInterface: WebViewJsInterface? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
-    private val defaultOkoaRunnables = mutableListOf<Runnable>()
     private val uiInjectRunnables = mutableListOf<Runnable>()
     private var playbackWatchdog: Runnable? = null
     private var playbackStarted = false
@@ -131,9 +130,7 @@ class WebViewEngine(
             headers = headers,
             clearKeys = clearKeysForShaka(session, extracted),
             licenseUrl = license,
-            maxHeight = RemotePlayerConfigHolder.defaultQualityMaxHeight().let {
-                if (it == Int.MAX_VALUE) 720 else it
-            },
+            maxHeight = defaultOkoaMaxHeight(),
         )
         w.loadDataWithBaseURL(
             "https://player.eamax.local/",
@@ -192,9 +189,33 @@ class WebViewEngine(
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
+            setDownloadListener { url, _, _, _, _ ->
+                Log.d(TAG, "Blocked WebView download (in-app playback only): $url")
+            }
+
             installDocumentStartHooks(this)
 
             webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest?,
+                ): Boolean {
+                    val url = request?.url?.toString().orEmpty()
+                    if (url.isEmpty()) return false
+                    val lower = url.lowercase()
+                    if (lower.startsWith("intent:") ||
+                        lower.startsWith("market:") ||
+                        lower.startsWith("vlc:") ||
+                        lower.startsWith("mx:") ||
+                        lower.startsWith("file:") ||
+                        lower.startsWith("content:")
+                    ) {
+                        Log.d(TAG, "Blocked external navigation: $url")
+                        return true
+                    }
+                    return false
+                }
+
                 override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, startedUrl, favicon)
                     if (!usingShakaEmbed) {
@@ -225,14 +246,13 @@ class WebViewEngine(
                     w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
                     fireGatewayExtractBurst(w)
                     licenseBridge?.injectScript()
-                    listOf(0L, 60L, 150L, 320L, 650L, 1200L).forEach { delayMs ->
+                    listOf(0L, 80L, 200L, 500L).forEach { delayMs ->
                         w.postDelayed({
                             if (!released && !usingShakaEmbed && !streamDelivered) {
-                                fireGatewayExtractBurst(w, includeHtmlProbe = delayMs >= 150L)
+                                fireGatewayExtractBurst(w, includeHtmlProbe = delayMs >= 200L)
                             }
                         }, delayMs)
                     }
-                    applyDefaultOkoa360(w)
                     scheduleUiInjection(w)
                     scheduleManifestFallback()
                 }
@@ -337,15 +357,10 @@ class WebViewEngine(
             }
             jsInterface = WebViewJsInterface(
                 onPlaybackStateChanged = { state ->
-                    if (state == PlaybackState.PLAYING) {
-                        playbackStarted = true
-                        cancelPlaybackWatchdog()
-                        webView?.alpha = 1f
-                    } else if (state == PlaybackState.BUFFERING && usingShakaEmbed) {
-                        // Show picture sooner on direct Shaka embed while buffering.
+                    if (state == PlaybackState.BUFFERING && usingShakaEmbed) {
                         webView?.alpha = 1f
                     }
-                    onPlaybackStateChanged(state)
+                    notifyPlaybackState(state)
                 },
                 onError = { handleJsPlaybackError() },
                 onStreamExtracted = { extracted ->
@@ -366,6 +381,26 @@ class WebViewEngine(
 
     fun restoreWebViewVisibility() {
         webView?.alpha = 1f
+    }
+
+    /** Shaka/HLS fire PLAYING on every quality switch — notify native only once per load. */
+    private fun notifyPlaybackState(state: PlaybackState) {
+        if (state == PlaybackState.PLAYING) {
+            if (playbackStarted) return
+            playbackStarted = true
+            cancelPlaybackWatchdog()
+            webView?.alpha = 1f
+        }
+        onPlaybackStateChanged(state)
+    }
+
+    private fun defaultOkoaMaxHeight(): Int = 360
+
+    /** Stop WebView/Shaka audio before native Exo takes over (prevents doubled sound). */
+    fun suspendPlayback() {
+        val w = webView ?: return
+        w.onPause()
+        w.evaluateJavascript(PhpWebViewSupport.suspendWebViewPlaybackScript(), null)
     }
 
     private fun scheduleGatewayHtmlPrefetch(gatewayUrl: String) {
@@ -574,7 +609,7 @@ class WebViewEngine(
         manifestExtendedFallbackRunnable = Runnable {
             if (released || streamDelivered) return@Runnable
             tryManifestFallback(extended = true)
-        }.also { mainHandler.postDelayed(it, 2_200L) }
+        }.also { mainHandler.postDelayed(it, 900L) }
     }
 
     private fun shouldWaitForLicense(streamUrl: String): Boolean {
@@ -588,7 +623,10 @@ class WebViewEngine(
             val gateway = currentSession?.mpdUrl.orEmpty()
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
-                PhpWebViewSupport.gatewayDocumentStartScript(gatewayUrl = gateway),
+                PhpWebViewSupport.gatewayDocumentStartScript(
+                    gatewayUrl = gateway,
+                    defaultMaxHeight = defaultOkoaMaxHeight(),
+                ),
                 setOf("*"),
             )
             Log.d(TAG, "Document-start Shaka/DRM hooks installed")
@@ -978,53 +1016,25 @@ class WebViewEngine(
     fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
         if (fromUser) {
             userPickedOkoaQuality = true
-            cancelDefaultOkoaRunnables()
         }
         val mode = when (quality) {
             StreamQuality.AUTO -> "auto"
             else -> quality.height.toString()
         }
-        injectOkoaQuality(mode)
-        if (fromUser) scheduleOkoaQualityRetries(mode)
+        injectOkoaQuality(mode, fromUser)
     }
 
-    private fun injectOkoaQuality(mode: String) {
+    private fun injectOkoaQuality(mode: String, fromUser: Boolean = false) {
         val w = webView ?: return
-        w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
+        if (!okoaApiInjected) {
+            okoaApiInjected = true
+            w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
+        }
+        val fromUserJs = if (fromUser) "true" else "false"
         w.evaluateJavascript(
-            "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode');}catch(e){}",
+            "try{window.__eaMaxDefaultMaxH=${defaultOkoaMaxHeight()};window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode',$fromUserJs);}catch(e){}",
             null,
         )
-    }
-
-    private fun scheduleOkoaQualityRetries(mode: String) {
-        listOf(300L, 800L, 1500L, 3000L, 5000L, 8000L).forEach { delayMs ->
-            mainHandler.postDelayed({
-                if (!userPickedOkoaQuality) return@postDelayed
-                injectOkoaQuality(mode)
-            }, delayMs)
-        }
-    }
-
-    private fun cancelDefaultOkoaRunnables() {
-        defaultOkoaRunnables.forEach { mainHandler.removeCallbacks(it) }
-        defaultOkoaRunnables.clear()
-    }
-
-    private fun applyDefaultOkoa360(target: WebView) {
-        if (userPickedOkoaQuality) return
-        val q = RemotePlayerConfigHolder.defaultStreamQuality()
-        if (q == StreamQuality.AUTO) return
-        val mode = q.height.toString()
-        val js = "try{window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode');}catch(e){}"
-        listOf(450L, 2200L, 5500L).forEach { delayMs ->
-            val r = Runnable {
-                if (userPickedOkoaQuality || released || usingShakaEmbed) return@Runnable
-                target.evaluateJavascript(js, null)
-            }
-            defaultOkoaRunnables.add(r)
-            target.postDelayed(r, delayMs)
-        }
     }
 
     fun setAudioLanguage(language: String) {}
@@ -1033,7 +1043,6 @@ class WebViewEngine(
         released = true
         cancelManifestFallback()
         cancelExtendedManifestFallback()
-        cancelDefaultOkoaRunnables()
         cancelUiInjectionRunnables()
         cancelPlaybackWatchdog()
         webView?.apply {

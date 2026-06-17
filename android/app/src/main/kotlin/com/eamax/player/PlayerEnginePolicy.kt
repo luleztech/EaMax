@@ -28,7 +28,11 @@ object PlayerEnginePolicy {
 
     fun normalize(raw: String?): String {
         val e = raw?.trim()?.lowercase().orEmpty()
-        return if (e in nativeEngines) e else "auto"
+        return when (e) {
+            "vlc", "mx", "flutter", "chewie", "native_video", "webrtc" -> "auto"
+            in nativeEngines -> e
+            else -> "auto"
+        }
     }
 
     fun forceWebView(): Boolean {
