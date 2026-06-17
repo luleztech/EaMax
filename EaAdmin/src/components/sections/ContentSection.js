@@ -20,6 +20,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
+import {
+  PLAYER_ENGINES,
+  playerEngineLabel,
+  suggestPlayerForUrl,
+} from '../../constants/playerEngines';
 import ChannelStreamsModal from './ChannelStreamsModal';
 
 const { width } = Dimensions.get('window');
@@ -217,6 +222,7 @@ const ContentSection = () => {
   const [useEmoji, setUseEmoji] = useState(false);
   const [pointsRequired, setPointsRequired] = useState('0');
   const [unlockToFree, setUnlockToFree] = useState(false);
+  const [playbackEngine, setPlaybackEngine] = useState('default');
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
   const [streamsChannel, setStreamsChannel] = useState(null);
@@ -291,6 +297,7 @@ const ContentSection = () => {
     setEditingChannel(null);
     setPointsRequired('0');
     setUnlockToFree(false);
+    setPlaybackEngine('default');
   };
 
   const handleSaveChannel = async () => {
@@ -332,6 +339,7 @@ const ContentSection = () => {
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
       drmClearKey: clearKeyTrimmed,
       unlockToFree: !!unlockToFree,
+      playbackEngine: playbackEngine === 'default' ? null : playbackEngine,
     };
 
     if (editingChannel) {
@@ -496,9 +504,7 @@ const ContentSection = () => {
         const detail = error?.message ? String(error.message).slice(0, 180) : '';
         showStatusModal(
           'Reorder not saved',
-          detail
-            ? `${detail}\n\nOrder kept on screen — deploy latest backend to Railway, then try again.`
-            : 'Order kept on screen. Deploy backend updates, then try again.',
+          detail || 'Order kept on screen — try again.',
         );
       } finally {
         setSavingOrder(false);
@@ -556,6 +562,8 @@ const ContentSection = () => {
     setUserId(channel.owner_user_id ? String(channel.owner_user_id) : '');
     setPointsRequired(String(channel.points_required ?? channel.pointsRequired ?? 0));
     setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
+    const savedEngine = channel.playback_engine ?? channel.playbackEngine;
+    setPlaybackEngine(savedEngine ? String(savedEngine) : 'default');
     setAddChannelModalVisible(true);
   }, []);
 
@@ -754,23 +762,12 @@ const ContentSection = () => {
         ) : null}
       </View>
 
-      {canReorder && hasAnyChannel ? (
-        <Text style={styles.reorderHint}>
-          Shika alama ya buruta (⋮⋮) na uburute channel kubadilisha mpangilio — huhifadhi kiotomatiki.
-        </Text>
-      ) : null}
-
       {!hasAnyChannel ? (
         <View style={styles.channelListCard}>
           <View style={styles.emptyState}>
             <Icon name="television-off" size={48} color="#6b7280" />
             <Text style={styles.emptyStateText}>
               {searchTrimmed ? 'No channels match your search' : 'No channels in this view'}
-            </Text>
-            <Text style={styles.emptyStateSubtext}>
-              {searchTrimmed
-                ? 'Try a different search or clear the search box'
-                : 'Add a channel with the + button above'}
             </Text>
           </View>
         </View>
@@ -835,9 +832,6 @@ const ContentSection = () => {
                 <View>
                   <Text style={styles.modalTitle}>
                     {editingChannel ? 'Edit Channel' : 'Add New Channel'}
-                  </Text>
-                  <Text style={styles.modalSubtitle}>
-                    {editingChannel ? 'Update channel details' : 'Create a new channel for the app'}
                   </Text>
                   {editingChannel?.id != null ? (
                     <View style={styles.channelIdRow}>
@@ -996,11 +990,6 @@ const ContentSection = () => {
                         Free
                       </Text>
                     </View>
-                    <Text style={styles.accessHint}>
-                      {unlockToFree
-                        ? 'Listed under Chaneli za bure — all users can watch without premium'
-                        : 'Premium only — not shown in Za bure, even if points are 0'}
-                    </Text>
                   </View>
                   <Switch
                     value={unlockToFree}
@@ -1035,6 +1024,63 @@ const ContentSection = () => {
 
               {/* Settings card */}
               <View style={styles.formCard}>
+                <Text style={styles.formCardTitle}>Playback</Text>
+                <View style={styles.inputSection}>
+                  <Text style={styles.inputLabel}>Player engine</Text>
+                  <Text style={styles.inputHint}>
+                    Per-channel override. Default uses Control Center global player.
+                    {videoUrl.trim() ? ` Suggested: ${playerEngineLabel(suggestPlayerForUrl(videoUrl))}.` : ''}
+                  </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.playerEngineRow}>
+                    {PLAYER_ENGINES.map((engine) => {
+                      const active = playbackEngine === engine.id;
+                      return (
+                        <TouchableOpacity
+                          key={engine.id}
+                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
+                          onPress={() => setPlaybackEngine(engine.id)}>
+                          <Icon
+                            name={engine.icon}
+                            size={16}
+                            color={active ? '#fff' : '#9ca3af'}
+                          />
+                          <Text
+                            style={[
+                              styles.playerEngineChipText,
+                              active && styles.playerEngineChipTextActive,
+                            ]}
+                            numberOfLines={1}>
+                            {engine.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                  {playbackEngine !== 'default' && (
+                    <Text style={styles.inputHint}>
+                      {PLAYER_ENGINES.find((e) => e.id === playbackEngine)?.formats || ''}
+                    </Text>
+                  )}
+                  {videoUrl.trim() &&
+                    playbackEngine === 'default' &&
+                    suggestPlayerForUrl(videoUrl) !== 'default' && (
+                      <TouchableOpacity
+                        style={styles.suggestPlayerBtn}
+                        onPress={() => setPlaybackEngine(suggestPlayerForUrl(videoUrl))}>
+                        <Icon name="lightbulb-on-outline" size={16} color="#fbbf24" />
+                        <Text style={styles.suggestPlayerBtnText}>
+                          Use suggested: {playerEngineLabel(suggestPlayerForUrl(videoUrl))}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                </View>
+              </View>
+
+              {/* Settings card */}
+              <View style={styles.formCard}>
                 <Text style={styles.formCardTitle}>Settings</Text>
                 <View style={styles.toggleSection}>
                   <View style={styles.toggleInfo}>
@@ -1049,7 +1095,6 @@ const ContentSection = () => {
                 </View>
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>DRM type</Text>
-                  <Text style={styles.inputHint}>NONE = no DRM. CLEARKEY = kid:key. WIDEVINE/PLAYREADY = license server (future).</Text>
                   <View style={styles.drmTypeRow}>
                     {['NONE', 'CLEARKEY', 'WIDEVINE', 'PLAYREADY'].map((opt) => {
                       const active = drmType === opt;
@@ -1079,7 +1124,6 @@ const ContentSection = () => {
                       multiline={false}
                       maxLength={2048}
                     />
-                    <Text style={styles.inputHint}>Hex kid and hex key separated by colon. Used by app and web player.</Text>
                   </View>
                 )}
                 <View style={styles.inputSection}>
@@ -1464,6 +1508,12 @@ const styles = StyleSheet.create({
     color: '#c4b5fd',
     fontWeight: '700',
   },
+  channelRowPlayerTag: {
+    fontSize: 11,
+    color: '#fbbf24',
+    fontWeight: '700',
+    maxWidth: 120,
+  },
   channelRowDot: {
     fontSize: 12,
     color: '#4b5563',
@@ -1615,6 +1665,55 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
     marginTop: 6,
     lineHeight: 18,
+  },
+  playerEngineRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 10,
+    paddingRight: 8,
+  },
+  playerEngineChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    maxWidth: 180,
+  },
+  playerEngineChipActive: {
+    borderColor: '#7c3aed',
+    backgroundColor: 'rgba(124, 58, 237, 0.25)',
+  },
+  playerEngineChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9ca3af',
+    flexShrink: 1,
+  },
+  playerEngineChipTextActive: {
+    color: '#fff',
+  },
+  suggestPlayerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#854d0e',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+  },
+  suggestPlayerBtnText: {
+    color: '#fbbf24',
+    fontSize: 13,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   thumbnailTypeToggle: {
     flexDirection: 'row',
@@ -1977,6 +2076,14 @@ const ChannelRow = memo(function ChannelRow({
                   <Text style={styles.channelRowPremiumTag}>Premium</Text>
                 </>
               )}
+              {(channel.playback_engine || channel.playbackEngine) ? (
+                <>
+                  <Text style={styles.channelRowDot}>·</Text>
+                  <Text style={styles.channelRowPlayerTag} numberOfLines={1}>
+                    {playerEngineLabel(channel.playback_engine || channel.playbackEngine)}
+                  </Text>
+                </>
+              ) : null}
               <Text style={styles.channelRowDot}>·</Text>
               <Text style={styles.channelRowViews}>
                 {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}

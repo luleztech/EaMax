@@ -281,8 +281,6 @@ export default function VideoPlayer({
   const [useWebView,           setUseWebView]           = useState(false);
   const [sourceKey,            setSourceKey]            = useState(0);
   const [layoutSize,           setLayoutSize]           = useState({ width: 0, height: 0 });
-  const [isPortrait,           setIsPortrait]           = useState(true);
-  const [rotateHintDismissed,  setRotateHintDismissed]  = useState(false);
   const [fetchedDrmClearKey,   setFetchedDrmClearKey]   = useState(null);
   const [drmSessionConfigured, setDrmSessionConfigured] = useState(false);
   const [trialRemaining,       setTrialRemaining]       = useState(null);
@@ -299,7 +297,6 @@ export default function VideoPlayer({
   const lastTrialUpdateRef       = useRef(Date.now());
   const manifestMalformedRetryRef = useRef(0);
   const playbackRetryCountRef    = useRef(0);
-  const rotateHintAnimRef        = useRef(new Animated.Value(0));
 
   // ─── Derived ─────────────────────────────────────────────────────────────
 
@@ -478,7 +475,7 @@ export default function VideoPlayer({
       setError(null); setDuration(0); setCurrentTime(0);
       setSourceKey(prev => prev + 1);
       setUseWebView(startWithWebView);
-      setDrmSessionConfigured(false); setRotateHintDismissed(false);
+      setDrmSessionConfigured(false);
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
       if (sessionExpiry) {
@@ -521,27 +518,6 @@ export default function VideoPlayer({
     recordedWatchRef.current = key;
     userAPI.recordChannelWatch(userId, String(channelId)).catch(() => {});
   }, [visible, userId, channelId]);
-
-  // Orientation
-  useEffect(() => {
-    const update = () => { const { width, height } = Dimensions.get('window'); setIsPortrait(width < height); };
-    update();
-    const sub = Dimensions.addEventListener('change', update);
-    return () => sub?.remove?.();
-  }, []);
-
-  // Rotate hint animation
-  useEffect(() => {
-    if (!visible || rotateHintDismissed || !isPortrait) return;
-    const anim = rotateHintAnimRef.current;
-    anim.setValue(0);
-    const animation = Animated.loop(Animated.sequence([
-      Animated.timing(anim, { toValue: 1, duration: 1400, useNativeDriver: true }),
-      Animated.timing(anim, { toValue: 0, duration: 1400, useNativeDriver: true }),
-    ]));
-    animation.start();
-    return () => animation.stop();
-  }, [visible, rotateHintDismissed, isPortrait]);
 
   // Trial timer
   useEffect(() => {
@@ -766,21 +742,6 @@ export default function VideoPlayer({
           </View>
         )}
 
-        {visible && isPortrait && !rotateHintDismissed && (
-          <View style={styles.rotateOverlay} pointerEvents="box-none">
-            <View style={styles.rotateCard}>
-              <Animated.View style={{ transform: [{ rotate: rotateHintAnimRef.current.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '90deg'] }) }] }}>
-                <Icon name="cellphone" size={72} color="rgba(255,255,255,0.95)" />
-              </Animated.View>
-              <Text style={styles.rotateTitle}>Ilaze simu yako</Text>
-              <Text style={styles.rotateSubtitle}>Laza simu yako ili uweze kutizama kwa ukubwa kamili</Text>
-              <TouchableOpacity style={styles.rotateDismissBtn} onPress={() => setRotateHintDismissed(true)} activeOpacity={0.8}>
-                <Text style={styles.rotateDismissText}>Baadaye</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
         {(loading || ((isWidevineChannel || isPlayReadyChannel) && !drmSessionConfigured)) && !error && !(useWebView && isMpd) && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color="#fff" />
@@ -838,12 +799,6 @@ const styles = StyleSheet.create({
   webviewBtnText: { color: 'rgba(255,255,255,0.8)', fontSize: 14 },
   closeErrBtn:  { marginTop: 16, paddingVertical: 8 },
   closeErrText: { color: 'rgba(255,255,255,0.5)', fontSize: 14 },
-  rotateOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', zIndex: 99998 },
-  rotateCard:    { alignItems: 'center', paddingHorizontal: 40, maxWidth: 340 },
-  rotateTitle:   { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 10, textAlign: 'center' },
-  rotateSubtitle: { color: 'rgba(255,255,255,0.8)', fontSize: 15, lineHeight: 22, textAlign: 'center', marginBottom: 20 },
-  rotateDismissBtn:  { paddingVertical: 12, paddingHorizontal: 20 },
-  rotateDismissText: { color: 'rgba(255,255,255,0.6)', fontSize: 14 },
   trialOverlay: { position: 'absolute', top: Platform.OS === 'ios' ? 100 : 70, left: 20, zIndex: 99998 },
   trialBadge:   { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, gap: 6 },
   trialText:    { color: '#fff', fontSize: 14, fontWeight: '600' },

@@ -220,8 +220,49 @@ async function getPlanPaymentInfo(slug) {
   };
 }
 
+async function ensureDefaultPlansSeeded() {
+  try {
+    const countResult = await query(
+      `SELECT COUNT(*)::int AS count FROM subscription_plans`,
+    );
+    if (Number(countResult.rows?.[0]?.count || 0) > 0) return;
+
+    for (const p of DEFAULT_PLANS) {
+      const display = buildPlanDisplayFields(
+        p.slug,
+        p.price_tzs,
+        p.duration_days,
+        p.name_sw,
+      );
+      await query(
+        `INSERT INTO subscription_plans
+           (slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
+            price_line_sw, is_active, is_popular, sort_order, badge_text, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+         ON CONFLICT (slug) DO NOTHING`,
+        [
+          p.slug,
+          display.nameSw,
+          display.nameEn,
+          p.price_tzs,
+          p.duration_days,
+          display.durationLabelSw,
+          display.priceLineSw,
+          p.is_active !== false,
+          p.is_popular === true,
+          p.sort_order,
+          p.badge_text,
+        ],
+      );
+    }
+  } catch (_) {
+    // Table may not exist yet on older deployments.
+  }
+}
+
 async function listAllPlansAdmin() {
   try {
+    await ensureDefaultPlansSeeded();
     const result = await query(
       `SELECT slug, name_sw, name_en, price_tzs, duration_days, duration_label_sw,
               price_line_sw, is_active, is_popular, sort_order, badge_text, updated_at
@@ -259,22 +300,27 @@ async function upsertPlanAdmin(slug, data) {
   } catch (_) {
     existing = null;
   }
-  if (!existing) {
-    const err = new Error('Plan not found');
-    err.statusCode = 404;
-    throw err;
-  }
   const fallback = DEFAULT_PLANS.find((p) => p.slug === key);
+  const isNew = !existing;
 
   const isActive = data.isActive !== undefined
     ? data.isActive !== false
-    : (existing?.is_active !== false);
+    : (isNew ? true : existing.is_active !== false);
   const isPopular = data.isPopular !== undefined
     ? data.isPopular === true
-    : (existing?.is_popular === true || fallback?.is_popular === true);
-  const sortOrder = data.sortOrder !== undefined
-    ? Number(data.sortOrder) || 0
-    : (Number(existing?.sort_order) || fallback?.sort_order || 0);
+    : (isNew
+      ? fallback?.is_popular === true
+      : (existing.is_popular === true || fallback?.is_popular === true));
+  let sortOrder;
+  if (data.sortOrder !== undefined) {
+    sortOrder = Number(data.sortOrder) || 0;
+  } else if (existing) {
+    sortOrder = Number(existing.sort_order) || 0;
+  } else if (fallback) {
+    sortOrder = Number(fallback.sort_order) || 0;
+  } else {
+    sortOrder = await nextPlanSortOrder();
+  }
   const badgeText = data.badgeText !== undefined
     ? (data.badgeText || null)
     : (existing?.badge_text || fallback?.badge_text || null);

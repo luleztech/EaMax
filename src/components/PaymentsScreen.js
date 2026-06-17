@@ -498,29 +498,6 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
               maxLength={10}
             />
           </View>
-          <Text style={styles.inputHint}>
-            Nambari ya Tanzania pekee — muundo wa ndani: anza kwa 0 (mfano 0712345678, 0742345678, 0612345678).
-          </Text>
-          {(phoneNumber.startsWith('061') || phoneNumber.startsWith('062') || phoneNumber.startsWith('063')) && (
-            <Text style={[styles.inputHint, styles.halotelHint]}>
-              Halotel: Hakikisha Halopesa iko active. Piga 150*88# kukagua.
-            </Text>
-          )}
-          {(phoneNumber.startsWith('065') || phoneNumber.startsWith('067') || phoneNumber.startsWith('071') || phoneNumber.startsWith('077')) && (
-            <Text style={[styles.inputHint, styles.halotelHint]}>
-              Tigo: Hakikisha akaunti ya Tigo Pesa iko tayari kupokea ombi la malipo.
-            </Text>
-          )}
-          {(phoneNumber.startsWith('074') || phoneNumber.startsWith('075') || phoneNumber.startsWith('076') || phoneNumber.startsWith('079')) && (
-            <Text style={[styles.inputHint, styles.halotelHint]}>
-              Vodacom: Hakikisha akaunti ya M-Pesa iko tayari kupokea ombi la malipo.
-            </Text>
-          )}
-          {(phoneNumber.startsWith('068') || phoneNumber.startsWith('069') || phoneNumber.startsWith('078')) && (
-            <Text style={[styles.inputHint, styles.halotelHint]}>
-              Airtel: Hakikisha akaunti ya Airtel Money iko tayari kupokea ombi la malipo.
-            </Text>
-          )}
         </View>
 
         {/* CTA */}
@@ -565,14 +542,8 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           </TouchableOpacity>
         ) : null}
 
-        {/* Info + WhatsApp */}
+        {/* WhatsApp */}
         <View style={styles.footerInfo}>
-          <View style={styles.footerRow}>
-            <Icon name="information-outline" size={18} color="#64748b" />
-            <Text style={styles.footerRowText}>
-              Utapokea ombi kwenye simu. Fuata maelekezo ili kukamilisha.
-            </Text>
-          </View>
           <TouchableOpacity style={styles.whatsappRow} onPress={handleOpenWhatsApp} activeOpacity={0.8}>
             <View style={styles.whatsappIconWrap}>
               <Icon name="whatsapp" size={22} color="#fff" />
@@ -590,7 +561,6 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         <View style={styles.sendingOverlay} pointerEvents="box-none">
           <ActivityIndicator size="large" color="#ffffff" />
           <Text style={styles.sendingTitle}>Tunatuma ombi la malipo…</Text>
-          <Text style={styles.sendingHint}>Subiri kidogo — mtandao unaweza kuchukua sekunde chache.</Text>
         </View>
       </Modal>
 

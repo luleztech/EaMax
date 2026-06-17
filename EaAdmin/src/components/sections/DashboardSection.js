@@ -969,7 +969,6 @@ const DashboardSection = ({ refreshTrigger }) => {
                 </View>
                 <View>
                   <Text style={styles.modalTitle}>Notifications history</Text>
-                  <Text style={styles.modalSubtitle}>All sent and scheduled notifications</Text>
                 </View>
               </View>
               <TouchableOpacity
@@ -1018,9 +1017,6 @@ const DashboardSection = ({ refreshTrigger }) => {
                 <View>
                   <Text style={styles.modalTitle}>
                     {editingSlide ? 'Edit slide' : 'Add carousel slide'}
-                  </Text>
-                  <Text style={styles.modalSubtitle}>
-                    {editingSlide ? 'Update slide content' : 'New slide for the home carousel'}
                   </Text>
                 </View>
               </View>
@@ -1190,9 +1186,6 @@ const DashboardSection = ({ refreshTrigger }) => {
                 <View>
                   <Text style={styles.modalTitle}>
                     {editingMatch ? 'Edit match' : 'Add upcoming match'}
-                  </Text>
-                  <Text style={styles.modalSubtitle}>
-                    {editingMatch ? 'Update match details' : 'Show on Football app home'}
                   </Text>
                 </View>
               </View>

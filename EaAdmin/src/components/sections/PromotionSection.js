@@ -401,9 +401,6 @@ const PromotionSection = () => {
                     keyboardType="numeric"
                     placeholder="10"
                   />
-                  <Text style={styles.ofaHint}>
-                    Watumiaji wa bure wataona ofa na kuhesabu muda. Pokea Ofa inatuma ombi la malipo.
-                  </Text>
                 </View>
               ) : null}
 
@@ -461,9 +458,7 @@ const PromotionSection = () => {
                     ))}
                   </View>
                 </>
-              ) : (
-                <Text style={styles.ofaHint}>Ofa inaonyeshwa kwa watumiaji wa bure pekee.</Text>
-              )}
+              ) : null}
 
               <View style={styles.switchRow}>
                 <Text style={styles.switchLabel}>Imewashwa</Text>

@@ -10,9 +10,85 @@ import {
   Switch,
   Alert,
   RefreshControl,
+  Modal,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminControlAPI } from '../../config/api';
+
+const PLAYER_ENGINES = [
+  {
+    id: 'auto',
+    label: 'Smart Auto',
+    icon: 'auto-fix',
+    formats: 'HLS · DASH · MP4 · PHP · ClearKey · Widevine',
+  },
+  {
+    id: 'kotlin',
+    label: 'Kotlin Native',
+    icon: 'language-kotlin',
+    formats: 'Native stack · probe · failover · all DRM',
+  },
+  {
+    id: 'exo',
+    label: 'ExoPlayer',
+    icon: 'play-box',
+    formats: 'HLS · DASH · MP4 · ClearKey · Widevine',
+  },
+  {
+    id: 'webview',
+    label: 'WebView',
+    icon: 'web',
+    formats: 'PHP gateways · HTML · embedded players',
+  },
+  {
+    id: 'webplayer',
+    label: 'Web Player',
+    icon: 'television-play',
+    formats: 'HTML5 · HLS · DASH · ClearKey · Widevine',
+  },
+  {
+    id: 'shaka',
+    label: 'Shaka Player',
+    icon: 'play-box-outline',
+    formats: 'Shaka · HLS · DASH · ClearKey · Widevine · PHP',
+  },
+  {
+    id: 'flutter',
+    label: 'Flutter Player',
+    icon: 'flutter',
+    formats: 'media_kit · HLS · DASH · MP4',
+  },
+  {
+    id: 'chewie',
+    label: 'Chewie',
+    icon: 'play-circle-outline',
+    formats: 'video_player · HLS · MP4 · controls',
+  },
+  {
+    id: 'native_video',
+    label: 'Native Video',
+    icon: 'cellphone-play',
+    formats: 'Platform video_player · MP4 · HLS',
+  },
+  {
+    id: 'webrtc',
+    label: 'Flutter WebRTC',
+    icon: 'broadcast',
+    formats: 'WHEP/WHIP · low-latency WebRTC',
+  },
+  {
+    id: 'vlc',
+    label: 'VLC Player',
+    icon: 'volume-high',
+    formats: 'External VLC · most stream URLs',
+  },
+  {
+    id: 'mx',
+    label: 'MX Player',
+    icon: 'movie-open-play',
+    formats: 'External MX Player · most stream URLs',
+  },
+];
 
 const cardStyles = StyleSheet.create({
   card: {
@@ -103,14 +179,10 @@ const ToggleRow = ({ label, value, onChange, disabled }) => (
 const ControlCenterSection = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [savingApp, setSavingApp] = useState(false);
   const [savingPlayer, setSavingPlayer] = useState(false);
-
-  const [maintenanceMode, setMaintenanceMode] = useState(false);
-  const [maintenanceMessage, setMaintenanceMessage] = useState('');
-  const [disablePayments, setDisablePayments] = useState(false);
-  const [disableChannels, setDisableChannels] = useState(false);
-  const [disabledChannelIdsText, setDisabledChannelIdsText] = useState('');
+  const [statusModalVisible, setStatusModalVisible] = useState(false);
+  const [statusModalTitle, setStatusModalTitle] = useState('');
+  const [statusModalMessage, setStatusModalMessage] = useState('');
 
   const [playerConfig, setPlayerConfig] = useState({
     preferredEngine: 'auto',
@@ -124,32 +196,15 @@ const ControlCenterSection = () => {
     failoverToWebview: true,
   });
 
-  const [adsEnabled, setAdsEnabled] = useState(true);
-  const [ratibaTab, setRatibaTab] = useState(true);
-  const [adRewardPoints, setAdRewardPoints] = useState('20');
-
-  const parseChannelIds = (text) =>
-    String(text || '')
-      .split(/[,\s]+/)
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isFinite(n) && n > 0);
+  const showStatus = (title, message) => {
+    setStatusModalTitle(title);
+    setStatusModalMessage(message);
+    setStatusModalVisible(true);
+  };
 
   const load = useCallback(async () => {
     try {
-      const [emergencyRes, playerRes, flagsRes, adsRes] = await Promise.all([
-        adminControlAPI.getEmergencyControls(),
-        adminControlAPI.getPlayerConfig(),
-        adminControlAPI.getFeatureFlags().catch(() => ({ adsEnabled: true, ratibaTab: true })),
-        adminControlAPI.getAdRewardPoints().catch(() => ({ rewardPoints: 20 })),
-      ]);
-
-      const c = emergencyRes?.controls || {};
-      setMaintenanceMode(!!c.maintenanceMode);
-      setMaintenanceMessage(c.maintenanceMessageSw || '');
-      setDisablePayments(!!c.disablePayments);
-      setDisableChannels(!!c.disableChannels);
-      setDisabledChannelIdsText((c.disabledChannelIds || []).join(', '));
-
+      const playerRes = await adminControlAPI.getPlayerConfig();
       const pc = playerRes?.config || {};
       setPlayerConfig({
         preferredEngine: pc.preferredEngine || 'auto',
@@ -162,12 +217,8 @@ const ControlCenterSection = () => {
         defaultQuality: pc.defaultQuality || '360p',
         failoverToWebview: pc.failoverToWebview !== false,
       });
-
-      setAdsEnabled(flagsRes.adsEnabled !== false);
-      setRatibaTab(flagsRes.ratibaTab !== false);
-      setAdRewardPoints(String(adsRes.rewardPoints ?? 20));
     } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kupakia');
+      showStatus('Hitilafu', e?.message || 'Imeshindwa kupakia');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -177,33 +228,6 @@ const ControlCenterSection = () => {
   useEffect(() => {
     load();
   }, [load]);
-
-  const saveApp = async () => {
-    const pts = Number(adRewardPoints);
-    if (!(pts > 0)) {
-      Alert.alert('Thibitisha', 'Weka pointi halali');
-      return;
-    }
-    setSavingApp(true);
-    try {
-      await Promise.all([
-        adminControlAPI.updateEmergencyControls({
-          maintenanceMode,
-          maintenanceMessageSw: maintenanceMessage.trim(),
-          disablePayments,
-          disableChannels,
-          disabledChannelIds: parseChannelIds(disabledChannelIdsText),
-        }),
-        adminControlAPI.updateFeatureFlags({ adsEnabled, ratibaTab }),
-        adminControlAPI.updateAdRewardPoints(pts),
-      ]);
-      Alert.alert('Imefanikiwa', 'Mipangilio imehifadhiwa.');
-    } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
-    } finally {
-      setSavingApp(false);
-    }
-  };
 
   const savePlayer = async () => {
     const minBuf = Number(playerConfig.bufferMinMs) || 800;
@@ -225,13 +249,17 @@ const ControlCenterSection = () => {
         defaultQuality: playerConfig.defaultQuality || '360p',
         failoverToWebview: playerConfig.failoverToWebview,
       });
-      Alert.alert('Imefanikiwa', 'Player imehifadhiwa.');
+      showStatus('Imefanikiwa', 'Player imehifadhiwa. Watumiaji wataitumia mara moja.');
     } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
+      showStatus('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
     } finally {
       setSavingPlayer(false);
     }
   };
+
+  const activeEngine = PLAYER_ENGINES.find(
+    (e) => e.id === playerConfig.preferredEngine,
+  ) || PLAYER_ENGINES[0];
 
   if (loading) {
     return (
@@ -242,179 +270,168 @@ const ControlCenterSection = () => {
   }
 
   return (
-    <ScrollView
-      style={styles.container}
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor="#7c3aed" />
-      }>
-      <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>App &amp; Features</Text>
+    <>
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); load(); }}
+            tintColor="#7c3aed"
+          />
+        }>
+        <View style={cardStyles.card}>
+          <Text style={cardStyles.title}>Player</Text>
+          <View style={styles.activeBanner}>
+            <Icon name={activeEngine.icon} size={22} color="#c4b5fd" />
+            <View style={styles.activeBannerText}>
+              <Text style={styles.activeLabel}>Inatumika sasa</Text>
+              <Text style={styles.activeName}>{activeEngine.label}</Text>
+            </View>
+          </View>
 
-        <ToggleRow label="Maintenance mode" value={maintenanceMode} onChange={setMaintenanceMode} />
-        <Text style={cardStyles.fieldLabel}>Ujumbe wa matengenezo</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={maintenanceMessage}
-          onChangeText={setMaintenanceMessage}
-          placeholder="Tunaendelea na matengenezo..."
-          placeholderTextColor="#6b7280"
-          multiline
-        />
+          <Text style={cardStyles.fieldLabel}>Chagua player</Text>
+          {PLAYER_ENGINES.map((engine) => {
+            const selected = playerConfig.preferredEngine === engine.id;
+            return (
+              <TouchableOpacity
+                key={engine.id}
+                style={[styles.engineCard, selected && styles.engineCardActive]}
+                onPress={() => setPlayerConfig((p) => ({ ...p, preferredEngine: engine.id }))}
+                activeOpacity={0.85}>
+                <View style={styles.engineCardTop}>
+                  <View style={[styles.engineIconWrap, selected && styles.engineIconWrapActive]}>
+                    <Icon name={engine.icon} size={22} color={selected ? '#fff' : '#9ca3af'} />
+                  </View>
+                  <View style={styles.engineCardBody}>
+                    <Text style={[styles.engineName, selected && styles.engineNameActive]}>
+                      {engine.label}
+                    </Text>
+                    <Text style={styles.engineFormats}>{engine.formats}</Text>
+                  </View>
+                  {selected ? (
+                    <Icon name="check-circle" size={22} color="#a78bfa" />
+                  ) : (
+                    <Icon name="circle-outline" size={22} color="#4b5563" />
+                  )}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
 
-        <ToggleRow label="Zima malipo" value={disablePayments} onChange={setDisablePayments} />
-        <ToggleRow label="Zima channels" value={disableChannels} onChange={setDisableChannels} />
-
-        <Text style={cardStyles.fieldLabel}>Channel IDs zilizozimwa</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={disabledChannelIdsText}
-          onChangeText={setDisabledChannelIdsText}
-          placeholder="48, 12, 7"
-          placeholderTextColor="#6b7280"
-          keyboardType="numbers-and-punctuation"
-        />
-
-        <ToggleRow label="Matangazo" value={adsEnabled} onChange={setAdsEnabled} disabled={savingApp} />
-        <ToggleRow label="Tab ya Ratiba" value={ratibaTab} onChange={setRatibaTab} disabled={savingApp} />
-
-        <Text style={cardStyles.fieldLabel}>Pointi kwa tangazo</Text>
-        <TextInput
-          style={cardStyles.input}
-          value={adRewardPoints}
-          onChangeText={setAdRewardPoints}
-          keyboardType="number-pad"
-        />
-
-        <TouchableOpacity style={cardStyles.saveBtn} onPress={saveApp} disabled={savingApp}>
-          {savingApp ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Icon name="content-save" size={18} color="#fff" />
-              <Text style={cardStyles.saveBtnText}>Hifadhi</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      <View style={cardStyles.card}>
-        <Text style={cardStyles.title}>Player</Text>
-
-        <Text style={cardStyles.fieldLabel}>Preferred engine</Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-          {['auto', 'exo', 'webview'].map((engine) => (
-            <TouchableOpacity
-              key={engine}
-              style={[
-                styles.chip,
-                playerConfig.preferredEngine === engine && styles.chipActive,
-              ]}
-              onPress={() => setPlayerConfig((p) => ({ ...p, preferredEngine: engine }))}>
-              <Text
+          <Text style={[cardStyles.fieldLabel, { marginTop: 16 }]}>Default quality</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            {['auto', '240p', '360p', '480p', '720p', '1080p'].map((q) => (
+              <TouchableOpacity
+                key={q}
                 style={[
-                  styles.chipText,
-                  playerConfig.preferredEngine === engine && styles.chipTextActive,
-                ]}>
-                {engine}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+                  styles.chip,
+                  playerConfig.defaultQuality === q && styles.chipActive,
+                ]}
+                onPress={() => setPlayerConfig((p) => ({ ...p, defaultQuality: q }))}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    playerConfig.defaultQuality === q && styles.chipTextActive,
+                  ]}>
+                  {q}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-        <Text style={cardStyles.fieldLabel}>Default quality</Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-          {['auto', '240p', '360p', '480p', '720p', '1080p'].map((q) => (
+          <View style={cardStyles.inputRow}>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Retry max</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.retryMax}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryMax: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Retry delay (ms)</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.retryDelayMs}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryDelayMs: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+          </View>
+
+          <View style={cardStyles.inputRow}>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Buffer min (ms)</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.bufferMinMs}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMinMs: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Buffer max (ms)</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.bufferMaxMs}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMaxMs: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+          </View>
+
+          <ToggleRow
+            label="Reconnect / retry on error"
+            value={playerConfig.reconnectEnabled}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, reconnectEnabled: v }))}
+          />
+
+          <ToggleRow
+            label="Auto-play on start"
+            value={playerConfig.autoPlay}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, autoPlay: v }))}
+          />
+
+          <ToggleRow
+            label="Failover to WebView"
+            value={playerConfig.failoverToWebview}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, failoverToWebview: v }))}
+          />
+
+          <TouchableOpacity style={cardStyles.saveBtn} onPress={savePlayer} disabled={savingPlayer}>
+            {savingPlayer ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Icon name="play-circle" size={18} color="#fff" />
+                <Text style={cardStyles.saveBtnText}>Hifadhi player</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      <Modal
+        visible={statusModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStatusModalVisible(false)}>
+        <View style={styles.statusModalOverlay}>
+          <View style={styles.statusModalContent}>
+            <Text style={styles.statusModalTitle}>{statusModalTitle}</Text>
+            <Text style={styles.statusModalMessage}>{statusModalMessage}</Text>
             <TouchableOpacity
-              key={q}
-              style={[
-                styles.chip,
-                playerConfig.defaultQuality === q && styles.chipActive,
-              ]}
-              onPress={() => setPlayerConfig((p) => ({ ...p, defaultQuality: q }))}>
-              <Text
-                style={[
-                  styles.chipText,
-                  playerConfig.defaultQuality === q && styles.chipTextActive,
-                ]}>
-                {q}
-              </Text>
+              style={styles.statusModalButton}
+              onPress={() => setStatusModalVisible(false)}>
+              <Text style={styles.statusModalButtonText}>Sawa</Text>
             </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={cardStyles.inputRow}>
-          <View style={cardStyles.inputHalf}>
-            <Text style={cardStyles.fieldLabel}>Retry max</Text>
-            <TextInput
-              style={cardStyles.input}
-              value={playerConfig.retryMax}
-              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryMax: v }))}
-              keyboardType="number-pad"
-            />
-          </View>
-          <View style={cardStyles.inputHalf}>
-            <Text style={cardStyles.fieldLabel}>Retry delay (ms)</Text>
-            <TextInput
-              style={cardStyles.input}
-              value={playerConfig.retryDelayMs}
-              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryDelayMs: v }))}
-              keyboardType="number-pad"
-            />
           </View>
         </View>
-
-        <View style={cardStyles.inputRow}>
-          <View style={cardStyles.inputHalf}>
-            <Text style={cardStyles.fieldLabel}>Buffer min (ms)</Text>
-            <TextInput
-              style={cardStyles.input}
-              value={playerConfig.bufferMinMs}
-              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMinMs: v }))}
-              keyboardType="number-pad"
-            />
-          </View>
-          <View style={cardStyles.inputHalf}>
-            <Text style={cardStyles.fieldLabel}>Buffer max (ms)</Text>
-            <TextInput
-              style={cardStyles.input}
-              value={playerConfig.bufferMaxMs}
-              onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMaxMs: v }))}
-              keyboardType="number-pad"
-            />
-          </View>
-        </View>
-
-        <ToggleRow
-          label="Reconnect / retry on error"
-          value={playerConfig.reconnectEnabled}
-          onChange={(v) => setPlayerConfig((p) => ({ ...p, reconnectEnabled: v }))}
-        />
-
-        <ToggleRow
-          label="Auto-play on start"
-          value={playerConfig.autoPlay}
-          onChange={(v) => setPlayerConfig((p) => ({ ...p, autoPlay: v }))}
-        />
-
-        <ToggleRow
-          label="Failover to WebView"
-          value={playerConfig.failoverToWebview}
-          onChange={(v) => setPlayerConfig((p) => ({ ...p, failoverToWebview: v }))}
-        />
-
-        <TouchableOpacity style={cardStyles.saveBtn} onPress={savePlayer} disabled={savingPlayer}>
-          {savingPlayer ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <>
-              <Icon name="play-circle" size={18} color="#fff" />
-              <Text style={cardStyles.saveBtnText}>Hifadhi player</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+      </Modal>
+    </>
   );
 };
 
@@ -429,6 +446,78 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
     paddingBottom: 100,
+  },
+  activeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: 'rgba(124, 58, 237, 0.15)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
+    padding: 14,
+    marginBottom: 16,
+  },
+  activeBannerText: {
+    flex: 1,
+  },
+  activeLabel: {
+    color: '#c4b5fd',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  activeName: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  engineCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    backgroundColor: 'rgba(3, 7, 18, 0.65)',
+    padding: 12,
+    marginBottom: 8,
+  },
+  engineCardActive: {
+    borderColor: '#7c3aed',
+    backgroundColor: 'rgba(124, 58, 237, 0.12)',
+  },
+  engineCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  engineIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: '#1f2937',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  engineIconWrapActive: {
+    backgroundColor: '#7c3aed',
+  },
+  engineCardBody: {
+    flex: 1,
+  },
+  engineName: {
+    color: '#e5e7eb',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  engineNameActive: {
+    color: '#fff',
+  },
+  engineFormats: {
+    color: '#6b7280',
+    fontSize: 11,
+    marginTop: 3,
+    lineHeight: 15,
   },
   chip: {
     paddingHorizontal: 12,
@@ -450,6 +539,45 @@ const styles = StyleSheet.create({
   },
   chipTextActive: {
     color: '#fff',
+  },
+  statusModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  statusModalContent: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 360,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+  },
+  statusModalTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  statusModalMessage: {
+    color: '#9ca3af',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  statusModalButton: {
+    backgroundColor: '#7c3aed',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  statusModalButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 15,
   },
 });
 

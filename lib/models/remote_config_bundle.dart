@@ -242,8 +242,8 @@ class RemotePlayerConfig {
   factory RemotePlayerConfig.fromJson(Map<String, dynamic> json) {
     return RemotePlayerConfig(
       preferredEngine: json['preferredEngine']?.toString() ?? 'auto',
-      bufferMinMs: int.tryParse('${json['bufferMinMs']}') ?? 1500,
-      bufferMaxMs: int.tryParse('${json['bufferMaxMs']}') ?? 30000,
+      bufferMinMs: int.tryParse('${json['bufferMinMs']}') ?? 800,
+      bufferMaxMs: int.tryParse('${json['bufferMaxMs']}') ?? 12000,
       retryMax: int.tryParse('${json['retryMax']}') ?? 4,
       retryDelayMs: int.tryParse('${json['retryDelayMs']}') ?? 1200,
       reconnectEnabled: json['reconnectEnabled'] != false,

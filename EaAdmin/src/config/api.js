@@ -566,14 +566,45 @@ export const adminPromotionsAPI = {
 /**
  * Subscription plans (server-driven pricing)
  */
+const slugifyPlanName = (name) => {
+  const base = String(name || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 28);
+  return base || 'plan';
+};
+
 export const adminSubscriptionPlansAPI = {
   list: async () => apiRequest('/api/admin/subscription-plans'),
 
-  create: async (payload) =>
-    apiRequest('/api/admin/subscription-plans', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+  create: async (payload) => {
+    const body = JSON.stringify(payload);
+    try {
+      return await apiRequest('/api/admin/subscription-plans', {
+        method: 'POST',
+        body,
+      });
+    } catch (error) {
+      const msg = String(error?.message || '').toLowerCase();
+      if (
+        msg.includes('404') ||
+        msg.includes('not found') ||
+        msg.includes('cannot post')
+      ) {
+        const slug = slugifyPlanName(payload?.nameSw);
+        return apiRequest(
+          `/api/admin/subscription-plans/${encodeURIComponent(slug)}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          },
+        );
+      }
+      throw error;
+    }
+  },
 
   update: async (slug, payload) =>
     apiRequest(`/api/admin/subscription-plans/${encodeURIComponent(slug)}`, {

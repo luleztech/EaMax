@@ -38,7 +38,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState({ type: null, text: '' });
-  const [composeHint, setComposeHint] = useState('');
 
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -72,9 +71,7 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
     setTitle(item.title || '');
     setMessage(item.message || '');
     setActiveTab('compose');
-    setComposeHint('Loaded from history — review and tap Send Now when ready');
     setStatusMessage({ type: null, text: '' });
-    setTimeout(() => setComposeHint(''), 5000);
   }, []);
 
   const handleSend = async () => {
@@ -132,7 +129,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
       setTimeout(() => {
         setTitle('');
         setMessage('');
-        setComposeHint('');
         setStatusMessage({ type: null, text: '' });
         onClose();
       }, 2500);
@@ -161,7 +157,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
     setTitle('');
     setMessage('');
     setActiveTab('compose');
-    setComposeHint('');
     setStatusMessage({ type: null, text: '' });
     onClose();
   };
@@ -232,13 +227,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
           {activeTab === 'compose' ? (
             <>
-              {composeHint ? (
-                <View style={styles.composeHintBanner}>
-                  <Icon name="information-outline" size={20} color="#a78bfa" />
-                  <Text style={styles.composeHintText}>{composeHint}</Text>
-                </View>
-              ) : null}
-
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Title *</Text>
                 <TextInput
@@ -280,9 +268,6 @@ const NotificationsPanel = ({ visible, onClose, onNotificationSent }) => {
                   )}
                 </TouchableOpacity>
               </View>
-              <Text style={styles.historySubtitle}>
-                Bonyeza resend kutuma tena mwaisa
-              </Text>
 
               {historyError ? (
                 <View style={styles.historyEmptyCard}>
@@ -490,23 +475,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
     marginBottom: 12,
-  },
-  composeHintBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: 14,
-    marginBottom: 16,
-    borderRadius: 12,
-    backgroundColor: 'rgba(124, 58, 237, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.35)',
-  },
-  composeHintText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#c4b5fd',
-    lineHeight: 18,
   },
   input: {
     backgroundColor: 'rgba(31, 41, 55, 0.8)',

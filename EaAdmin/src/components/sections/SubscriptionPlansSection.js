@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   RefreshControl,
   Switch,
-  Alert,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminSubscriptionPlansAPI } from '../../config/api';
@@ -56,6 +55,16 @@ const SubscriptionPlansSection = () => {
   const [isActive, setIsActive] = useState(true);
   const [isPopular, setIsPopular] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [statusModalVisible, setStatusModalVisible] = useState(false);
+  const [statusModalTitle, setStatusModalTitle] = useState('');
+  const [statusModalMessage, setStatusModalMessage] = useState('');
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
+
+  const showStatusModal = useCallback((title, message) => {
+    setStatusModalTitle(title);
+    setStatusModalMessage(message);
+    setStatusModalVisible(true);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -67,12 +76,12 @@ const SubscriptionPlansSection = () => {
         ),
       );
     } catch (e) {
-      Alert.alert('Hitilafu', e?.message || 'Imeshindwa kupakia vifurushi');
+      showStatusModal('Hitilafu', e?.message || 'Imeshindwa kupakia vifurushi');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [showStatusModal]);
 
   useEffect(() => {
     load();
@@ -109,19 +118,20 @@ const SubscriptionPlansSection = () => {
   const handleSave = async () => {
     const priceTzs = Number(amount);
     if (!nameSw.trim()) {
-      Alert.alert('Thibitisha', 'Weka jina la kifurushi');
+      showStatusModal('Thibitisha', 'Weka jina la kifurushi');
       return;
     }
     if (!(priceTzs > 0)) {
-      Alert.alert('Thibitisha', 'Weka kiasi halali (TZS)');
+      showStatusModal('Thibitisha', 'Weka kiasi halali (TZS)');
       return;
     }
     if (!(durationDays > 0)) {
-      Alert.alert('Thibitisha', 'Chagua kipindi');
+      showStatusModal('Thibitisha', 'Chagua kipindi');
       return;
     }
 
     setSaving(true);
+    const wasCreate = modalMode === 'create';
     try {
       const payload = {
         nameSw: nameSw.trim(),
@@ -137,14 +147,12 @@ const SubscriptionPlansSection = () => {
       }
       setModalOpen(false);
       await load();
-      Alert.alert(
+      showStatusModal(
         'Imefaulu',
-        modalMode === 'create'
-          ? 'Kifurushi kipya kimeongezwa. Watumiaji wataona mara moja.'
-          : 'Vifurushi vimesasishwa. Watumiaji wataona mara moja.',
+        wasCreate ? 'Kifurushi kipya kimeongezwa.' : 'Vifurushi vimesasishwa.',
       );
     } catch (e) {
-      Alert.alert('Imeshindwa', e?.message || 'Haijahifadhiwa');
+      showStatusModal('Imeshindwa', e?.message || 'Haijahifadhiwa');
     } finally {
       setSaving(false);
     }
@@ -152,30 +160,23 @@ const SubscriptionPlansSection = () => {
 
   const handleDelete = () => {
     if (!editing?.slug) return;
-    Alert.alert(
-      'Futa kifurushi',
-      `Una uhakika unataka kufuta "${planTitle(editing)}"?`,
-      [
-        { text: 'Ghairi', style: 'cancel' },
-        {
-          text: 'Futa',
-          style: 'destructive',
-          onPress: async () => {
-            setSaving(true);
-            try {
-              await adminSubscriptionPlansAPI.remove(editing.slug);
-              setModalOpen(false);
-              await load();
-              Alert.alert('Imefaulu', 'Kifurushi kimefutwa.');
-            } catch (e) {
-              Alert.alert('Imeshindwa', e?.message || 'Imeshindwa kufuta');
-            } finally {
-              setSaving(false);
-            }
-          },
-        },
-      ],
-    );
+    setDeleteConfirmVisible(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!editing?.slug) return;
+    setSaving(true);
+    try {
+      await adminSubscriptionPlansAPI.remove(editing.slug);
+      setDeleteConfirmVisible(false);
+      setModalOpen(false);
+      await load();
+      showStatusModal('Imefaulu', 'Kifurushi kimefutwa.');
+    } catch (e) {
+      showStatusModal('Imeshindwa', e?.message || 'Imeshindwa kufuta');
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (loading) {
@@ -232,7 +233,7 @@ const SubscriptionPlansSection = () => {
 
         {plans.length === 0 ? (
           <View style={styles.empty}>
-            <Text style={styles.emptyText}>Hakuna vifurushi. Ongeza kifurushi cha kwanza.</Text>
+            <Text style={styles.emptyText}>Hakuna vifurushi.</Text>
           </View>
         ) : null}
       </ScrollView>
@@ -290,7 +291,6 @@ const SubscriptionPlansSection = () => {
 
             {preview ? (
               <View style={styles.previewBox}>
-                <Text style={styles.previewLabel}>Itaonekana kwenye app:</Text>
                 <Text style={styles.previewText}>{preview}</Text>
               </View>
             ) : null}
@@ -326,6 +326,57 @@ const SubscriptionPlansSection = () => {
                 {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Hifadhi</Text>}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={deleteConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteConfirmVisible(false)}>
+        <View style={styles.statusModalOverlay}>
+          <View style={styles.statusModalContent}>
+            <Text style={styles.statusModalTitle}>Futa kifurushi</Text>
+            <Text style={styles.statusModalMessage}>
+              Una uhakika unataka kufuta "{planTitle(editing)}"?
+            </Text>
+            <View style={styles.statusModalActionsRow}>
+              <TouchableOpacity
+                style={styles.statusModalCancel}
+                onPress={() => setDeleteConfirmVisible(false)}
+                disabled={saving}>
+                <Text style={styles.statusModalCancelText}>Ghairi</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.statusModalConfirm, saving && { opacity: 0.7 }]}
+                onPress={confirmDelete}
+                disabled={saving}>
+                {saving ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.statusModalConfirmText}>Futa</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={statusModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStatusModalVisible(false)}>
+        <View style={styles.statusModalOverlay}>
+          <View style={styles.statusModalContent}>
+            <Text style={styles.statusModalTitle}>{statusModalTitle}</Text>
+            <Text style={styles.statusModalMessage}>{statusModalMessage}</Text>
+            <TouchableOpacity
+              style={styles.statusModalButton}
+              onPress={() => setStatusModalVisible(false)}>
+              <Text style={styles.statusModalButtonText}>Sawa</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -452,6 +503,74 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   saveText: { color: '#fff', fontWeight: '800' },
+  statusModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  statusModalContent: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 360,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+  },
+  statusModalTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  statusModalMessage: {
+    color: '#9ca3af',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  statusModalButton: {
+    backgroundColor: '#7c3aed',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  statusModalButtonText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 15,
+  },
+  statusModalActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  statusModalCancel: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#374151',
+    alignItems: 'center',
+  },
+  statusModalCancelText: {
+    color: '#d1d5db',
+    fontWeight: '700',
+  },
+  statusModalConfirm: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#dc2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  statusModalConfirmText: {
+    color: '#fff',
+    fontWeight: '800',
+  },
 });
 
 export default SubscriptionPlansSection;

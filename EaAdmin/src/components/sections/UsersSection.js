@@ -560,10 +560,6 @@ const UsersSection = ({ isActive }) => {
               </>
             )}
           </TouchableOpacity>
-          <Text style={styles.remindHint}>
-            Sends FCM to devices with a token. Blocked accounts are skipped. Server needs Firebase
-            (FIREBASE_SERVICE_ACCOUNT_KEY).
-          </Text>
         </View>
       ) : null}
 
@@ -849,10 +845,6 @@ const UsersSection = ({ isActive }) => {
             </View>
 
             <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalSubtitle}>
-                Grant premium access to {selectedUser?.name}
-              </Text>
-
               {/* Access Type Selection */}
               <View style={styles.accessTypeContainer}>
                 <Text style={styles.inputLabel}>Access Duration</Text>

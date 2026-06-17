@@ -16,6 +16,7 @@ const {
   getGlobalPlayerConfig,
   updateGlobalPlayerConfig,
 } = require('../services/playerConfigService');
+const { sanitizeChannelPlaybackEngine } = require('../constants/playerEngines');
 const {
   getChannelPlayback,
   upsertChannelStream,
@@ -522,6 +523,7 @@ router.get('/channels', async (req, res, next) => {
                c.owner_user_id, c.created_at,
                COALESCE(c.sort_order, c.id) AS sort_order,
                COALESCE(c.unlock_to_free, false) AS unlock_to_free,
+               c.playback_engine,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
         LEFT JOIN (
@@ -541,6 +543,7 @@ router.get('/channels', async (req, res, next) => {
                  owner_user_id, created_at,
                  COALESCE(sort_order, id) AS sort_order,
                  COALESCE(unlock_to_free, false) AS unlock_to_free,
+                 playback_engine,
                  0 AS view_count
           FROM channels
           ORDER BY COALESCE(sort_order, id) ASC, id ASC
@@ -563,6 +566,8 @@ router.get('/channels', async (req, res, next) => {
           drmClearKey: clearKey,
           unlock_to_free: unlockToFree,
           unlockToFree,
+          playback_engine: row.playback_engine || null,
+          playbackEngine: row.playback_engine || null,
         };
       })
     );
@@ -588,6 +593,7 @@ router.post('/channels', async (req, res, next) => {
       ownerUserId: z.number().int().optional(),
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
       unlockToFree: z.boolean().optional().default(false),
+      playbackEngine: z.string().max(32).optional().nullable(),
     }).superRefine((data, ctx) => {
       const hasUrl = !!(data.streamUrl && String(data.streamUrl).trim());
       const hasAlias = !!(data.streamAlias && String(data.streamAlias).trim());
@@ -604,6 +610,7 @@ router.post('/channels', async (req, res, next) => {
     const drmKeyValue = drmType === 'CLEARKEY' && req.body.drmClearKey != null && String(req.body.drmClearKey).trim() !== ''
       ? String(req.body.drmClearKey).trim()
       : null;
+    const playbackEngine = sanitizeChannelPlaybackEngine(data.playbackEngine);
 
     // If channel is alias-only, ensure alias resolves to a real URL so playback won't break.
     if (!urlTrimmed && aliasTrimmed) {
@@ -626,8 +633,8 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free, playback_engine)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        RETURNING *`,
       [
         data.name,
@@ -645,6 +652,7 @@ router.post('/channels', async (req, res, next) => {
         data.ownerUserId || null,
         data.pointsRequired ?? 0,
         !!data.unlockToFree,
+        playbackEngine,
       ],
     );
 
@@ -665,6 +673,7 @@ router.post('/channels', async (req, res, next) => {
       drm_type: drmType,
       drmType,
       drmClearKey: row.drm_clear_key ?? row.drmClearKey,
+      playbackEngine: row.playback_engine || null,
     });
   } catch (err) {
     return next(err);
@@ -691,6 +700,7 @@ router.put('/channels/:id', async (req, res, next) => {
       pointsRequired: z.coerce.number().int().min(0).optional(),
       unlockToFree: z.boolean().optional(),
       sortOrder: z.coerce.number().int().min(0).optional(),
+      playbackEngine: z.string().max(32).optional().nullable(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -751,6 +761,9 @@ router.put('/channels/:id', async (req, res, next) => {
       ...(data.unlockToFree !== undefined && { unlock_to_free: !!data.unlockToFree }),
       ...(data.sortOrder !== undefined && { sort_order: data.sortOrder }),
       ...(data.licenseUrl !== undefined && { license_url: data.licenseUrl != null ? String(data.licenseUrl).trim() : null }),
+      ...(data.playbackEngine !== undefined && {
+        playback_engine: sanitizeChannelPlaybackEngine(data.playbackEngine),
+      }),
     };
 
     if (data.sortOrder !== undefined) {
@@ -802,6 +815,7 @@ router.put('/channels/:id', async (req, res, next) => {
     return res.json({
       ...row,
       drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
+      playbackEngine: row.playback_engine || null,
     });
   } catch (err) {
     return next(err);
@@ -1819,8 +1833,8 @@ router.post('/subscription-plans', async (req, res, next) => {
     const schema = z.object({
       slug: z.string().min(2).max(32).regex(/^[a-z0-9_]+$/).optional(),
       nameSw: z.string().min(1).max(128),
-      priceTzs: z.number().int().positive(),
-      durationDays: z.number().int().positive(),
+      priceTzs: z.coerce.number().int().positive(),
+      durationDays: z.coerce.number().int().positive(),
       isActive: z.boolean().optional(),
       isPopular: z.boolean().optional(),
     });
@@ -1845,14 +1859,14 @@ router.put('/subscription-plans/:slug', async (req, res, next) => {
     if (!slug) return res.status(400).json({ error: 'Missing plan slug' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const schema = z.object({
-      priceTzs: z.number().int().positive(),
-      durationDays: z.number().int().positive(),
+      priceTzs: z.coerce.number().int().positive(),
+      durationDays: z.coerce.number().int().positive(),
       nameSw: z.string().min(1).max(128).optional(),
       isActive: z.boolean().optional(),
       isPopular: z.boolean().optional(),
     });
     const data = schema.parse(body);
-    const plan = await upsertPlanAdmin(slug, data);
+    const plan = await upsertPlanAdmin(slug, { ...data, nameSw: data.nameSw || slug });
     pushConfigRefresh();
     return res.json({ plan });
   } catch (err) {

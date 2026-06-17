@@ -130,7 +130,8 @@ object PhpWebViewSupport {
                 'video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{' +
                 'position:fixed!important;inset:0!important;width:100%!important;height:100%!important;' +
                 'max-width:100%!important;max-height:100%!important;object-fit:contain!important;' +
-                'z-index:2147483646!important;opacity:1!important;visibility:visible!important;display:block!important}';
+                'z-index:2147483646!important;opacity:1!important;visibility:visible!important;display:block!important}' +
+                '@media (orientation:landscape){video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{object-fit:cover!important}}';
               root.appendChild(s);
               return true;
             })();
@@ -1174,6 +1175,7 @@ object PhpWebViewSupport {
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{background:#000;height:100%;width:100%;overflow:hidden}
 video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
+@media (orientation:landscape){video{object-fit:cover}}
 video::-webkit-media-controls-enclosure,video::-webkit-media-controls,
 video::-webkit-media-controls-panel,video::-webkit-media-controls-current-time-display,
 video::-webkit-media-controls-time-remaining-display,video::-webkit-media-controls-duration-display,

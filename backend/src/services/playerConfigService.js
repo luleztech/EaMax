@@ -1,4 +1,5 @@
 const { query } = require('../db');
+const { VALID_ENGINES } = require('../constants/playerEngines');
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
@@ -80,7 +81,6 @@ async function updateGlobalPlayerConfig(patch) {
   return next;
 }
 
-const VALID_ENGINES = new Set(['auto', 'exo', 'webview']);
 const VALID_QUALITIES = new Set(['auto', '240p', '360p', '480p', '720p', '1080p']);
 
 function sanitizePlayerConfigPatch(patch) {
@@ -118,6 +118,7 @@ function sanitizePlayerConfigPatch(patch) {
 
 module.exports = {
   DEFAULT_PLAYER_CONFIG,
+  VALID_ENGINES,
   getGlobalPlayerConfig,
   updateGlobalPlayerConfig,
   sanitizePlayerConfigPatch,

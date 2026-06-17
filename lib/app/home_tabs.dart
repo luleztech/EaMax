@@ -432,13 +432,6 @@ class HomeMainTab extends StatelessWidget {
                         : 'Hakuna channels',
                     style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2),
                   ),
-                  if (channelsLoadFailed) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      'Vuta chini kujaribu tena',
-                      style: rajdhani(12).copyWith(color: t.text2.withValues(alpha: 0.75)),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -739,13 +732,6 @@ class ChannelsTab extends StatelessWidget {
                             : 'Hakuna channels',
                         style: rajdhani(14, weight: FontWeight.w600).copyWith(color: t.text2),
                       ),
-                      if (channelsLoadFailed) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          'Vuta chini kujaribu tena',
-                          style: rajdhani(12).copyWith(color: t.text2.withValues(alpha: 0.75)),
-                        ),
-                      ],
                     ],
                   ),
                 ),

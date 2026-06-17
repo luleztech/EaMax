@@ -22,6 +22,7 @@ class NativeAndroidPlayer {
     String clearKeyHex = '',
     Map<String, String>? headers,
     List<PlaybackStream>? fallbackStreams,
+    String? playbackEngine,
   }) async {
     if (!supported) return;
 
@@ -37,7 +38,37 @@ class NativeAndroidPlayer {
       'drm_clear_key': clearKeyHex,
       'headersJson': headers == null || headers.isEmpty ? '' : jsonEncode(headers),
       if (fallbackJson.isNotEmpty) 'fallbackStreamsJson': fallbackJson,
+      if (playbackEngine != null && playbackEngine.isNotEmpty)
+        'playbackEngine': playbackEngine,
     });
+  }
+
+  /// Launch VLC or MX Player with stream URL (admin engine: vlc / mx).
+  static Future<bool> openExternal({
+    required String engine,
+    required String url,
+    String licenseUrl = '',
+    String token = '',
+    String drmType = 'NONE',
+    String clearKeyHex = '',
+    Map<String, String>? headers,
+  }) async {
+    if (!supported) return false;
+    try {
+      final result = await _channel.invokeMethod<bool>('openExternal', <String, dynamic>{
+        'engine': engine,
+        'url': url,
+        'licenseUrl': licenseUrl,
+        'token': token,
+        'drmType': drmType,
+        'clearKeyHex': clearKeyHex,
+        'headersJson': headers == null || headers.isEmpty ? '' : jsonEncode(headers),
+      });
+      return result == true;
+    } catch (e) {
+      debugPrint('[NativeAndroidPlayer] openExternal failed: $e');
+      return false;
+    }
   }
 
   /// Push server-driven player settings to Kotlin [RemotePlayerConfigHolder].

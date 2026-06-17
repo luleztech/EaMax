@@ -102,24 +102,11 @@ const AdsSection = () => {
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Ads Statistics</Text>
-          <Text style={styles.headerSubtitle}>
-            {stats?._fallback ? 'Partial data from dashboard' : 'Real-time data from database'}
-          </Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
           <Icon name="refresh" size={20} color="#9ca3af" />
         </TouchableOpacity>
       </View>
-
-      {/* Fallback notice */}
-      {stats?._fallback && (
-        <View style={styles.fallbackBanner}>
-          <Icon name="information-outline" size={16} color="#fbbf24" />
-          <Text style={styles.fallbackText}>
-            {'  '}Backend update pending — showing available data. Full stats appear after deploy.
-          </Text>
-        </View>
-      )}
 
       {/* Top Stats Row */}
       <View style={styles.statsRow}>

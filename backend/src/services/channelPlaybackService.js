@@ -1,4 +1,5 @@
 const { query } = require('../db');
+const { resolvePlaybackEngine } = require('../constants/playerEngines');
 const { getGlobalPlayerConfig } = require('./playerConfigService');
 
 async function resolveStreamUrl(row) {
@@ -49,7 +50,8 @@ async function getChannelPlayback(channelId) {
     `SELECT c.id, c.name, c.category, c.is_active,
             COALESCE(c.stream_url, t.stream_url) AS legacy_url,
             c.stream_alias, c.drm_type, c.drm_clear_key, c.license_url,
-            c.thumbnail_url, c.points_required, c.unlock_to_free
+            c.thumbnail_url, c.points_required, c.unlock_to_free,
+            c.playback_engine
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
        LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
@@ -100,13 +102,20 @@ async function getChannelPlayback(channelId) {
   }
 
   const playerConfig = await getGlobalPlayerConfig();
+  const channelEngine = channel.playback_engine || null;
+  const effectiveEngine = resolvePlaybackEngine(channelEngine, playerConfig.preferredEngine);
 
   return {
     channelId: channel.id,
     name: channel.name,
     category: channel.category,
     streams,
-    playerConfig,
+    playbackEngine: channelEngine,
+    effectiveEngine,
+    playerConfig: {
+      ...playerConfig,
+      preferredEngine: effectiveEngine,
+    },
   };
 }
 

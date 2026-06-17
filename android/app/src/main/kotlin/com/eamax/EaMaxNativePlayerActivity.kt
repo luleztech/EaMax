@@ -28,6 +28,7 @@ import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
 import com.eamax.player.PlayerManager
+import com.eamax.player.PlayerEnginePolicy
 import com.eamax.player.StreamSessionBuilder
 
 /** Full-screen playback using the native PlayerManager stack (see repo `player/` sources). */
@@ -125,6 +126,12 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         applyOkoaButtonInsets(okoaBundle)
 
         showWebLoadingOverlay()
+
+        val channelEngine = intent.getStringExtra("playbackEngine")?.trim().orEmpty()
+        if (channelEngine.isNotEmpty()) {
+            PlayerEnginePolicy.setSessionEngine(channelEngine)
+            Log.d(TAG, "Per-channel playback engine: $channelEngine")
+        }
 
         playerManager = PlayerManager(
             context = this,
@@ -257,6 +264,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             val webContainer = findViewById<FrameLayout>(R.id.webview_container)
             playerView.applyResizeModeForOrientation()
             syncExoVideoScalingForOrientation()
+            syncWebViewVideoFitForOrientation()
 
             if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
                 hasBeenLandscapeThisSession = true
@@ -300,14 +308,28 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun syncWebViewVideoFitForOrientation() {
+        if (!::playerManager.isInitialized || !playerManager.isWebViewPlayback()) return
+        val fit = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            "cover"
+        } else {
+            "contain"
+        }
+        playerManager.getWebView()?.evaluateJavascript(
+            """
+            (function(){
+              var fit='$fit';
+              document.querySelectorAll('video,.shaka-video,.video-js,.shaka-video-container').forEach(function(el){
+                el.style.objectFit=fit;
+              });
+            })();
+            """.trimIndent(),
+            null,
+        )
+    }
+
     private fun maybeShowRotateHint() {
-        if (!playbackReady) return
-        if (RotateHintPreferences.neverShowHint(this)) return
-        if (rotateHintDismissedThisSession) return
-        if (hasBeenLandscapeThisSession) return
-        if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) return
-        rotateHintOverlay.visibility = View.VISIBLE
-        startPhoneHintAnimation()
+        hideRotateHintOverlay()
     }
 
     private fun hideWebLoadingOverlay() {
@@ -400,6 +422,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 ),
             )
         }
+        syncWebViewVideoFitForOrientation()
     }
 
     private fun bindExoToPlayerViewIfNeeded(playerView: PlayerView, strictNull: Boolean) {
@@ -444,6 +467,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         if (::playerManager.isInitialized) {
             playerManager.release()
         }
+        PlayerEnginePolicy.clearSessionEngine()
         super.onDestroy()
     }
 }

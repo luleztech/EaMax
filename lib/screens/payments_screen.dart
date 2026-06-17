@@ -794,34 +794,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                             ],
                           ),
                         ),
-                        if (!_phoneOk && _phoneCtrl.text.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 12),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  Icons.info_outline_rounded,
-                                  size: 16,
-                                  color: Colors.orange.shade300,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Hakikisha umeandika namba yako kwa usahihi na ukamilifu.',
-                                    style: TextStyle(
-                                      fontSize: 12.5,
-                                      height: 1.4,
-                                      color: Colors.orange.shade200.withValues(
-                                        alpha: 0.95,
-                                      ),
-                                      decoration: TextDecoration.none,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+
                       ],
                     ),
                   ),

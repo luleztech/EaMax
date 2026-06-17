@@ -38,6 +38,7 @@ router.get('/', async (req, res, next) => {
       const drmType = (row.drm_type || 'NONE').toUpperCase();
       const isClearKey = drmType === 'CLEARKEY';
       const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
+      const playbackEngine = row.playback_engine || null;
       const out = {
         ...row,
         stream_url: row.resolved_stream_url ?? row.stream_url,
@@ -52,6 +53,8 @@ router.get('/', async (req, res, next) => {
         drmType,
         unlock_to_free: unlockToFree,
         unlockToFree,
+        playback_engine: playbackEngine,
+        playbackEngine,
       };
       if (!isClearKey) {
         out.drm_clear_key = null;
@@ -83,6 +86,7 @@ router.get('/:id', async (req, res, next) => {
          COALESCE(c.drm_type, 'NONE') AS drm_type,
          c.drm_clear_key,
          c.license_url,
+         c.playback_engine,
          COALESCE(c.unlock_to_free, false) AS unlock_to_free
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
@@ -118,6 +122,8 @@ router.get('/:id', async (req, res, next) => {
       drmClearKey: clearKey,
       license_url: row.license_url ?? null,
       licenseUrl: row.license_url ?? null,
+      playback_engine: row.playback_engine || null,
+      playbackEngine: row.playback_engine || null,
       unlock_to_free: unlockToFree,
       unlockToFree,
     });

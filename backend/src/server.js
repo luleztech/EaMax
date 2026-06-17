@@ -203,6 +203,13 @@ query(
   `ALTER TABLE channels ALTER COLUMN stream_url DROP NOT NULL`
 ).catch(() => {});
 query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS playback_engine VARCHAR(32)`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration channels.playback_engine (non-fatal):', err.message);
+  }
+});
+query(
   `ALTER TABLE channels ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`
 ).catch((err) => {
   if (err.message && !err.message.includes('does not exist')) {

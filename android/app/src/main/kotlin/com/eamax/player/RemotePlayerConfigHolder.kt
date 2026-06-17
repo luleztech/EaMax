@@ -53,8 +53,12 @@ object RemotePlayerConfigHolder {
         autoPlay: Boolean?,
         defaultQuality: String?,
     ) {
-        preferredEngine?.trim()?.lowercase()?.takeIf { it in setOf("auto", "exo", "webview") }
-            ?.let { this.preferredEngine = it }
+        preferredEngine?.trim()?.lowercase()?.takeIf {
+            it in setOf(
+                "auto", "kotlin", "exo", "webview", "webplayer", "shaka",
+                "flutter", "chewie", "native_video", "webrtc", "vlc", "mx",
+            )
+        }?.let { this.preferredEngine = it }
         bufferMinMs?.takeIf { it in 500..60_000 }?.let { this.bufferMinMs = it }
         bufferMaxMs?.takeIf { it in 2_000..120_000 }?.let { this.bufferMaxMs = it }
         retryMax?.takeIf { it in 1..12 }?.let { this.retryMax = it }

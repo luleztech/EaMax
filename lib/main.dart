@@ -14,9 +14,13 @@ import 'services/fcm_notifications.dart';
 import 'register_webview_for_web_stub.dart'
     if (dart.library.html) 'register_webview_for_web.dart';
 import 'theme/app_theme.dart';
+import 'utils/player_orientation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb) {
+    await PlayerOrientation.lockHomePortrait();
+  }
   await initAppVersion();
   registerWebViewPlatformForWeb();
   try {

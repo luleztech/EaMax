@@ -50,6 +50,7 @@ dependencies:
   shimmer: ^3.0.0
   video_player: ^2.11.1
   chewie: ^1.14.1
+  flutter_webrtc: ^0.12.12
   webview_flutter: ^4.13.1
   webview_flutter_web: ^0.2.3+4
   wakelock_plus: ^1.6.1

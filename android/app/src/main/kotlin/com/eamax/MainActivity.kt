@@ -1,6 +1,7 @@
 package com.eamax
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -75,10 +76,56 @@ class MainActivity : FlutterActivity() {
                         intent.putExtra("clearKeyHex", mergedClearKey)
                         intent.putExtra("headersJson", args["headersJson"]?.toString().orEmpty())
                         intent.putExtra("fallbackStreamsJson", args["fallbackStreamsJson"]?.toString().orEmpty())
+                        val playbackEngine = args["playbackEngine"]?.toString()?.trim().orEmpty()
+                        if (playbackEngine.isNotEmpty()) {
+                            intent.putExtra("playbackEngine", playbackEngine)
+                        }
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
+                    }
+                }
+                "openExternal" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any?>
+                    if (args == null) {
+                        result.error("bad_args", "Expected map", null)
+                        return@setMethodCallHandler
+                    }
+                    val engine = args["engine"]?.toString()?.lowercase()?.trim().orEmpty()
+                    val url = args["url"]?.toString()?.trim().orEmpty()
+                    if (url.isEmpty()) {
+                        result.error("bad_args", "Missing url", null)
+                        return@setMethodCallHandler
+                    }
+                    val pkg = when (engine) {
+                        "vlc" -> "org.videolan.vlc"
+                        "mx" -> "com.mxtech.videoplayer.ad"
+                        else -> {
+                            result.error("bad_engine", "Unknown external player", null)
+                            return@setMethodCallHandler
+                        }
+                    }
+                    try {
+                        val view = Intent(Intent.ACTION_VIEW).apply {
+                            setPackage(pkg)
+                            setDataAndType(Uri.parse(url), "video/*")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(view)
+                        result.success(true)
+                    } catch (_: Exception) {
+                        try {
+                            val generic = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(Uri.parse(url), "video/*")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(generic)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("external_failed", e.message ?: "External player not installed", null)
+                        }
                     }
                 }
                 "updatePlayerConfig" -> {

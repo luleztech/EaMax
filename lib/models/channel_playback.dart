@@ -3,11 +3,17 @@ class ChannelPlaybackBundle {
     required this.channelId,
     required this.name,
     required this.streams,
+    this.playbackEngine,
+    this.effectiveEngine,
   });
 
   final int channelId;
   final String name;
   final List<PlaybackStream> streams;
+  /// Per-channel override from admin (null = use global).
+  final String? playbackEngine;
+  /// Resolved engine: channel override or global default.
+  final String? effectiveEngine;
 
   PlaybackStream? get primary =>
       streams.isNotEmpty ? streams.first : null;
@@ -22,11 +28,26 @@ class ChannelPlaybackBundle {
             .toList()
         : <PlaybackStream>[];
     streams.sort((a, b) => a.priority.compareTo(b.priority));
+    final playbackEngine = _readEngine(json['playbackEngine'] ?? json['playback_engine']);
+    final effectiveEngine = _readEngine(json['effectiveEngine']) ??
+        _readEngine(json['playerConfig'] is Map
+            ? (json['playerConfig'] as Map)['preferredEngine']
+            : null) ??
+        playbackEngine;
     return ChannelPlaybackBundle(
       channelId: int.tryParse('${json['channelId']}') ?? 0,
       name: json['name']?.toString() ?? '',
       streams: streams,
+      playbackEngine: playbackEngine,
+      effectiveEngine: effectiveEngine,
     );
+  }
+
+  static String? _readEngine(Object? raw) {
+    if (raw == null) return null;
+    final e = raw.toString().trim().toLowerCase();
+    if (e.isEmpty || e == 'default' || e == 'global') return null;
+    return e;
   }
 
   /// Maps v2 stream fields to the legacy channelData shape used by playback helpers.
@@ -42,6 +63,8 @@ class ChannelPlaybackBundle {
       'drm_clear_key': stream.drmClearKey,
       'headers': stream.headers,
       'headersJson': stream.headers,
+      if (playbackEngine != null) 'playbackEngine': playbackEngine,
+      if (effectiveEngine != null) 'effectiveEngine': effectiveEngine,
     };
   }
 }

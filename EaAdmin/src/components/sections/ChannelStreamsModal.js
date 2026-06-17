@@ -105,7 +105,9 @@ const ChannelStreamsModal = ({ visible, channel, onClose }) => {
           <View style={styles.header}>
             <View style={styles.headerText}>
               <Text style={styles.title}>Backup Streams</Text>
-              <Text style={styles.subtitle}>{channel?.name ?? ''} · priority 0 = primary</Text>
+              {channel?.name ? (
+                <Text style={styles.subtitle}>{channel.name}</Text>
+              ) : null}
             </View>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Icon name="close" size={24} color="#9ca3af" />

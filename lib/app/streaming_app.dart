@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -31,6 +32,7 @@ import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 import 'main_shell.dart';
 import '../screens/loader_screen.dart';
+import '../utils/player_orientation.dart';
 
 class StreamingApp extends StatefulWidget {
   const StreamingApp({super.key});
@@ -270,6 +272,9 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   @override
   void initState() {
     super.initState();
+    if (!kIsWeb) {
+      unawaited(PlayerOrientation.lockHomePortrait());
+    }
     WidgetsBinding.instance.addObserver(this);
     appUpdateState.addListener(_onGlobalUpdateStateChanged);
     unawaited(_hydrateChannelsPremiumOnlyFromCache());

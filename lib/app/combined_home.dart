@@ -10,12 +10,11 @@ import '../config/payment_helpers.dart';
 import '../models/carousel_slide.dart';
 import '../models/channel_playback.dart';
 import '../models/channel_ui.dart';
-import '../screens/fullscreen_video_page.dart';
+import '../services/player_playback_service.dart';
 import '../screens/payments_screen.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/home_data_cache.dart';
-import '../services/native_android_player.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
@@ -584,81 +583,38 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
-  /// Android: native ExoPlayer/WebView stack. Other platforms: [FullscreenVideoPage].
+  /// Opens playback using admin global + per-channel player engine.
   Future<void> _openVideoPlayback({
     required String url,
     String? channelName,
     Map<String, dynamic>? channelData,
     List<PlaybackStream>? fallbackStreams,
+    String? playbackEngineOverride,
   }) async {
-    if (url.isEmpty) return;
-    if (kIsWeb) {
-      if (!mounted) return;
-      final token = _extractPlaybackToken(channelData);
-      final playbackHeaders = _extractPlaybackHeaders(channelData);
-      final merged = Map<String, String>.from(playbackHeaders);
-      if (token.isNotEmpty &&
-          !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
-        merged['Authorization'] = 'Bearer $token';
-      }
-      final ck = _extractClearKeyPayload(channelData);
-      final drm = _normalizedDrmType(channelData, ck, url);
-      final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute<void>(
-          builder: (_) => FullscreenVideoPage(
-            videoUrl: url,
-            channelName: channelName,
-            httpHeaders: merged.isEmpty ? null : merged,
-            drmType: drm,
-            licenseUrl: license != null ? '$license' : '',
-            clearKeyRaw: ck,
-            playbackToken: token,
-          ),
-        ),
-      );
-      return;
-    }
-    if (NativeAndroidPlayer.supported) {
-      final ck = _extractClearKeyPayload(channelData);
-      final drm = _normalizedDrmType(channelData, ck, url);
-      final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
-      final token = _extractPlaybackToken(channelData);
-      final playbackHeaders = _extractPlaybackHeaders(channelData);
-      await NativeAndroidPlayer.open(
-        url: url,
-        licenseUrl: license != null ? '$license' : '',
-        token: token,
-        drmType: drm,
-        clearKeyHex: ck,
-        headers: playbackHeaders.isEmpty ? null : playbackHeaders,
-        fallbackStreams: fallbackStreams,
-      );
-      return;
-    }
-    if (!mounted) return;
-    final ck = _extractClearKeyPayload(channelData);
-    final drm = _normalizedDrmType(channelData, ck, url);
-    final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
-    final token = _extractPlaybackToken(channelData);
-    final playbackHeaders = _extractPlaybackHeaders(channelData);
-    final merged = Map<String, String>.from(playbackHeaders);
-    if (token.isNotEmpty && !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
-      merged['Authorization'] = 'Bearer $token';
-    }
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => FullscreenVideoPage(
-          videoUrl: url,
-          channelName: channelName,
-          httpHeaders: merged.isEmpty ? null : merged,
-          drmType: drm,
-          licenseUrl: license != null ? '$license' : '',
-          clearKeyRaw: ck,
-          playbackToken: token,
-        ),
-      ),
+    await PlayerPlaybackService.open(
+      context: context,
+      url: url,
+      channelName: channelName,
+      channelData: channelData,
+      fallbackStreams: fallbackStreams,
+      playbackEngineOverride: playbackEngineOverride,
+      extractClearKey: _extractClearKeyPayload,
+      normalizeDrm: _normalizedDrmType,
+      extractToken: _extractPlaybackToken,
+      extractHeaders: _extractPlaybackHeaders,
     );
+  }
+
+  String? _playbackEngineFromData(Map<String, dynamic>? data) {
+    if (data == null) return null;
+    final raw = data['effectiveEngine'] ??
+        data['effective_engine'] ??
+        data['playbackEngine'] ??
+        data['playback_engine'];
+    if (raw == null) return null;
+    final e = raw.toString().trim();
+    if (e.isEmpty || e == 'default' || e == 'global') return null;
+    return e;
   }
 
   bool _canOpenFromCachedData(Map<String, dynamic>? data) {
@@ -819,6 +775,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         channelName: ch.name,
         channelData: channelData,
         fallbackStreams: backups,
+        playbackEngineOverride: playback.effectiveEngine,
       );
       return;
     }
@@ -834,6 +791,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         url: quickUrl,
         channelName: ch.name,
         channelData: channelData,
+        playbackEngineOverride: _playbackEngineFromData(channelData),
       );
       return;
     }
@@ -845,6 +803,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         url: legacyUrl,
         channelName: ch.name,
         channelData: legacy ?? ch.apiRow,
+        playbackEngineOverride: _playbackEngineFromData(legacy ?? ch.apiRow),
       );
       return;
     }
@@ -883,6 +842,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
           url: quickUrl,
           channelName: ch.name,
           channelData: channelData,
+          playbackEngineOverride: _playbackEngineFromData(channelData),
         ));
         unawaited(_resolveChannelPlayback(ch));
         return;
