@@ -124,11 +124,25 @@ query(
 
 // Track which payment provider was used for each order
 query(
-  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(32) NOT NULL DEFAULT 'zeno'`
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(32) NOT NULL DEFAULT 'aurax'`
 ).catch((err) => {
   if (err.message && !err.message.includes('does not exist')) {
     console.warn('Migration payment_provider (non-fatal):', err.message);
   }
+});
+
+// Migrate legacy ZenoPay provider labels to Aurax Pay
+query(
+  `UPDATE app_settings SET value = 'aurax', updated_at = now()
+    WHERE key = 'payment_provider' AND lower(trim(value)) IN ('zeno', 'zenopay')`
+).catch((err) => {
+  console.warn('Migration payment_provider setting zeno→aurax (non-fatal):', err.message);
+});
+query(
+  `UPDATE subscription_payments SET payment_provider = 'aurax'
+    WHERE payment_provider IN ('zeno', 'zenopay') AND status = 'pending'`
+).catch((err) => {
+  console.warn('Migration pending payments zeno→aurax (non-fatal):', err.message);
 });
 
 // Throttle auto Push reminders for expired subscriptions (7-day repeat)
@@ -396,17 +410,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 let expiryReminderTimer = null;
 try {
   const { sendExpiredSubscriptionReminders } = require('./services/expiredSubscriptionReminders');
-  expiryReminderTimer = setInterval(() => {
+  const { clearAllExpiredPremiumFlags, repairCompletedPaymentsMissingPremium } = require('./services/userEntitlements');
+  const runPremiumMaintenance = () => {
+    clearAllExpiredPremiumFlags().catch((err) => {
+      console.warn('[Entitlements] Expired premium cleanup failed:', err.message || err);
+    });
     sendExpiredSubscriptionReminders({ force: false }).catch((err) => {
       console.error('[ExpiredReminder] scheduled run failed:', err.message || err);
     });
-  }, DAY_MS);
+  };
+  expiryReminderTimer = setInterval(runPremiumMaintenance, DAY_MS);
   // First run 2 minutes after boot (avoid cold-start contention)
   setTimeout(() => {
-    sendExpiredSubscriptionReminders({ force: false }).catch((err) => {
-      console.error('[ExpiredReminder] initial run failed:', err.message || err);
-    });
-    const { repairCompletedPaymentsMissingPremium } = require('./services/userEntitlements');
+    runPremiumMaintenance();
     repairCompletedPaymentsMissingPremium().catch((err) => {
       console.warn('[Entitlements] Boot repair failed:', err.message || err);
     });

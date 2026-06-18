@@ -1743,15 +1743,18 @@ router.get('/settings/payment-provider', async (req, res, next) => {
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
     );
-    const raw = result.rows.length > 0 ? result.rows[0].value : 'zeno';
+    const raw = result.rows.length > 0 ? result.rows[0].value : 'aurax';
     const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    const paymentProvider = compact === 'sonicpesa' ? 'sonicpesa' : 'zeno';
+    const paymentProvider =
+      compact === 'sonicpesa'
+        ? 'sonicpesa'
+        : compact === 'zeno' || compact === 'zenopay'
+          ? 'aurax'
+          : 'aurax';
     const configured =
       paymentProvider === 'sonicpesa'
         ? Boolean(process.env.SONICPESA_API_KEY)
-        : Boolean(
-            process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY,
-          );
+        : Boolean(process.env.AURAXPAY_API_KEY);
     console.log('[Admin] Current payment provider (normalized):', paymentProvider, 'raw:', raw);
     return res.json({ paymentProvider, configured });
   } catch (err) {
@@ -1765,7 +1768,7 @@ router.put('/settings/payment-provider', async (req, res, next) => {
     console.log('[Admin] Payment provider update request:', req.body);
     await ensureAppSettingsTable();
     const bodySchema = z.object({
-      paymentProvider: z.enum(['zeno', 'sonicpesa']),
+      paymentProvider: z.enum(['aurax', 'sonicpesa']),
     });
     const { paymentProvider } = bodySchema.parse(req.body);
     console.log('[Admin] Validated payment provider:', paymentProvider);
@@ -1779,14 +1782,10 @@ router.put('/settings/payment-provider', async (req, res, next) => {
           configured: false,
         });
       }
-    } else if (
-      !process.env.ZENO_API_KEY &&
-      !process.env.ZENOPAY_API_KEY &&
-      !process.env.ZENOURI_API_KEY
-    ) {
+    } else if (!process.env.AURAXPAY_API_KEY) {
       return res.status(400).json({
         error:
-          'ZenoPay haijasanidi: weka ZENO_API_KEY (au ZENOPAY_API_KEY) kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
+          'Aurax Pay haijasanidi: weka AURAXPAY_API_KEY kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
         paymentProvider,
         configured: false,
       });

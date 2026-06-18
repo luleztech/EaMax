@@ -110,7 +110,7 @@ class RemotePaymentConfig {
             .toList()
         : <RemoteSubscriptionPlan>[];
     return RemotePaymentConfig(
-      provider: json['provider']?.toString() ?? 'zeno',
+      provider: json['provider']?.toString() ?? 'aurax',
       currency: json['currency']?.toString() ?? 'TZS',
       whatsappNumber: json['whatsappNumber']?.toString(),
       plans: plans,

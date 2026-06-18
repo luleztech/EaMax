@@ -205,6 +205,23 @@ const buildUserSummaryResponse = (row) => {
   };
 };
 
+/** Clear is_premium for users whose subscription period has ended (expiry date is authoritative). */
+const clearAllExpiredPremiumFlags = async () => {
+  const result = await query(
+    `UPDATE users
+        SET is_premium = FALSE
+      WHERE is_premium = TRUE
+        AND premium_expires_at IS NOT NULL
+        AND premium_expires_at <= NOW()
+      RETURNING id`,
+  );
+  const cleared = result.rowCount != null ? result.rowCount : (result.rows?.length ?? 0);
+  if (cleared > 0) {
+    console.log(`[Entitlements] Cleared expired premium for ${cleared} user(s)`);
+  }
+  return cleared;
+};
+
 const repairCompletedPaymentsMissingPremium = async () => {
   const PLAN_INTERVALS = { week: '7 days', month: '30 days', year: '90 days' };
   const resolveInterval = (plan) => {
@@ -251,4 +268,5 @@ module.exports = {
   fetchUserPremiumSnapshotByUserId,
   buildUserSummaryResponse,
   repairCompletedPaymentsMissingPremium,
+  clearAllExpiredPremiumFlags,
 };

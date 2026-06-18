@@ -416,7 +416,7 @@ router.get('/transactions', async (req, res, next) => {
               : status === 'cancelled'
                 ? 'Cancelled'
                 : 'Pending',
-        paymentProvider: row.payment_provider || 'zeno',
+        paymentProvider: row.payment_provider || 'aurax',
         createdAt: row.created_at,
         completedAt: row.completed_at,
       };

@@ -79,15 +79,15 @@ async function testPaymentProvider() {
       console.log('✅ Payment provider was successfully updated to sonicpesa!\n');
     }
 
-    // Test 4: Switch back to zeno
-    console.log('4️⃣ Testing PUT to switch back to "zeno"');
+    // Test 4: Switch back to aurax
+    console.log('4️⃣ Testing PUT to switch back to "aurax"');
     const putResponse2 = await fetch(`${API_BASE_URL}/api/admin/settings/payment-provider`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'X-Admin-Key': ADMIN_API_KEY,
       },
-      body: JSON.stringify({ paymentProvider: 'zeno' }),
+      body: JSON.stringify({ paymentProvider: 'aurax' }),
     });
 
     if (!putResponse2.ok) {

@@ -100,7 +100,7 @@ router.get('/channels-premium-only', async (req, res, next) => {
   }
 });
 
-// Public: get payment provider in use (zeno or sonicpesa)
+// Public: get payment provider in use (aurax or sonicpesa)
 router.get('/payment-provider', async (req, res, next) => {
   try {
     await ensureAppSettingsTable();
@@ -108,18 +108,21 @@ router.get('/payment-provider', async (req, res, next) => {
     const result = await query(
       "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
     );
-    const raw = result.rows.length > 0 ? result.rows[0].value : 'zeno';
+    const raw = result.rows.length > 0 ? result.rows[0].value : 'aurax';
     const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    const paymentProvider = compact === 'sonicpesa' ? 'sonicpesa' : 'zeno';
-    const zenoConfigured = Boolean(
-      process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY,
-    );
+    const paymentProvider =
+      compact === 'sonicpesa'
+        ? 'sonicpesa'
+        : compact === 'zeno' || compact === 'zenopay'
+          ? 'aurax'
+          : 'aurax';
+    const auraxConfigured = Boolean(process.env.AURAXPAY_API_KEY);
     const sonicConfigured = Boolean(process.env.SONICPESA_API_KEY);
-    const configured = paymentProvider === 'sonicpesa' ? sonicConfigured : zenoConfigured;
+    const configured = paymentProvider === 'sonicpesa' ? sonicConfigured : auraxConfigured;
     return res.json({
       paymentProvider,
       configured,
-      zenoConfigured,
+      auraxConfigured,
       sonicConfigured,
     });
   } catch (err) {

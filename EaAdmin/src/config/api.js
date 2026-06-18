@@ -400,7 +400,7 @@ export const adminSettingsAPI = {
   // Get currently active payment provider
   getPaymentProvider: async () => {
     const data = await apiRequest('/api/admin/settings/payment-provider');
-    return { paymentProvider: data.paymentProvider || 'zeno' };
+    return { paymentProvider: data.paymentProvider || 'aurax' };
   },
 
   // Update active payment provider

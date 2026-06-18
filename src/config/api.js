@@ -286,6 +286,8 @@ export const paymentsAPI = {
   checkPaymentStatus,
   completePaymentForTesting,
   // Legacy aliases for compatibility
+  startAuraxPayment: startPayment,
+  // Legacy aliases
   startZenoPayment: startPayment,
   checkZenoStatus: checkPaymentStatus,
 };

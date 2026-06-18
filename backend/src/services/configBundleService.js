@@ -29,7 +29,7 @@ async function getChannelsPremiumOnly() {
 }
 
 async function getPaymentProvider() {
-  return (await getAppSetting('payment_provider', 'zeno')) || 'zeno';
+  return (await getAppSetting('payment_provider', 'aurax')) || 'aurax';
 }
 
 async function getWhatsappNumber() {

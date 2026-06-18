@@ -32,7 +32,7 @@ function shouldSkipRateLimit(req) {
 function isPaymentStartRoute(req) {
   const path = apiPath(req);
   const method = String(req.method || 'GET').toUpperCase();
-  return method === 'POST' && (path.endsWith('/start') || path.endsWith('/zeno/start'));
+  return method === 'POST' && (path.endsWith('/start') || path.endsWith('/aurax/start'));
 }
 
 function isPromotionAnalyticsRoute(req) {

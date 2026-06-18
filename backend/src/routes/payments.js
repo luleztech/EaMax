@@ -18,8 +18,27 @@ const {
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
 const PAYMENT_PROVIDERS = {
-  ZENO: 'zeno',
+  AURAX: 'aurax',
   SONICPESA: 'sonicpesa',
+};
+const AURAXPAY_API_BASE = (process.env.AURAXPAY_BASE_URL || 'https://api.auraxpay.net/v1').replace(/\/$/, '');
+const AURAXPAY_API_KEY = process.env.AURAXPAY_API_KEY;
+const AURAXPAY_WEBHOOK_SECRET = process.env.AURAXPAY_WEBHOOK_SECRET;
+
+const getAuraxPayRequestHeaders = () => ({
+  'Content-Type': 'application/json',
+  'x-api-key': AURAXPAY_API_KEY,
+  Accept: 'application/json',
+});
+
+const AURAX_WEBHOOK_PAID_STATUSES = new Set([
+  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
+]);
+
+const ensureAuraxPayConfigured = () => {
+  if (!AURAXPAY_API_KEY) {
+    throw new Error('Aurax Pay API key (AURAXPAY_API_KEY) is not configured on the server');
+  }
 };
 const SONICPESA_API_BASE = 'https://api.sonicpesa.com/api/v1';
 const SONICPESA_API_KEY = process.env.SONICPESA_API_KEY;
@@ -59,18 +78,24 @@ const normalizeStoredPaymentProvider = (raw) => {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   const compact = raw.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
   if (compact === 'sonicpesa') return PAYMENT_PROVIDERS.SONICPESA;
-  if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.ZENO;
+  if (compact === 'aurax' || compact === 'auraxpay') return PAYMENT_PROVIDERS.AURAX;
+  // Legacy admin value — treat former Zeno selection as Aurax.
+  if (compact === 'zeno' || compact === 'zenopay') return PAYMENT_PROVIDERS.AURAX;
   return null;
 };
 
 const getSelectedPaymentProvider = async () => {
-  const rawValue = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.ZENO);
-  return normalizeStoredPaymentProvider(rawValue) || PAYMENT_PROVIDERS.ZENO;
+  const envDefault =
+    String(process.env.PAYMENT_PROVIDER || '').trim().toLowerCase() === 'sonicpesa'
+      ? PAYMENT_PROVIDERS.SONICPESA
+      : PAYMENT_PROVIDERS.AURAX;
+  const rawValue = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, envDefault);
+  return normalizeStoredPaymentProvider(rawValue) || envDefault;
 };
 
-/** Off by default — when SonicPesa is admin-active, money must not silently go to Zeno. */
-const isSonicZenoFallbackAllowed = () =>
-  String(process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1';
+/** Off by default — when SonicPesa is admin-active, money must not silently go to Aurax. */
+const isSonicAuraxFallbackAllowed = () =>
+  String(process.env.ALLOW_SONIC_AURAX_FALLBACK || process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1';
 
 const getPaymentProviderForOrder = async (orderId) => {
   const result = await query(
@@ -81,9 +106,10 @@ const getPaymentProviderForOrder = async (orderId) => {
   return result.rows[0].payment_provider || null;
 };
 
-/** Legacy Zeno refs `${user_id}_${epochMs}` or UUID v4 (current). */
-const isLikelyInternalZenoOrderRef = (orderId) => {
+/** Aurax refs: UUID v4 or AXP-XXXXXXXX. Legacy Zeno refs `${user_id}_${epochMs}` route to Aurax. */
+const isLikelyAuraxOrderRef = (orderId) => {
   const s = String(orderId || '').trim();
+  if (/^AXP-[A-Z0-9]+$/i.test(s)) return true;
   if (/^\d+_\d{10,}$/.test(s)) return true;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
 };
@@ -92,19 +118,17 @@ const isLikelyInternalZenoOrderRef = (orderId) => {
  * Routing rules (EaAdmin → app_settings.payment_provider):
  * - New payments: handlePaymentStart() uses ONLY getSelectedPaymentProvider() — never the URL path name.
  * - Status polling: prefer the payment row's payment_provider (set at start) so an admin toggle mid-checkout
- *   does not move an in-flight order to the wrong gateway. If the row is missing briefly, infer Zeno from ref
- *   shape; otherwise fall back to the current admin default.
+ *   does not move an in-flight order to the wrong gateway.
  */
 const resolveGatewayForOrderId = async (orderId) => {
   const selected = await getSelectedPaymentProvider();
   const fromRow = normalizeStoredPaymentProvider(await getPaymentProviderForOrder(orderId));
   if (fromRow) return fromRow;
-  // SonicPesa order ids are often UUIDs — do not treat them as Zeno when Sonic is active.
   if (selected === PAYMENT_PROVIDERS.SONICPESA) {
     return PAYMENT_PROVIDERS.SONICPESA;
   }
-  if (isLikelyInternalZenoOrderRef(orderId)) {
-    return PAYMENT_PROVIDERS.ZENO;
+  if (isLikelyAuraxOrderRef(orderId)) {
+    return PAYMENT_PROVIDERS.AURAX;
   }
   return selected;
 };
@@ -204,7 +228,7 @@ const isSonicInitiateSuccess = (sonicData, httpResponse) => {
   return false;
 };
 
-/** Sonic result codes / messages where STK/USSD was not delivered — safe to try ZenoPay next. */
+/** Sonic result codes / messages where STK/USSD was not delivered — safe to try Aurax Pay next. */
 const SONIC_STK_FAILURE_CODES = new Set([
   '9012', '999', '103', '9009', '90009', '500', '502', '503', '504', '408', '429',
 ]);
@@ -239,9 +263,9 @@ const isHalotelLocalPhone = (local0) => {
 const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}) => {
   const code = String(rawCode ?? '').trim();
   const msg = String(rawMessage || '').trim();
-  if (options.zenoAlsoFailed) {
+  if (options.auraxAlsoFailed) {
     return (
-      'Hatukuweza kutuma ombi la malipo kwenye simu yako (SonicPesa na ZenoPay). Hakikisha nambari ni sahihi, mtandao wa pesa unafanya kazi, na una salio la kutosha, kisha jaribu tena.'
+      'Hatukuweza kutuma ombi la malipo kwenye simu yako (SonicPesa na Aurax Pay). Hakikisha nambari ni sahihi, mtandao wa pesa unafanya kazi, na una salio la kutosha, kisha jaribu tena.'
     );
   }
   if (code === '103' || /ongoing ussd/i.test(msg)) {
@@ -250,7 +274,7 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}
   if (isSonicPaymentSendFailure(rawMessage, rawCode)) {
     if (isHalotelLocalPhone(localPhone)) {
       return (
-        'Halopesa (061–063) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu ZenoPay kiotomatiki.'
+        'Halopesa (061–063) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
       );
     }
     return (
@@ -262,40 +286,181 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}
 
 const router = express.Router();
 
-const ZENO_API_KEY =
-  process.env.ZENO_API_KEY || process.env.ZENOPAY_API_KEY || process.env.ZENOURI_API_KEY;
-const ZENO_API_BASE = 'https://zenoapi.com/api';
+const AURAX_HTTP_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.AURAX_HTTP_TIMEOUT_MS) || 22000, 8000),
+  55000,
+);
 
-const ensureZenoConfigured = () => {
-  if (!ZENO_API_KEY) {
-    throw new Error(
-      'ZenoPay API key missing: set ZENO_API_KEY (or ZENOPAY_API_KEY / ZENOURI_API_KEY) on the server',
+/** Aurax Pay requires E.164 +255… (e.g. +255712345678). DB buyer_phone stays local 0…. */
+const formatPhoneForAuraxPayApi = (local0) => {
+  const local = formatBuyerPhoneLocal(local0);
+  if (local.startsWith('+255')) return local;
+  if (local.startsWith('0')) return `+255${local.slice(1)}`;
+  if (local.startsWith('255')) return `+${local}`;
+  return `+255${local}`;
+};
+
+/** Map Tanzanian MSISDN prefix to Aurax channel enum. */
+const resolveAuraxChannelFromPhone = (local0) => {
+  const p = String(local0 || '');
+  if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
+  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'MPESA';
+  if (p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGO_PESA';
+  if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL_MONEY';
+  return 'MPESA';
+};
+
+const isAuraxInitiateSuccess = (auraxData, httpResponse) => {
+  if (!auraxData || typeof auraxData !== 'object') return false;
+  if (auraxData.success === true && auraxData.transaction) return true;
+  const tx = auraxData.transaction;
+  if (tx && (tx.id || tx.reference)) return httpResponse?.ok !== false;
+  return false;
+};
+
+const isRetriableAuraxInitiateFailure = (httpOk, auraxData, httpStatus) => {
+  if (httpOk && auraxData?.success === true) return false;
+  if (httpStatus >= 500 || httpStatus === 408 || httpStatus === 429) return true;
+  const combined = `${auraxData?.message || ''} ${auraxData?.error || ''}`.toLowerCase();
+  return /timeout|temporarily|unavailable|network|upstream|try again/i.test(combined);
+};
+
+const initiateAuraxPayment = async ({
+  normalizedPhone,
+  amountToSend,
+  data,
+  externalId,
+  callbackUrl,
+  orderId,
+}) => {
+  const phoneForAurax = formatPhoneForAuraxPayApi(normalizedPhone);
+  const payload = {
+    amount: amountToSend,
+    currency: 'TZS',
+    channel: resolveAuraxChannelFromPhone(normalizedPhone),
+    buyerPhone: phoneForAurax,
+    buyerName: data.name || externalId || 'EaMax User',
+    buyerEmail: data.email || 'user@eamax.app',
+    description: `EaMax ${data.bundle || 'subscription'}`,
+    callbackUrl,
+    metadata: {
+      orderId,
+      externalId,
+      bundle: data.bundle || null,
+    },
+  };
+
+  const maxAttempts = 2;
+  let last = {
+    response: { ok: false, status: 500 },
+    auraxData: { success: false, message: 'Failed to start payment request' },
+    phoneUsed: phoneForAurax,
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const { response, data: auraxData } = await gatewayFetchJson(
+        `${AURAXPAY_API_BASE}/payments`,
+        {
+          method: 'POST',
+          headers: getAuraxPayRequestHeaders(),
+          body: JSON.stringify(payload),
+        },
+        AURAX_HTTP_TIMEOUT_MS,
+      );
+      last = { response, auraxData, phoneUsed: phoneForAurax };
+      if (isAuraxInitiateSuccess(auraxData, response)) return last;
+      if (
+        attempt < maxAttempts &&
+        isRetriableAuraxInitiateFailure(response.ok, auraxData, response.status)
+      ) {
+        console.warn('[AuraxPay] Retrying initiate', { attempt, phone: phoneForAurax });
+        continue;
+      }
+      break;
+    } catch (fetchErr) {
+      last = {
+        response: { ok: false, status: 502 },
+        auraxData: { success: false, message: String(fetchErr?.message || fetchErr || 'network') },
+        phoneUsed: phoneForAurax,
+      };
+      if (attempt < maxAttempts) continue;
+      break;
+    }
+  }
+  return last;
+};
+
+const pollAuraxOrderStatus = async (orderId) => {
+  try {
+    const { response, data: statusData } = await gatewayFetchJson(
+      `${AURAXPAY_API_BASE}/payments/${encodeURIComponent(orderId)}`,
+      {
+        method: 'GET',
+        headers: getAuraxPayRequestHeaders(),
+      },
+      AURAX_HTTP_TIMEOUT_MS,
     );
+    return { statusResp: response, statusData };
+  } catch (fetchErr) {
+    return {
+      statusResp: { ok: false, status: 502 },
+      statusData: { success: false, message: String(fetchErr?.message || fetchErr || 'network') },
+    };
   }
 };
 
-/** ZenoPay: local 0… per official samples. */
-const formatBuyerPhoneForZeno = (local0) => formatBuyerPhoneLocal(local0);
-
-const isRetriableZenoInitiateFailure = (httpOk, zenoData, httpStatus) => {
-  if (httpOk && zenoData?.status === 'success') return false;
-  const combined = `${zenoData?.message || ''} ${zenoData?.resultcode || ''}`.toLowerCase();
-  if (
-    /timeout|timed out|upstream|temporarily|unavailable|network|econnreset|abort|could not reach|try again|busy/i.test(
-      combined,
-    )
-  ) {
-    return true;
-  }
-  return httpStatus >= 502 || httpStatus === 408 || httpStatus === 429;
+const extractAuraxPaymentStatus = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return '';
+  const tx = statusData.transaction;
+  if (tx && tx.status != null) return String(tx.status).toUpperCase().trim();
+  if (statusData.status != null) return String(statusData.status).toUpperCase().trim();
+  return '';
 };
 
-const isPhoneFormatZenoError = (zenoData, httpStatus) => {
-  const combined = `${zenoData?.message || ''} ${zenoData?.resultcode || ''}`.toLowerCase();
-  if (/invalid.*phone|phone.*invalid|msisdn|buyer_phone|nambari|number format|malformed/i.test(combined)) {
-    return true;
+const isAuraxPaidRaw = (rawUpper) => {
+  if (!rawUpper) return false;
+  const u = String(rawUpper).toUpperCase().trim();
+  if (AURAX_WEBHOOK_PAID_STATUSES.has(u)) return true;
+  const lower = u.toLowerCase();
+  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
+};
+
+const evaluateAuraxOrderStatusForApply = (statusData) => {
+  const tx = statusData?.transaction;
+  const rawStatus = extractAuraxPaymentStatus(statusData);
+  const isCompleted = isAuraxPaidRaw(rawStatus);
+  return { isCompleted, rawStatus, transaction: tx || null };
+};
+
+const extractAuraxWebhookOrderAndPaid = (payload) => {
+  const tx = payload.transaction || payload.data?.transaction || payload.data;
+  const nest = tx && typeof tx === 'object' ? tx : null;
+  const orderId = String(
+    nest?.id ||
+      nest?.reference ||
+      payload.id ||
+      payload.reference ||
+      payload.transactionId ||
+      payload.transaction_id ||
+      nest?.metadata?.orderId ||
+      payload.metadata?.orderId ||
+      '',
+  ).trim();
+  const raw = String(
+    nest?.status || payload.status || payload.event || '',
+  ).toUpperCase().trim();
+  const ev = String(payload.event || payload.type || '').toLowerCase().trim();
+  let paid = isAuraxPaidRaw(raw);
+  if (!paid && ev) {
+    paid =
+      ev === 'payment.completed' ||
+      ev === 'payment.success' ||
+      ev === 'payment_completed' ||
+      ev === 'transaction.completed' ||
+      ev === 'collection.completed';
   }
-  return httpStatus === 400 && /phone|msisdn/i.test(combined);
+  return { orderId: orderId || null, paid, raw: raw || ev };
 };
 
 const SONIC_HTTP_TIMEOUT_MS = Math.min(
@@ -377,57 +542,6 @@ const buildCompletedStatusPayload = async (orderId, rawPayload) => {
 };
 
 /**
- * ZenoPay SDK-style wallet names: M-PESA, TIGOPESA, HALOPESA, AIRTEL MONEY.
- * Set `ZENO_SEND_PROVIDER=0` to omit `provider` (pure auto-detect — not recommended for all MNOs).
- * Per-MNO overrides: ZENO_VODACOM_WALLET_PROVIDER, ZENO_HALOTEL_WALLET_PROVIDER, ZENO_TIGO_WALLET_PROVIDER, ZENO_AIRTEL_WALLET_PROVIDER.
- */
-const applyZenoWalletProviderForPayload = (payload, normalizedPhoneLocal0) => {
-  if (String(process.env.ZENO_SEND_PROVIDER || '1').trim() === '0') return;
-  const p = String(normalizedPhoneLocal0 || '');
-  if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) {
-    const v = process.env.ZENO_HALOTEL_WALLET_PROVIDER;
-    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'HALOPESA';
-    return;
-  }
-  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) {
-    if (String(process.env.ZENO_VODACOM_SEND_PROVIDER || '1').trim() === '1') {
-      const v = process.env.ZENO_VODACOM_WALLET_PROVIDER;
-      payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'M-PESA';
-    }
-    return;
-  }
-  if (p.startsWith('071')) {
-    // 071 (Tigo) — ZenoPay does not always map 071 to TIGOPESA internally;
-    // omit provider to let ZenoPay auto-detect. Override with ZENO_TIGO_071_WALLET_PROVIDER if needed.
-    const v = process.env.ZENO_TIGO_071_WALLET_PROVIDER;
-    if (typeof v === 'string' && v.trim()) payload.provider = v.trim();
-    return;
-  }
-  if (p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) {
-    const v = process.env.ZENO_TIGO_WALLET_PROVIDER;
-    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'TIGOPESA';
-    return;
-  }
-  if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) {
-    const v = process.env.ZENO_AIRTEL_WALLET_PROVIDER;
-    payload.provider = typeof v === 'string' && v.trim() ? v.trim() : 'AIRTEL MONEY';
-    return;
-  }
-};
-
-/**
- * Hint only (logging / support). ZenoPay’s published samples omit `provider` for most networks.
- */
-const resolveZenoMobileWalletProviderHint = (localPhone0) => {
-  const p = String(localPhone0 || '');
-  if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
-  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'M-PESA';
-  if (p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGOPESA';
-  if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL MONEY';
-  return null;
-};
-
-/**
  * Insufficient-balance mapping must stay strict: broad patterns like `salio.*hali` false-positive on
  * Halotel/Sonic messages such as “Salio la akaunti halipo…” (account/state), not low balance.
  * Sonic sometimes appends `90009` without a separator: `...payment90009`.
@@ -463,7 +577,7 @@ const looksLikeInsufficientBalance = (msg, code, combined) => {
   return false;
 };
 
-/** Sonic/Zeno explicit “not enough balance” wording (initiate) — translate without sounding like a blind app guess. */
+/** Gateway explicit “not enough balance” wording (initiate) — translate without sounding like a blind app guess. */
 const isExplicitGatewayInsufficientReport = (msg, combined, code) => {
   if (/\bbalance of customer is not enough\b/i.test(combined)) return true;
   if (/\binsufficient (?:funds|balance)\b/i.test(combined)) return true;
@@ -520,10 +634,6 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
   return msg || 'Malipo hayajaweza kuanza. Jaribu tena baada ya muda mfupi.';
 };
 
-const zenoTerminalStartStatuses = new Set([
-  'FAILED', 'CANCELLED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID', 'REVERSED',
-]);
-
 /** Gateway ended without pay — stop app polling; only user cancel gets a soft message. */
 const PAYMENT_TERMINAL_STATUSES = new Set([
   'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID',
@@ -566,68 +676,14 @@ const markOrderTerminalIfPending = async (orderId, rawStatus) => {
 
 const isActivePaymentProviderConfigured = (provider) => {
   if (provider === PAYMENT_PROVIDERS.SONICPESA) return Boolean(SONICPESA_API_KEY);
-  return Boolean(ZENO_API_KEY);
+  return Boolean(AURAXPAY_API_KEY);
 };
 
-/** Optional legacy escape hatch — disabled unless ALLOW_SONIC_ZENO_FALLBACK=1 on Railway. */
-const shouldFallbackSonicToZeno = (rawMessage, rawCode) =>
-  isSonicZenoFallbackAllowed() &&
+/** Optional legacy escape hatch — disabled unless ALLOW_SONIC_AURAX_FALLBACK=1 on Railway. */
+const shouldFallbackSonicToAurax = (rawMessage, rawCode) =>
+  isSonicAuraxFallbackAllowed() &&
   isSonicPaymentSendFailure(rawMessage, rawCode) &&
-  isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO);
-
-/** Second GET right after create; off by default — Zeno responses vary and can false-fail. Set ZENO_POST_VERIFY=1 to enable. */
-const zenoQuickPostCreateVerify = async (orderRef) => {
-  if (String(process.env.ZENO_POST_VERIFY || '').trim() !== '1') return { ok: true };
-  if (String(process.env.ZENO_SKIP_POST_VERIFY || '').trim() === '1') return { ok: true };
-  const ref = String(orderRef || '').trim();
-  if (!ref || !ZENO_API_KEY) return { ok: true };
-
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), Math.min(Math.max(Number(process.env.ZENO_VERIFY_TIMEOUT_MS) || 6000, 2000), 12000));
-  try {
-    const statusResp = await fetch(
-      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(ref)}`,
-      {
-        method: 'GET',
-        headers: { 'x-api-key': ZENO_API_KEY },
-        signal: ac.signal,
-      },
-    );
-    const text = await statusResp.text();
-    let statusData = {};
-    try {
-      if (text && text.trim()) statusData = JSON.parse(text);
-    } catch (_) {
-      return { ok: true };
-    }
-    const d = statusData.data;
-    const row0 = Array.isArray(d) ? d[0] : d && typeof d === 'object' ? d : null;
-    const raw = String(
-      row0?.payment_status ||
-        row0?.paymentStatus ||
-        row0?.status ||
-        statusData.payment_status ||
-        statusData.paymentStatus ||
-        statusData.status ||
-        '',
-    )
-      .toUpperCase()
-      .trim();
-    if (raw && zenoTerminalStartStatuses.has(raw)) {
-      const reason =
-        statusData.message ||
-        statusData.error ||
-        row0?.message ||
-        `Malipo yamesitishwa (${raw})`;
-      return { ok: false, reason: String(reason) };
-    }
-    return { ok: true };
-  } catch (_) {
-    return { ok: true };
-  } finally {
-    clearTimeout(t);
-  }
-};
+  isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
@@ -679,70 +735,6 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
   return last;
 };
 
-const initiateZenoPayment = async ({
-  orderId,
-  normalizedPhone,
-  amountToSend,
-  data,
-  externalId,
-  webhookUrl,
-}) => {
-  const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
-  const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 22000, 8000), 55000);
-  const payload = {
-    order_id: orderId,
-    buyer_email: data.email || 'user@eamax.app',
-    buyer_name: data.name || externalId,
-    buyer_phone: phoneForZeno,
-    amount: amountToSend,
-    webhook_url: webhookUrl,
-  };
-  applyZenoWalletProviderForPayload(payload, normalizedPhone);
-
-  const maxAttempts = 2;
-  let last = {
-    response: { ok: false, status: 500 },
-    zenoData: { status: 'error', message: 'Failed to start payment request' },
-    phoneUsed: phoneForZeno,
-  };
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const { response, data: zenoData } = await gatewayFetchJson(
-        `${ZENO_API_BASE}/payments/mobile_money_tanzania`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': ZENO_API_KEY,
-          },
-          body: JSON.stringify(payload),
-        },
-        zenoHttpMs,
-      );
-      last = { response, zenoData, phoneUsed: phoneForZeno };
-      if (response.ok && zenoData?.status === 'success') return last;
-      if (
-        attempt < maxAttempts &&
-        isRetriableZenoInitiateFailure(response.ok, zenoData, response.status)
-      ) {
-        console.warn('[ZenoPay] Retrying initiate (same local MSISDN)', { attempt, phone: phoneForZeno });
-        continue;
-      }
-      break;
-    } catch (fetchErr) {
-      last = {
-        response: { ok: false, status: 502 },
-        zenoData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-        phoneUsed: phoneForZeno,
-      };
-      if (attempt < maxAttempts) continue;
-      break;
-    }
-  }
-  return last;
-};
-
 const pollSonicOrderStatus = async (orderId) => {
   try {
     const { response, data: statusData } = await gatewayFetchJson(
@@ -763,27 +755,7 @@ const pollSonicOrderStatus = async (orderId) => {
   }
 };
 
-const pollZenoOrderStatus = async (orderId) => {
-  const zenoHttpMs = Math.min(Math.max(Number(process.env.ZENO_HTTP_TIMEOUT_MS) || 22000, 8000), 55000);
-  try {
-    const { response, data: statusData } = await gatewayFetchJson(
-      `${ZENO_API_BASE}/payments/order-status?order_id=${encodeURIComponent(orderId)}`,
-      {
-        method: 'GET',
-        headers: { 'x-api-key': ZENO_API_KEY },
-      },
-      zenoHttpMs,
-    );
-    return { statusResp: response, statusData };
-  } catch (fetchErr) {
-    return {
-      statusResp: { ok: false, status: 502 },
-      statusData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-    };
-  }
-};
-
-// Mobile money start: `/start` and legacy `/zeno/start` share this handler.
+// Mobile money start: `/start` and legacy `/aurax/start` share this handler.
 // Active gateway for NEW payments is ONLY `app_settings.payment_provider` (never inferred from the URL path).
 async function handlePaymentStart(req, res, next) {
   try {
@@ -893,37 +865,37 @@ async function handlePaymentStart(req, res, next) {
     const selectedProvider = await getSelectedPaymentProvider();
     const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
       ? PAYMENT_PROVIDERS.SONICPESA
-      : PAYMENT_PROVIDERS.ZENO;
-    const rawSetting = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.ZENO);
+      : PAYMENT_PROVIDERS.AURAX;
+    const rawSetting = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.AURAX);
     console.log('[Payment] /start app_settings.payment_provider raw:', rawSetting, '→ gateway:', provider);
 
     const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
 
-    const zenoReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.ZENO);
+    const auraxReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
     const sonicReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.SONICPESA);
-    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && !zenoReady) {
+    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && !auraxReady) {
       return res.status(503).json({
-        error: 'SonicPesa na ZenoPay hazijasanidi kwenye seva. Wasiliana na admin.',
+        error: 'SonicPesa na Aurax Pay hazijasanidi kwenye seva. Wasiliana na admin.',
         activeProvider: provider,
         configured: false,
       });
     }
-    if (provider === PAYMENT_PROVIDERS.ZENO && !zenoReady) {
+    if (provider === PAYMENT_PROVIDERS.AURAX && !auraxReady) {
       return res.status(503).json({
-        error: 'ZenoPay haijasanidi kwenye seva. Wasiliana na admin au chagua SonicPesa kwenye EaAdmin.',
+        error: 'Aurax Pay haijasanidi kwenye seva. Wasiliana na admin au chagua SonicPesa kwenye EaAdmin.',
         activeProvider: provider,
         configured: false,
       });
     }
     let paymentProviderForRow = provider;
-    let usedZenoFallbackFromSonic = false;
+    let usedAuraxFallbackFromSonic = false;
     let sonicFailureForClient = null;
 
     if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady) {
-      if (zenoReady && isSonicZenoFallbackAllowed()) {
-        console.warn('[Payment] SonicPesa not configured — using ZenoPay (ALLOW_SONIC_ZENO_FALLBACK=1)');
-        paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
+      if (auraxReady && isSonicAuraxFallbackAllowed()) {
+        console.warn('[Payment] SonicPesa not configured — using Aurax Pay (ALLOW_SONIC_AURAX_FALLBACK=1)');
+        paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
       } else {
         return res.status(503).json({
           error:
@@ -935,15 +907,15 @@ async function handlePaymentStart(req, res, next) {
     }
 
     const skipSonicForHalotel =
-      isSonicZenoFallbackAllowed() &&
+      isSonicAuraxFallbackAllowed() &&
       paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
       isHalotelLocalPhone(normalizedPhone) &&
-      zenoReady;
+      auraxReady;
 
     if (skipSonicForHalotel) {
-      console.log('[Payment] Halotel MSISDN — using ZenoPay (ALLOW_SONIC_ZENO_FALLBACK=1 only)');
-      paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
-      usedZenoFallbackFromSonic = true;
+      console.log('[Payment] Halotel MSISDN — using Aurax Pay (ALLOW_SONIC_AURAX_FALLBACK=1 only)');
+      paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
+      usedAuraxFallbackFromSonic = true;
     } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
       if (!SONICPESA_SECRET_KEY) {
@@ -1015,13 +987,13 @@ async function handlePaymentStart(req, res, next) {
 
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
-      if (shouldFallbackSonicToZeno(rawErr, rawCode)) {
-        console.warn('[Payment] SonicPesa STK not sent — falling back to ZenoPay for this payment', {
+      if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
+        console.warn('[Payment] SonicPesa STK not sent — falling back to Aurax Pay for this payment', {
           phonePrefix: normalizedPhone.slice(0, 3),
           resultcode: rawCode,
         });
-        paymentProviderForRow = PAYMENT_PROVIDERS.ZENO;
-        usedZenoFallbackFromSonic = true;
+        paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
+        usedAuraxFallbackFromSonic = true;
       } else {
         return res.status(400).json({
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
@@ -1030,130 +1002,94 @@ async function handlePaymentStart(req, res, next) {
       }
     }
 
-    ensureZenoConfigured();
+    ensureAuraxPayConfigured();
 
-    const webhookUrl =
-      process.env.ZENO_WEBHOOK_URL ||
-      `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/zeno/webhook`;
-    console.log(`[Backend] Using webhook URL: ${webhookUrl}`);
+    const callbackUrl =
+      process.env.AURAXPAY_WEBHOOK_URL ||
+      `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/aurax/webhook`;
+    console.log(`[Backend] Using Aurax webhook URL: ${callbackUrl}`);
 
-    // Insert BEFORE calling Zeno so /status always sees payment_provider=zeno (avoids races with fast polling
-    // or admin switching gateway while the HTTP round-trip is in flight).
-    await query(
-      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, planKey, amountToSend, 'TZS', 'pending', orderId, paymentProviderForRow, buyerPhoneLocal],
-    );
-
-    const rollbackPendingZenoByRef = async (ref) => {
-      await query(
-        `DELETE FROM subscription_payments WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
-        [ref, paymentProviderForRow],
-      );
-    };
-    const rollbackPendingZenoRow = async () => {
-      await rollbackPendingZenoByRef(orderId);
-    };
-
-    const phoneForZeno = formatBuyerPhoneForZeno(normalizedPhone);
-    // eslint-disable-next-line no-console
-    console.log('[ZenoPay] Sending payment request (exact amount):', {
+    const phoneForAurax = formatPhoneForAuraxPayApi(normalizedPhone);
+    console.log('[AuraxPay] Sending payment request:', {
       orderId,
-      phone: phoneForZeno,
-      phonePrefix: normalizedPhone.slice(0, 3),
-      walletHint: resolveZenoMobileWalletProviderHint(normalizedPhone),
+      phone: phoneForAurax,
+      channel: resolveAuraxChannelFromPhone(normalizedPhone),
       amount: amountToSend,
       bundle: planKey,
     });
 
-    const { response, zenoData, phoneUsed } = await initiateZenoPayment({
+    const { response, auraxData, phoneUsed } = await initiateAuraxPayment({
       orderId,
       normalizedPhone,
       amountToSend,
-      data,
+      data: { ...data, bundle: planKey },
       externalId: data.externalId,
-      webhookUrl,
+      callbackUrl,
     });
 
-    // eslint-disable-next-line no-console
-    console.log('[ZenoPay] Response:', {
+    console.log('[AuraxPay] Response:', {
       status: response.status,
-      zenoStatus: zenoData.status,
-      message: zenoData.message,
-      resultcode: zenoData.resultcode,
+      success: auraxData.success,
+      message: auraxData.message,
+      transactionId: auraxData.transaction?.id || null,
+      transactionRef: auraxData.transaction?.reference || null,
       phoneUsed,
-      responseOrderId: zenoData.order_id || zenoData.orderId || null,
     });
 
-    if (!response.ok || !String(zenoData.status || '').toLowerCase().includes('success')) {
-      await rollbackPendingZenoRow();
+    if (!isAuraxInitiateSuccess(auraxData, response)) {
       const rawError =
-        zenoData.message ||
-        (zenoData.resultcode ? `ZenoPay (${zenoData.resultcode})` : '') ||
+        auraxData.message ||
+        auraxData.error ||
+        (auraxData.details ? JSON.stringify(auraxData.details) : '') ||
         'Failed to start payment request';
-      const zenoMapped = mapPaymentGatewayUserError(rawError, zenoData.resultcode, { context: 'initiate' });
-      if (usedZenoFallbackFromSonic && sonicFailureForClient) {
+      const auraxMapped = mapPaymentGatewayUserError(rawError, '', { context: 'initiate' });
+      if (usedAuraxFallbackFromSonic && sonicFailureForClient) {
         return res.status(400).json({
           error: mapSonicInitiateUserError(
             normalizedPhone,
             sonicFailureForClient.message,
             sonicFailureForClient.code,
-            { zenoAlsoFailed: true },
+            { auraxAlsoFailed: true },
           ),
-          detail: zenoMapped,
+          detail: auraxMapped,
           sonicResponse: sonicFailureForClient.sonicData,
-          zenoResponse: zenoData,
+          auraxResponse: auraxData,
         });
       }
       return res.status(400).json({
-        error: zenoMapped,
-        zenoResponse: zenoData,
+        error: auraxMapped,
+        auraxResponse: auraxData,
       });
     }
 
-    let clientFacingOrderId = orderId;
-    const zenoCanon = String(zenoData.order_id ?? zenoData.orderId ?? '').trim();
-    if (zenoCanon && zenoCanon !== orderId) {
-      const upd = await query(
-        `UPDATE subscription_payments SET provider_ref = $1 WHERE provider_ref = $2 AND status = 'pending' AND payment_provider = $3`,
-        [zenoCanon, orderId, paymentProviderForRow],
-      );
-      const n = upd.rowCount != null ? upd.rowCount : (upd.rows?.length ?? 0);
-      if (n < 1) {
-        console.warn('[ZenoPay] Could not remap provider_ref to gateway order_id', { orderId, zenoCanon });
-      } else {
-        console.log('[ZenoPay] provider_ref remapped to gateway order_id', { was: orderId, now: zenoCanon });
-        clientFacingOrderId = zenoCanon;
-      }
-    }
-
-    const postVerify = await zenoQuickPostCreateVerify(clientFacingOrderId);
-    if (!postVerify.ok) {
-      console.warn('[ZenoPay] Post-create verify failed; rolling back pending row', {
-        orderId: clientFacingOrderId,
-        reason: postVerify.reason,
-      });
-      await rollbackPendingZenoByRef(clientFacingOrderId);
+    const auraxTx = auraxData.transaction || {};
+    const auraxOrderId = String(auraxTx.id || auraxTx.reference || '').trim();
+    if (!auraxOrderId) {
       return res.status(400).json({
-        error: mapPaymentGatewayUserError(postVerify.reason, '', { context: 'initiate' }),
-        zenoPostVerifyFailed: true,
+        error: 'Aurax Pay did not return a transaction id',
+        auraxResponse: auraxData,
       });
     }
 
-    // Use `pending` — not `success` — so clients never confuse “prompt sent” with “money received”.
+    await query(
+      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [userId, planKey, amountToSend, 'TZS', 'pending', auraxOrderId, paymentProviderForRow, buyerPhoneLocal],
+    );
+
     return res.json({
       status: 'pending',
-      orderId: clientFacingOrderId,
+      orderId: auraxOrderId,
       message:
-        zenoData.message ||
-        (usedZenoFallbackFromSonic
+        auraxData.message ||
+        (usedAuraxFallbackFromSonic
           ? isHalotelLocalPhone(normalizedPhone)
-            ? 'Ombi limetumwa kupitia ZenoPay (Halopesa). Angalia simu yako na uingize PIN.'
-            : 'Ombi limetumwa kupitia ZenoPay. Angalia simu yako na uingize PIN ya malipo.'
-          : 'Request in progress. You will receive a prompt on your phone.'),
-      provider: PAYMENT_PROVIDERS.ZENO,
+            ? 'Ombi limetumwa kupitia Aurax Pay (Halopesa). Angalia simu yako na uingize PIN.'
+            : 'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo.'
+          : providerResponseMessage),
+      provider: PAYMENT_PROVIDERS.AURAX,
       activeProvider: provider,
-      ...(usedZenoFallbackFromSonic ? { fallbackFrom: PAYMENT_PROVIDERS.SONICPESA } : {}),
+      ...(usedAuraxFallbackFromSonic ? { fallbackFrom: PAYMENT_PROVIDERS.SONICPESA } : {}),
     });
   } catch (err) {
     console.error('[Payment] Start error:', err?.message || err);
@@ -1163,12 +1099,12 @@ async function handlePaymentStart(req, res, next) {
   }
 }
 
-router.post('/zeno/start', handlePaymentStart);
+router.post('/aurax/start', handlePaymentStart);
 router.post('/start', handlePaymentStart);
 
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
-// [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents Zeno callbacks from completing Sonic orders and vice versa.
+// [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents cross-gateway completion.
 const applyCompletedPayment = async (orderId, meta, options = {}) => {
   const { expectedPaymentProvider = null } = options;
   console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta, 'expectedProvider:', expectedPaymentProvider || '(any)');
@@ -1182,7 +1118,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   }
   const payment = payRes.rows[0];
 
-  const dbProvider = (payment.payment_provider || PAYMENT_PROVIDERS.ZENO).toLowerCase().trim();
+  const dbProvider = (payment.payment_provider || PAYMENT_PROVIDERS.AURAX).toLowerCase().trim();
   if (expectedPaymentProvider && dbProvider !== expectedPaymentProvider) {
     console.warn('[Payment] Skipping applyCompletedPayment: payment_provider mismatch', {
       orderId,
@@ -1337,7 +1273,7 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
   });
 };
 
-/** Shared GET /status and GET /zeno/status handler. */
+/** Shared GET /status and GET /aurax/status handler. */
 const handlePaymentStatusPoll = async (orderId, res, next) => {
   try {
     const dbCheck = await query(
@@ -1362,7 +1298,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     const gateway = await resolveGatewayForOrderId(orderId);
     const expectedProvider =
-      gateway === PAYMENT_PROVIDERS.SONICPESA ? PAYMENT_PROVIDERS.SONICPESA : PAYMENT_PROVIDERS.ZENO;
+      gateway === PAYMENT_PROVIDERS.SONICPESA ? PAYMENT_PROVIDERS.SONICPESA : PAYMENT_PROVIDERS.AURAX;
 
     if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
@@ -1419,15 +1355,14 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       });
     }
 
-    ensureZenoConfigured();
-    const { statusResp, statusData } = await pollZenoOrderStatus(orderId);
+    ensureAuraxPayConfigured();
+    const { statusResp, statusData } = await pollAuraxOrderStatus(orderId);
 
-    const zenoMessage = String(statusData.message || statusData.error || '').toLowerCase();
+    const auraxMessage = String(statusData.message || statusData.error || '').toLowerCase();
     const isOrderNotFound =
       !statusResp.ok &&
-      (zenoMessage.includes('no order found') ||
-        zenoMessage.includes('order not found') ||
-        (zenoMessage.includes('order_id') && zenoMessage.includes('not found')) ||
+      (auraxMessage.includes('not found') ||
+        auraxMessage.includes('transaction not found') ||
         statusResp.status === 404);
     if (isOrderNotFound) {
       return res.json({ status: 'PENDING', raw: statusData });
@@ -1437,26 +1372,29 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       return res.status(400).json({
         error: mapPaymentGatewayUserError(
           statusData.message || statusData.error || 'Failed to fetch order status',
-          statusData.resultcode,
+          '',
         ),
       });
     }
 
-    const { isCompleted, rawStatus, firstItem } = evaluateZenoOrderStatusForApply(statusData);
+    const { isCompleted, rawStatus, transaction } = evaluateAuraxOrderStatusForApply(statusData);
 
     if (isCompleted) {
       try {
-        await applyCompletedPayment(orderId, firstItem || statusData || {}, {
+        await applyCompletedPayment(orderId, transaction || statusData || {}, {
           expectedPaymentProvider: expectedProvider,
         });
       } catch (applyErr) {
-        console.error('[Payment] Zeno applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
+        console.error('[Payment] Aurax applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
         return res.json({ status: 'PENDING', applying: true, raw: statusData });
       }
       return respondPaymentCompletion(orderId, statusData, res);
     }
 
-    const clientStatus = zenoClientStatusFromPoll(isCompleted, rawStatus, statusData);
+    let clientStatus = rawStatus || 'PENDING';
+    if (!isCompleted && (clientStatus === 'SUCCESS' || clientStatus === 'OK')) {
+      clientStatus = 'PENDING';
+    }
     if (isPaymentTerminalStatus(clientStatus) || isPaymentTerminalStatus(rawStatus)) {
       const term = isPaymentTerminalStatus(rawStatus) ? rawStatus : clientStatus;
       await markOrderTerminalIfPending(orderId, term);
@@ -1477,150 +1415,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
   }
 };
 
-// Helper: Parse "order not found" from API responses
-const parseOrderNotFound = (message, statusResp) => {
-  const text = String(message || '').toLowerCase();
-  return (!statusResp.ok && (
-    text.includes('no order found') ||
-    text.includes('order not found') ||
-    (text.includes('order_id') && text.includes('not found')) ||
-    statusResp.status === 404
-  ));
-};
-
-/** Values some carriers (Halopesa/Halotel, Airtel) return instead of plain COMPLETED */
-const ZENO_PAID_STATUSES = new Set([
-  'COMPLETED', 'SUCCESS', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'SETTLED', 'CONFIRMED',
-]);
-
-const isZenoPaidRaw = (rawUpper) => {
-  if (!rawUpper) return false;
-  const u = String(rawUpper).toUpperCase().trim();
-  if (ZENO_PAID_STATUSES.has(u)) return true;
-  const lower = u.toLowerCase();
-  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
-};
-
-const pickZenoStatusFromObject = (o) => {
-  if (!o || typeof o !== 'object') return '';
-  const keys = [
-    'payment_status', 'paymentStatus', 'payment_state', 'paymentState',
-    'status', 'state', 'transaction_status', 'transactionStatus', 'mpesa_status',
-  ];
-  for (const k of keys) {
-    const v = o[k];
-    if (v != null && typeof v !== 'object') {
-      const s = String(v).toUpperCase().trim();
-      if (s) return s;
-    }
-  }
-  return '';
-};
-
-/**
- * Zeno order-status (and similar) payloads: `data` may be an array OR object; Halotel/Airtel
- * often nest status under `result` or a single object instead of data[0].
- */
-const extractRawZenoPaymentStatus = (statusData) => {
-  if (!statusData || typeof statusData !== 'object') return '';
-  let s = pickZenoStatusFromObject(statusData);
-  if (s) return s;
-  const d = statusData.data;
-  if (Array.isArray(d) && d.length) {
-    for (const row of d) {
-      s = pickZenoStatusFromObject(row) || (row && typeof row === 'object' ? pickZenoStatusFromObject(row.order) : '');
-      if (s) return s;
-    }
-  } else if (d && typeof d === 'object') {
-    s = pickZenoStatusFromObject(d) || pickZenoStatusFromObject(d.order) || pickZenoStatusFromObject(d.transaction);
-    if (s) return s;
-  }
-  const r = statusData.result;
-  if (r && typeof r === 'object') {
-    s = pickZenoStatusFromObject(r);
-    if (s) return s;
-  }
-  if (statusData.order && typeof statusData.order === 'object') {
-    s = pickZenoStatusFromObject(statusData.order);
-    if (s) return s;
-  }
-  return '';
-};
-
-const zenoOrderStatusFirstRecord = (statusData) => {
-  if (!statusData?.data) return null;
-  if (Array.isArray(statusData.data)) return statusData.data[0] || null;
-  if (typeof statusData.data === 'object') return statusData.data;
-  return null;
-};
-
-const evaluateZenoOrderStatusForApply = (statusData) => {
-  const firstItem = zenoOrderStatusFirstRecord(statusData);
-  const rawStatus = extractRawZenoPaymentStatus(statusData);
-  const isCompleted = isZenoPaidRaw(rawStatus);
-  return { isCompleted, rawStatus, firstItem };
-};
-
-/** Zeno `result: "SUCCESS"` is API-level success, not wallet paid — never leak that to clients as payment status. */
-const zenoClientStatusFromPoll = (isCompleted, rawStatus, statusData) => {
-  let clientStatus = isCompleted
-    ? 'COMPLETED'
-    : (rawStatus || (typeof statusData.result === 'string' ? statusData.result : '') || 'PENDING');
-  clientStatus = String(clientStatus).toUpperCase().trim() || 'PENDING';
-  if (!isCompleted) {
-    if (clientStatus === 'SUCCESS' || clientStatus === '000' || clientStatus === 'OK') {
-      clientStatus = 'PENDING';
-    }
-    if (clientStatus === 'UNKNOWN' || clientStatus === '') {
-      clientStatus = 'PENDING';
-    }
-  }
-  return clientStatus;
-};
-
-/** Webhook bodies vary by MNO; merge nested `data` and common aliases. */
-const extractZenoWebhookOrderAndPaid = (payload) => {
-  const nested = payload.data;
-  const first = Array.isArray(nested) ? nested[0] : (nested && typeof nested === 'object' ? nested : null);
-  const orderId = String(
-    payload.order_id ||
-      payload.orderId ||
-      first?.order_id ||
-      first?.orderId ||
-      payload.reference ||
-      payload.transid ||
-      first?.reference ||
-      first?.transid ||
-      payload.metadata?.order_id ||
-      payload.metadata?.orderId ||
-      '',
-  ).trim();
-  const statusCandidates = [
-    payload.payment_status,
-    payload.paymentStatus,
-    payload.status,
-    first?.payment_status,
-    first?.paymentStatus,
-    first?.status,
-    payload.result && typeof payload.result === 'object' ? payload.result.payment_status : null,
-    payload.result && typeof payload.result === 'object' ? payload.result.status : null,
-  ];
-  let raw = '';
-  for (const f of statusCandidates) {
-    if (f != null && typeof f !== 'object') {
-      raw = String(f).toUpperCase().trim();
-      if (raw) break;
-    }
-  }
-  if (!raw && typeof payload.result === 'string') {
-    raw = String(payload.result).toUpperCase().trim();
-  }
-  const paid = isZenoPaidRaw(raw);
-  return { orderId: orderId || null, paid, raw };
-};
-
-// Check payment status (polling from app)
-router.get('/zeno/status', async (req, res, next) => {
+router.get('/aurax/status', async (req, res, next) => {
   try {
     const paramsSchema = z.object({ orderId: z.string().min(1) });
     const { orderId } = paramsSchema.parse(req.query);
@@ -1631,79 +1426,7 @@ router.get('/zeno/status', async (req, res, next) => {
   }
 });
 
-// Webhook endpoint for ZenoPay
-router.post('/zeno/webhook', async (req, res, next) => {
-  try {
-    console.log('[ZenoPay] Webhook received:', req.body);
-    ensureZenoConfigured();
-
-    // Accept API key from x-api-key or Authorization: Bearer <key> (ZenoPay may send either)
-    const incomingKey = req.headers['x-api-key'] || (req.headers['authorization'] && req.headers['authorization'].startsWith('Bearer ')
-      ? req.headers['authorization'].slice(7).trim()
-      : null);
-    const keyValid = incomingKey && incomingKey === ZENO_API_KEY;
-    console.log('[ZenoPay] Webhook API key check:', { incomingKey: incomingKey ? 'present' : 'missing', keyValid });
-
-    const bodySchema = z.object({
-      order_id: z.string().optional(),
-      orderId: z.string().optional(),
-      payment_status: z.string().optional(),
-      paymentStatus: z.string().optional(),
-      status: z.string().optional(),
-      reference: z.string().optional(),
-      transid: z.string().optional(),
-      metadata: z.any().optional(),
-      data: z.any().optional(),
-      result: z.any().optional(),
-    }).passthrough();
-
-    const payload = bodySchema.parse(req.body);
-    const { orderId: webhookOrderId, paid, raw: webhookStatusRaw } = extractZenoWebhookOrderAndPaid(payload);
-    console.log('[ZenoPay] Webhook payload parsed:', { orderId: webhookOrderId, webhookStatusRaw, paid });
-
-    if (!webhookOrderId) {
-      console.log('[ZenoPay] Webhook missing order_id/orderId/reference');
-      return res.status(400).json({ error: 'Missing order_id' });
-    }
-
-    // If key is missing/invalid, only allow completion when we have a pending payment for this order (ZenoPay often doesn't send x-api-key on webhooks)
-    if (!keyValid) {
-      const pendingCheck = await query(
-        `SELECT id FROM subscription_payments
-           WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
-           LIMIT 1`,
-        [webhookOrderId, 'pending', PAYMENT_PROVIDERS.ZENO],
-      );
-      if (pendingCheck.rows.length === 0) {
-        console.log('[ZenoPay] Webhook rejected: invalid API key and order not found or not pending');
-        return res.status(401).json({ error: 'Invalid webhook signature' });
-      }
-      if (paid) {
-        console.warn('[ZenoPay] Webhook accepted without API key (order exists as pending). Configure ZenoPay to send x-api-key if supported.');
-      }
-    }
-
-    if (paid) {
-      console.log('[ZenoPay] Processing completed payment:', webhookOrderId);
-      const result = await applyCompletedPayment(webhookOrderId, payload, { expectedPaymentProvider: PAYMENT_PROVIDERS.ZENO });
-      if (!result) {
-        console.warn('[ZenoPay] Payment processing returned null for:', webhookOrderId);
-        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
-      }
-      console.log('[ZenoPay] Payment processing completed for:', webhookOrderId, 'user:', result.user?.external_id);
-      return res.json({ received: true, processed: true, userId: result.user?.external_id });
-    } else {
-      console.log('[ZenoPay] Ignoring non-completed payment status:', webhookStatusRaw || '(empty)');
-      return res.json({ received: true, processed: false, reason: 'not_paid' });
-    }
-  } catch (err) {
-    console.error('[ZenoPay] Webhook error:', err);
-    return next(err);
-  }
-});
-
-// SonicPesa: production callbacks must hit this URL only (configure in SonicPesa dashboard).
-// ZenoPay uses /zeno/webhook separately — each path applies only to its own payment_provider rows.
+// Aurax Pay and SonicPesa each have their own webhook path — tied to payment_provider rows.
 
 const timingSafeEqualHexOrString = (a, b) => {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -1734,6 +1457,22 @@ const verifySonicPesaWebhookHmac = (rawBodyString, headerValue) => {
   return (
     timingSafeEqualHexOrString(headerValue, expected) ||
     timingSafeEqualHexOrString(headerValue, `sha256=${expected}`)
+  );
+};
+
+const verifyAuraxPayWebhookHmac = (rawBodyString, headerValue) => {
+  if (!AURAXPAY_WEBHOOK_SECRET || typeof headerValue !== 'string' || !headerValue.trim()) return false;
+  if (typeof rawBodyString !== 'string' || !rawBodyString.length) return false;
+  const secret = AURAXPAY_WEBHOOK_SECRET.startsWith('whsec_')
+    ? AURAXPAY_WEBHOOK_SECRET.slice(6)
+    : AURAXPAY_WEBHOOK_SECRET;
+  const expected = crypto.createHmac('sha256', secret).update(rawBodyString, 'utf8').digest('hex');
+  const expectedFull = crypto.createHmac('sha256', AURAXPAY_WEBHOOK_SECRET).update(rawBodyString, 'utf8').digest('hex');
+  return (
+    timingSafeEqualHexOrString(headerValue, expected) ||
+    timingSafeEqualHexOrString(headerValue, expectedFull) ||
+    timingSafeEqualHexOrString(headerValue, `sha256=${expected}`) ||
+    timingSafeEqualHexOrString(headerValue, `sha256=${expectedFull}`)
   );
 };
 
@@ -1772,6 +1511,99 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
   }
   return { orderId: orderId || null, paid, raw: st || ev };
 };
+
+// Webhook endpoint for Aurax Pay (configure in Aurax dashboard: /api/payments/aurax/webhook)
+router.post('/aurax/webhook', async (req, res, next) => {
+  try {
+    ensureAuraxPayConfigured();
+
+    const rawBodyString =
+      typeof req.rawBody === 'string' && req.rawBody.length > 0
+        ? req.rawBody
+        : JSON.stringify(req.body || {});
+
+    const sigHeader =
+      req.headers['x-aurax-signature'] ||
+      req.headers['x-webhook-signature'] ||
+      req.headers['x-signature'];
+
+    const signatureValid = verifyAuraxPayWebhookHmac(rawBodyString, sigHeader);
+
+    const bodySchema = z.object({
+      event: z.string().optional(),
+      type: z.string().optional(),
+      status: z.string().optional(),
+      id: z.string().optional(),
+      reference: z.string().optional(),
+      transaction: z.any().optional(),
+      data: z.any().optional(),
+      metadata: z.any().optional(),
+    }).passthrough();
+
+    let payload;
+    try {
+      payload = bodySchema.parse(req.body || {});
+    } catch (e) {
+      console.error('[AuraxPay] Webhook payload validation failed:', e?.errors || e.message);
+      return res.status(400).json({ error: 'Invalid payload' });
+    }
+
+    const { orderId, paid, raw } = extractAuraxWebhookOrderAndPaid(payload);
+    console.log('[AuraxPay] Webhook:', {
+      orderId,
+      paid,
+      raw,
+      signatureValid,
+      secretConfigured: Boolean(AURAXPAY_WEBHOOK_SECRET),
+    });
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'Missing transaction reference' });
+    }
+
+    const pendingAurax = await query(
+      `SELECT id FROM subscription_payments
+         WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
+         LIMIT 1`,
+      [orderId, 'pending', PAYMENT_PROVIDERS.AURAX],
+    );
+    const hasPendingAurax = pendingAurax.rows.length > 0;
+
+    if (AURAXPAY_WEBHOOK_SECRET) {
+      if (!signatureValid) {
+        console.warn('[AuraxPay] Webhook rejected: invalid HMAC (AURAXPAY_WEBHOOK_SECRET is set).');
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+    } else if (!hasPendingAurax) {
+      console.warn('[AuraxPay] Webhook rejected: set AURAXPAY_WEBHOOK_SECRET in production, or no pending Aurax order for this reference.');
+      return res.status(401).json({ error: 'Webhook not verified' });
+    } else {
+      console.warn('[AuraxPay] Webhook accepted without HMAC (pending Aurax order only). Set AURAXPAY_WEBHOOK_SECRET for production.');
+    }
+
+    if (!paid) {
+      return res.status(200).json({ received: true, processed: false });
+    }
+
+    try {
+      const result = await applyCompletedPayment(orderId, payload, {
+        expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
+      });
+      if (!result) {
+        console.warn('[AuraxPay] Payment processing returned null for:', orderId);
+        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
+      }
+      console.log('[AuraxPay] Payment processing completed for:', orderId, 'user:', result.user?.external_id);
+      return res.status(200).json({ received: true, processed: true, userId: result.user?.external_id });
+    } catch (e) {
+      console.error('[AuraxPay] Webhook applyCompletedPayment failed:', e?.message || e);
+      return res.status(500).json({ error: 'Processing failed' });
+    }
+  } catch (err) {
+    console.error('[AuraxPay] Webhook error:', err);
+    return next(err);
+  }
+});
 
 // Webhook endpoint for SonicPesa
 router.post('/sonicpesa/webhook', async (req, res, next) => {
@@ -1890,7 +1722,7 @@ const manualCompleteHandler = async (req, res, next) => {
   }
 };
 router.post('/complete/:orderId', manualCompleteHandler);
-router.post('/zeno/complete/:orderId', manualCompleteHandler);
+router.post('/aurax/complete/:orderId', manualCompleteHandler);
 
 // Unified payment status endpoint - routes to active provider
 router.get('/status', async (req, res, next) => {

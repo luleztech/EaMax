@@ -248,19 +248,19 @@ class SettingsApi {
     if (data is Map) return data['channelsPremiumOnly'] == true;
     return false;
   }
-  /// Get the currently active payment provider ('zeno' or 'sonicpesa').
-  /// Defaults to 'zeno' if not configured.
+  /// Get the currently active payment provider ('aurax' or 'sonicpesa').
+  /// Defaults to 'aurax' if not configured.
   Future<String> getPaymentProvider() async {
     try {
       final data = await apiRequest('/api/settings/payment-provider');
       if (data is Map && data.containsKey('paymentProvider')) {
         final provider = data['paymentProvider'] as String;
-        return provider == 'sonicpesa' ? 'sonicpesa' : 'zeno';
+        return provider == 'sonicpesa' ? 'sonicpesa' : 'aurax';
       }
     } catch (e) {
-      // If endpoint fails, default to zeno for backward compatibility
+      // If endpoint fails, default to aurax
     }
-    return 'zeno';
+    return 'aurax';
   }
   Future<List<dynamic>> getCarouselSlides(
     String category, {
@@ -358,7 +358,7 @@ class PaymentsApi {
     return Map<String, dynamic>.from(r as Map);
   }
 
-  /// Legacy name: always uses `/api/payments/start` so the server picks Zeno vs SonicPesa from admin settings.
+  /// Legacy name: always uses `/api/payments/start` so the server picks Aurax vs SonicPesa from admin settings.
   Future<Map<String, dynamic>> startZenoPayment({
     required String externalId,
     required String bundle,

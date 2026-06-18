@@ -20,7 +20,7 @@ const SettingsSection = () => {
   const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
   const [channelsPremiumOnlyLoading, setChannelsPremiumOnlyLoading] = useState(true);
   const [channelsPremiumOnlySaving, setChannelsPremiumOnlySaving] = useState(false);
-  const [paymentProvider, setPaymentProvider] = useState('zeno');
+  const [paymentProvider, setPaymentProvider] = useState('aurax');
   const [paymentProviderLoading, setPaymentProviderLoading] = useState(true);
   const [paymentProviderSaving, setPaymentProviderSaving] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
@@ -39,11 +39,12 @@ const SettingsSection = () => {
         const [whatsappRes, premiumRes, providerRes] = await Promise.all([
           adminSettingsAPI.getWhatsAppNumber(),
           adminSettingsAPI.getChannelsPremiumOnly().catch(() => ({ channelsPremiumOnly: false })),
-          adminSettingsAPI.getPaymentProvider().catch(() => ({ paymentProvider: 'zeno' })),
+          adminSettingsAPI.getPaymentProvider().catch(() => ({ paymentProvider: 'aurax' })),
         ]);
         if (whatsappRes.number) setWhatsappNumber(whatsappRes.number);
         setChannelsPremiumOnly(!!premiumRes.channelsPremiumOnly);
-        setPaymentProvider(providerRes.paymentProvider || 'zeno');
+        const loadedProvider = providerRes.paymentProvider || 'aurax';
+        setPaymentProvider(loadedProvider === 'sonicpesa' ? 'sonicpesa' : 'aurax');
       } catch (error) {
         console.error('Failed to load settings:', error);
       } finally {
@@ -105,7 +106,7 @@ const SettingsSection = () => {
         'Setting saved',
         next === 'sonicpesa'
           ? 'Payment provider switched to SonicPesa.'
-          : 'Payment provider switched to ZenoPay.',
+          : 'Payment provider switched to Aurax Pay.',
       );
     } catch (error) {
       console.error('Failed to update payment provider:', error);
@@ -218,17 +219,17 @@ const SettingsSection = () => {
               <TouchableOpacity
                 activeOpacity={0.85}
                 disabled={paymentProviderLoading || paymentProviderSaving}
-                onPress={() => handlePaymentProviderSelect('zeno')}
+                onPress={() => handlePaymentProviderSelect('aurax')}
                 style={[
                   styles.providerChip,
-                  paymentProvider === 'zeno' && styles.providerChipSelected,
+                  paymentProvider === 'aurax' && styles.providerChipSelected,
                 ]}>
                 <Text
                   style={[
                     styles.providerChipText,
-                    paymentProvider === 'zeno' && styles.providerChipTextSelected,
+                    paymentProvider === 'aurax' && styles.providerChipTextSelected,
                   ]}>
-                  ZenoPay
+                  Aurax Pay
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity

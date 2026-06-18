@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS subscription_payments (
   currency VARCHAR(8) NOT NULL DEFAULT 'TZS',
   status VARCHAR(16) NOT NULL DEFAULT 'pending', -- pending | completed | failed
   provider_ref TEXT,
-  payment_provider VARCHAR(32) NOT NULL DEFAULT 'zeno',
+  payment_provider VARCHAR(32) NOT NULL DEFAULT 'aurax',
   buyer_phone VARCHAR(20),
   completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

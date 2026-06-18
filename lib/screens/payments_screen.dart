@@ -541,7 +541,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (!mounted) return;
     try {
       // Always use the unified backend start endpoint.
-      // The backend decides whether to route to Zeno or SonicPesa based on current settings.
+      // The backend decides whether to route to Aurax Pay or SonicPesa based on current settings.
       final result = await paymentsApi.startPayment(
         externalId: _userId!,
         bundle: bundle.slug,
@@ -556,7 +556,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       final usedFallback = result['fallbackFrom']?.toString().trim().isNotEmpty == true;
       if (usedFallback && serverMsg.isEmpty) {
         serverMsg =
-            'Ombi limetumwa kupitia ZenoPay. Angalia simu yako na uingize PIN ya malipo (M-Pesa, Halopesa, Tigopesa, Airtel).';
+            'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo (M-Pesa, Halopesa, Tigopesa, Airtel).';
       }
 
       // Start endpoint never means “paid” — only `orderId` + instruction + polling/webhook.

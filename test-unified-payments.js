@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * Test script to verify unified payment endpoints work for both ZenoPay and SonicPesa
+ * Test script to verify unified payment endpoints work for both Aurax Pay and SonicPesa
  */
 
 const API_BASE_URL = 'http://localhost:4000';
 
 async function testUnifiedPayments() {
-  console.log('🧪 Testing Unified Payment Endpoints (Works with both ZenoPay & SonicPesa)\n');
+  console.log('🧪 Testing Unified Payment Endpoints (Works with both Aurax Pay & SonicPesa)\n');
   console.log(`📍 API Base URL: ${API_BASE_URL}\n`);
 
   try {

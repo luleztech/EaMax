@@ -1,4 +1,4 @@
-/// Normalizes Zeno / backend payment status strings from polling or webhooks.
+/// Normalizes Aurax Pay / backend payment status strings from polling or webhooks.
 String normalizedPaymentStatus(Object? status) {
   return status?.toString().toUpperCase().trim() ?? '';
 }
@@ -16,7 +16,7 @@ bool isPaymentPending(Object? status) {
 
 /// True only when money is confirmed (polling `/api/payments/status` or user record).
 ///
-/// **Never** treat `SUCCESS` as paid here — Zeno’s order-status often uses `result: SUCCESS`
+/// **Never** treat `SUCCESS` as paid here — some gateways use `SUCCESS` for “STK sent”, not wallet paid.
 /// for “HTTP OK / query OK” while `payment_status` is still pending; the backend maps
 /// real completion to `COMPLETED` for the app.
 bool isPaymentCompleted(Object? status) {

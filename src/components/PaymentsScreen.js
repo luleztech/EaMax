@@ -528,7 +528,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           </LinearGradient>
         </TouchableOpacity>
 
-        {/* Only in development/debug: simulate payment success for testing without real ZenoPay (hidden in release) */}
+        {/* Only in development/debug: simulate payment success for testing without real payment gateway (hidden in release) */}
         {__DEV__ && pollingOrderId ? (
           <TouchableOpacity
             style={styles.simulateBtn}

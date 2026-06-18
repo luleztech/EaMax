@@ -68,9 +68,9 @@ async function diagnosePaymentProvider() {
     console.log(`❌ Error: ${err.message}`);
   }
   
-  // Test 3: PUT payment provider (zeno)
+  // Test 3: PUT payment provider (aurax)
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('TEST 3: PUT /api/admin/settings/payment-provider (zeno)');
+  console.log('TEST 3: PUT /api/admin/settings/payment-provider (aurax)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
   try {
@@ -80,7 +80,7 @@ async function diagnosePaymentProvider() {
         'Content-Type': 'application/json',
         'X-Admin-Key': ADMIN_API_KEY,
       },
-      body: JSON.stringify({ paymentProvider: 'zeno' }),
+      body: JSON.stringify({ paymentProvider: 'aurax' }),
     });
     
     console.log(`Status: ${putRes.status}`);
