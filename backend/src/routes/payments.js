@@ -14,6 +14,8 @@ const {
 const {
   getPlanPaymentInfo,
   resolvePremiumInterval,
+  getActivePlans,
+  intervalForPlan,
 } = require('../services/subscriptionPlansService');
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
@@ -32,7 +34,8 @@ const getAuraxPayRequestHeaders = () => ({
 });
 
 const AURAX_WEBHOOK_PAID_STATUSES = new Set([
-  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
+  'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED',
+  'APPROVED', 'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS',
 ]);
 
 const ensureAuraxPayConfigured = () => {
@@ -97,13 +100,41 @@ const getSelectedPaymentProvider = async () => {
 const isSonicAuraxFallbackAllowed = () =>
   String(process.env.ALLOW_SONIC_AURAX_FALLBACK || process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1';
 
+const paymentRefWhereSql = 'provider_ref = $1 OR gateway_ref = $1';
+
 const getPaymentProviderForOrder = async (orderId) => {
   const result = await query(
-    'SELECT payment_provider FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+    `SELECT payment_provider FROM subscription_payments WHERE ${paymentRefWhereSql} LIMIT 1`,
     [orderId],
   );
   if (result.rows.length === 0) return null;
   return result.rows[0].payment_provider || null;
+};
+
+/** Resolve a payment row by client ref, gateway ref, or webhook metadata ids. */
+const findPaymentRowByRefs = async (refs) => {
+  const unique = [...new Set(
+    (refs || []).map((r) => String(r || '').trim()).filter(Boolean),
+  )];
+  if (!unique.length) return null;
+  const result = await query(
+    `SELECT id, user_id, plan, amount_cents, currency, status, payment_provider, provider_ref, gateway_ref
+       FROM subscription_payments
+      WHERE provider_ref = ANY($1::text[]) OR gateway_ref = ANY($1::text[])
+      ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, id DESC
+      LIMIT 1`,
+    [unique],
+  );
+  return result.rows[0] || null;
+};
+
+const rollbackPendingPaymentByRef = async (providerRef, paymentProvider) => {
+  if (!providerRef) return;
+  await query(
+    `DELETE FROM subscription_payments
+      WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
+    [providerRef, paymentProvider],
+  );
 };
 
 /** Aurax refs: UUID v4 or AXP-XXXXXXXX. Legacy Zeno refs `${user_id}_${epochMs}` route to Aurax. */
@@ -413,8 +444,27 @@ const pollAuraxOrderStatus = async (orderId) => {
 const extractAuraxPaymentStatus = (statusData) => {
   if (!statusData || typeof statusData !== 'object') return '';
   const tx = statusData.transaction;
-  if (tx && tx.status != null) return String(tx.status).toUpperCase().trim();
-  if (statusData.status != null) return String(statusData.status).toUpperCase().trim();
+  const nest = statusData.data && typeof statusData.data === 'object' ? statusData.data : null;
+  const nestTx = nest?.transaction && typeof nest.transaction === 'object' ? nest.transaction : null;
+  const candidates = [
+    tx?.status,
+    tx?.paymentStatus,
+    tx?.payment_status,
+    tx?.state,
+    nestTx?.status,
+    nestTx?.paymentStatus,
+    nest?.status,
+    statusData.status,
+    statusData.paymentStatus,
+    statusData.payment_status,
+    statusData.state,
+  ];
+  for (const c of candidates) {
+    if (c != null && typeof c !== 'object') {
+      const s = String(c).toUpperCase().trim();
+      if (s) return s;
+    }
+  }
   return '';
 };
 
@@ -422,6 +472,7 @@ const isAuraxPaidRaw = (rawUpper) => {
   if (!rawUpper) return false;
   const u = String(rawUpper).toUpperCase().trim();
   if (AURAX_WEBHOOK_PAID_STATUSES.has(u)) return true;
+  if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS)/.test(u)) return true;
   const lower = u.toLowerCase();
   return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
 };
@@ -429,24 +480,51 @@ const isAuraxPaidRaw = (rawUpper) => {
 const evaluateAuraxOrderStatusForApply = (statusData) => {
   const tx = statusData?.transaction;
   const rawStatus = extractAuraxPaymentStatus(statusData);
-  const isCompleted = isAuraxPaidRaw(rawStatus);
+  let isCompleted = isAuraxPaidRaw(rawStatus);
+  if (!isCompleted && statusData?.success === true) {
+    const nested = extractAuraxPaymentStatus({ transaction: tx });
+    if (isAuraxPaidRaw(nested)) isCompleted = true;
+    if (!isCompleted && isAuraxPaidRaw(String(statusData.status || ''))) isCompleted = true;
+  }
+  const ev = String(statusData?.event || statusData?.type || '').toLowerCase().trim();
+  if (!isCompleted && ev) {
+    isCompleted =
+      ev === 'payment.completed' ||
+      ev === 'payment.success' ||
+      ev === 'payment_completed' ||
+      ev === 'transaction.completed' ||
+      ev === 'collection.completed';
+  }
   return { isCompleted, rawStatus, transaction: tx || null };
 };
 
+const collectAuraxOrderRefs = (payload) => {
+  const tx = payload?.transaction || payload?.data?.transaction || payload?.data;
+  const nest = tx && typeof tx === 'object' ? tx : null;
+  const meta = nest?.metadata || payload?.metadata || payload?.data?.metadata || {};
+  const refs = new Set();
+  for (const v of [
+    nest?.id,
+    nest?.reference,
+    payload?.id,
+    payload?.reference,
+    payload?.transactionId,
+    payload?.transaction_id,
+    meta?.orderId,
+    meta?.order_id,
+    meta?.reference,
+  ]) {
+    const s = String(v || '').trim();
+    if (s) refs.add(s);
+  }
+  return [...refs];
+};
+
 const extractAuraxWebhookOrderAndPaid = (payload) => {
+  const allRefs = collectAuraxOrderRefs(payload);
+  const orderId = allRefs[0] || null;
   const tx = payload.transaction || payload.data?.transaction || payload.data;
   const nest = tx && typeof tx === 'object' ? tx : null;
-  const orderId = String(
-    nest?.id ||
-      nest?.reference ||
-      payload.id ||
-      payload.reference ||
-      payload.transactionId ||
-      payload.transaction_id ||
-      nest?.metadata?.orderId ||
-      payload.metadata?.orderId ||
-      '',
-  ).trim();
   const raw = String(
     nest?.status || payload.status || payload.event || '',
   ).toUpperCase().trim();
@@ -460,7 +538,7 @@ const extractAuraxWebhookOrderAndPaid = (payload) => {
       ev === 'transaction.completed' ||
       ev === 'collection.completed';
   }
-  return { orderId: orderId || null, paid, raw: raw || ev };
+  return { orderId, allRefs, paid, raw: raw || ev };
 };
 
 const SONIC_HTTP_TIMEOUT_MS = Math.min(
@@ -524,7 +602,7 @@ const fetchUserPremiumSnapshotForOrder = async (orderId) => {
     `SELECT u.id AS user_id
        FROM subscription_payments sp
        JOIN users u ON u.id = sp.user_id
-      WHERE sp.provider_ref = $1
+      WHERE sp.provider_ref = $1 OR sp.gateway_ref = $1
       LIMIT 1`,
     [orderId],
   );
@@ -669,7 +747,7 @@ const markOrderTerminalIfPending = async (orderId, rawStatus) => {
   await query(
     `UPDATE subscription_payments
         SET status = 'failed'
-      WHERE provider_ref = $1 AND status = 'pending'`,
+      WHERE (provider_ref = $1 OR gateway_ref = $1) AND status = 'pending'`,
     [orderId],
   );
 };
@@ -1009,6 +1087,13 @@ async function handlePaymentStart(req, res, next) {
       `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/aurax/webhook`;
     console.log(`[Backend] Using Aurax webhook URL: ${callbackUrl}`);
 
+    // Insert pending row BEFORE gateway call (Zeno pattern) — webhooks can arrive quickly.
+    await query(
+      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [userId, planKey, amountToSend, 'TZS', 'pending', orderId, null, paymentProviderForRow, buyerPhoneLocal],
+    );
+
     const phoneForAurax = formatPhoneForAuraxPayApi(normalizedPhone);
     console.log('[AuraxPay] Sending payment request:', {
       orderId,
@@ -1037,6 +1122,7 @@ async function handlePaymentStart(req, res, next) {
     });
 
     if (!isAuraxInitiateSuccess(auraxData, response)) {
+      await rollbackPendingPaymentByRef(orderId, paymentProviderForRow);
       const rawError =
         auraxData.message ||
         auraxData.error ||
@@ -1063,8 +1149,9 @@ async function handlePaymentStart(req, res, next) {
     }
 
     const auraxTx = auraxData.transaction || {};
-    const auraxOrderId = String(auraxTx.id || auraxTx.reference || '').trim();
-    if (!auraxOrderId) {
+    const gatewayRef = String(auraxTx.id || auraxTx.reference || '').trim();
+    if (!gatewayRef) {
+      await rollbackPendingPaymentByRef(orderId, paymentProviderForRow);
       return res.status(400).json({
         error: 'Aurax Pay did not return a transaction id',
         auraxResponse: auraxData,
@@ -1072,14 +1159,18 @@ async function handlePaymentStart(req, res, next) {
     }
 
     await query(
-      `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, planKey, amountToSend, 'TZS', 'pending', auraxOrderId, paymentProviderForRow, buyerPhoneLocal],
+      `UPDATE subscription_payments
+          SET gateway_ref = $1
+        WHERE provider_ref = $2 AND status = 'pending' AND payment_provider = $3`,
+      [gatewayRef, orderId, paymentProviderForRow],
     );
+    if (gatewayRef !== orderId) {
+      console.log('[AuraxPay] gateway_ref linked', { clientOrderId: orderId, gatewayRef });
+    }
 
     return res.json({
       status: 'pending',
-      orderId: auraxOrderId,
+      orderId,
       message:
         auraxData.message ||
         (usedAuraxFallbackFromSonic
@@ -1102,26 +1193,38 @@ async function handlePaymentStart(req, res, next) {
 router.post('/aurax/start', handlePaymentStart);
 router.post('/start', handlePaymentStart);
 
+const resolvePlanIntervalForPayment = async (plan, amountCents) => {
+  const planInterval = await resolvePremiumInterval(plan);
+  if (planInterval) return planInterval;
+  try {
+    const plans = await getActivePlans();
+    const match = plans.find((p) => Number(p.priceTzs) === Number(amountCents));
+    const inferred = intervalForPlan(match);
+    if (inferred) {
+      console.warn('[Payment] Inferred plan interval from amount', { plan, amountCents, inferred });
+      return inferred;
+    }
+  } catch (_) {}
+  return null;
+};
+
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
 // [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents cross-gateway completion.
 const applyCompletedPayment = async (orderId, meta, options = {}) => {
-  const { expectedPaymentProvider = null } = options;
-  console.log('[Payment] Applying completed payment for order:', orderId, 'meta:', meta, 'expectedProvider:', expectedPaymentProvider || '(any)');
-  const payRes = await query(
-    'SELECT id, user_id, plan, amount_cents, currency, status, payment_provider FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
-    [orderId],
-  );
-  if (payRes.rows.length === 0) {
-    console.log('[Payment] No payment found for order:', orderId);
+  const { expectedPaymentProvider = null, altRefs = [] } = options;
+  const lookupRefs = [...new Set([orderId, ...(altRefs || [])].map((r) => String(r || '').trim()).filter(Boolean))];
+  console.log('[Payment] Applying completed payment for refs:', lookupRefs, 'meta:', meta, 'expectedProvider:', expectedPaymentProvider || '(any)');
+  const payment = await findPaymentRowByRefs(lookupRefs);
+  if (!payment) {
+    console.log('[Payment] No payment found for refs:', lookupRefs);
     return null;
   }
-  const payment = payRes.rows[0];
 
   const dbProvider = (payment.payment_provider || PAYMENT_PROVIDERS.AURAX).toLowerCase().trim();
   if (expectedPaymentProvider && dbProvider !== expectedPaymentProvider) {
     console.warn('[Payment] Skipping applyCompletedPayment: payment_provider mismatch', {
-      orderId,
+      orderId: payment.provider_ref,
       expected: expectedPaymentProvider,
       actual: dbProvider,
     });
@@ -1138,14 +1241,14 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     return null;
   }
 
-  const planInterval = await resolvePremiumInterval(plan);
+  const planInterval = await resolvePlanIntervalForPayment(plan, payment.amount_cents);
   if (!planInterval) {
     console.error('[Payment] Invalid or missing plan:', plan);
     return null;
   }
 
   if (payment.status === 'completed') {
-    console.log('[Payment] Payment already completed:', orderId);
+    console.log('[Payment] Payment already completed:', payment.provider_ref);
     await repairUserEntitlementsIfNeeded(userId, planInterval);
     const user = await fetchUserPremiumSnapshotByUserId(userId);
     return { ...payment, user };
@@ -1187,7 +1290,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     await grantUserEntitlementsInTransaction(client, userId, { planInterval });
 
     await client.query('COMMIT');
-    console.log('[Payment] Transaction committed for order:', orderId, '- revenue and premium users will reflect in admin.');
+    console.log('[Payment] Transaction committed for order:', payment.provider_ref, '- revenue and premium users will reflect in admin.');
 
     // Send push notification to user about successful payment
     try {
@@ -1209,7 +1312,7 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
           'Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
           {
             type: 'payment_success',
-            orderId: String(orderId || ''),
+            orderId: String(payment.provider_ref || orderId || ''),
             isPremium: String(!!premium.isPremium),
             is_premium: String(!!premium.is_premium),
             premiumExpiresAt: premium.premiumExpiresAt || '',
@@ -1277,21 +1380,19 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
 const handlePaymentStatusPoll = async (orderId, res, next) => {
   try {
     const dbCheck = await query(
-      'SELECT status FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
+      `SELECT status, gateway_ref, user_id, plan, amount_cents
+         FROM subscription_payments
+        WHERE provider_ref = $1 OR gateway_ref = $1
+        LIMIT 1`,
       [orderId],
     );
 
     if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
-      const payRow = await query(
-        'SELECT user_id, plan FROM subscription_payments WHERE provider_ref = $1 LIMIT 1',
-        [orderId],
-      );
-      if (payRow.rows.length > 0) {
-        const plan = String(payRow.rows[0].plan || '').toLowerCase();
-        const planInterval = await resolvePremiumInterval(plan);
-        if (planInterval) {
-          await repairUserEntitlementsIfNeeded(Number(payRow.rows[0].user_id), planInterval);
-        }
+      const payRow = dbCheck.rows[0];
+      const plan = String(payRow.plan || '').toLowerCase();
+      const planInterval = await resolvePlanIntervalForPayment(plan, payRow.amount_cents);
+      if (planInterval) {
+        await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
       }
       return respondPaymentCompletion(orderId, { data: [{ payment_status: 'COMPLETED' }] }, res);
     }
@@ -1356,7 +1457,8 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     }
 
     ensureAuraxPayConfigured();
-    const { statusResp, statusData } = await pollAuraxOrderStatus(orderId);
+    const auraxPollId = String(dbCheck.rows[0]?.gateway_ref || orderId).trim();
+    const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
 
     const auraxMessage = String(statusData.message || statusData.error || '').toLowerCase();
     const isOrderNotFound =
@@ -1548,24 +1650,26 @@ router.post('/aurax/webhook', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid payload' });
     }
 
-    const { orderId, paid, raw } = extractAuraxWebhookOrderAndPaid(payload);
+    const { orderId, allRefs, paid, raw } = extractAuraxWebhookOrderAndPaid(payload);
     console.log('[AuraxPay] Webhook:', {
       orderId,
+      allRefs,
       paid,
       raw,
       signatureValid,
       secretConfigured: Boolean(AURAXPAY_WEBHOOK_SECRET),
     });
 
-    if (!orderId) {
+    if (!orderId && (!allRefs || !allRefs.length)) {
       return res.status(400).json({ error: 'Missing transaction reference' });
     }
 
     const pendingAurax = await query(
       `SELECT id FROM subscription_payments
-         WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
+         WHERE (provider_ref = ANY($1::text[]) OR gateway_ref = ANY($1::text[]))
+           AND status = $2 AND payment_provider = $3
          LIMIT 1`,
-      [orderId, 'pending', PAYMENT_PROVIDERS.AURAX],
+      [allRefs.length ? allRefs : [orderId], 'pending', PAYMENT_PROVIDERS.AURAX],
     );
     const hasPendingAurax = pendingAurax.rows.length > 0;
 
@@ -1588,6 +1692,7 @@ router.post('/aurax/webhook', async (req, res, next) => {
     try {
       const result = await applyCompletedPayment(orderId, payload, {
         expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
+        altRefs: allRefs,
       });
       if (!result) {
         console.warn('[AuraxPay] Payment processing returned null for:', orderId);

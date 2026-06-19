@@ -170,6 +170,15 @@ query(
    WHERE status = 'completed' AND completed_at IS NULL`
 ).catch(() => {});
 
+// Aurax Pay gateway transaction id (provider_ref stays client-facing / metadata orderId)
+query(
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS gateway_ref TEXT`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration gateway_ref (non-fatal):', err.message);
+  }
+});
+
 // FCM + channel unlock table (required for premium grants and admin special access)
 query(
   `DO $$
