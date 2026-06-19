@@ -268,18 +268,34 @@ html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
 (function(){
   var gw=document.getElementById('gw'), spin=document.getElementById('spin');
   gw.src=$urlJs;
+  var videoReady=false;
   function showVideo(doc){
     try{
       if(!doc||!doc.head) return;
-      var css='html,body{background:#000!important;overflow:hidden!important}'+
-        'video,.shaka-video-container{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;object-fit:contain!important;z-index:99999!important}'+
-        '@media (orientation:landscape){video,.shaka-video-container{object-fit:cover!important}}';
-      var s=doc.createElement('style'); s.textContent=css; doc.head.appendChild(s);
-      var v=doc.querySelector('video'); if(v){ gw.style.opacity='1'; spin.style.display='none'; v.play().catch(function(){}); }
+      if(!doc.getElementById('__eaMaxGwStyle')){
+        var css='html,body{background:#000!important;overflow:hidden!important}'+
+          'video,.shaka-video-container{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;object-fit:contain!important;z-index:99999!important}'+
+          '@media (orientation:landscape){video,.shaka-video-container{object-fit:cover!important}}';
+        var s=doc.createElement('style'); s.id='__eaMaxGwStyle'; s.textContent=css; doc.head.appendChild(s);
+      }
+      var v=doc.querySelector('video');
+      if(v){
+        gw.style.opacity='1'; spin.style.display='none';
+        if(!videoReady){
+          videoReady=true;
+          v.setAttribute('playsinline',''); v.setAttribute('webkit-playsinline','');
+          v.play().catch(function(){});
+        }
+      }
     }catch(e){}
   }
   gw.onload=function(){ try{ showVideo(gw.contentDocument); }catch(e){} };
-  setInterval(function(){ try{ showVideo(gw.contentDocument); }catch(e){} }, 2000);
+  try{
+    var obs=new MutationObserver(function(){ try{ showVideo(gw.contentDocument); }catch(e){} });
+    gw.addEventListener('load',function(){
+      try{ obs.observe(gw.contentDocument.documentElement,{childList:true,subtree:true}); }catch(e){}
+    });
+  }catch(e){}
   setTimeout(function(){ spin.style.display='none'; gw.style.opacity='1'; }, 15000);
 })();
 </script></body></html>''';

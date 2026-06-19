@@ -7,17 +7,14 @@
  * 2. .php/.html streams go to a plain WebView — NOT MPDPlayer.
  *    MPDPlayer is only used for actual .mpd DASH streams.
  * 3. PHP WebView gets PHP_WEBVIEW_INJECTED_JS:
- *    - Scans for <video> elements and forces autoplay.
- *    - Intercepts pause events and immediately calls play() again.
- *    - Runs a 4s keepalive interval to enforce playback.
- *    - Activates Media Session API to prevent system-level pausing.
- *    - Posts 'playing' / 'paused' / 'buffering' messages to React Native.
- * 4. VideoPlayer handles 'paused' message from WebView and injects play() command back.
- * 5. StreamEngine.prepareStream is skipped for pure web-page streams.
- * 6. ONE source of truth for default quality: DEFAULT_PLAYBACK_HEIGHT = 360.
- * 7. bufferConfig tuned for smooth mobile playback.
- * 8. selectedVideoTrack locks ExoPlayer to 360p.
- * 9. maxBitRate caps ExoPlayer ABR at 800kbps for 360p.
+ *    - One-time autoplay setup (playsinline, no aggressive pause-fight loops).
+ *    - Posts 'playing' / 'buffering' messages to React Native for loading UI.
+ *    - Gentle stall recovery only after 20s of no progress (no seek-back).
+ * 4. StreamEngine.prepareStream is skipped for pure web-page streams.
+ * 5. ONE source of truth for default quality: DEFAULT_PLAYBACK_HEIGHT = 360.
+ * 6. bufferConfig tuned for smooth mobile playback.
+ * 7. selectedVideoTrack locks ExoPlayer to 360p.
+ * 8. maxBitRate caps ExoPlayer ABR at 800kbps for 360p.
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -171,17 +168,16 @@ function base64EncodeUtf8(str) {
   } catch { return ''; }
 }
 
-// ─── WebView autoplay keepalive JS (injected into .php / .html pages) ────────
+// ─── WebView autoplay JS (injected into .php / .html pages) ─────────────────
 //
-// Fixes the pause loop on .php streams by:
-//   1. Attaching play/pause/buffering event listeners to <video> elements.
-//   2. Calling play() immediately when pause is detected.
-//   3. Running a 4s interval to enforce play on any paused video.
-//   4. Using MutationObserver to attach to dynamically created videos.
-//   5. Media Session API prevents system/OS pause (background audio).
+// Smooth playback: one-time setup, no pause-fight loops, no seek-back.
+// Gentle recovery only after 20s stall — avoids repeating audio/video every second.
 //
 const PHP_WEBVIEW_INJECTED_JS = `
 (function() {
+  if (window.__eaMaxPhpPlayerStarted) return;
+  window.__eaMaxPhpPlayerStarted = true;
+
   var POST = function(type, extra) {
     try {
       var msg = JSON.stringify(Object.assign({ type: type }, extra || {}));
@@ -189,34 +185,32 @@ const PHP_WEBVIEW_INJECTED_JS = `
     } catch(e) {}
   };
 
-  function enforcePlay(v) {
-    if (v && v.paused && !v.ended && v.readyState >= 2) {
-      v.play().catch(function(){});
-    }
+  var lastProgressAt = Date.now();
+  var lastRecoveryAt = 0;
+
+  function tryPlay(v) {
+    if (!v || v.ended) return;
+    try { var p = v.play(); if (p && p.catch) p.catch(function(){}); } catch(e) {}
   }
 
   function attachVideo(v) {
-    if (v.__rnAttached) return;
+    if (!v || v.__rnAttached) return;
     v.__rnAttached = true;
     v.autoplay = true;
     v.muted = false;
     v.setAttribute('autoplay','');
     v.setAttribute('playsinline','');
     v.setAttribute('webkit-playsinline','');
-    v.addEventListener('playing', function(){ POST('playing'); });
-    v.addEventListener('pause', function(){
-      POST('paused');
-      setTimeout(function(){ enforcePlay(v); }, 150);
-    });
+    v.controls = false;
+    v.removeAttribute('controls');
+
+    v.addEventListener('playing', function(){ lastProgressAt = Date.now(); POST('playing'); });
+    v.addEventListener('timeupdate', function(){ lastProgressAt = Date.now(); });
     v.addEventListener('waiting', function(){ POST('buffering', { isBuffering: true }); });
     v.addEventListener('canplay', function(){ POST('buffering', { isBuffering: false }); });
-    v.addEventListener('stalled', function(){
-      POST('buffering', { isBuffering: true });
-      setTimeout(function(){ enforcePlay(v); }, 500);
-    });
     v.addEventListener('ended', function(){ POST('ended'); });
     v.addEventListener('error', function(){ POST('error', { message: 'Video element error' }); });
-    enforcePlay(v);
+    tryPlay(v);
   }
 
   function scanAndAttach() {
@@ -224,32 +218,32 @@ const PHP_WEBVIEW_INJECTED_JS = `
     for (var i = 0; i < vs.length; i++) attachVideo(vs[i]);
   }
 
-  // Keepalive interval: enforce play every 4s
+  // Gentle stall recovery — play() only, never seek (seek causes repeat/stutter)
   setInterval(function() {
-    scanAndAttach();
-    var vs = document.querySelectorAll('video');
-    for (var i = 0; i < vs.length; i++) enforcePlay(vs[i]);
-  }, 4000);
+    var v = document.querySelector('video');
+    if (!v || v.ended) return;
+    var now = Date.now();
+    if (now - lastProgressAt < 20000) return;
+    if (now - lastRecoveryAt < 15000) return;
+    lastRecoveryAt = now;
+    tryPlay(v);
+  }, 5000);
 
-  // Watch for dynamically added video elements
   if (window.MutationObserver) {
     new MutationObserver(function(){ scanAndAttach(); })
       .observe(document.documentElement, { childList: true, subtree: true });
   }
 
-  // Media Session API: prevent OS from pausing the stream
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({ title: 'Live Stream' });
       navigator.mediaSession.setActionHandler('play', function() {
-        var v = document.querySelector('video'); if (v) v.play().catch(function(){});
+        var v = document.querySelector('video'); if (v) tryPlay(v);
       });
-      navigator.mediaSession.setActionHandler('pause', function() { /* block pause */ });
       navigator.mediaSession.playbackState = 'playing';
     } catch(e) {}
   }
 
-  // Initial scan
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function(){ scanAndAttach(); setTimeout(function(){ POST('ready'); }, 800); });
   } else {
@@ -593,7 +587,6 @@ export default function VideoPlayer({
 
   const handleClose = useCallback(() => { setPaused(true); onClose(); }, [onClose]);
 
-  // FIX: WebView message handler — handles 'paused' from .php WebView and re-injects play()
   const handleWebViewMessage = useCallback((e) => {
     try {
       const data = JSON.parse(e.nativeEvent?.data ?? '{}');
@@ -601,14 +594,8 @@ export default function VideoPlayer({
       if (data.type === 'ready')   { setLoading(false); setError(null); }
       if (data.type === 'buffering') { setLoading(!!data.isBuffering); }
       if (data.type === 'error')   { setError(USER_PLAYBACK_ERROR); setLoading(false); }
-      if (data.type === 'paused' && isWebPage && webViewRef.current) {
-        // Stream paused unexpectedly — force play via injection
-        webViewRef.current.injectJavaScript(
-          'var v=document.querySelector("video");if(v&&v.paused&&!v.ended&&v.readyState>=2)v.play().catch(function(){});true;'
-        );
-      }
     } catch (_) {}
-  }, [isWebPage]);
+  }, []);
 
   const onLayout = useCallback((e) => {
     const { width: w, height: h } = e.nativeEvent.layout;

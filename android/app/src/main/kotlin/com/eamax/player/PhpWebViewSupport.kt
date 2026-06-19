@@ -23,9 +23,12 @@ object PhpWebViewSupport {
 
         return """
             (function () {
+              if (window.__eaMaxGatewayRecoveryStarted) return true;
+              window.__eaMaxGatewayRecoveryStarted = true;
+
               var lastProgressAt = Date.now();
-              var waitingSince = 0;
-              var monitorStarted = false;
+              var lastRecoveryAt = 0;
+              var stallSince = 0;
 
               function getVideo() {
                 return document.querySelector('video');
@@ -33,41 +36,52 @@ object PhpWebViewSupport {
 
               function tryPlay(video) {
                 try {
+                  if (!video || video.ended) return;
                   var p = video.play && video.play();
                   if (p && typeof p.catch === 'function') p.catch(function(){});
                 } catch (e) {}
               }
 
               function bindVideo(video) {
-                if (!video || video.__nixBound) return;
-                video.__nixBound = true;
+                if (!video || video.__eaMaxBound) return;
+                video.__eaMaxBound = true;
                 video.setAttribute('playsinline', 'true');
                 video.setAttribute('webkit-playsinline', 'true');
+                video.setAttribute('autoplay', '');
                 try { video.muted = false; } catch (e) {}
                 video.controls = false;
                 video.removeAttribute('controls');
 
                 video.addEventListener('timeupdate', function () {
                   lastProgressAt = Date.now();
-                  waitingSince = 0;
+                  stallSince = 0;
                 });
 
                 video.addEventListener('playing', function () {
                   lastProgressAt = Date.now();
-                  waitingSince = 0;
+                  stallSince = 0;
                   $postPlaying
                 });
 
                 video.addEventListener('waiting', function () {
-                  waitingSince = waitingSince || Date.now();
+                  if (!stallSince) stallSince = Date.now();
+                });
+
+                video.addEventListener('canplay', function () {
+                  stallSince = 0;
                 });
 
                 tryPlay(video);
               }
 
+              function gentleRecovery(video) {
+                var now = Date.now();
+                if (now - lastRecoveryAt < 15000) return;
+                lastRecoveryAt = now;
+                tryPlay(video);
+              }
+
               function startMonitor() {
-                if (monitorStarted) return;
-                monitorStarted = true;
                 setInterval(function () {
                   var video = getVideo();
                   if (!video) return;
@@ -75,24 +89,17 @@ object PhpWebViewSupport {
 
                   var now = Date.now();
                   var noProgressMs = now - lastProgressAt;
-                  if (video.paused && !video.ended) {
-                    tryPlay(video);
+
+                  if (video.paused && !video.ended && noProgressMs > 20000) {
+                    gentleRecovery(video);
+                    return;
                   }
 
-                  if ((video.readyState < 3 || video.seeking) && waitingSince === 0) {
-                    waitingSince = now;
+                  if (stallSince > 0 && noProgressMs > 20000) {
+                    gentleRecovery(video);
+                    stallSince = 0;
                   }
-
-                  if (waitingSince > 0 && noProgressMs > 8000) {
-                    try {
-                      if (isFinite(video.currentTime) && video.currentTime > 0.15) {
-                        video.currentTime = Math.max(0, video.currentTime - 0.1);
-                      }
-                    } catch (e) {}
-                    tryPlay(video);
-                    waitingSince = now;
-                  }
-                }, 1000);
+                }, 5000);
               }
 
               try {
