@@ -17,6 +17,7 @@ const {
   updateGlobalPlayerConfig,
 } = require('../services/playerConfigService');
 const { sanitizeChannelPlaybackEngine } = require('../constants/playerEngines');
+const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
 const {
   getChannelPlayback,
   upsertChannelStream,
@@ -524,6 +525,7 @@ router.get('/channels', async (req, res, next) => {
                COALESCE(c.sort_order, c.id) AS sort_order,
                COALESCE(c.unlock_to_free, false) AS unlock_to_free,
                c.playback_engine,
+               COALESCE(c.audio_language, 'auto') AS audio_language,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
         LEFT JOIN (
@@ -544,6 +546,7 @@ router.get('/channels', async (req, res, next) => {
                  COALESCE(sort_order, id) AS sort_order,
                  COALESCE(unlock_to_free, false) AS unlock_to_free,
                  playback_engine,
+                 COALESCE(audio_language, 'auto') AS audio_language,
                  0 AS view_count
           FROM channels
           ORDER BY COALESCE(sort_order, id) ASC, id ASC
@@ -568,6 +571,8 @@ router.get('/channels', async (req, res, next) => {
           unlockToFree,
           playback_engine: row.playback_engine || null,
           playbackEngine: row.playback_engine || null,
+          audio_language: row.audio_language || 'auto',
+          audioLanguage: row.audio_language || 'auto',
         };
       })
     );
@@ -594,6 +599,7 @@ router.post('/channels', async (req, res, next) => {
       pointsRequired: z.coerce.number().int().min(0).optional().default(0),
       unlockToFree: z.boolean().optional().default(false),
       playbackEngine: z.string().max(32).optional().nullable(),
+      audioLanguage: z.string().max(16).optional().nullable(),
     }).superRefine((data, ctx) => {
       const hasUrl = !!(data.streamUrl && String(data.streamUrl).trim());
       const hasAlias = !!(data.streamAlias && String(data.streamAlias).trim());
@@ -611,6 +617,7 @@ router.post('/channels', async (req, res, next) => {
       ? String(req.body.drmClearKey).trim()
       : null;
     const playbackEngine = sanitizeChannelPlaybackEngine(data.playbackEngine);
+    const audioLanguage = sanitizeChannelAudioLanguage(data.audioLanguage);
 
     // If channel is alias-only, ensure alias resolves to a real URL so playback won't break.
     if (!urlTrimmed && aliasTrimmed) {
@@ -633,8 +640,8 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free, playback_engine)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free, playback_engine, audio_language)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
       [
         data.name,
@@ -653,6 +660,7 @@ router.post('/channels', async (req, res, next) => {
         data.pointsRequired ?? 0,
         !!data.unlockToFree,
         playbackEngine,
+        audioLanguage,
       ],
     );
 
@@ -674,6 +682,7 @@ router.post('/channels', async (req, res, next) => {
       drmType,
       drmClearKey: row.drm_clear_key ?? row.drmClearKey,
       playbackEngine: row.playback_engine || null,
+      audioLanguage: row.audio_language || 'auto',
     });
   } catch (err) {
     return next(err);
@@ -701,6 +710,7 @@ router.put('/channels/:id', async (req, res, next) => {
       unlockToFree: z.boolean().optional(),
       sortOrder: z.coerce.number().int().min(0).optional(),
       playbackEngine: z.string().max(32).optional().nullable(),
+      audioLanguage: z.string().max(16).optional().nullable(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -764,6 +774,9 @@ router.put('/channels/:id', async (req, res, next) => {
       ...(data.playbackEngine !== undefined && {
         playback_engine: sanitizeChannelPlaybackEngine(data.playbackEngine),
       }),
+      ...(data.audioLanguage !== undefined && {
+        audio_language: sanitizeChannelAudioLanguage(data.audioLanguage),
+      }),
     };
 
     if (data.sortOrder !== undefined) {
@@ -816,6 +829,7 @@ router.put('/channels/:id', async (req, res, next) => {
       ...row,
       drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
       playbackEngine: row.playback_engine || null,
+      audioLanguage: row.audio_language || 'auto',
     });
   } catch (err) {
     return next(err);

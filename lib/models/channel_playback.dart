@@ -5,6 +5,7 @@ class ChannelPlaybackBundle {
     required this.streams,
     this.playbackEngine,
     this.effectiveEngine,
+    this.audioLanguage,
   });
 
   final int channelId;
@@ -14,6 +15,8 @@ class ChannelPlaybackBundle {
   final String? playbackEngine;
   /// Resolved engine: channel override or global default.
   final String? effectiveEngine;
+  /// Admin-set stream audio language (`auto` = player default).
+  final String? audioLanguage;
 
   PlaybackStream? get primary =>
       streams.isNotEmpty ? streams.first : null;
@@ -34,12 +37,14 @@ class ChannelPlaybackBundle {
             ? (json['playerConfig'] as Map)['preferredEngine']
             : null) ??
         playbackEngine;
+    final audioLanguage = _readAudioLanguage(json['audioLanguage'] ?? json['audio_language']);
     return ChannelPlaybackBundle(
       channelId: int.tryParse('${json['channelId']}') ?? 0,
       name: json['name']?.toString() ?? '',
       streams: streams,
       playbackEngine: playbackEngine,
       effectiveEngine: effectiveEngine,
+      audioLanguage: audioLanguage,
     );
   }
 
@@ -48,6 +53,13 @@ class ChannelPlaybackBundle {
     final e = raw.toString().trim().toLowerCase();
     if (e.isEmpty || e == 'default' || e == 'global') return null;
     return e;
+  }
+
+  static String? _readAudioLanguage(Object? raw) {
+    if (raw == null) return 'auto';
+    final lang = raw.toString().trim().toLowerCase();
+    if (lang.isEmpty || lang == 'default') return 'auto';
+    return lang;
   }
 
   /// Maps v2 stream fields to the legacy channelData shape used by playback helpers.
@@ -65,6 +77,8 @@ class ChannelPlaybackBundle {
       'headersJson': stream.headers,
       if (playbackEngine != null) 'playbackEngine': playbackEngine,
       if (effectiveEngine != null) 'effectiveEngine': effectiveEngine,
+      if (audioLanguage != null) 'audioLanguage': audioLanguage,
+      if (audioLanguage != null) 'audio_language': audioLanguage,
     };
   }
 }

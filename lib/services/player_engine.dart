@@ -25,6 +25,9 @@ class PlayerEngine {
     webview,
     webplayer,
     shaka,
+  };
+
+  static const _deprecated = <String>{
     flutter,
     chewie,
     nativeVideo,
@@ -35,6 +38,7 @@ class PlayerEngine {
 
   static String normalize(String? raw) {
     final e = (raw ?? auto).trim().toLowerCase();
+    if (_deprecated.contains(e)) return auto;
     return all.contains(e) ? e : auto;
   }
 

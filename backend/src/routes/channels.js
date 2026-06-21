@@ -39,6 +39,7 @@ router.get('/', async (req, res, next) => {
       const isClearKey = drmType === 'CLEARKEY';
       const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
       const playbackEngine = row.playback_engine || null;
+      const audioLanguage = row.audio_language || 'auto';
       const out = {
         ...row,
         stream_url: row.resolved_stream_url ?? row.stream_url,
@@ -55,6 +56,8 @@ router.get('/', async (req, res, next) => {
         unlockToFree,
         playback_engine: playbackEngine,
         playbackEngine,
+        audio_language: audioLanguage,
+        audioLanguage,
       };
       if (!isClearKey) {
         out.drm_clear_key = null;
@@ -87,6 +90,7 @@ router.get('/:id', async (req, res, next) => {
          c.drm_clear_key,
          c.license_url,
          c.playback_engine,
+         COALESCE(c.audio_language, 'auto') AS audio_language,
          COALESCE(c.unlock_to_free, false) AS unlock_to_free
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
@@ -101,6 +105,7 @@ router.get('/:id', async (req, res, next) => {
     const isClearKey = drmType === 'CLEARKEY';
     const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
     const unlockToFree = !!(row.unlock_to_free === true);
+    const audioLanguage = row.audio_language || 'auto';
     return res.json({
       id: row.id,
       name: row.name,
@@ -124,6 +129,8 @@ router.get('/:id', async (req, res, next) => {
       licenseUrl: row.license_url ?? null,
       playback_engine: row.playback_engine || null,
       playbackEngine: row.playback_engine || null,
+      audio_language: audioLanguage,
+      audioLanguage,
       unlock_to_free: unlockToFree,
       unlockToFree,
     });

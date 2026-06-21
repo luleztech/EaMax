@@ -27,6 +27,7 @@ class PlayerPlaybackService {
     required String Function(Map<String, dynamic>?, String, String) normalizeDrm,
     required String Function(Map<String, dynamic>?) extractToken,
     required Map<String, String> Function(Map<String, dynamic>?) extractHeaders,
+    required String Function(Map<String, dynamic>?) extractAudioLanguage,
   }) async {
     if (url.isEmpty) return;
 
@@ -46,6 +47,7 @@ class PlayerPlaybackService {
     final license = channelData?['licenseUrl'] ?? channelData?['license_url'];
     final token = extractToken(channelData);
     final playbackHeaders = extractHeaders(channelData);
+    final audioLanguage = extractAudioLanguage(channelData);
     final merged = Map<String, String>.from(playbackHeaders);
     if (token.isNotEmpty &&
         !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
@@ -62,6 +64,7 @@ class PlayerPlaybackService {
         headers: merged.isEmpty ? null : merged,
         fallbackStreams: fallbackStreams,
         playbackEngine: engine,
+        audioLanguage: audioLanguage,
       );
       return;
     }
@@ -86,6 +89,7 @@ class PlayerPlaybackService {
           clearKeyRaw: ck,
           playbackToken: token,
           playbackMode: effectiveFlutterMode,
+          audioLanguage: audioLanguage,
         ),
       ),
     );

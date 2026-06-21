@@ -602,6 +602,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       normalizeDrm: _normalizedDrmType,
       extractToken: _extractPlaybackToken,
       extractHeaders: _extractPlaybackHeaders,
+      extractAudioLanguage: _extractAudioLanguage,
     );
   }
 
@@ -662,6 +663,14 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       if (parsed.isNotEmpty) return parsed;
     }
     return const {};
+  }
+
+  String _extractAudioLanguage(Map<String, dynamic>? channelData) {
+    if (channelData == null) return 'auto';
+    final raw = channelData['audioLanguage'] ?? channelData['audio_language'];
+    final lang = raw?.toString().trim().toLowerCase() ?? '';
+    if (lang.isEmpty || lang == 'default') return 'auto';
+    return lang;
   }
 
   /// ClearKey payload: hex string or JSON `{"keys":[...]}` from API (never shown to users).

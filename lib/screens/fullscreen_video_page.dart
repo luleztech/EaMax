@@ -32,6 +32,7 @@ class FullscreenVideoPage extends StatefulWidget {
     this.clearKeyRaw,
     this.playbackToken,
     this.playbackMode = FlutterPlaybackMode.mediaKit,
+    this.audioLanguage = 'auto',
   });
 
   final String videoUrl;
@@ -45,6 +46,8 @@ class FullscreenVideoPage extends StatefulWidget {
   final String? playbackToken;
   /// Admin-selected Flutter playback backend.
   final FlutterPlaybackMode playbackMode;
+  /// Admin-set stream audio language (`auto` = player default).
+  final String audioLanguage;
 
   @override
   State<FullscreenVideoPage> createState() => _FullscreenVideoPageState();
@@ -285,10 +288,17 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await player.play();
 
       await _tracksSub?.cancel();
-      _tracksSub = player.stream.tracks.listen((_) => _maybeApplyDefaultOkoa360());
+      _tracksSub = player.stream.tracks.listen((tracks) {
+        unawaited(_maybeApplyAdminAudioLanguage(tracks));
+        _maybeApplyDefaultOkoa360();
+      });
 
       // Manifest may expose tracks slightly after play().
-      unawaited(Future<void>.delayed(const Duration(milliseconds: 300), _maybeApplyDefaultOkoa360));
+      unawaited(Future<void>.delayed(const Duration(milliseconds: 300), () {
+        final tracks = player.state.tracks;
+        unawaited(_maybeApplyAdminAudioLanguage(tracks));
+        _maybeApplyDefaultOkoa360();
+      }));
 
       final started = await _waitUntilPlaying(
         maxWait: Duration(seconds: kIsWeb ? 4 : 8),
@@ -328,6 +338,25 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await Future<void>.delayed(const Duration(milliseconds: 120));
     }
     return _isPlaying;
+  }
+
+  Future<void> _maybeApplyAdminAudioLanguage(Tracks tracks) async {
+    final lang = widget.audioLanguage.trim().toLowerCase();
+    if (lang.isEmpty || lang == 'auto') return;
+    final p = _player;
+    if (p == null) return;
+    try {
+      for (final track in tracks.audio) {
+        final trackLang = track.language?.trim().toLowerCase() ?? '';
+        if (trackLang.isEmpty) continue;
+        if (trackLang == lang || trackLang.startsWith('$lang-') || trackLang.startsWith(lang)) {
+          await p.setAudioTrack(track);
+          return;
+        }
+      }
+    } catch (e, st) {
+      debugPrint('Admin audio language: $e\n$st');
+    }
   }
 
   void _maybeApplyDefaultOkoa360() {

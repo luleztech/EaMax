@@ -92,12 +92,16 @@ function getBitrateCap(height) {
   }
 }
 
-function buildHeaders(streamSession) {
+function buildHeaders(streamSession, audioLanguage) {
   const h = new Map();
   if (streamSession.drmData?.headers) Object.entries(streamSession.drmData.headers).forEach(([k, v]) => h.set(k, v));
   if (streamSession.headers) Object.entries(streamSession.headers).forEach(([k, v]) => h.set(k, v));
+  const lang = String(audioLanguage || 'auto').trim().toLowerCase();
+  const acceptLanguage = lang && lang !== 'auto'
+    ? `${lang}-${lang.toUpperCase()},${lang};q=0.9,en;q=0.8`
+    : 'en-US,en;q=0.9';
   const std = {
-    'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': '*/*', 'Accept-Language': acceptLanguage,
     'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive',
     'User-Agent': NATIVE_USER_AGENT,
   };
@@ -262,6 +266,7 @@ export default function VideoPlayer({
   channelId, userId, drmProtected, drmClearKey,
   drmData: drmDataProp, drmLicenseUrl, drmType: drmTypeProp,
   fetchChannelClearKey, sessionExpiry, onSessionExpired, onTrialUpdate,
+  audioLanguage,
 }) {
   const videoRef  = useRef(null);
   const webViewRef = useRef(null);
@@ -319,12 +324,17 @@ export default function VideoPlayer({
 
   const drmWaitingForKey = !!(isClearKeyChannel && !effectiveDrmClearKey && !drmLicenseUrl && channelId && fetchChannelClearKey);
 
+  const normalizedAudioLanguage = (() => {
+    const lang = String(audioLanguage || 'auto').trim().toLowerCase();
+    return lang && lang !== 'auto' ? lang : null;
+  })();
+
   const streamSession = {
     mpdUrl: url, licenseUrl: drmLicenseUrl || '', token: token || '', drmType,
     drmData: { headers: customHeaders, keys: effectiveDrmClearKey ? [parseClearKeys(effectiveDrmClearKey)] : null },
     headers: customHeaders,
   };
-  const mergedHeaders = buildHeaders(streamSession);
+  const mergedHeaders = buildHeaders(streamSession, normalizedAudioLanguage);
 
   // ─── Build video source ─────────────────────────────────────────────────
 
@@ -669,7 +679,11 @@ export default function VideoPlayer({
             ref={videoRef} source={source} style={videoStyle}
             resizeMode="contain" paused={paused} controls={false}
             selectedVideoTrack={{ type: 'resolution', value: DEFAULT_PLAYBACK_HEIGHT }}
-            selectedAudioTrack={{ type: 'index', value: 0 }}
+            selectedAudioTrack={
+              normalizedAudioLanguage
+                ? { type: 'language', value: normalizedAudioLanguage }
+                : { type: 'index', value: 0 }
+            }
             bufferConfig={BUFFER_CONFIG}
             onLoad={onLoad} onReadyForDisplay={onReadyForDisplay}
             onProgress={onProgress} onBuffer={onBuffer}

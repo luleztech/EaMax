@@ -23,8 +23,9 @@ import { adminChannelsAPI } from '../../config/api';
 import {
   PLAYER_ENGINES,
   playerEngineLabel,
-  suggestPlayerForUrl,
+  normalizePlayerEngine,
 } from '../../constants/playerEngines';
+import { STREAM_LANGUAGES } from '../../constants/streamLanguages';
 import ChannelStreamsModal from './ChannelStreamsModal';
 
 const { width } = Dimensions.get('window');
@@ -223,6 +224,7 @@ const ContentSection = () => {
   const [pointsRequired, setPointsRequired] = useState('0');
   const [unlockToFree, setUnlockToFree] = useState(false);
   const [playbackEngine, setPlaybackEngine] = useState('default');
+  const [audioLanguage, setAudioLanguage] = useState('auto');
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
   const [streamsChannel, setStreamsChannel] = useState(null);
@@ -298,6 +300,7 @@ const ContentSection = () => {
     setPointsRequired('0');
     setUnlockToFree(false);
     setPlaybackEngine('default');
+    setAudioLanguage('auto');
   };
 
   const handleSaveChannel = async () => {
@@ -340,6 +343,7 @@ const ContentSection = () => {
       drmClearKey: clearKeyTrimmed,
       unlockToFree: !!unlockToFree,
       playbackEngine: playbackEngine === 'default' ? null : playbackEngine,
+      audioLanguage: audioLanguage === 'auto' ? 'auto' : audioLanguage,
     };
 
     if (editingChannel) {
@@ -563,7 +567,9 @@ const ContentSection = () => {
     setPointsRequired(String(channel.points_required ?? channel.pointsRequired ?? 0));
     setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
     const savedEngine = channel.playback_engine ?? channel.playbackEngine;
-    setPlaybackEngine(savedEngine ? String(savedEngine) : 'default');
+    setPlaybackEngine(normalizePlayerEngine(savedEngine ? String(savedEngine) : 'default'));
+    const savedLang = channel.audio_language ?? channel.audioLanguage;
+    setAudioLanguage(savedLang ? String(savedLang).toLowerCase() : 'auto');
     setAddChannelModalVisible(true);
   }, []);
 
@@ -854,6 +860,8 @@ const ContentSection = () => {
                   setUserId('');
                   setUseEmoji(false);
                   setUnlockToFree(false);
+                  setPlaybackEngine('default');
+                  setAudioLanguage('auto');
                 }}
                 style={styles.closeButton}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -1027,10 +1035,6 @@ const ContentSection = () => {
                 <Text style={styles.formCardTitle}>Playback</Text>
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Player engine</Text>
-                  <Text style={styles.inputHint}>
-                    Per-channel override. Default uses Control Center global player.
-                    {videoUrl.trim() ? ` Suggested: ${playerEngineLabel(suggestPlayerForUrl(videoUrl))}.` : ''}
-                  </Text>
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -1059,23 +1063,37 @@ const ContentSection = () => {
                       );
                     })}
                   </ScrollView>
-                  {playbackEngine !== 'default' && (
-                    <Text style={styles.inputHint}>
-                      {PLAYER_ENGINES.find((e) => e.id === playbackEngine)?.formats || ''}
-                    </Text>
-                  )}
-                  {videoUrl.trim() &&
-                    playbackEngine === 'default' &&
-                    suggestPlayerForUrl(videoUrl) !== 'default' && (
-                      <TouchableOpacity
-                        style={styles.suggestPlayerBtn}
-                        onPress={() => setPlaybackEngine(suggestPlayerForUrl(videoUrl))}>
-                        <Icon name="lightbulb-on-outline" size={16} color="#fbbf24" />
-                        <Text style={styles.suggestPlayerBtnText}>
-                          Use suggested: {playerEngineLabel(suggestPlayerForUrl(videoUrl))}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
+                </View>
+                <View style={styles.inputSection}>
+                  <Text style={styles.inputLabel}>Stream language</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.playerEngineRow}>
+                    {STREAM_LANGUAGES.map((lang) => {
+                      const active = audioLanguage === lang.id;
+                      return (
+                        <TouchableOpacity
+                          key={lang.id}
+                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
+                          onPress={() => setAudioLanguage(lang.id)}>
+                          <Icon
+                            name={lang.icon}
+                            size={16}
+                            color={active ? '#fff' : '#9ca3af'}
+                          />
+                          <Text
+                            style={[
+                              styles.playerEngineChipText,
+                              active && styles.playerEngineChipTextActive,
+                            ]}
+                            numberOfLines={1}>
+                            {lang.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
                 </View>
               </View>
 
@@ -1665,6 +1683,11 @@ const styles = StyleSheet.create({
     color: '#9ca3af',
     marginTop: 6,
     lineHeight: 18,
+  },
+  languageHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   playerEngineRow: {
     flexDirection: 'row',

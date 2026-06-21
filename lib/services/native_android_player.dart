@@ -23,6 +23,7 @@ class NativeAndroidPlayer {
     Map<String, String>? headers,
     List<PlaybackStream>? fallbackStreams,
     String? playbackEngine,
+    String? audioLanguage,
   }) async {
     if (!supported) return;
 
@@ -40,6 +41,8 @@ class NativeAndroidPlayer {
       if (fallbackJson.isNotEmpty) 'fallbackStreamsJson': fallbackJson,
       if (playbackEngine != null && playbackEngine.isNotEmpty)
         'playbackEngine': playbackEngine,
+      if (audioLanguage != null && audioLanguage.isNotEmpty)
+        'audioLanguage': audioLanguage,
     });
   }
 

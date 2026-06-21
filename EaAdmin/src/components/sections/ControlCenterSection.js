@@ -14,81 +14,7 @@ import {
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminControlAPI } from '../../config/api';
-
-const PLAYER_ENGINES = [
-  {
-    id: 'auto',
-    label: 'Smart Auto',
-    icon: 'auto-fix',
-    formats: 'HLS · DASH · MP4 · PHP · ClearKey · Widevine',
-  },
-  {
-    id: 'kotlin',
-    label: 'Kotlin Native',
-    icon: 'language-kotlin',
-    formats: 'Native stack · probe · failover · all DRM',
-  },
-  {
-    id: 'exo',
-    label: 'ExoPlayer',
-    icon: 'play-box',
-    formats: 'HLS · DASH · MP4 · ClearKey · Widevine',
-  },
-  {
-    id: 'webview',
-    label: 'WebView',
-    icon: 'web',
-    formats: 'PHP gateways · HTML · embedded players',
-  },
-  {
-    id: 'webplayer',
-    label: 'Web Player',
-    icon: 'television-play',
-    formats: 'HTML5 · HLS · DASH · ClearKey · Widevine',
-  },
-  {
-    id: 'shaka',
-    label: 'Shaka Player',
-    icon: 'play-box-outline',
-    formats: 'Shaka · HLS · DASH · ClearKey · Widevine · PHP',
-  },
-  {
-    id: 'flutter',
-    label: 'Flutter Player',
-    icon: 'flutter',
-    formats: 'media_kit · HLS · DASH · MP4',
-  },
-  {
-    id: 'chewie',
-    label: 'Chewie',
-    icon: 'play-circle-outline',
-    formats: 'video_player · HLS · MP4 · controls',
-  },
-  {
-    id: 'native_video',
-    label: 'Native Video',
-    icon: 'cellphone-play',
-    formats: 'Platform video_player · MP4 · HLS',
-  },
-  {
-    id: 'webrtc',
-    label: 'Flutter WebRTC',
-    icon: 'broadcast',
-    formats: 'WHEP/WHIP · low-latency WebRTC',
-  },
-  {
-    id: 'vlc',
-    label: 'VLC Player',
-    icon: 'volume-high',
-    formats: 'In-app native · most stream URLs',
-  },
-  {
-    id: 'mx',
-    label: 'MX Player',
-    icon: 'movie-open-play',
-    formats: 'In-app native · most stream URLs',
-  },
-];
+import { GLOBAL_PLAYER_ENGINES, normalizePlayerEngine } from '../../constants/playerEngines';
 
 const cardStyles = StyleSheet.create({
   card: {
@@ -207,7 +133,9 @@ const ControlCenterSection = () => {
       const playerRes = await adminControlAPI.getPlayerConfig();
       const pc = playerRes?.config || {};
       setPlayerConfig({
-        preferredEngine: pc.preferredEngine || 'auto',
+        preferredEngine: normalizePlayerEngine(pc.preferredEngine) === 'default'
+          ? 'auto'
+          : normalizePlayerEngine(pc.preferredEngine),
         retryMax: String(pc.retryMax ?? 4),
         retryDelayMs: String(pc.retryDelayMs ?? 1200),
         bufferMinMs: String(pc.bufferMinMs ?? 800),
@@ -257,9 +185,9 @@ const ControlCenterSection = () => {
     }
   };
 
-  const activeEngine = PLAYER_ENGINES.find(
+  const activeEngine = GLOBAL_PLAYER_ENGINES.find(
     (e) => e.id === playerConfig.preferredEngine,
-  ) || PLAYER_ENGINES[0];
+  ) || GLOBAL_PLAYER_ENGINES[0];
 
   if (loading) {
     return (
@@ -292,7 +220,7 @@ const ControlCenterSection = () => {
           </View>
 
           <Text style={cardStyles.fieldLabel}>Chagua player</Text>
-          {PLAYER_ENGINES.map((engine) => {
+          {GLOBAL_PLAYER_ENGINES.map((engine) => {
             const selected = playerConfig.preferredEngine === engine.id;
             return (
               <TouchableOpacity
@@ -308,7 +236,6 @@ const ControlCenterSection = () => {
                     <Text style={[styles.engineName, selected && styles.engineNameActive]}>
                       {engine.label}
                     </Text>
-                    <Text style={styles.engineFormats}>{engine.formats}</Text>
                   </View>
                   {selected ? (
                     <Icon name="check-circle" size={22} color="#a78bfa" />

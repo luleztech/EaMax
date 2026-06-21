@@ -51,7 +51,7 @@ async function getChannelPlayback(channelId) {
             COALESCE(c.stream_url, t.stream_url) AS legacy_url,
             c.stream_alias, c.drm_type, c.drm_clear_key, c.license_url,
             c.thumbnail_url, c.points_required, c.unlock_to_free,
-            c.playback_engine
+            c.playback_engine, c.audio_language
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
        LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
@@ -105,6 +105,10 @@ async function getChannelPlayback(channelId) {
   const channelEngine = channel.playback_engine || null;
   const effectiveEngine = resolvePlaybackEngine(channelEngine, playerConfig.preferredEngine);
 
+  const audioLanguage = channel.audio_language
+    ? String(channel.audio_language).trim().toLowerCase()
+    : 'auto';
+
   return {
     channelId: channel.id,
     name: channel.name,
@@ -112,6 +116,8 @@ async function getChannelPlayback(channelId) {
     streams,
     playbackEngine: channelEngine,
     effectiveEngine,
+    audioLanguage,
+    audio_language: audioLanguage,
     playerConfig: {
       ...playerConfig,
       preferredEngine: effectiveEngine,

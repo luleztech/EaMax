@@ -56,7 +56,6 @@ object RemotePlayerConfigHolder {
         preferredEngine?.trim()?.lowercase()?.takeIf {
             it in setOf(
                 "auto", "kotlin", "exo", "webview", "webplayer", "shaka",
-                "flutter", "chewie", "native_video", "webrtc", "vlc", "mx",
             )
         }?.let { this.preferredEngine = it }
         bufferMinMs?.takeIf { it in 500..60_000 }?.let { this.bufferMinMs = it }

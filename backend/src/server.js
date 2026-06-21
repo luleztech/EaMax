@@ -233,6 +233,23 @@ query(
   }
 });
 query(
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS audio_language VARCHAR(16) NOT NULL DEFAULT 'auto'`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration channels.audio_language (non-fatal):', err.message);
+  }
+});
+query(
+  `UPDATE player_config_global
+      SET preferred_engine = 'auto'
+    WHERE preferred_engine IN ('flutter','chewie','native_video','webrtc','vlc','mx')`
+).catch(() => {});
+query(
+  `UPDATE channels
+      SET playback_engine = NULL
+    WHERE playback_engine IN ('flutter','chewie','native_video','webrtc','vlc','mx')`
+).catch(() => {});
+query(
   `ALTER TABLE channels ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`
 ).catch((err) => {
   if (err.message && !err.message.includes('does not exist')) {

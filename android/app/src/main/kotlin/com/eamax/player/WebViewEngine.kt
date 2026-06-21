@@ -47,6 +47,8 @@ class WebViewEngine(
     private var released = false
     private var errorReported = false
     private var okoaApiInjected = false
+    private var audioLangApiInjected = false
+    private var preferredAudioLanguage: String? = null
     private var capturedManifestUrl: String? = null
     private var capturedLicenseUrl: String? = null
     private var manifestFallbackRunnable: Runnable? = null
@@ -1037,7 +1039,28 @@ class WebViewEngine(
         )
     }
 
-    fun setAudioLanguage(language: String) {}
+    fun setAudioLanguage(language: String) {
+        val lang = language.trim().lowercase()
+        if (lang.isEmpty() || lang == "auto") {
+            preferredAudioLanguage = null
+            return
+        }
+        preferredAudioLanguage = lang
+        injectAudioLanguage(lang)
+    }
+
+    private fun injectAudioLanguage(lang: String) {
+        val w = webView ?: return
+        if (!audioLangApiInjected) {
+            audioLangApiInjected = true
+            w.evaluateJavascript(PhpWebViewSupport.eaMaxAudioLanguageApiScript(), null)
+        }
+        val safeLang = lang.replace("\\", "\\\\").replace("'", "\\'")
+        w.evaluateJavascript(
+            "try{window.__eaMaxSetAudioLanguage&&window.__eaMaxSetAudioLanguage('$safeLang');}catch(e){}",
+            null,
+        )
+    }
 
     fun release() {
         released = true

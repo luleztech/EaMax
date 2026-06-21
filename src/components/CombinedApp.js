@@ -906,6 +906,7 @@ const CombinedApp = ({
           }
           return undefined;
         })()}
+        audioLanguage={playingChannel?.audioLanguage ?? playingChannel?.audio_language ?? 'auto'}
         fetchChannelClearKey={async (id) => {
           const d = await channelsAPI.getChannel(id);
           return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };

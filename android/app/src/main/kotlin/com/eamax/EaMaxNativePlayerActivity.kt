@@ -54,6 +54,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private var webViewSurfaceAttached = false
     private lateinit var webLoadingOverlay: FrameLayout
     private var unavailableDialogShown = false
+    private var adminAudioLanguage: String = "auto"
 
     /** Close player silently on fatal playback errors (no technician popup). */
     private fun showChannelUnavailableAndFinish() {
@@ -133,6 +134,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             PlayerEnginePolicy.setSessionEngine(channelEngine)
             Log.d(TAG, "Per-channel playback engine: $channelEngine")
         }
+        adminAudioLanguage = intent.getStringExtra("audioLanguage")?.trim()?.lowercase().orEmpty()
+            .ifEmpty { "auto" }
 
         playerManager = PlayerManager(
             context = this,
@@ -197,6 +200,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                     if (!hasVideo) return@runOnUiThread
                     okoaAppliedOnTracks = true
                     playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+                    applyAdminAudioLanguage()
                 }
             },
             onReady = {
@@ -225,6 +229,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)
                         }
+                        applyAdminAudioLanguage()
                         maybeShowRotateHint()
                     } catch (e: Exception) {
                         Log.e(TAG, "onReady", e)
@@ -377,6 +382,12 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(okoaBundle)
+    }
+
+    private fun applyAdminAudioLanguage() {
+        val lang = adminAudioLanguage.trim().lowercase()
+        if (lang.isEmpty() || lang == "auto") return
+        playerManager.setAudioLanguage(lang)
     }
 
     private fun showOkoaQualityDialog() {

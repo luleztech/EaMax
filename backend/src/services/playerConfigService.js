@@ -1,5 +1,5 @@
 const { query } = require('../db');
-const { VALID_ENGINES } = require('../constants/playerEngines');
+const { VALID_ENGINES, sanitizeGlobalPlaybackEngine } = require('../constants/playerEngines');
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
@@ -16,7 +16,7 @@ const DEFAULT_PLAYER_CONFIG = {
 function mapRow(row) {
   if (!row) return { ...DEFAULT_PLAYER_CONFIG };
   return {
-    preferredEngine: row.preferred_engine || 'auto',
+    preferredEngine: sanitizeGlobalPlaybackEngine(row.preferred_engine),
     bufferMinMs: Number(row.buffer_min_ms) || 800,
     bufferMaxMs: Number(row.buffer_max_ms) || 12000,
     retryMax: Number(row.retry_max) || 4,
@@ -87,8 +87,7 @@ function sanitizePlayerConfigPatch(patch) {
   if (!patch || typeof patch !== 'object') return {};
   const out = {};
   if (patch.preferredEngine != null) {
-    const e = String(patch.preferredEngine).trim().toLowerCase();
-    if (VALID_ENGINES.has(e)) out.preferredEngine = e;
+    out.preferredEngine = sanitizeGlobalPlaybackEngine(patch.preferredEngine);
   }
   if (patch.bufferMinMs != null) {
     const n = Number(patch.bufferMinMs);

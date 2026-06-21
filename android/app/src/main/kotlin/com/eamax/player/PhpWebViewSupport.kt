@@ -137,6 +137,9 @@ object PhpWebViewSupport {
                 'video::-webkit-media-controls-timeline{display:none!important;visibility:hidden!important;opacity:0!important}' +
                 '.vjs-time-control,.vjs-duration,.vjs-current-time,.vjs-remaining-time,' +
                 '.shaka-current-time,.shaka-time-container,.shaka-seek-bar-container{display:none!important}' +
+                '.shaka-overflow-menu-button,.shaka-settings-menu,.vjs-settings-button,' +
+                '[class*="settings-button"],[class*="gear"],[aria-label*="Settings"],[title*="Settings"]' +
+                '{display:none!important;pointer-events:none!important;opacity:0!important;visibility:hidden!important}' +
                 'video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{' +
                 'position:fixed!important;inset:0!important;width:100%!important;height:100%!important;' +
                 'max-width:100%!important;max-height:100%!important;object-fit:contain!important;' +
@@ -1385,6 +1388,62 @@ video::-webkit-media-controls-timeline{display:none!important}
   });
 })();
 </script></body></html>
+        """.trimIndent()
+    }
+
+    /** Admin-controlled audio language for Shaka / HTML5 in-page players. */
+    fun eaMaxAudioLanguageApiScript(): String {
+        return """
+            (function () {
+              if (window.__eaMaxAudioLangApi) return true;
+              window.__eaMaxAudioLangApi = true;
+              window.__eaMaxPreferredAudioLang = '';
+              window.__eaMaxSetAudioLanguage = function (lang) {
+                if (!lang || lang === 'auto') {
+                  window.__eaMaxPreferredAudioLang = '';
+                  return;
+                }
+                window.__eaMaxPreferredAudioLang = String(lang).toLowerCase();
+                window.__eaMaxApplyAudioLanguage && window.__eaMaxApplyAudioLanguage();
+              };
+              window.__eaMaxApplyAudioLanguage = function () {
+                var lang = window.__eaMaxPreferredAudioLang;
+                if (!lang) return false;
+                var applied = false;
+                try {
+                  document.querySelectorAll('video').forEach(function (v) {
+                    if (v.audioTracks && v.audioTracks.length) {
+                      for (var i = 0; i < v.audioTracks.length; i++) {
+                        var tl = (v.audioTracks[i].language || '').toLowerCase();
+                        var match = tl === lang || tl.indexOf(lang + '-') === 0 || tl.indexOf(lang) === 0;
+                        v.audioTracks[i].enabled = match;
+                        if (match) applied = true;
+                      }
+                    }
+                  });
+                } catch (e) {}
+                try {
+                  if (window.shaka && shaka.Player && typeof shaka.Player.getPlayerInstance === 'function') {
+                    document.querySelectorAll('video').forEach(function (v) {
+                      try {
+                        var p = shaka.Player.getPlayerInstance(v);
+                        if (p && typeof p.selectAudioLanguage === 'function') {
+                          p.selectAudioLanguage(lang, true);
+                          applied = true;
+                        }
+                      } catch (e) {}
+                    });
+                  }
+                } catch (e) {}
+                return applied;
+              };
+              if (!window.__eaMaxAudioLangRetryInterval) {
+                window.__eaMaxAudioLangRetryInterval = setInterval(function () {
+                  if (window.__eaMaxPreferredAudioLang) window.__eaMaxApplyAudioLanguage();
+                }, 2500);
+              }
+              return true;
+            })();
         """.trimIndent()
     }
 }

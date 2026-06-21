@@ -6,6 +6,9 @@ const VALID_ENGINES = new Set([
   'webview',
   'webplayer',
   'shaka',
+]);
+
+const DEPRECATED_ENGINES = new Set([
   'flutter',
   'chewie',
   'native_video',
@@ -14,22 +17,36 @@ const VALID_ENGINES = new Set([
   'mx',
 ]);
 
+function normalizeEngineId(raw) {
+  const e = String(raw || '').trim().toLowerCase();
+  if (!e || e === 'default' || e === 'global') return null;
+  if (DEPRECATED_ENGINES.has(e)) return 'auto';
+  return VALID_ENGINES.has(e) ? e : 'auto';
+}
+
 /** Channel override: null/empty/default → use global config. */
 function sanitizeChannelPlaybackEngine(raw) {
   if (raw == null || raw === '' || raw === 'default' || raw === 'global') return null;
-  const e = String(raw).trim().toLowerCase();
-  return VALID_ENGINES.has(e) ? e : null;
+  const normalized = normalizeEngineId(raw);
+  if (!normalized || normalized === 'auto') return null;
+  return normalized;
 }
 
 function resolvePlaybackEngine(channelOverride, globalDefault) {
   const channel = sanitizeChannelPlaybackEngine(channelOverride);
   if (channel) return channel;
-  const global = sanitizeChannelPlaybackEngine(globalDefault);
-  return global || 'auto';
+  return normalizeEngineId(globalDefault) || 'auto';
+}
+
+function sanitizeGlobalPlaybackEngine(raw) {
+  return normalizeEngineId(raw) || 'auto';
 }
 
 module.exports = {
   VALID_ENGINES,
+  DEPRECATED_ENGINES,
+  normalizeEngineId,
   sanitizeChannelPlaybackEngine,
+  sanitizeGlobalPlaybackEngine,
   resolvePlaybackEngine,
 };
