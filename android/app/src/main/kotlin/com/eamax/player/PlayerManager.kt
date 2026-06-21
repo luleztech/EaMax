@@ -593,8 +593,11 @@ class PlayerManager(
      */
     fun setAudioLanguage(language: String) {
         val lang = AudioLanguageSupport.normalize(language)
-        webViewEngine?.setAudioLanguage(lang)
-        engine?.setAudioLanguage(lang)
+        when {
+            engine?.getPlayer() != null -> engine?.setAudioLanguage(lang)
+            webViewEngine != null -> webViewEngine?.setAudioLanguage(lang)
+            else -> engine?.setAudioLanguage(lang)
+        }
         Log.d(TAG, "Audio language changed to: $lang")
     }
 
@@ -645,7 +648,12 @@ class PlayerManager(
     /** Embed gateway playback — add this [WebView] to your layout when non-null. */
     fun getWebView(): WebView? = webViewEngine?.getWebView()
 
-    fun isWebViewPlayback(): Boolean = webViewEngine != null
+    /** True only when WebView is the active renderer (not after gateway→Exo promotion). */
+    fun isWebViewPlayback(): Boolean =
+        webViewEngine != null && engine?.getPlayer() == null
+
+    fun wasWebViewPlaybackStarted(): Boolean =
+        webViewEngine?.wasPlaybackStarted() == true
 
     /**
      * True when playback is active or Exo is still starting after a WebView→Exo handoff.

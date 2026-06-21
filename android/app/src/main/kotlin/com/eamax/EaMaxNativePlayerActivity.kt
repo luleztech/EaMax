@@ -230,8 +230,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             okoaBundle.visibility = View.VISIBLE
                             playerView.visibility = View.GONE
                             attachWebViewIfNeeded(webContainer, playerView)
-                            showWebLoadingOverlay()
-                            playerManager.getWebView()?.alpha = 0f
+                            if (playerManager.wasWebViewPlaybackStarted()) {
+                                hideWebLoadingOverlay()
+                                playerManager.getWebView()?.alpha = 1f
+                            } else {
+                                showWebLoadingOverlay()
+                                playerManager.getWebView()?.alpha = 0f
+                            }
                         } else {
                             exoBoundToView = false
                             hideWebLoadingOverlay()
