@@ -30,6 +30,7 @@ import com.eamax.domain.model.StreamQuality
 import com.eamax.player.PlayerManager
 import com.eamax.player.PlayerEnginePolicy
 import com.eamax.player.StreamSessionBuilder
+import com.eamax.player.AudioLanguageSupport
 
 /** Full-screen playback using the native PlayerManager stack (see repo `player/` sources). */
 class EaMaxNativePlayerActivity : AppCompatActivity() {
