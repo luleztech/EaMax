@@ -104,6 +104,13 @@ function audioTrackMatches(trackLang, target) {
   return aliases.some((alias) => t === alias || t.startsWith(`${alias}-`));
 }
 
+function pickAudioTrackIndex(tracks, target) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null;
+  const match = tracks.find((track) => audioTrackMatches(track.language, target));
+  if (match && Number.isFinite(match.index)) return match.index;
+  return target === 'en' ? null : 0;
+}
+
 function buildHeaders(streamSession, audioLanguage) {
   const h = new Map();
   if (streamSession.drmData?.headers) Object.entries(streamSession.drmData.headers).forEach(([k, v]) => h.set(k, v));
@@ -569,9 +576,9 @@ export default function VideoPlayer({
     if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
     const tracks = data?.audioTracks;
     if (Array.isArray(tracks) && tracks.length > 0) {
-      const match = tracks.find((track) => audioTrackMatches(track.language, adminAudioLanguage));
-      if (match && Number.isFinite(match.index)) {
-        setSelectedAudioTrack({ type: 'index', value: match.index });
+      const idx = pickAudioTrackIndex(tracks, adminAudioLanguage);
+      if (idx != null) {
+        setSelectedAudioTrack({ type: 'index', value: idx });
       } else {
         setSelectedAudioTrack({ type: 'language', value: adminAudioLanguage });
       }
@@ -700,7 +707,7 @@ export default function VideoPlayer({
         /* CASE 5: Native ExoPlayer */
         ) : source && hasLayout ? (
           <Video
-            key={`video-${sourceKey}`}
+            key={`video-${sourceKey}-${adminAudioLanguage}`}
             ref={videoRef} source={source} style={videoStyle}
             resizeMode="contain" paused={paused} controls={false}
             selectedVideoTrack={{ type: 'resolution', value: DEFAULT_PLAYBACK_HEIGHT }}

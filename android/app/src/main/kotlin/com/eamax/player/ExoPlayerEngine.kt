@@ -102,8 +102,8 @@ class ExoPlayerEngine(
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val trackSelector = DefaultTrackSelector(context)
-    /** Kotlin-owned quality; default ~360p (“Okoa bando”) until user picks Auto or higher. */
-    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
+    /** Kotlin-owned quality; default from admin config (~360p “Okoa bando”) until user changes it. */
+    private var selectedQuality: StreamQuality = RemotePlayerConfigHolder.defaultStreamQuality()
     private var currentSession: StreamSession? = null
     private var currentFormat: StreamFormat? = null
     private var malformedManifestRecovered = false
@@ -136,6 +136,7 @@ class ExoPlayerEngine(
         webViewLicenseBridge: WebViewLicenseBridge? = null,
     ) {
         currentSession = streamSession
+        pendingAudioLanguage = AudioLanguageSupport.normalize(streamSession.preferredAudioLanguage)
         this.webViewLicenseBridge = webViewLicenseBridge
         if (resetRecoveryFlags) {
             malformedManifestRecovered = false
@@ -200,12 +201,19 @@ class ExoPlayerEngine(
                 .build()
                 .apply {
                     val ts = this@ExoPlayerEngine.trackSelector
-                    selectedQuality = StreamQuality.QUALITY_360P
-                    val maxHeight = 360
-                    ts.parameters = ts.buildUponParameters()
-                        .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+                    selectedQuality = RemotePlayerConfigHolder.defaultStreamQuality()
+                    val paramsBuilder = ts.buildUponParameters()
                         .setForceHighestSupportedBitrate(selectedQuality == StreamQuality.AUTO)
-                        .build()
+                    if (selectedQuality == StreamQuality.AUTO) {
+                        paramsBuilder
+                            .clearVideoSizeConstraints()
+                            .setMaxVideoBitrate(Int.MAX_VALUE)
+                    } else {
+                        paramsBuilder
+                            .setMaxVideoSize(Int.MAX_VALUE, selectedQuality.height)
+                            .setMaxVideoBitrate(maxBitrateForQuality(selectedQuality))
+                    }
+                    ts.parameters = paramsBuilder.build()
 
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -305,7 +313,12 @@ class ExoPlayerEngine(
             
             // Priority 3: Add standard browser-like headers (lowest priority, won't override)
             putIfAbsent("Accept", "*/*")
-            putIfAbsent("Accept-Language", "en-US,en;q=0.9")
+            putIfAbsent(
+                "Accept-Language",
+                AudioLanguageSupport.acceptLanguageHeader(
+                    currentSession?.preferredAudioLanguage ?: pendingAudioLanguage,
+                ),
+            )
             putIfAbsent("Connection", "keep-alive")
 
             // Priority 4: User-Agent — many .mpd/.m3u8 CDNs block generic ExoPlayer UAs.
@@ -843,6 +856,7 @@ class ExoPlayerEngine(
     fun setQuality(quality: StreamQuality) {
         selectedQuality = quality
         applySelectedQuality()
+        applyPendingAudioLanguage()
         Log.d(TAG, "🎨 Quality set to: $quality")
     }
 
@@ -917,28 +931,39 @@ class ExoPlayerEngine(
 
     private fun applyPendingAudioLanguage() {
         val target = pendingAudioLanguage
-        val tracks = exoPlayer?.currentTracks ?: Tracks.EMPTY
-        val builder = trackSelector.buildUponParameters()
-        var matched = false
+        val player = exoPlayer ?: return
+        val tracks = player.currentTracks
+        val builder = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+
+        var matchedGroup: Tracks.Group? = null
+        var matchedIndex = -1
 
         for (group in tracks.groups) {
             if (group.type != C.TRACK_TYPE_AUDIO || group.length <= 0) continue
             for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
                 val format = group.getTrackFormat(i)
-                if (AudioLanguageSupport.matchesTrackLanguage(format.language, target)) {
-                    builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, i))
-                    matched = true
-                    Log.d(
-                        TAG,
-                        "🔊 Audio track override: lang=${format.language} → target=$target (index=$i)",
-                    )
+                if (AudioLanguageSupport.matchesTrackLanguage(format.language, target) ||
+                    AudioLanguageSupport.matchesTrackLabel(format.label, target)
+                ) {
+                    matchedGroup = group
+                    matchedIndex = i
                     break
                 }
             }
-            if (matched) break
+            if (matchedGroup != null) break
         }
 
-        if (!matched) {
+        if (matchedGroup != null && matchedIndex >= 0) {
+            builder.addOverride(TrackSelectionOverride(matchedGroup.mediaTrackGroup, matchedIndex))
+            val format = matchedGroup.getTrackFormat(matchedIndex)
+            Log.d(
+                TAG,
+                "🔊 Audio track override: lang=${format.language} label=${format.label} → target=$target (index=$matchedIndex)",
+            )
+        } else {
             AudioLanguageSupport.aliases(target).forEach { alias ->
                 builder.setPreferredAudioLanguage(alias)
             }
@@ -946,8 +971,8 @@ class ExoPlayerEngine(
         }
 
         val params = builder.build()
+        player.trackSelectionParameters = params
         trackSelector.setParameters(params)
-        exoPlayer?.trackSelectionParameters = params
     }
 
     fun setTrack(group: Tracks.Group, trackIndex: Int) {

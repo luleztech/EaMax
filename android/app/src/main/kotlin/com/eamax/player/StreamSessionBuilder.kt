@@ -19,6 +19,7 @@ object StreamSessionBuilder {
 
     /** Primary stream + optional backup streams from Flutter v2 playback API. */
     fun fromFlutterBundleWithFallbacks(b: Bundle): List<StreamSession> {
+        val preferredAudioLanguage = AudioLanguageSupport.normalize(b.getString("audioLanguage"))
         val primary = buildSession(
             url = b.getString("url")?.trim().orEmpty(),
             licenseUrl = b.getString("licenseUrl")?.trim().orEmpty(),
@@ -26,9 +27,10 @@ object StreamSessionBuilder {
             drmTypeStr = (b.getString("drmType") ?: "NONE").uppercase(),
             clearKeyHex = b.getString("clearKeyHex")?.trim().orEmpty(),
             headersJson = b.getString("headersJson")?.trim().orEmpty(),
+            preferredAudioLanguage = preferredAudioLanguage,
         )
         val fallbackJson = b.getString("fallbackStreamsJson")?.trim().orEmpty()
-        val fallbacks = parseFallbackStreams(fallbackJson)
+        val fallbacks = parseFallbackStreams(fallbackJson, preferredAudioLanguage)
         val seen = mutableSetOf<String>()
         return (listOf(primary) + fallbacks).filter { session ->
             val key = session.mpdUrl.trim()
@@ -46,6 +48,7 @@ object StreamSessionBuilder {
         drmTypeStr: String,
         clearKeyHex: String,
         headersJson: String,
+        preferredAudioLanguage: String = AudioLanguageSupport.DEFAULT,
     ): StreamSession {
 
         val expiresAt = (System.currentTimeMillis() / 1000) + 86400 * 365L
@@ -59,7 +62,8 @@ object StreamSessionBuilder {
             else -> DrmType.NONE
         }
 
-        val headers = parseHeaders(headersJson)
+        val headers = parseHeaders(headersJson).toMutableMap()
+        headers["Accept-Language"] = AudioLanguageSupport.acceptLanguageHeader(preferredAudioLanguage)
 
         // Backend sometimes ships keys without drmType — infer ClearKey when keys exist for manifests.
         if (drmType == DrmType.NONE && clearKeyHex.isNotEmpty()) {
@@ -93,10 +97,14 @@ object StreamSessionBuilder {
             trialRemaining = 999_999,
             channelIsPremium = false,
             headers = headers,
+            preferredAudioLanguage = preferredAudioLanguage,
         )
     }
 
-    private fun parseFallbackStreams(json: String): List<StreamSession> {
+    private fun parseFallbackStreams(
+        json: String,
+        preferredAudioLanguage: String = AudioLanguageSupport.DEFAULT,
+    ): List<StreamSession> {
         if (json.isEmpty()) return emptyList()
         return try {
             val arr = JSONArray(json)
@@ -119,6 +127,7 @@ object StreamSessionBuilder {
                             headersJson = item.optString("headersJson", "").ifEmpty {
                                 item.optJSONObject("headers")?.toString().orEmpty()
                             },
+                            preferredAudioLanguage = preferredAudioLanguage,
                         ),
                     )
                 }

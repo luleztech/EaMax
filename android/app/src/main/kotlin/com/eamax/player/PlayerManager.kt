@@ -151,6 +151,8 @@ class PlayerManager(
             }
         }
         isInitialized = true
+        engine?.setAudioLanguage(mergedSession.preferredAudioLanguage)
+        engine?.setQuality(RemotePlayerConfigHolder.defaultStreamQuality())
         notifyReady()
     }
 
@@ -545,6 +547,8 @@ class PlayerManager(
                 dispatchFatalError("Playback failed for this stream")
                 return
             }
+            engine?.setAudioLanguage(merged.preferredAudioLanguage)
+            engine?.setQuality(RemotePlayerConfigHolder.defaultStreamQuality())
             isInitialized = true
             notifyReady()
             engine?.play()

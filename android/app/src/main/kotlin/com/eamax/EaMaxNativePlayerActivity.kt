@@ -31,6 +31,7 @@ import com.eamax.player.PlayerManager
 import com.eamax.player.PlayerEnginePolicy
 import com.eamax.player.StreamSessionBuilder
 import com.eamax.player.AudioLanguageSupport
+import com.eamax.player.RemotePlayerConfigHolder
 
 /** Full-screen playback using the native PlayerManager stack (see repo `player/` sources). */
 class EaMaxNativePlayerActivity : AppCompatActivity() {
@@ -41,7 +42,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
     private lateinit var playerManager: PlayerManager
     private var exoBoundToView = false
-    private var selectedOkoaQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var selectedOkoaQuality: StreamQuality = RemotePlayerConfigHolder.defaultStreamQuality()
     private var okoaAppliedOnTracks = false
 
     private lateinit var rotateHintOverlay: FrameLayout
@@ -55,7 +56,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private var webViewSurfaceAttached = false
     private lateinit var webLoadingOverlay: FrameLayout
     private var unavailableDialogShown = false
-    private var adminAudioLanguage: String = "auto"
+    private var adminAudioLanguage: String = AudioLanguageSupport.DEFAULT
 
     /** Close player silently on fatal playback errors (no technician popup). */
     private fun showChannelUnavailableAndFinish() {
@@ -138,6 +139,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         adminAudioLanguage = AudioLanguageSupport.normalize(
             intent.getStringExtra("audioLanguage"),
         )
+        selectedOkoaQuality = RemotePlayerConfigHolder.defaultStreamQuality()
 
         playerManager = PlayerManager(
             context = this,
@@ -149,6 +151,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 hideWebLoadingOverlay()
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 playerManager.getWebView()?.alpha = 1f
+                                applyDefaultOkoaQuality()
                                 applyAdminAudioLanguage()
                                 scheduleWebViewAudioLanguageRetries()
                             }
@@ -200,12 +203,17 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             onTracksAvailable = { tracks ->
                 runOnUiThread {
                     if (isFinishing) return@runOnUiThread
+                    if (!playerManager.isWebViewPlayback() && !okoaAppliedOnTracks) {
+                        val hasVideo = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
+                        if (hasVideo) {
+                            okoaAppliedOnTracks = true
+                            playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+                        }
+                    }
                     applyAdminAudioLanguage()
-                    if (playerManager.isWebViewPlayback() || okoaAppliedOnTracks) return@runOnUiThread
-                    val hasVideo = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
-                    if (!hasVideo) return@runOnUiThread
-                    okoaAppliedOnTracks = true
-                    playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+                    if (!playerManager.isWebViewPlayback()) {
+                        scheduleExoAudioLanguageRetries()
+                    }
                 }
             },
             onReady = {
@@ -389,17 +397,29 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         ViewCompat.requestApplyInsets(okoaBundle)
     }
 
+    private fun applyDefaultOkoaQuality() {
+        playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+    }
+
     private fun applyAdminAudioLanguage() {
         playerManager.setAudioLanguage(adminAudioLanguage)
     }
 
     private fun scheduleWebViewAudioLanguageRetries() {
+        scheduleAudioLanguageRetries(requireWebView = true)
+    }
+
+    private fun scheduleExoAudioLanguageRetries() {
+        scheduleAudioLanguageRetries(requireWebView = false)
+    }
+
+    private fun scheduleAudioLanguageRetries(requireWebView: Boolean) {
         val handler = window.decorView.handler ?: return
-        listOf(800L, 2000L, 4500L).forEach { delayMs ->
+        listOf(800L, 2000L, 4500L, 8000L).forEach { delayMs ->
             handler.postDelayed({
-                if (!isFinishing && playerManager.isWebViewPlayback()) {
-                    applyAdminAudioLanguage()
-                }
+                if (isFinishing) return@postDelayed
+                if (requireWebView != playerManager.isWebViewPlayback()) return@postDelayed
+                applyAdminAudioLanguage()
             }, delayMs)
         }
     }

@@ -370,12 +370,15 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   bool _audioLangMatches(String trackLang, String target) {
-    final aliases = target == 'en'
-        ? const ['en', 'eng']
-        : const ['sw', 'swa'];
-    return aliases.any(
-      (alias) => trackLang == alias || trackLang.startsWith('$alias-'),
-    );
+    final t = trackLang.toLowerCase();
+    if (target == 'en') {
+      if (t.contains('english') || t.contains('eng')) return true;
+      return t == 'en' || t.startsWith('en-');
+    }
+    if (t.contains('swahili') || t.contains('kiswahili') || t.contains('swa')) {
+      return true;
+    }
+    return t == 'sw' || t.startsWith('sw-');
   }
 
   void _maybeApplyDefaultOkoa360() {

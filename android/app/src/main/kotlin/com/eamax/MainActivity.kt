@@ -79,10 +79,10 @@ class MainActivity : FlutterActivity() {
                         if (playbackEngine.isNotEmpty()) {
                             intent.putExtra("playbackEngine", playbackEngine)
                         }
-                        val audioLanguage = args["audioLanguage"]?.toString()?.trim().orEmpty()
-                        if (audioLanguage.isNotEmpty()) {
-                            intent.putExtra("audioLanguage", audioLanguage)
-                        }
+                        val audioLanguage = com.eamax.player.AudioLanguageSupport.normalize(
+                            args["audioLanguage"]?.toString(),
+                        )
+                        intent.putExtra("audioLanguage", audioLanguage)
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {

@@ -16,6 +16,7 @@ data class StreamSession(
     val trialRemaining: Int, // Default is now handled in DTO
     val channelIsPremium: Boolean = false, // 🔥 CRITICAL: Is this channel premium (needs trial timer)?
     val headers: Map<String, String> = emptyMap(),
+    val preferredAudioLanguage: String = "sw",
     val sessionId: String = UUID.randomUUID().toString()
 ) {
     fun isValid(): Boolean {

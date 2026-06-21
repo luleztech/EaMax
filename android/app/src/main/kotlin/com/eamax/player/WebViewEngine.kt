@@ -142,6 +142,7 @@ class WebViewEngine(
             null,
         )
         schedulePlaybackWatchdog()
+        setAudioLanguage(session.preferredAudioLanguage)
     }
 
     private fun loadGatewayFallback(gatewayUrl: String) {
@@ -151,6 +152,7 @@ class WebViewEngine(
         scheduleGatewayHtmlPrefetch(gatewayUrl)
         webView?.loadUrl(gatewayUrl)
         schedulePlaybackWatchdog()
+        currentSession?.let { setAudioLanguage(it.preferredAudioLanguage) }
     }
 
     /** Fire stream/DRM extract scripts ASAP (gateway pages). */
@@ -237,7 +239,10 @@ class WebViewEngine(
                 override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                     super.onPageFinished(view, finishedUrl)
                     val w = view ?: return
-                    if (usingShakaEmbed) return
+                    if (usingShakaEmbed) {
+                        applyDefaultOkoaIfNeeded()
+                        return
+                    }
                     val gateway = currentSession?.mpdUrl ?: finishedUrl.orEmpty()
                     w.evaluateJavascript(PhpWebViewSupport.gatewayCdnRefererFixScript(gateway), null)
                     injectPlayerOnlyUi(w)
@@ -392,11 +397,28 @@ class WebViewEngine(
             playbackStarted = true
             cancelPlaybackWatchdog()
             webView?.alpha = 1f
+            applyDefaultOkoaIfNeeded()
         }
         onPlaybackStateChanged(state)
     }
 
-    private fun defaultOkoaMaxHeight(): Int = 360
+    private fun defaultOkoaMaxHeight(): Int {
+        val maxH = RemotePlayerConfigHolder.defaultQualityMaxHeight()
+        return if (maxH <= 0) 360 else maxH
+    }
+
+    private fun defaultOkoaMode(): String {
+        val quality = RemotePlayerConfigHolder.defaultStreamQuality()
+        return when (quality) {
+            StreamQuality.AUTO -> "auto"
+            else -> quality.height.toString()
+        }
+    }
+
+    private fun applyDefaultOkoaIfNeeded() {
+        if (userPickedOkoaQuality) return
+        injectOkoaQuality(defaultOkoaMode(), fromUser = false)
+    }
 
     /** Stop WebView/Shaka audio before native Exo takes over (prevents doubled sound). */
     fun suspendPlayback() {

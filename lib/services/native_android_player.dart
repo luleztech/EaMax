@@ -41,8 +41,7 @@ class NativeAndroidPlayer {
       if (fallbackJson.isNotEmpty) 'fallbackStreamsJson': fallbackJson,
       if (playbackEngine != null && playbackEngine.isNotEmpty)
         'playbackEngine': playbackEngine,
-      if (audioLanguage != null && audioLanguage.isNotEmpty)
-        'audioLanguage': audioLanguage,
+      'audioLanguage': (audioLanguage == null || audioLanguage.isEmpty) ? 'sw' : audioLanguage,
     });
   }
 

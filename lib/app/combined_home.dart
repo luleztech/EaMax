@@ -738,23 +738,33 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   Future<ChannelPlaybackBundle?> _resolveChannelPlayback(ChannelUi ch) async {
     if (_isChannelDisabledByEmergency(ch.id)) return null;
 
-    final cachedPlayback = _playbackCache[ch.id];
-    final cachedAt = _playbackCacheTime[ch.id];
-    if (cachedPlayback != null &&
-        cachedAt != null &&
-        DateTime.now().difference(cachedAt) < _channelCacheTtl) {
-      return cachedPlayback;
-    }
-
     try {
       final playback = await channelsApi.getChannelPlayback(ch.id);
       if (playback.streams.isEmpty) return null;
-      _playbackCache[ch.id] = playback;
-      _playbackCacheTime[ch.id] = DateTime.now();
       return playback;
     } catch (_) {
-      return cachedPlayback;
+      return null;
     }
+  }
+
+  Future<Map<String, dynamic>> _mergeFreshAudioLanguage(
+    int channelId,
+    Map<String, dynamic>? channelData,
+  ) async {
+    final merged = Map<String, dynamic>.from(channelData ?? const {});
+    try {
+      final fresh = await channelsApi.getChannel(channelId);
+      final lang = _extractAudioLanguage(fresh);
+      merged['audioLanguage'] = lang;
+      merged['audio_language'] = lang;
+      _channelDataCache[channelId] = Map<String, dynamic>.from(merged);
+      _channelDataCacheTime[channelId] = DateTime.now();
+    } catch (_) {
+      final lang = _extractAudioLanguage(merged);
+      merged['audioLanguage'] = lang;
+      merged['audio_language'] = lang;
+    }
+    return merged;
   }
 
   Future<Map<String, dynamic>?> _legacyChannelData(ChannelUi ch) async {
@@ -775,7 +785,10 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final playback = await _resolveChannelPlayback(ch);
     if (playback != null && playback.streams.isNotEmpty) {
       final stream = playback.primary!;
-      final channelData = playback.channelDataForStream(stream);
+      final channelData = await _mergeFreshAudioLanguage(
+        ch.id,
+        playback.channelDataForStream(stream),
+      );
       final backups = playback.streams.length > 1
           ? playback.streams.sublist(1)
           : null;
@@ -793,9 +806,12 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final quickData = cachedData ?? ch.apiRow;
     final quickUrl = _channelExternalUrl(ch, quickData);
     if (quickUrl.isNotEmpty) {
-      final channelData = quickData != null
-          ? Map<String, dynamic>.from(quickData)
-          : ch.apiRow;
+      final channelData = await _mergeFreshAudioLanguage(
+        ch.id,
+        quickData != null
+            ? Map<String, dynamic>.from(quickData)
+            : ch.apiRow,
+      );
       await _openVideoPlayback(
         url: quickUrl,
         channelName: ch.name,
@@ -808,10 +824,14 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final legacy = await _legacyChannelData(ch);
     final legacyUrl = _channelExternalUrl(ch, legacy);
     if (legacyUrl.isNotEmpty && mounted) {
+      final channelData = await _mergeFreshAudioLanguage(
+        ch.id,
+        legacy ?? ch.apiRow,
+      );
       await _openVideoPlayback(
         url: legacyUrl,
         channelName: ch.name,
-        channelData: legacy ?? ch.apiRow,
+        channelData: channelData,
         playbackEngineOverride: _playbackEngineFromData(legacy ?? ch.apiRow),
       );
       return;
@@ -842,17 +862,23 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       final quickData = cachedData ?? ch.apiRow;
       final quickUrl = _channelExternalUrl(ch, quickData);
 
-      // Instant open when list already has URL — v2 fetch runs in parallel for DRM/headers.
+      // Instant open when list already has URL — always fetch fresh admin audio language.
       if (quickUrl.isNotEmpty) {
-        final channelData = quickData != null
-            ? Map<String, dynamic>.from(quickData)
-            : ch.apiRow;
-        unawaited(_openVideoPlayback(
-          url: quickUrl,
-          channelName: ch.name,
-          channelData: channelData,
-          playbackEngineOverride: _playbackEngineFromData(channelData),
-        ));
+        unawaited(() async {
+          final channelData = await _mergeFreshAudioLanguage(
+            ch.id,
+            quickData != null
+                ? Map<String, dynamic>.from(quickData)
+                : ch.apiRow,
+          );
+          if (!mounted) return;
+          await _openVideoPlayback(
+            url: quickUrl,
+            channelName: ch.name,
+            channelData: channelData,
+            playbackEngineOverride: _playbackEngineFromData(channelData),
+          );
+        }());
         unawaited(_resolveChannelPlayback(ch));
         return;
       }

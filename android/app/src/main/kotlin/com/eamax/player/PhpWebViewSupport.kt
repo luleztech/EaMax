@@ -1332,6 +1332,7 @@ video::-webkit-media-controls-timeline{display:none!important}
 <script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.4/dist/shaka-player.compiled.js"
   onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.4/shaka-player.compiled.min.js';document.head.appendChild(s);})();"></script>
+<script>${eaMaxOkoaQualityApiScript()}</script>
 </head><body>
 <video id="v" autoplay playsinline webkit-playsinline></video>
 <script>
@@ -1339,6 +1340,7 @@ video::-webkit-media-controls-timeline{display:none!important}
   var BR='$androidInterfaceName';
   var url=$urlJson, headers=$headerJson, clearKeys=$clearKeysJson;
   var licenseUrl=$licenseJson, maxH=$maxHeight, maxW=$maxW;
+  try{window.__eaMaxDefaultMaxH=maxH;}catch(e){}
   function postPlaying(){
     try{
       if(window.__eaMaxPlayingPosted) return;
@@ -1353,6 +1355,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     var v=document.getElementById('v');
     shaka.polyfill.installAll();
     var player=new shaka.Player(v);
+    try{window.__eaMaxActiveShakaPlayer=player;}catch(e){}
     player.getNetworkingEngine().registerRequestFilter(function(type,req){
       req.allowCrossSiteCredentials=(type===shaka.net.NetworkingEngine.RequestType.LICENSE);
       Object.keys(headers||{}).forEach(function(k){ if(headers[k]!=null) req.headers[k]=String(headers[k]); });
