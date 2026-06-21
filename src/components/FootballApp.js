@@ -978,7 +978,7 @@ const FootballApp = ({
         drmClearKey={playingChannel?.drmClearKey || playingChannel?.drm_clear_key || null}
         drmType={playingChannel?.drmType ?? playingChannel?.drm_type ?? 'NONE'}
         drmLicenseUrl={(playingChannel?.drmType === 'CLEARKEY' || playingChannel?.drm_type === 'CLEARKEY') && playingChannel?.id ? `${API_BASE_URL}/api/channels/${playingChannel.id}/drm-license` : undefined}
-        audioLanguage={playingChannel?.audioLanguage ?? playingChannel?.audio_language ?? 'auto'}
+        audioLanguage={playingChannel?.audioLanguage ?? playingChannel?.audio_language ?? 'sw'}
         fetchChannelClearKey={async (id) => {
           const d = await channelsAPI.getChannel(id);
           return { drmClearKey: d.drmClearKey ?? d.drm_clear_key ?? null };

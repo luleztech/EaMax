@@ -32,7 +32,7 @@ class FullscreenVideoPage extends StatefulWidget {
     this.clearKeyRaw,
     this.playbackToken,
     this.playbackMode = FlutterPlaybackMode.mediaKit,
-    this.audioLanguage = 'auto',
+    this.audioLanguage = 'sw',
   });
 
   final String videoUrl;
@@ -341,22 +341,41 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   Future<void> _maybeApplyAdminAudioLanguage(Tracks tracks) async {
-    final lang = widget.audioLanguage.trim().toLowerCase();
-    if (lang.isEmpty || lang == 'auto') return;
+    final lang = _normalizeAudioLanguage(widget.audioLanguage);
     final p = _player;
     if (p == null) return;
     try {
+      AudioTrack? fallback;
       for (final track in tracks.audio) {
         final trackLang = track.language?.trim().toLowerCase() ?? '';
         if (trackLang.isEmpty) continue;
-        if (trackLang == lang || trackLang.startsWith('$lang-') || trackLang.startsWith(lang)) {
+        if (_audioLangMatches(trackLang, lang)) {
           await p.setAudioTrack(track);
           return;
         }
+        if (fallback == null) fallback = track;
+      }
+      if (fallback != null && lang == 'sw') {
+        await p.setAudioTrack(fallback);
       }
     } catch (e, st) {
       debugPrint('Admin audio language: $e\n$st');
     }
+  }
+
+  String _normalizeAudioLanguage(String raw) {
+    final lang = raw.trim().toLowerCase();
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
+    return lang == 'en' ? 'en' : 'sw';
+  }
+
+  bool _audioLangMatches(String trackLang, String target) {
+    final aliases = target == 'en'
+        ? const ['en', 'eng']
+        : const ['sw', 'swa'];
+    return aliases.any(
+      (alias) => trackLang == alias || trackLang.startsWith('$alias-'),
+    );
   }
 
   void _maybeApplyDefaultOkoa360() {

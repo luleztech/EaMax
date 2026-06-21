@@ -110,6 +110,7 @@ class ExoPlayerEngine(
     private var blockedHeadersRecovered = false
     private var networkFallbackRecovered = false
     private var webViewLicenseBridge: WebViewLicenseBridge? = null
+    private var pendingAudioLanguage: String = AudioLanguageSupport.DEFAULT
 
     companion object {
         private const val TAG = "ExoPlayerEngine"
@@ -910,12 +911,43 @@ class ExoPlayerEngine(
     }
 
     fun setAudioLanguage(language: String) {
-        trackSelector.setParameters(
-            trackSelector.buildUponParameters()
-                .setPreferredAudioLanguage(language)
-                .build()
-        )
-        Log.d(TAG, "🔊 Audio language set to: $language")
+        pendingAudioLanguage = AudioLanguageSupport.normalize(language)
+        applyPendingAudioLanguage()
+    }
+
+    private fun applyPendingAudioLanguage() {
+        val target = pendingAudioLanguage
+        val tracks = exoPlayer?.currentTracks ?: Tracks.EMPTY
+        val builder = trackSelector.buildUponParameters()
+        var matched = false
+
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO || group.length <= 0) continue
+            for (i in 0 until group.length) {
+                val format = group.getTrackFormat(i)
+                if (AudioLanguageSupport.matchesTrackLanguage(format.language, target)) {
+                    builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, i))
+                    matched = true
+                    Log.d(
+                        TAG,
+                        "🔊 Audio track override: lang=${format.language} → target=$target (index=$i)",
+                    )
+                    break
+                }
+            }
+            if (matched) break
+        }
+
+        if (!matched) {
+            AudioLanguageSupport.aliases(target).forEach { alias ->
+                builder.setPreferredAudioLanguage(alias)
+            }
+            Log.d(TAG, "🔊 Audio preferred languages: ${AudioLanguageSupport.aliases(target)}")
+        }
+
+        val params = builder.build()
+        trackSelector.setParameters(params)
+        exoPlayer?.trackSelectionParameters = params
     }
 
     fun setTrack(group: Tracks.Group, trackIndex: Int) {
@@ -1005,6 +1037,7 @@ class ExoPlayerEngine(
             if (selectedQuality != StreamQuality.AUTO) {
                 applySelectedQuality()
             }
+            applyPendingAudioLanguage()
             
             onTracksChangedCallback(tracks)
         }

@@ -525,7 +525,7 @@ router.get('/channels', async (req, res, next) => {
                COALESCE(c.sort_order, c.id) AS sort_order,
                COALESCE(c.unlock_to_free, false) AS unlock_to_free,
                c.playback_engine,
-               COALESCE(c.audio_language, 'auto') AS audio_language,
+               COALESCE(c.audio_language, 'sw') AS audio_language,
                COALESCE(v.view_count, 0)::int AS view_count
         FROM channels c
         LEFT JOIN (
@@ -546,7 +546,7 @@ router.get('/channels', async (req, res, next) => {
                  COALESCE(sort_order, id) AS sort_order,
                  COALESCE(unlock_to_free, false) AS unlock_to_free,
                  playback_engine,
-                 COALESCE(audio_language, 'auto') AS audio_language,
+                 COALESCE(audio_language, 'sw') AS audio_language,
                  0 AS view_count
           FROM channels
           ORDER BY COALESCE(sort_order, id) ASC, id ASC
@@ -571,8 +571,8 @@ router.get('/channels', async (req, res, next) => {
           unlockToFree,
           playback_engine: row.playback_engine || null,
           playbackEngine: row.playback_engine || null,
-          audio_language: row.audio_language || 'auto',
-          audioLanguage: row.audio_language || 'auto',
+          audio_language: sanitizeChannelAudioLanguage(row.audio_language),
+          audioLanguage: sanitizeChannelAudioLanguage(row.audio_language),
         };
       })
     );
@@ -682,7 +682,7 @@ router.post('/channels', async (req, res, next) => {
       drmType,
       drmClearKey: row.drm_clear_key ?? row.drmClearKey,
       playbackEngine: row.playback_engine || null,
-      audioLanguage: row.audio_language || 'auto',
+      audioLanguage: sanitizeChannelAudioLanguage(row.audio_language),
     });
   } catch (err) {
     return next(err);
@@ -829,7 +829,7 @@ router.put('/channels/:id', async (req, res, next) => {
       ...row,
       drmClearKey: row.drm_clear_key != null ? row.drm_clear_key : '',
       playbackEngine: row.playback_engine || null,
-      audioLanguage: row.audio_language || 'auto',
+      audioLanguage: sanitizeChannelAudioLanguage(row.audio_language),
     });
   } catch (err) {
     return next(err);

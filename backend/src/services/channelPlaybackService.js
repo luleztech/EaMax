@@ -1,5 +1,6 @@
 const { query } = require('../db');
 const { resolvePlaybackEngine } = require('../constants/playerEngines');
+const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
 const { getGlobalPlayerConfig } = require('./playerConfigService');
 
 async function resolveStreamUrl(row) {
@@ -106,8 +107,8 @@ async function getChannelPlayback(channelId) {
   const effectiveEngine = resolvePlaybackEngine(channelEngine, playerConfig.preferredEngine);
 
   const audioLanguage = channel.audio_language
-    ? String(channel.audio_language).trim().toLowerCase()
-    : 'auto';
+    ? sanitizeChannelAudioLanguage(channel.audio_language)
+    : 'sw';
 
   return {
     channelId: channel.id,

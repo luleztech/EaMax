@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
+const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
 
 /* global Buffer */
 
@@ -39,7 +40,7 @@ router.get('/', async (req, res, next) => {
       const isClearKey = drmType === 'CLEARKEY';
       const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
       const playbackEngine = row.playback_engine || null;
-      const audioLanguage = row.audio_language || 'auto';
+      const audioLanguage = sanitizeChannelAudioLanguage(row.audio_language);
       const out = {
         ...row,
         stream_url: row.resolved_stream_url ?? row.stream_url,
@@ -90,7 +91,7 @@ router.get('/:id', async (req, res, next) => {
          c.drm_clear_key,
          c.license_url,
          c.playback_engine,
-         COALESCE(c.audio_language, 'auto') AS audio_language,
+         COALESCE(c.audio_language, 'sw') AS audio_language,
          COALESCE(c.unlock_to_free, false) AS unlock_to_free
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
@@ -105,7 +106,7 @@ router.get('/:id', async (req, res, next) => {
     const isClearKey = drmType === 'CLEARKEY';
     const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
     const unlockToFree = !!(row.unlock_to_free === true);
-    const audioLanguage = row.audio_language || 'auto';
+    const audioLanguage = sanitizeChannelAudioLanguage(row.audio_language);
     return res.json({
       id: row.id,
       name: row.name,

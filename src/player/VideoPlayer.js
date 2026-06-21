@@ -92,14 +92,26 @@ function getBitrateCap(height) {
   }
 }
 
+function normalizeAdminAudioLanguage(raw) {
+  const lang = String(raw || 'sw').trim().toLowerCase();
+  if (!lang || lang === 'auto' || lang === 'default') return 'sw';
+  return lang === 'en' ? 'en' : 'sw';
+}
+
+function audioTrackMatches(trackLang, target) {
+  const t = String(trackLang || '').toLowerCase();
+  const aliases = target === 'en' ? ['en', 'eng'] : ['sw', 'swa'];
+  return aliases.some((alias) => t === alias || t.startsWith(`${alias}-`));
+}
+
 function buildHeaders(streamSession, audioLanguage) {
   const h = new Map();
   if (streamSession.drmData?.headers) Object.entries(streamSession.drmData.headers).forEach(([k, v]) => h.set(k, v));
   if (streamSession.headers) Object.entries(streamSession.headers).forEach(([k, v]) => h.set(k, v));
-  const lang = String(audioLanguage || 'auto').trim().toLowerCase();
-  const acceptLanguage = lang && lang !== 'auto'
-    ? `${lang}-${lang.toUpperCase()},${lang};q=0.9,en;q=0.8`
-    : 'en-US,en;q=0.9';
+  const lang = normalizeAdminAudioLanguage(audioLanguage);
+  const acceptLanguage = lang === 'en'
+    ? 'en-US,en;q=0.9,sw;q=0.8'
+    : 'sw-TZ,sw;q=0.9,en;q=0.8';
   const std = {
     'Accept': '*/*', 'Accept-Language': acceptLanguage,
     'Accept-Encoding': 'gzip, deflate', 'Connection': 'keep-alive',
@@ -287,6 +299,7 @@ export default function VideoPlayer({
   const [showPaywall,          setShowPaywall]          = useState(false);
   const [preparedSource,       setPreparedSource]       = useState(null);
   const [forceTokenRefresh,    setForceTokenRefresh]    = useState(false);
+  const [selectedAudioTrack,   setSelectedAudioTrack]   = useState(null);
 
   const recordedWatchRef         = useRef(null);
   const nativeLoadTimeoutRef     = useRef(null);
@@ -324,17 +337,14 @@ export default function VideoPlayer({
 
   const drmWaitingForKey = !!(isClearKeyChannel && !effectiveDrmClearKey && !drmLicenseUrl && channelId && fetchChannelClearKey);
 
-  const normalizedAudioLanguage = (() => {
-    const lang = String(audioLanguage || 'auto').trim().toLowerCase();
-    return lang && lang !== 'auto' ? lang : null;
-  })();
+  const adminAudioLanguage = normalizeAdminAudioLanguage(audioLanguage);
 
   const streamSession = {
     mpdUrl: url, licenseUrl: drmLicenseUrl || '', token: token || '', drmType,
     drmData: { headers: customHeaders, keys: effectiveDrmClearKey ? [parseClearKeys(effectiveDrmClearKey)] : null },
     headers: customHeaders,
   };
-  const mergedHeaders = buildHeaders(streamSession, normalizedAudioLanguage);
+  const mergedHeaders = buildHeaders(streamSession, adminAudioLanguage);
 
   // ─── Build video source ─────────────────────────────────────────────────
 
@@ -514,6 +524,10 @@ export default function VideoPlayer({
     return () => { if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current); };
   }, [visible, url, useWebView, isWebPage, loading]);
 
+  useEffect(() => {
+    setSelectedAudioTrack(null);
+  }, [adminAudioLanguage, sourceKey, url]);
+
   // Analytics
   useEffect(() => {
     if (!visible || !userId || !channelId) { if (!visible) recordedWatchRef.current = null; return; }
@@ -553,7 +567,18 @@ export default function VideoPlayer({
     if (__DEV__) console.log('[VideoPlayer] onLoad', { format, duration: data?.duration });
     setLoading(false); setError(null); setDuration(data?.duration || 0);
     if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
-  }, [format]);
+    const tracks = data?.audioTracks;
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      const match = tracks.find((track) => audioTrackMatches(track.language, adminAudioLanguage));
+      if (match && Number.isFinite(match.index)) {
+        setSelectedAudioTrack({ type: 'index', value: match.index });
+      } else {
+        setSelectedAudioTrack({ type: 'language', value: adminAudioLanguage });
+      }
+    } else {
+      setSelectedAudioTrack({ type: 'language', value: adminAudioLanguage });
+    }
+  }, [format, adminAudioLanguage]);
 
   const onReadyForDisplay = useCallback(() => { setLoading(false); }, []);
   const onProgress = useCallback((ev) => { setCurrentTime(ev?.currentTime ?? 0); lastPlaybackPositionRef.current = ev?.currentTime ?? 0; }, []);
@@ -680,9 +705,7 @@ export default function VideoPlayer({
             resizeMode="contain" paused={paused} controls={false}
             selectedVideoTrack={{ type: 'resolution', value: DEFAULT_PLAYBACK_HEIGHT }}
             selectedAudioTrack={
-              normalizedAudioLanguage
-                ? { type: 'language', value: normalizedAudioLanguage }
-                : { type: 'index', value: 0 }
+              selectedAudioTrack || { type: 'language', value: adminAudioLanguage }
             }
             bufferConfig={BUFFER_CONFIG}
             onLoad={onLoad} onReadyForDisplay={onReadyForDisplay}

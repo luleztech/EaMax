@@ -1040,11 +1040,7 @@ class WebViewEngine(
     }
 
     fun setAudioLanguage(language: String) {
-        val lang = language.trim().lowercase()
-        if (lang.isEmpty() || lang == "auto") {
-            preferredAudioLanguage = null
-            return
-        }
+        val lang = AudioLanguageSupport.normalize(language)
         preferredAudioLanguage = lang
         injectAudioLanguage(lang)
     }

@@ -25,7 +25,7 @@ import {
   playerEngineLabel,
   normalizePlayerEngine,
 } from '../../constants/playerEngines';
-import { STREAM_LANGUAGES } from '../../constants/streamLanguages';
+import { STREAM_LANGUAGES, normalizeStreamLanguage } from '../../constants/streamLanguages';
 import ChannelStreamsModal from './ChannelStreamsModal';
 
 const { width } = Dimensions.get('window');
@@ -224,7 +224,7 @@ const ContentSection = () => {
   const [pointsRequired, setPointsRequired] = useState('0');
   const [unlockToFree, setUnlockToFree] = useState(false);
   const [playbackEngine, setPlaybackEngine] = useState('default');
-  const [audioLanguage, setAudioLanguage] = useState('auto');
+  const [audioLanguage, setAudioLanguage] = useState('sw');
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
   const [streamsChannel, setStreamsChannel] = useState(null);
@@ -300,7 +300,7 @@ const ContentSection = () => {
     setPointsRequired('0');
     setUnlockToFree(false);
     setPlaybackEngine('default');
-    setAudioLanguage('auto');
+    setAudioLanguage('sw');
   };
 
   const handleSaveChannel = async () => {
@@ -343,7 +343,7 @@ const ContentSection = () => {
       drmClearKey: clearKeyTrimmed,
       unlockToFree: !!unlockToFree,
       playbackEngine: playbackEngine === 'default' ? null : playbackEngine,
-      audioLanguage: audioLanguage === 'auto' ? 'auto' : audioLanguage,
+      audioLanguage: normalizeStreamLanguage(audioLanguage),
     };
 
     if (editingChannel) {
@@ -568,8 +568,7 @@ const ContentSection = () => {
     setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
     const savedEngine = channel.playback_engine ?? channel.playbackEngine;
     setPlaybackEngine(normalizePlayerEngine(savedEngine ? String(savedEngine) : 'default'));
-    const savedLang = channel.audio_language ?? channel.audioLanguage;
-    setAudioLanguage(savedLang ? String(savedLang).toLowerCase() : 'auto');
+    setAudioLanguage(normalizeStreamLanguage(channel.audio_language ?? channel.audioLanguage));
     setAddChannelModalVisible(true);
   }, []);
 
@@ -861,7 +860,7 @@ const ContentSection = () => {
                   setUseEmoji(false);
                   setUnlockToFree(false);
                   setPlaybackEngine('default');
-                  setAudioLanguage('auto');
+                  setAudioLanguage('sw');
                 }}
                 style={styles.closeButton}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>

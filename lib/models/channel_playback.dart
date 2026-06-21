@@ -56,10 +56,10 @@ class ChannelPlaybackBundle {
   }
 
   static String? _readAudioLanguage(Object? raw) {
-    if (raw == null) return 'auto';
+    if (raw == null) return 'sw';
     final lang = raw.toString().trim().toLowerCase();
-    if (lang.isEmpty || lang == 'default') return 'auto';
-    return lang;
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
+    return lang == 'en' ? 'en' : 'sw';
   }
 
   /// Maps v2 stream fields to the legacy channelData shape used by playback helpers.

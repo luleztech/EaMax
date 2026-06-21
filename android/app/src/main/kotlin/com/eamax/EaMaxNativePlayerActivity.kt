@@ -134,8 +134,9 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             PlayerEnginePolicy.setSessionEngine(channelEngine)
             Log.d(TAG, "Per-channel playback engine: $channelEngine")
         }
-        adminAudioLanguage = intent.getStringExtra("audioLanguage")?.trim()?.lowercase().orEmpty()
-            .ifEmpty { "auto" }
+        adminAudioLanguage = AudioLanguageSupport.normalize(
+            intent.getStringExtra("audioLanguage"),
+        )
 
         playerManager = PlayerManager(
             context = this,
@@ -147,6 +148,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 hideWebLoadingOverlay()
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 playerManager.getWebView()?.alpha = 1f
+                                applyAdminAudioLanguage()
+                                scheduleWebViewAudioLanguageRetries()
                             }
                             PlaybackState.ENDED -> {
                                 // Ignore ENDED from WebView when Exo took over (live TV handoff).
@@ -195,12 +198,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             },
             onTracksAvailable = { tracks ->
                 runOnUiThread {
-                    if (isFinishing || okoaAppliedOnTracks || playerManager.isWebViewPlayback()) return@runOnUiThread
+                    if (isFinishing) return@runOnUiThread
+                    applyAdminAudioLanguage()
+                    if (playerManager.isWebViewPlayback() || okoaAppliedOnTracks) return@runOnUiThread
                     val hasVideo = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
                     if (!hasVideo) return@runOnUiThread
                     okoaAppliedOnTracks = true
                     playerManager.setQuality(selectedOkoaQuality, fromUser = false)
-                    applyAdminAudioLanguage()
                 }
             },
             onReady = {
@@ -385,9 +389,18 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     }
 
     private fun applyAdminAudioLanguage() {
-        val lang = adminAudioLanguage.trim().lowercase()
-        if (lang.isEmpty() || lang == "auto") return
-        playerManager.setAudioLanguage(lang)
+        playerManager.setAudioLanguage(adminAudioLanguage)
+    }
+
+    private fun scheduleWebViewAudioLanguageRetries() {
+        val handler = window.decorView.handler ?: return
+        listOf(800L, 2000L, 4500L).forEach { delayMs ->
+            handler.postDelayed({
+                if (!isFinishing && playerManager.isWebViewPlayback()) {
+                    applyAdminAudioLanguage()
+                }
+            }, delayMs)
+        }
     }
 
     private fun showOkoaQualityDialog() {

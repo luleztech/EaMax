@@ -1397,25 +1397,33 @@ video::-webkit-media-controls-timeline{display:none!important}
             (function () {
               if (window.__eaMaxAudioLangApi) return true;
               window.__eaMaxAudioLangApi = true;
-              window.__eaMaxPreferredAudioLang = '';
+              window.__eaMaxPreferredAudioLang = 'sw';
               window.__eaMaxSetAudioLanguage = function (lang) {
-                if (!lang || lang === 'auto') {
-                  window.__eaMaxPreferredAudioLang = '';
-                  return;
-                }
-                window.__eaMaxPreferredAudioLang = String(lang).toLowerCase();
+                var normalized = (!lang || lang === 'auto' || lang === 'default') ? 'sw' : String(lang).toLowerCase();
+                window.__eaMaxPreferredAudioLang = (normalized === 'en') ? 'en' : 'sw';
                 window.__eaMaxApplyAudioLanguage && window.__eaMaxApplyAudioLanguage();
               };
+              function __eaMaxLangAliases(lang) {
+                if (lang === 'en') return ['en','eng','en-us','en-gb','en-au'];
+                return ['sw','swa','sw-tz','sw-ke'];
+              }
+              function __eaMaxTrackMatches(tl, lang) {
+                var aliases = __eaMaxLangAliases(lang);
+                for (var i = 0; i < aliases.length; i++) {
+                  var a = aliases[i];
+                  if (tl === a || tl.indexOf(a + '-') === 0) return true;
+                }
+                return false;
+              }
               window.__eaMaxApplyAudioLanguage = function () {
-                var lang = window.__eaMaxPreferredAudioLang;
-                if (!lang) return false;
+                var lang = window.__eaMaxPreferredAudioLang || 'sw';
                 var applied = false;
                 try {
                   document.querySelectorAll('video').forEach(function (v) {
                     if (v.audioTracks && v.audioTracks.length) {
                       for (var i = 0; i < v.audioTracks.length; i++) {
                         var tl = (v.audioTracks[i].language || '').toLowerCase();
-                        var match = tl === lang || tl.indexOf(lang + '-') === 0 || tl.indexOf(lang) === 0;
+                        var match = __eaMaxTrackMatches(tl, lang);
                         v.audioTracks[i].enabled = match;
                         if (match) applied = true;
                       }
@@ -1428,8 +1436,14 @@ video::-webkit-media-controls-timeline{display:none!important}
                       try {
                         var p = shaka.Player.getPlayerInstance(v);
                         if (p && typeof p.selectAudioLanguage === 'function') {
-                          p.selectAudioLanguage(lang, true);
-                          applied = true;
+                          var aliases = __eaMaxLangAliases(lang);
+                          for (var j = 0; j < aliases.length; j++) {
+                            try {
+                              p.selectAudioLanguage(aliases[j], true);
+                              applied = true;
+                              break;
+                            } catch (e2) {}
+                          }
                         }
                       } catch (e) {}
                     });

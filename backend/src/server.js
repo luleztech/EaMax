@@ -233,12 +233,16 @@ query(
   }
 });
 query(
-  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS audio_language VARCHAR(16) NOT NULL DEFAULT 'auto'`
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS audio_language VARCHAR(16) NOT NULL DEFAULT 'sw'`
 ).catch((err) => {
   if (err.message && !err.message.includes('does not exist')) {
     console.warn('Migration channels.audio_language (non-fatal):', err.message);
   }
 });
+query(
+  `UPDATE channels SET audio_language = 'sw'
+    WHERE audio_language IS NULL OR TRIM(audio_language) = '' OR audio_language = 'auto'`
+).catch(() => {});
 query(
   `UPDATE player_config_global
       SET preferred_engine = 'auto'

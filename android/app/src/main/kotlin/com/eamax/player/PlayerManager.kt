@@ -588,9 +588,10 @@ class PlayerManager(
      * Set preferred audio language
      */
     fun setAudioLanguage(language: String) {
-        webViewEngine?.setAudioLanguage(language)
-        engine?.setAudioLanguage(language)
-        Log.d(TAG, "Audio language changed to: $language")
+        val lang = AudioLanguageSupport.normalize(language)
+        webViewEngine?.setAudioLanguage(lang)
+        engine?.setAudioLanguage(lang)
+        Log.d(TAG, "Audio language changed to: $lang")
     }
 
     /**

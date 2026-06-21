@@ -666,11 +666,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   String _extractAudioLanguage(Map<String, dynamic>? channelData) {
-    if (channelData == null) return 'auto';
+    if (channelData == null) return 'sw';
     final raw = channelData['audioLanguage'] ?? channelData['audio_language'];
     final lang = raw?.toString().trim().toLowerCase() ?? '';
-    if (lang.isEmpty || lang == 'default') return 'auto';
-    return lang;
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
+    return lang == 'en' ? 'en' : 'sw';
   }
 
   /// ClearKey payload: hex string or JSON `{"keys":[...]}` from API (never shown to users).
