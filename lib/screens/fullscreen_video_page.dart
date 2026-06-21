@@ -730,46 +730,26 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                   padding: controlPad,
                   child: Align(
                     alignment: Alignment.topRight,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Material(
                           color: Colors.black.withValues(alpha: 0.55),
-                          borderRadius: BorderRadius.circular(20),
-                          child: InkWell(
-                            onTap: _showOkoaQualitySheet,
-                            borderRadius: BorderRadius.circular(20),
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Text(
-                                'OKOA BANDO',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
+                          shape: const CircleBorder(),
+                          child: IconButton(
+                            tooltip: 'Badili Lugha',
+                            icon: const Icon(Icons.language, color: Colors.white),
+                            onPressed: _showLanguageSheet,
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(width: 8),
                         Material(
                           color: Colors.black.withValues(alpha: 0.55),
-                          borderRadius: BorderRadius.circular(20),
-                          child: InkWell(
-                            onTap: _showLanguageSheet,
-                            borderRadius: BorderRadius.circular(20),
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Text(
-                                'Badili Lugha',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
+                          shape: const CircleBorder(),
+                          child: IconButton(
+                            tooltip: 'Mipangilio',
+                            icon: const Icon(Icons.settings, color: Colors.white),
+                            onPressed: _showOkoaQualitySheet,
                           ),
                         ),
                       ],

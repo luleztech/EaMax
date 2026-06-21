@@ -636,6 +636,20 @@ export default function VideoPlayer({
 
   const handleClose = useCallback(() => { setPaused(true); onClose(); }, [onClose]);
 
+  const showQualityPicker = useCallback(() => {
+    Alert.alert(
+      'OKOA BANDO',
+      'Chagua ubora wa video',
+      [
+        { text: 'Auto', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'auto' } }) },
+        { text: '360p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 360 } }) },
+        { text: '480p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 480 } }) },
+        { text: '720p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 720 } }) },
+        { text: 'Ghairi', style: 'cancel' },
+      ],
+    );
+  }, []);
+
   const showLanguagePicker = useCallback(() => {
     Alert.alert(
       'Badili Lugha',
@@ -780,9 +794,14 @@ export default function VideoPlayer({
         </TouchableOpacity>
 
         {source && hasLayout && !useWebView && !error && (
-          <TouchableOpacity style={styles.langBtn} onPress={showLanguagePicker} activeOpacity={0.85}>
-            <Text style={styles.langBtnText}>Badili Lugha</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity style={styles.langBtn} onPress={showLanguagePicker} activeOpacity={0.85}>
+              <Icon name="earth" size={22} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.settingsBtn} onPress={showQualityPicker} activeOpacity={0.85}>
+              <Icon name="cog" size={22} color="#fff" />
+            </TouchableOpacity>
+          </>
         )}
 
         {showPaywall && (
@@ -856,14 +875,27 @@ const styles = StyleSheet.create({
   langBtn: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 104 : 74,
-    right: 20,
+    right: 76,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(0,0,0,0.7)',
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
     zIndex: 99999,
   },
-  langBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  settingsBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 104 : 74,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 99999,
+  },
   noSource:     { flex: 1, justifyContent: 'center', alignItems: 'center' },
   noSourceText: { color: '#888', fontSize: 16 },
   loadingOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', gap: 12, zIndex: 9997 },

@@ -118,8 +118,7 @@ object PhpWebViewSupport {
     }
 
     /**
-     * Hides gateway page chrome, security banners, HLS/package error text — video surface only.
-     * Does not report playback errors; the native watchdog handles timeouts.
+     * Hides gateway page chrome and timers — keeps Shaka/gateway settings + language (earth) controls.
      */
     fun playerOnlyUiScript(): String {
         return """
@@ -137,15 +136,41 @@ object PhpWebViewSupport {
                 'video::-webkit-media-controls-timeline{display:none!important;visibility:hidden!important;opacity:0!important}' +
                 '.vjs-time-control,.vjs-duration,.vjs-current-time,.vjs-remaining-time,' +
                 '.shaka-current-time,.shaka-time-container,.shaka-seek-bar-container{display:none!important}' +
-                '.shaka-overflow-menu-button,.shaka-settings-menu,.vjs-settings-button,' +
-                '[class*="settings-button"],[class*="gear"],[aria-label*="Settings"],[title*="Settings"]' +
-                '{display:none!important;pointer-events:none!important;opacity:0!important;visibility:hidden!important}' +
-                'video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{' +
+                'video,.shaka-video-container,.shaka-video,.video-js video{' +
                 'position:fixed!important;inset:0!important;width:100%!important;height:100%!important;' +
                 'max-width:100%!important;max-height:100%!important;object-fit:contain!important;' +
-                'z-index:2147483646!important;opacity:1!important;visibility:visible!important;display:block!important}' +
-                '@media (orientation:landscape){video,.shaka-video-container,.shaka-video,.video-js,#player,#player *{object-fit:cover!important}}';
+                'z-index:1!important;opacity:1!important;visibility:visible!important;display:block!important}' +
+                '@media (orientation:landscape){video,.shaka-video-container,.shaka-video,.video-js video{object-fit:cover!important}}' +
+                '.shaka-controls-container,.shaka-bottom-controls,.shaka-controls-button-panel,' +
+                '.shaka-overflow-menu-button,.shaka-settings-menu,.shaka-language-menu,' +
+                '.vjs-settings-button,[class*="settings-button"],[class*="gear"],' +
+                '[class*="language"],[class*="Language"],[class*="globe"],[class*="earth"],' +
+                '[aria-label*="Settings"],[title*="Settings"],[aria-label*="Language"],[title*="Language"],' +
+                '[aria-label*="Audio"],[title*="Audio"],.fa-globe,.fa-language,.material-icons{' +
+                'display:block!important;visibility:visible!important;opacity:1!important;' +
+                'pointer-events:auto!important;z-index:2147483647!important}' +
+                '.shaka-controls-container,.shaka-bottom-controls,.shaka-controls-button-panel{' +
+                'position:fixed!important;bottom:0!important;left:0!important;right:0!important;' +
+                'top:auto!important;width:100%!important;height:auto!important;max-height:140px!important;' +
+                'inset:auto!important;object-fit:unset!important}';
               root.appendChild(s);
+              function showControls() {
+                var sel = '.shaka-overflow-menu-button,.shaka-settings-menu,.shaka-controls-button-panel,' +
+                  '[aria-label*="Language"],[title*="Language"],[class*="language"],[class*="globe"],[class*="earth"]';
+                try {
+                  document.querySelectorAll(sel).forEach(function (el) {
+                    el.style.setProperty('display', 'block', 'important');
+                    el.style.setProperty('visibility', 'visible', 'important');
+                    el.style.setProperty('opacity', '1', 'important');
+                    el.style.setProperty('pointer-events', 'auto', 'important');
+                    el.style.setProperty('z-index', '2147483647', 'important');
+                  });
+                } catch (e) {}
+              }
+              showControls();
+              if (!window.__eaMaxShowControlsInterval) {
+                window.__eaMaxShowControlsInterval = setInterval(showControls, 2500);
+              }
               return true;
             })();
         """.trimIndent()

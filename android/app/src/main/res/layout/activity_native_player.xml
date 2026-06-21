@@ -133,42 +133,29 @@
         android:layout_marginTop="16dp"
         android:layout_marginEnd="16dp"
         android:elevation="24dp"
-        android:orientation="vertical"
+        android:gravity="end"
+        android:orientation="horizontal"
         android:visibility="gone">
 
-        <Button
-            android:id="@+id/btn_okoa_bundle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:backgroundTint="#CC000000"
-            android:clickable="true"
-            android:contentDescription="@string/okoa_bundle"
-            android:focusable="true"
-            android:minHeight="48dp"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp"
-            android:stateListAnimator="@null"
-            android:text="@string/okoa_bundle"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/btn_change_language"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:backgroundTint="#CC000000"
-            android:clickable="true"
+        <ImageButton
+            android:id="@+id/btn_player_language"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="#CC000000"
             android:contentDescription="@string/badili_lugha"
-            android:focusable="true"
-            android:minHeight="48dp"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp"
-            android:stateListAnimator="@null"
-            android:text="@string/badili_lugha"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
-            android:textSize="13sp" />
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_player_language" />
+
+        <ImageButton
+            android:id="@+id/btn_player_settings"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:background="#CC000000"
+            android:contentDescription="@string/player_settings"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_player_settings" />
     </LinearLayout>
 </FrameLayout>

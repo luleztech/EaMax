@@ -128,10 +128,10 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
         val close = findViewById<ImageButton>(R.id.btn_close)
         close.setOnClickListener { finish() }
-        val okoaBundle = findViewById<Button>(R.id.btn_okoa_bundle)
-        okoaBundle.setOnClickListener { showOkoaQualityDialog() }
-        val changeLanguage = findViewById<Button>(R.id.btn_change_language)
-        changeLanguage.setOnClickListener { showLanguageDialog() }
+        val playerLanguage = findViewById<ImageButton>(R.id.btn_player_language)
+        playerLanguage.setOnClickListener { showLanguageDialog() }
+        val playerSettings = findViewById<ImageButton>(R.id.btn_player_settings)
+        playerSettings.setOnClickListener { showOkoaQualityDialog() }
         val topActions = findViewById<LinearLayout>(R.id.player_top_actions)
         applyTopActionInsets(topActions)
 
