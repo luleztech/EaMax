@@ -1418,6 +1418,85 @@ video::-webkit-media-controls-timeline{display:none!important}
                 }
                 return false;
               }
+              function __eaMaxLabelMatches(lbl, lang) {
+                var t = (lbl || '').toLowerCase();
+                if (!t) return false;
+                if (lang === 'en') return t.indexOf('english') >= 0 || t.indexOf('eng') >= 0;
+                return t.indexOf('swahili') >= 0 || t.indexOf('kiswahili') >= 0 || t.indexOf('swa') >= 0;
+              }
+              function getActiveShakaPlayer() {
+                function ok(p) {
+                  return p && typeof p.getVariantTracks === 'function';
+                }
+                try {
+                  if (ok(window.__eaMaxActiveShakaPlayer)) return window.__eaMaxActiveShakaPlayer;
+                } catch (e0) {}
+                try {
+                  if (window.shaka && shaka.Player &&
+                      typeof shaka.Player.getPlayerInstance === 'function') {
+                    var vids = document.querySelectorAll('video');
+                    var fallback = null;
+                    for (var i = 0; i < vids.length; i++) {
+                      var v = vids[i];
+                      var p = shaka.Player.getPlayerInstance(v);
+                      if (!ok(p)) {
+                        if (ok(v.shakaPlayer)) p = v.shakaPlayer;
+                        else if (ok(v.player)) p = v.player;
+                        else p = null;
+                      }
+                      if (!ok(p)) continue;
+                      window.__eaMaxActiveShakaPlayer = p;
+                      if (!v.paused && v.readyState >= 2) return p;
+                      if (v.currentTime > 0) fallback = p;
+                      if (!fallback) fallback = p;
+                    }
+                    if (fallback) return fallback;
+                  }
+                } catch (e1) {}
+                try {
+                  var refs = [window.shakaPlayer, window.player, window.shaka_player];
+                  for (var j = 0; j < refs.length; j++) {
+                    if (ok(refs[j])) {
+                      window.__eaMaxActiveShakaPlayer = refs[j];
+                      return refs[j];
+                    }
+                  }
+                } catch (e2) {}
+                return null;
+              }
+              function tryShakaAudio(lang) {
+                var pl = getActiveShakaPlayer();
+                if (!pl) return false;
+                try {
+                  var tracks = pl.getVariantTracks();
+                  if (tracks && tracks.length) {
+                    var best = null, bestH = 0;
+                    for (var i = 0; i < tracks.length; i++) {
+                      var tr = tracks[i];
+                      if (tr.type && tr.type !== 'variant' && tr.type !== 'audio') continue;
+                      var al = (tr.language || tr.audioLanguage || '').toLowerCase();
+                      var lbl = (tr.label || tr.audioLabel || '').toLowerCase();
+                      if (!__eaMaxTrackMatches(al, lang) && !__eaMaxLabelMatches(lbl, lang)) continue;
+                      var h = tr.height || tr.videoHeight || 0;
+                      if (!best || h >= bestH) { best = tr; bestH = h; }
+                    }
+                    if (best && typeof pl.selectVariantTrack === 'function') {
+                      pl.selectVariantTrack(best, true);
+                      return true;
+                    }
+                  }
+                } catch (e3) {}
+                if (typeof pl.selectAudioLanguage === 'function') {
+                  var aliases = __eaMaxLangAliases(lang);
+                  for (var k = 0; k < aliases.length; k++) {
+                    try {
+                      pl.selectAudioLanguage(aliases[k], true);
+                      return true;
+                    } catch (e4) {}
+                  }
+                }
+                return false;
+              }
               window.__eaMaxApplyAudioLanguage = function () {
                 var lang = window.__eaMaxPreferredAudioLang || 'sw';
                 var applied = false;
@@ -1433,25 +1512,7 @@ video::-webkit-media-controls-timeline{display:none!important}
                     }
                   });
                 } catch (e) {}
-                try {
-                  if (window.shaka && shaka.Player && typeof shaka.Player.getPlayerInstance === 'function') {
-                    document.querySelectorAll('video').forEach(function (v) {
-                      try {
-                        var p = shaka.Player.getPlayerInstance(v);
-                        if (p && typeof p.selectAudioLanguage === 'function') {
-                          var aliases = __eaMaxLangAliases(lang);
-                          for (var j = 0; j < aliases.length; j++) {
-                            try {
-                              p.selectAudioLanguage(aliases[j], true);
-                              applied = true;
-                              break;
-                            } catch (e2) {}
-                          }
-                        }
-                      } catch (e) {}
-                    });
-                  }
-                } catch (e) {}
+                if (tryShakaAudio(lang)) applied = true;
                 return applied;
               };
               if (!window.__eaMaxAudioLangRetryInterval) {

@@ -68,6 +68,8 @@ class WebViewEngine(
         released = false
         errorReported = false
         okoaApiInjected = false
+        audioLangApiInjected = false
+        userPickedOkoaQuality = false
         capturedManifestUrl = null
         capturedLicenseUrl = null
         streamDelivered = false
@@ -250,6 +252,11 @@ class WebViewEngine(
                         okoaApiInjected = true
                         w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
                     }
+                    if (!audioLangApiInjected) {
+                        audioLangApiInjected = true
+                        w.evaluateJavascript(PhpWebViewSupport.eaMaxAudioLanguageApiScript(), null)
+                    }
+                    injectPreferredAudioLanguageJs(w)
                     w.evaluateJavascript(PhpWebViewSupport.gatewayPageRecoveryScript(), null)
                     fireGatewayExtractBurst(w)
                     licenseBridge?.injectScript()
@@ -364,17 +371,19 @@ class WebViewEngine(
             }
             jsInterface = WebViewJsInterface(
                 onPlaybackStateChanged = { state ->
-                    if (state == PlaybackState.BUFFERING && usingShakaEmbed) {
-                        webView?.alpha = 1f
+                    mainHandler.post {
+                        if (state == PlaybackState.BUFFERING && usingShakaEmbed) {
+                            webView?.alpha = 1f
+                        }
+                        notifyPlaybackState(state)
                     }
-                    notifyPlaybackState(state)
                 },
-                onError = { handleJsPlaybackError() },
+                onError = { mainHandler.post { handleJsPlaybackError() } },
                 onStreamExtracted = { extracted ->
-                    deliverExtractedStream(extracted)
+                    mainHandler.post { deliverExtractedStream(extracted) }
                 },
                 onHtmlProbe = { html ->
-                    probeHtmlForGatewayExtract(html)
+                    mainHandler.post { probeHtmlForGatewayExtract(html) }
                 },
             )
             addJavascriptInterface(jsInterface!!, "ShakaPlayerBridge")
@@ -390,16 +399,30 @@ class WebViewEngine(
         webView?.alpha = 1f
     }
 
+    private fun runOnMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
+
     /** Shaka/HLS fire PLAYING on every quality switch — notify native only once per load. */
     private fun notifyPlaybackState(state: PlaybackState) {
-        if (state == PlaybackState.PLAYING) {
-            if (playbackStarted) return
-            playbackStarted = true
-            cancelPlaybackWatchdog()
-            webView?.alpha = 1f
-            applyDefaultOkoaIfNeeded()
+        runOnMain {
+            if (state == PlaybackState.PLAYING) {
+                if (playbackStarted) return@runOnMain
+                playbackStarted = true
+                cancelPlaybackWatchdog()
+                webView?.alpha = 1f
+                try {
+                    applyDefaultOkoaIfNeeded()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Okoa apply on PLAYING: ${e.message}")
+                }
+            }
+            onPlaybackStateChanged(state)
         }
-        onPlaybackStateChanged(state)
     }
 
     private fun defaultOkoaMaxHeight(): Int {
@@ -422,9 +445,11 @@ class WebViewEngine(
 
     /** Stop WebView/Shaka audio before native Exo takes over (prevents doubled sound). */
     fun suspendPlayback() {
-        val w = webView ?: return
-        w.onPause()
-        w.evaluateJavascript(PhpWebViewSupport.suspendWebViewPlaybackScript(), null)
+        runOnMain {
+            val w = webView ?: return@runOnMain
+            w.onPause()
+            w.evaluateJavascript(PhpWebViewSupport.suspendWebViewPlaybackScript(), null)
+        }
     }
 
     private fun scheduleGatewayHtmlPrefetch(gatewayUrl: String) {
@@ -1049,16 +1074,18 @@ class WebViewEngine(
     }
 
     private fun injectOkoaQuality(mode: String, fromUser: Boolean = false) {
-        val w = webView ?: return
-        if (!okoaApiInjected) {
-            okoaApiInjected = true
-            w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
+        runOnMain {
+            val w = webView ?: return@runOnMain
+            if (!okoaApiInjected) {
+                okoaApiInjected = true
+                w.evaluateJavascript(PhpWebViewSupport.eaMaxOkoaQualityApiScript(), null)
+            }
+            val fromUserJs = if (fromUser) "true" else "false"
+            w.evaluateJavascript(
+                "try{window.__eaMaxDefaultMaxH=${defaultOkoaMaxHeight()};window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode',$fromUserJs);}catch(e){}",
+                null,
+            )
         }
-        val fromUserJs = if (fromUser) "true" else "false"
-        w.evaluateJavascript(
-            "try{window.__eaMaxDefaultMaxH=${defaultOkoaMaxHeight()};window.__eaMaxOkoaSetQuality&&window.__eaMaxOkoaSetQuality('$mode',$fromUserJs);}catch(e){}",
-            null,
-        )
     }
 
     fun setAudioLanguage(language: String) {
@@ -1067,17 +1094,28 @@ class WebViewEngine(
         injectAudioLanguage(lang)
     }
 
-    private fun injectAudioLanguage(lang: String) {
-        val w = webView ?: return
-        if (!audioLangApiInjected) {
-            audioLangApiInjected = true
-            w.evaluateJavascript(PhpWebViewSupport.eaMaxAudioLanguageApiScript(), null)
-        }
+    private fun injectPreferredAudioLanguageJs(w: WebView) {
+        val lang = preferredAudioLanguage ?: return
         val safeLang = lang.replace("\\", "\\\\").replace("'", "\\'")
         w.evaluateJavascript(
             "try{window.__eaMaxSetAudioLanguage&&window.__eaMaxSetAudioLanguage('$safeLang');}catch(e){}",
             null,
         )
+    }
+
+    private fun injectAudioLanguage(lang: String) {
+        runOnMain {
+            val w = webView ?: return@runOnMain
+            if (!audioLangApiInjected) {
+                audioLangApiInjected = true
+                w.evaluateJavascript(PhpWebViewSupport.eaMaxAudioLanguageApiScript(), null)
+            }
+            val safeLang = lang.replace("\\", "\\\\").replace("'", "\\'")
+            w.evaluateJavascript(
+                "try{window.__eaMaxSetAudioLanguage&&window.__eaMaxSetAudioLanguage('$safeLang');}catch(e){}",
+                null,
+            )
+        }
     }
 
     fun release() {
