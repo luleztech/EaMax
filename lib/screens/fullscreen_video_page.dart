@@ -71,6 +71,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   /// First multi-track manifest: default to ~360p (“Okoa bando”) unless user changed quality.
   bool _appliedDefaultOkoa360 = false;
   bool _userChoseOkoaQuality = false;
+  late String _activeAudioLanguage;
 
   /** After landscape once this session, do not show hint again (until new page). */
   bool _hasSeenLandscapeSession = false;
@@ -95,6 +96,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   @override
   void initState() {
     super.initState();
+    _activeAudioLanguage = _normalizeAudioLanguage(widget.audioLanguage);
     WidgetsBinding.instance.addObserver(this);
     _useWebPlayer = kIsWeb || widget.playbackMode == FlutterPlaybackMode.webEmbedded;
     _webView = !kIsWeb &&
@@ -341,7 +343,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   Future<void> _maybeApplyAdminAudioLanguage(Tracks tracks) async {
-    final lang = _normalizeAudioLanguage(widget.audioLanguage);
+    final lang = _activeAudioLanguage;
     final p = _player;
     if (p == null) return;
     try {
@@ -433,6 +435,44 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       }
     } catch (e, st) {
       debugPrint('Okoa choice: $e\n$st');
+    }
+  }
+
+  Future<void> _showLanguageSheet() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xE6202020),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'Badili Lugha',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
+                ),
+              ),
+              ListTile(
+                title: const Text('Kiswahili', style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx, 'sw'),
+              ),
+              ListTile(
+                title: const Text('Kiingereza', style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx, 'en'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+    setState(() => _activeAudioLanguage = choice);
+    final p = _player;
+    if (p != null) {
+      await _maybeApplyAdminAudioLanguage(p.state.tracks);
     }
   }
 
@@ -690,27 +730,49 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                   padding: controlPad,
                   child: Align(
                     alignment: Alignment.topRight,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 4, right: 6),
-                      child: Material(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(20),
-                        child: InkWell(
-                          onTap: _showOkoaQualitySheet,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Material(
+                          color: Colors.black.withValues(alpha: 0.55),
                           borderRadius: BorderRadius.circular(20),
-                          child: const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            child: Text(
-                              'OKOA BANDO',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 13,
+                          child: InkWell(
+                            onTap: _showOkoaQualitySheet,
+                            borderRadius: BorderRadius.circular(20),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Text(
+                                'OKOA BANDO',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        Material(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(20),
+                          child: InkWell(
+                            onTap: _showLanguageSheet,
+                            borderRadius: BorderRadius.circular(20),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Text(
+                                'Badili Lugha',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),

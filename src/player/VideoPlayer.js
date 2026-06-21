@@ -25,6 +25,7 @@ import {
   TouchableOpacity,
   Modal,
   ActivityIndicator,
+  Alert,
   Platform,
   Dimensions,
   StatusBar,
@@ -307,6 +308,7 @@ export default function VideoPlayer({
   const [preparedSource,       setPreparedSource]       = useState(null);
   const [forceTokenRefresh,    setForceTokenRefresh]    = useState(false);
   const [selectedAudioTrack,   setSelectedAudioTrack]   = useState(null);
+  const [activeAudioLanguage,  setActiveAudioLanguage]  = useState('sw');
 
   const recordedWatchRef         = useRef(null);
   const nativeLoadTimeoutRef     = useRef(null);
@@ -346,12 +348,17 @@ export default function VideoPlayer({
 
   const adminAudioLanguage = normalizeAdminAudioLanguage(audioLanguage);
 
+  useEffect(() => {
+    setActiveAudioLanguage(adminAudioLanguage);
+    setSelectedAudioTrack(null);
+  }, [adminAudioLanguage, sourceKey]);
+
   const streamSession = {
     mpdUrl: url, licenseUrl: drmLicenseUrl || '', token: token || '', drmType,
     drmData: { headers: customHeaders, keys: effectiveDrmClearKey ? [parseClearKeys(effectiveDrmClearKey)] : null },
     headers: customHeaders,
   };
-  const mergedHeaders = buildHeaders(streamSession, adminAudioLanguage);
+  const mergedHeaders = buildHeaders(streamSession, activeAudioLanguage);
 
   // ─── Build video source ─────────────────────────────────────────────────
 
@@ -576,16 +583,16 @@ export default function VideoPlayer({
     if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
     const tracks = data?.audioTracks;
     if (Array.isArray(tracks) && tracks.length > 0) {
-      const idx = pickAudioTrackIndex(tracks, adminAudioLanguage);
+      const idx = pickAudioTrackIndex(tracks, activeAudioLanguage);
       if (idx != null) {
         setSelectedAudioTrack({ type: 'index', value: idx });
       } else {
-        setSelectedAudioTrack({ type: 'language', value: adminAudioLanguage });
+        setSelectedAudioTrack({ type: 'language', value: activeAudioLanguage });
       }
     } else {
-      setSelectedAudioTrack({ type: 'language', value: adminAudioLanguage });
+      setSelectedAudioTrack({ type: 'language', value: activeAudioLanguage });
     }
-  }, [format, adminAudioLanguage]);
+  }, [format, activeAudioLanguage]);
 
   const onReadyForDisplay = useCallback(() => { setLoading(false); }, []);
   const onProgress = useCallback((ev) => { setCurrentTime(ev?.currentTime ?? 0); lastPlaybackPositionRef.current = ev?.currentTime ?? 0; }, []);
@@ -628,6 +635,30 @@ export default function VideoPlayer({
   }, []);
 
   const handleClose = useCallback(() => { setPaused(true); onClose(); }, [onClose]);
+
+  const showLanguagePicker = useCallback(() => {
+    Alert.alert(
+      'Badili Lugha',
+      'Chagua lugha ya sauti',
+      [
+        {
+          text: 'Kiswahili',
+          onPress: () => {
+            setActiveAudioLanguage('sw');
+            setSelectedAudioTrack({ type: 'language', value: 'sw' });
+          },
+        },
+        {
+          text: 'Kiingereza',
+          onPress: () => {
+            setActiveAudioLanguage('en');
+            setSelectedAudioTrack({ type: 'language', value: 'en' });
+          },
+        },
+        { text: 'Ghairi', style: 'cancel' },
+      ],
+    );
+  }, []);
 
   const handleWebViewMessage = useCallback((e) => {
     try {
@@ -707,12 +738,12 @@ export default function VideoPlayer({
         /* CASE 5: Native ExoPlayer */
         ) : source && hasLayout ? (
           <Video
-            key={`video-${sourceKey}-${adminAudioLanguage}`}
+            key={`video-${sourceKey}-${activeAudioLanguage}`}
             ref={videoRef} source={source} style={videoStyle}
             resizeMode="contain" paused={paused} controls={false}
             selectedVideoTrack={{ type: 'resolution', value: DEFAULT_PLAYBACK_HEIGHT }}
             selectedAudioTrack={
-              selectedAudioTrack || { type: 'language', value: adminAudioLanguage }
+              selectedAudioTrack || { type: 'language', value: activeAudioLanguage }
             }
             bufferConfig={BUFFER_CONFIG}
             onLoad={onLoad} onReadyForDisplay={onReadyForDisplay}
@@ -747,6 +778,12 @@ export default function VideoPlayer({
         <TouchableOpacity style={styles.closeBtn} onPress={handleClose} activeOpacity={0.8}>
           <Icon name="close" size={28} color="#fff" />
         </TouchableOpacity>
+
+        {source && hasLayout && !useWebView && !error && (
+          <TouchableOpacity style={styles.langBtn} onPress={showLanguagePicker} activeOpacity={0.85}>
+            <Text style={styles.langBtnText}>Badili Lugha</Text>
+          </TouchableOpacity>
+        )}
 
         {showPaywall && (
           <View style={styles.paywallOverlay}>
@@ -816,6 +853,17 @@ const styles = StyleSheet.create({
     width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center', alignItems: 'center', zIndex: 99999,
   },
+  langBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 104 : 74,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    zIndex: 99999,
+  },
+  langBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   noSource:     { flex: 1, justifyContent: 'center', alignItems: 'center' },
   noSourceText: { color: '#888', fontSize: 16 },
   loadingOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', gap: 12, zIndex: 9997 },

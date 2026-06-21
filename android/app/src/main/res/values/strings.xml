@@ -3,6 +3,10 @@
     <string name="app_name">EaMax</string>
     <string name="close_player">Close player</string>
     <string name="okoa_bundle">OKOA BANDO</string>
+    <string name="badili_lugha">Badili Lugha</string>
+    <string name="pick_language">Chagua lugha</string>
+    <string name="language_swahili">Kiswahili</string>
+    <string name="language_english">Kiingereza</string>
     <string name="pick_quality">Chagua ubora</string>
     <string name="rotate_hint_message">Geuza simu yako kuona kwa ukubwa kamili</string>
     <string name="rotate_hint_later">Baadae</string>

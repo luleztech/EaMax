@@ -125,25 +125,50 @@
         android:elevation="12dp"
         android:src="@android:drawable/ic_menu_close_clear_cancel" />
 
-    <Button
-        android:id="@+id/btn_okoa_bundle"
+    <LinearLayout
+        android:id="@+id/player_top_actions"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_marginTop="16dp"
         android:layout_marginEnd="16dp"
-        android:backgroundTint="#CC000000"
-        android:clickable="true"
-        android:contentDescription="@string/okoa_bundle"
         android:elevation="24dp"
-        android:focusable="true"
-        android:minHeight="48dp"
-        android:paddingStart="14dp"
-        android:paddingEnd="14dp"
-        android:stateListAnimator="@null"
-        android:text="@string/okoa_bundle"
-        android:textAllCaps="false"
-        android:textColor="#FFFFFFFF"
-        android:textSize="13sp"
-        android:visibility="gone" />
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/btn_okoa_bundle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#CC000000"
+            android:clickable="true"
+            android:contentDescription="@string/okoa_bundle"
+            android:focusable="true"
+            android:minHeight="48dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:stateListAnimator="@null"
+            android:text="@string/okoa_bundle"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFFFF"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btn_change_language"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="#CC000000"
+            android:clickable="true"
+            android:contentDescription="@string/badili_lugha"
+            android:focusable="true"
+            android:minHeight="48dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:stateListAnimator="@null"
+            android:text="@string/badili_lugha"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFFFF"
+            android:textSize="13sp" />
+    </LinearLayout>
 </FrameLayout>

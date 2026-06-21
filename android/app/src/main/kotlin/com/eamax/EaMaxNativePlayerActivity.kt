@@ -14,6 +14,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -57,6 +58,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private lateinit var webLoadingOverlay: FrameLayout
     private var unavailableDialogShown = false
     private var adminAudioLanguage: String = AudioLanguageSupport.DEFAULT
+    /** User-selected language (Swahili or English); starts from admin default. */
+    private var selectedAudioLanguage: String = AudioLanguageSupport.DEFAULT
 
     /** Close player silently on fatal playback errors (no technician popup). */
     private fun showChannelUnavailableAndFinish() {
@@ -127,7 +130,10 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         close.setOnClickListener { finish() }
         val okoaBundle = findViewById<Button>(R.id.btn_okoa_bundle)
         okoaBundle.setOnClickListener { showOkoaQualityDialog() }
-        applyOkoaButtonInsets(okoaBundle)
+        val changeLanguage = findViewById<Button>(R.id.btn_change_language)
+        changeLanguage.setOnClickListener { showLanguageDialog() }
+        val topActions = findViewById<LinearLayout>(R.id.player_top_actions)
+        applyTopActionInsets(topActions)
 
         showWebLoadingOverlay()
 
@@ -139,6 +145,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         adminAudioLanguage = AudioLanguageSupport.normalize(
             intent.getStringExtra("audioLanguage"),
         )
+        selectedAudioLanguage = adminAudioLanguage
         selectedOkoaQuality = RemotePlayerConfigHolder.defaultStreamQuality()
 
         playerManager = PlayerManager(
@@ -152,7 +159,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 playerManager.getWebView()?.alpha = 1f
                                 applyDefaultOkoaQuality()
-                                applyAdminAudioLanguage()
+                                applySelectedAudioLanguage()
                                 scheduleWebViewAudioLanguageRetries()
                             }
                             PlaybackState.ENDED -> {
@@ -210,7 +217,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                         }
                     }
-                    applyAdminAudioLanguage()
+                    applySelectedAudioLanguage()
                     if (!playerManager.isWebViewPlayback()) {
                         scheduleExoAudioLanguageRetries()
                     }
@@ -224,10 +231,10 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                     okoaAppliedOnTracks = false
                     try {
                         close.bringToFront()
-                        okoaBundle.bringToFront()
+                        topActions.bringToFront()
                         if (playerManager.isWebViewPlayback()) {
                             playerView.player = null
-                            okoaBundle.visibility = View.VISIBLE
+                            topActions.visibility = View.VISIBLE
                             playerView.visibility = View.GONE
                             attachWebViewIfNeeded(webContainer, playerView)
                             if (playerManager.wasWebViewPlaybackStarted()) {
@@ -243,11 +250,11 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             webContainer.visibility = View.GONE
                             webContainer.removeAllViews()
                             playerView.visibility = View.VISIBLE
-                            okoaBundle.visibility = View.VISIBLE
+                            topActions.visibility = View.VISIBLE
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)
                         }
-                        applyAdminAudioLanguage()
+                        applySelectedAudioLanguage()
                         maybeShowRotateHint()
                     } catch (e: Exception) {
                         Log.e(TAG, "onReady", e)
@@ -366,7 +373,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             webLoadingOverlay.visibility = View.VISIBLE
             webLoadingOverlay.bringToFront()
             findViewById<ImageButton>(R.id.btn_close)?.bringToFront()
-            findViewById<Button>(R.id.btn_okoa_bundle)?.bringToFront()
+            findViewById<LinearLayout>(R.id.player_top_actions)?.bringToFront()
         }
     }
 
@@ -388,9 +395,9 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyOkoaButtonInsets(okoaBundle: Button) {
+    private fun applyTopActionInsets(topActions: LinearLayout) {
         val baseTop = (16 * resources.displayMetrics.density).toInt()
-        ViewCompat.setOnApplyWindowInsetsListener(okoaBundle) { v, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(topActions) { v, insets ->
             val top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
             val lp = v.layoutParams as? FrameLayout.LayoutParams
             if (lp != null) {
@@ -399,15 +406,15 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             }
             insets
         }
-        ViewCompat.requestApplyInsets(okoaBundle)
+        ViewCompat.requestApplyInsets(topActions)
     }
 
     private fun applyDefaultOkoaQuality() {
         playerManager.setQuality(selectedOkoaQuality, fromUser = false)
     }
 
-    private fun applyAdminAudioLanguage() {
-        playerManager.setAudioLanguage(adminAudioLanguage)
+    private fun applySelectedAudioLanguage() {
+        playerManager.setAudioLanguage(selectedAudioLanguage)
     }
 
     private fun scheduleWebViewAudioLanguageRetries() {
@@ -424,7 +431,40 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             handler.postDelayed({
                 if (isFinishing) return@postDelayed
                 if (requireWebView != playerManager.isWebViewPlayback()) return@postDelayed
-                applyAdminAudioLanguage()
+                applySelectedAudioLanguage()
+            }, delayMs)
+        }
+    }
+
+    private fun showLanguageDialog() {
+        val options = listOf(
+            "sw" to getString(R.string.language_swahili),
+            "en" to getString(R.string.language_english),
+        )
+        val initial = options.indexOfFirst { it.first == selectedAudioLanguage }.let {
+            if (it >= 0) it else 0
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pick_language)
+            .setSingleChoiceItems(
+                options.map { it.second }.toTypedArray(),
+                initial,
+            ) { d, which ->
+                selectedAudioLanguage = options[which].first
+                applySelectedAudioLanguage()
+                scheduleLanguageSwitchRetries()
+                d.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun scheduleLanguageSwitchRetries() {
+        val handler = window.decorView.handler ?: return
+        listOf(400L, 1200L, 3000L, 6000L).forEach { delayMs ->
+            handler.postDelayed({
+                if (isFinishing) return@postDelayed
+                applySelectedAudioLanguage()
             }, delayMs)
         }
     }
