@@ -187,12 +187,13 @@ class ExoPlayerEngine(
             val cfg = RemotePlayerConfigHolder
             val minBuf = cfg.bufferMinMs.coerceIn(500, 60_000)
             val maxBuf = cfg.bufferMaxMs.coerceIn(minBuf + 500, 120_000)
+            val initialBuf = cfg.initialBufferMs.coerceIn(200, 30_000)
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
                     minBuf,
                     maxBuf,
-                    BUFFER_FOR_PLAYBACK_MS,
-                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                    initialBuf,
+                    (initialBuf * 2).coerceAtMost(maxBuf),
                 )
                 .build()
             exoPlayer = ExoPlayer.Builder(context, renderersFactory)

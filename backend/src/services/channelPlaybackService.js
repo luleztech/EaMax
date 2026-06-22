@@ -1,7 +1,6 @@
 const { query } = require('../db');
-const { resolvePlaybackEngine } = require('../constants/playerEngines');
 const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
-const { getGlobalPlayerConfig } = require('./playerConfigService');
+const { resolvePlaybackPolicy } = require('./playbackPolicyService');
 
 async function resolveStreamUrl(row) {
   if (row.stream_url && String(row.stream_url).trim()) {
@@ -52,7 +51,11 @@ async function getChannelPlayback(channelId) {
             COALESCE(c.stream_url, t.stream_url) AS legacy_url,
             c.stream_alias, c.drm_type, c.drm_clear_key, c.license_url,
             c.thumbnail_url, c.points_required, c.unlock_to_free,
-            c.playback_engine, c.audio_language
+            c.playback_engine, c.audio_language,
+            c.preferred_quality, c.stream_type,
+            c.buffer_min_ms_override, c.buffer_max_ms_override,
+            c.retry_max_override, c.retry_delay_ms_override,
+            c.region_rules_json
        FROM channels c
        LEFT JOIN stream_aliases a ON a.alias = c.stream_alias AND a.is_active = TRUE
        LEFT JOIN channels t ON t.id = a.channel_id AND t.is_active = TRUE
@@ -102,27 +105,20 @@ async function getChannelPlayback(channelId) {
     });
   }
 
-  const playerConfig = await getGlobalPlayerConfig();
-  const channelEngine = channel.playback_engine || null;
-  const effectiveEngine = resolvePlaybackEngine(channelEngine, playerConfig.preferredEngine);
-
-  const audioLanguage = channel.audio_language
-    ? sanitizeChannelAudioLanguage(channel.audio_language)
-    : 'sw';
+  const policy = await resolvePlaybackPolicy(channel);
 
   return {
     channelId: channel.id,
     name: channel.name,
     category: channel.category,
     streams,
-    playbackEngine: channelEngine,
-    effectiveEngine,
-    audioLanguage,
-    audio_language: audioLanguage,
-    playerConfig: {
-      ...playerConfig,
-      preferredEngine: effectiveEngine,
-    },
+    playbackEngine: policy.playbackEngine,
+    effectiveEngine: policy.effectiveEngine,
+    audioLanguage: policy.audioLanguage,
+    audio_language: policy.audioLanguage,
+    streamType: policy.streamType,
+    playerConfig: policy,
+    playbackPolicy: policy,
   };
 }
 

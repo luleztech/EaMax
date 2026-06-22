@@ -661,6 +661,9 @@ export const adminControlAPI = {
       method: 'PUT',
       body: JSON.stringify(labels),
     }),
+
+  getPlaybackAnalytics: async (days = 7) =>
+    apiRequest(`/api/admin/analytics/playback?days=${days}`),
 };
 
 export default {

@@ -29,11 +29,13 @@ import java.util.concurrent.Executors
  */
 class PlayerManager(
     private val context: Context,
+    private val channelId: Int = 0,
     private val onStateChanged: (PlaybackState) -> Unit = {},
     private val onError: (String) -> Unit = {},
     private val onTracksAvailable: (Tracks) -> Unit = {},
     /** Called on main thread after Exo or WebView engine is created and initialized. */
     private val onReady: () -> Unit = {},
+    private val onAutoHeal: ((String) -> Unit)? = null,
 ) {
     private var engine: ExoPlayerEngine? = null
     private var webViewEngine: WebViewEngine? = null
@@ -49,6 +51,17 @@ class PlayerManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var errorRetryCount = 0
     private var pendingRetryRunnable: Runnable? = null
+    private var pendingOverlayTap: (() -> Unit)? = null
+    private var pendingOverlayCapabilities: ((Boolean, Boolean) -> Unit)? = null
+    private val healthWatchdog = HealthWatchdog { symptom ->
+        mainHandler.post {
+            onAutoHeal?.invoke(symptom)
+            Log.w(TAG, "Auto-heal: $symptom — restarting stream")
+            errorRetryCount = 0
+            cancelPendingRetry()
+            startCurrentSession()
+        }
+    }
 
     companion object {
         private const val TAG = "PlayerManager"
@@ -93,6 +106,21 @@ class PlayerManager(
             context = context,
             onPlaybackStateChanged = { state ->
                 Log.d(TAG, "Playback state changed: $state")
+                when (state) {
+                    PlaybackState.PLAYING -> {
+                        healthWatchdog.onPlayingChanged(true)
+                        healthWatchdog.onBufferingChanged(false)
+                    }
+                    PlaybackState.BUFFERING -> {
+                        healthWatchdog.onPlayingChanged(false)
+                        healthWatchdog.onBufferingChanged(true)
+                    }
+                    PlaybackState.READY -> healthWatchdog.onReadyForDisplay()
+                    else -> { }
+                }
+                engine?.getPlayer()?.let { player ->
+                    healthWatchdog.onProgress(player.currentPosition)
+                }
                 onStateChanged(state)
             },
             onError = { error ->
@@ -158,6 +186,7 @@ class PlayerManager(
 
     private fun notifyReady() {
         errorRetryCount = 0
+        healthWatchdog.start()
         onReady()
     }
 
@@ -258,13 +287,12 @@ class PlayerManager(
     }
 
     private fun dispatchFatalError(message: String) {
-        if (RemotePlayerConfigHolder.reconnectEnabled &&
-            errorRetryCount < RemotePlayerConfigHolder.retryMax
-        ) {
+        if (RecoveryPolicy.shouldRetrySameStream(errorRetryCount)) {
             errorRetryCount++
+            val delay = RecoveryPolicy.retryDelayMs(errorRetryCount)
             Log.w(
                 TAG,
-                "Retry $errorRetryCount/${RemotePlayerConfigHolder.retryMax} in ${RemotePlayerConfigHolder.retryDelayMs}ms",
+                "Retry $errorRetryCount/${RemotePlayerConfigHolder.retryMax} in ${delay}ms",
             )
             cancelPendingRetry()
             val retry = Runnable {
@@ -272,13 +300,14 @@ class PlayerManager(
                 startCurrentSession()
             }
             pendingRetryRunnable = retry
-            mainHandler.postDelayed(retry, RemotePlayerConfigHolder.retryDelayMs)
+            mainHandler.postDelayed(retry, delay)
             return
         }
         if (tryAdvanceToNextStream()) {
-            Log.w(TAG, "Failover → stream ${sessionIndex + 1}/${allSessions.size}")
+            Log.w(TAG, "Failover → stream ${sessionIndex + 1}/${allSessions.size} (channel=$channelId)")
             return
         }
+        healthWatchdog.stop()
         onError(message)
     }
 
@@ -332,6 +361,7 @@ class PlayerManager(
      */
     fun release() {
         Log.d(TAG, "Releasing player")
+        healthWatchdog.stop()
         cancelPendingRetry()
         errorRetryCount = 0
         engine?.release()
@@ -347,7 +377,7 @@ class PlayerManager(
     }
 
     private fun createWebViewEngine(baseSession: StreamSession): WebViewEngine {
-        return WebViewEngine(
+        val engine = WebViewEngine(
             context = context,
             onPlaybackStateChanged = { state ->
                 Log.d(TAG, "WebView state: $state")
@@ -396,6 +426,12 @@ class PlayerManager(
                 }
             },
         )
+        val tap = pendingOverlayTap
+        val caps = pendingOverlayCapabilities
+        if (tap != null && caps != null) {
+            engine.setOverlayCallbacks(tap, caps)
+        }
+        return engine
     }
 
     private fun mergeResolvedSession(
@@ -580,10 +616,10 @@ class PlayerManager(
      * @param fromUser false when applying the default 360p cap on startup
      */
     fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
-        when {
-            engine?.getPlayer() != null -> engine?.setQuality(quality)
-            webViewEngine != null -> webViewEngine?.setQuality(quality, fromUser)
-            else -> engine?.setQuality(quality)
+        if (isWebViewPlayback()) {
+            webViewEngine?.setQuality(quality, fromUser)
+        } else {
+            engine?.setQuality(quality)
         }
         Log.d(TAG, "Quality changed to: $quality (fromUser=$fromUser)")
     }
@@ -591,14 +627,14 @@ class PlayerManager(
     /**
      * Set preferred audio language
      */
-    fun setAudioLanguage(language: String) {
+    fun setAudioLanguage(language: String, fromUser: Boolean = false) {
         val lang = AudioLanguageSupport.normalize(language)
-        when {
-            engine?.getPlayer() != null -> engine?.setAudioLanguage(lang)
-            webViewEngine != null -> webViewEngine?.setAudioLanguage(lang)
-            else -> engine?.setAudioLanguage(lang)
+        if (isWebViewPlayback()) {
+            webViewEngine?.setAudioLanguage(lang, fromUser)
+        } else {
+            engine?.setAudioLanguage(lang)
         }
-        Log.d(TAG, "Audio language changed to: $lang")
+        Log.d(TAG, "Audio language changed to: $lang (fromUser=$fromUser)")
     }
 
     /**
@@ -651,6 +687,19 @@ class PlayerManager(
     /** True only when WebView is the active renderer (not after gateway→Exo promotion). */
     fun isWebViewPlayback(): Boolean =
         webViewEngine != null && engine?.getPlayer() == null
+
+    fun setPlayerOverlayCallbacks(
+        onTap: () -> Unit,
+        onCapabilities: (Boolean, Boolean) -> Unit,
+    ) {
+        pendingOverlayTap = onTap
+        pendingOverlayCapabilities = onCapabilities
+        webViewEngine?.setOverlayCallbacks(onTap, onCapabilities)
+    }
+
+    fun centerWebViewVideo(landscape: Boolean) {
+        webViewEngine?.centerVideoForOrientation(landscape)
+    }
 
     fun wasWebViewPlaybackStarted(): Boolean =
         webViewEngine?.wasPlaybackStarted() == true

@@ -36,6 +36,11 @@ const {
   getAdRewardPoints,
   updateAdRewardPoints,
 } = require('../services/platformSettingsService');
+const {
+  getPlaybackAnalyticsSummary,
+  getTopFailureChannels,
+} = require('../services/playbackAnalyticsService');
+const { sanitizeStreamType, sanitizeQuality } = require('../services/playbackPolicyService');
 
 const router = express.Router();
 
@@ -600,6 +605,12 @@ router.post('/channels', async (req, res, next) => {
       unlockToFree: z.boolean().optional().default(false),
       playbackEngine: z.string().max(32).optional().nullable(),
       audioLanguage: z.string().max(16).optional().nullable(),
+      preferredQuality: z.string().max(16).optional().nullable(),
+      streamType: z.string().max(32).optional().nullable(),
+      bufferMinMsOverride: z.coerce.number().int().min(500).max(60000).optional().nullable(),
+      bufferMaxMsOverride: z.coerce.number().int().min(2000).max(120000).optional().nullable(),
+      retryMaxOverride: z.coerce.number().int().min(1).max(12).optional().nullable(),
+      retryDelayMsOverride: z.coerce.number().int().min(200).max(15000).optional().nullable(),
     }).superRefine((data, ctx) => {
       const hasUrl = !!(data.streamUrl && String(data.streamUrl).trim());
       const hasAlias = !!(data.streamAlias && String(data.streamAlias).trim());
@@ -618,6 +629,10 @@ router.post('/channels', async (req, res, next) => {
       : null;
     const playbackEngine = sanitizeChannelPlaybackEngine(data.playbackEngine);
     const audioLanguage = sanitizeChannelAudioLanguage(data.audioLanguage);
+    const preferredQuality = data.preferredQuality
+      ? sanitizeQuality(data.preferredQuality, '360p')
+      : null;
+    const streamType = sanitizeStreamType(data.streamType);
 
     // If channel is alias-only, ensure alias resolves to a real URL so playback won't break.
     if (!urlTrimmed && aliasTrimmed) {
@@ -640,8 +655,8 @@ router.post('/channels', async (req, res, next) => {
 
     const result = await query(
       `INSERT INTO channels
-         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free, playback_engine, audio_language)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         (name, category, stream_url, stream_alias, thumbnail_url, thumbnail_emoji, color, is_active, drm_protected, drm_type, drm_clear_key, license_url, owner_user_id, points_required, unlock_to_free, playback_engine, audio_language, preferred_quality, stream_type, buffer_min_ms_override, buffer_max_ms_override, retry_max_override, retry_delay_ms_override)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         data.name,
@@ -661,6 +676,12 @@ router.post('/channels', async (req, res, next) => {
         !!data.unlockToFree,
         playbackEngine,
         audioLanguage,
+        preferredQuality,
+        streamType,
+        data.bufferMinMsOverride ?? null,
+        data.bufferMaxMsOverride ?? null,
+        data.retryMaxOverride ?? null,
+        data.retryDelayMsOverride ?? null,
       ],
     );
 
@@ -711,6 +732,12 @@ router.put('/channels/:id', async (req, res, next) => {
       sortOrder: z.coerce.number().int().min(0).optional(),
       playbackEngine: z.string().max(32).optional().nullable(),
       audioLanguage: z.string().max(16).optional().nullable(),
+      preferredQuality: z.string().max(16).optional().nullable(),
+      streamType: z.string().max(32).optional().nullable(),
+      bufferMinMsOverride: z.coerce.number().int().min(500).max(60000).optional().nullable(),
+      bufferMaxMsOverride: z.coerce.number().int().min(2000).max(120000).optional().nullable(),
+      retryMaxOverride: z.coerce.number().int().min(1).max(12).optional().nullable(),
+      retryDelayMsOverride: z.coerce.number().int().min(200).max(15000).optional().nullable(),
     });
 
     const { id } = paramsSchema.parse(req.params);
@@ -776,6 +803,26 @@ router.put('/channels/:id', async (req, res, next) => {
       }),
       ...(data.audioLanguage !== undefined && {
         audio_language: sanitizeChannelAudioLanguage(data.audioLanguage),
+      }),
+      ...(data.preferredQuality !== undefined && {
+        preferred_quality: data.preferredQuality
+          ? sanitizeQuality(data.preferredQuality, '360p')
+          : null,
+      }),
+      ...(data.streamType !== undefined && {
+        stream_type: sanitizeStreamType(data.streamType),
+      }),
+      ...(data.bufferMinMsOverride !== undefined && {
+        buffer_min_ms_override: data.bufferMinMsOverride,
+      }),
+      ...(data.bufferMaxMsOverride !== undefined && {
+        buffer_max_ms_override: data.bufferMaxMsOverride,
+      }),
+      ...(data.retryMaxOverride !== undefined && {
+        retry_max_override: data.retryMaxOverride,
+      }),
+      ...(data.retryDelayMsOverride !== undefined && {
+        retry_delay_ms_override: data.retryDelayMsOverride,
       }),
     };
 
@@ -2078,6 +2125,20 @@ router.put('/channels/:id/streams/:priority', async (req, res, next) => {
     const playback = await getChannelPlayback(channelId);
     pushConfigRefresh();
     return res.json(playback);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// ── Playback analytics (admin dashboard) ───────────────────────────────────
+router.get('/analytics/playback', async (req, res, next) => {
+  try {
+    const days = parseInt(req.query.days, 10) || 7;
+    const [summary, topFailures] = await Promise.all([
+      getPlaybackAnalyticsSummary({ days }),
+      getTopFailureChannels({ days, limit: 10 }),
+    ]);
+    return res.json({ summary, topFailures });
   } catch (err) {
     return next(err);
   }

@@ -137,12 +137,19 @@ class RemoteConfigService {
         preferredEngine: pc.preferredEngine,
         bufferMinMs: pc.bufferMinMs,
         bufferMaxMs: pc.bufferMaxMs,
+        initialBufferMs: pc.initialBufferMs,
         retryMax: pc.retryMax,
         retryDelayMs: pc.retryDelayMs,
         reconnectEnabled: pc.reconnectEnabled,
         autoPlay: pc.autoPlay,
         defaultQuality: pc.defaultQuality,
         failoverToWebview: pc.failoverToWebview,
+        hardwareAcceleration: pc.hardwareAcceleration,
+        softwareDecodeFallback: pc.softwareDecodeFallback,
+        backgroundPlayback: pc.backgroundPlayback,
+        resumePlayback: pc.resumePlayback,
+        networkTimeoutMs: pc.networkTimeoutMs,
+        reconnectionPolicy: pc.reconnectionPolicy,
       );
     } catch (e) {
       debugPrint('[RemoteConfigService] native player config sync: $e');

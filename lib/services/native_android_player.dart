@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/channel_playback.dart';
+import '../models/remote_config_bundle.dart';
 
 /// Opens the Kotlin [PlayerManager] stack on Android (see `android/.../com/eamax/player/`).
 class NativeAndroidPlayer {
@@ -16,6 +17,8 @@ class NativeAndroidPlayer {
 
   static Future<void> open({
     required String url,
+    int? channelId,
+    String? channelName,
     String licenseUrl = '',
     String token = '',
     String drmType = 'NONE',
@@ -24,6 +27,7 @@ class NativeAndroidPlayer {
     List<PlaybackStream>? fallbackStreams,
     String? playbackEngine,
     String? audioLanguage,
+    RemotePlayerConfig? playerPolicy,
   }) async {
     if (!supported) return;
 
@@ -31,6 +35,8 @@ class NativeAndroidPlayer {
 
     await _channel.invokeMethod<void>('open', <String, dynamic>{
       'url': url,
+      'channelId': ?channelId,
+      'channelName': ?channelName,
       'licenseUrl': licenseUrl,
       'token': token,
       'drmType': drmType,
@@ -42,35 +48,8 @@ class NativeAndroidPlayer {
       if (playbackEngine != null && playbackEngine.isNotEmpty)
         'playbackEngine': playbackEngine,
       'audioLanguage': (audioLanguage == null || audioLanguage.isEmpty) ? 'sw' : audioLanguage,
+      if (playerPolicy != null) 'playerPolicyJson': jsonEncode(_policyToMap(playerPolicy)),
     });
-  }
-
-  /// Launch VLC or MX Player with stream URL (admin engine: vlc / mx).
-  static Future<bool> openExternal({
-    required String engine,
-    required String url,
-    String licenseUrl = '',
-    String token = '',
-    String drmType = 'NONE',
-    String clearKeyHex = '',
-    Map<String, String>? headers,
-  }) async {
-    if (!supported) return false;
-    try {
-      final result = await _channel.invokeMethod<bool>('openExternal', <String, dynamic>{
-        'engine': engine,
-        'url': url,
-        'licenseUrl': licenseUrl,
-        'token': token,
-        'drmType': drmType,
-        'clearKeyHex': clearKeyHex,
-        'headersJson': headers == null || headers.isEmpty ? '' : jsonEncode(headers),
-      });
-      return result == true;
-    } catch (e) {
-      debugPrint('[NativeAndroidPlayer] openExternal failed: $e');
-      return false;
-    }
   }
 
   /// Push server-driven player settings to Kotlin [RemotePlayerConfigHolder].
@@ -78,26 +57,59 @@ class NativeAndroidPlayer {
     required String preferredEngine,
     required int bufferMinMs,
     required int bufferMaxMs,
+    required int initialBufferMs,
     required int retryMax,
     required int retryDelayMs,
     required bool reconnectEnabled,
     required bool autoPlay,
     required String defaultQuality,
     required bool failoverToWebview,
+    required bool hardwareAcceleration,
+    required bool softwareDecodeFallback,
+    required bool backgroundPlayback,
+    required bool resumePlayback,
+    required int networkTimeoutMs,
+    required String reconnectionPolicy,
   }) async {
     if (!supported) return;
     await _channel.invokeMethod<void>('updatePlayerConfig', <String, dynamic>{
       'preferredEngine': preferredEngine,
       'bufferMinMs': bufferMinMs,
       'bufferMaxMs': bufferMaxMs,
+      'initialBufferMs': initialBufferMs,
       'retryMax': retryMax,
       'retryDelayMs': retryDelayMs,
       'reconnectEnabled': reconnectEnabled,
       'autoPlay': autoPlay,
       'defaultQuality': defaultQuality,
       'failoverToWebview': failoverToWebview,
+      'hardwareAcceleration': hardwareAcceleration,
+      'softwareDecodeFallback': softwareDecodeFallback,
+      'backgroundPlayback': backgroundPlayback,
+      'resumePlayback': resumePlayback,
+      'networkTimeoutMs': networkTimeoutMs,
+      'reconnectionPolicy': reconnectionPolicy,
     });
   }
+
+  static Map<String, dynamic> _policyToMap(RemotePlayerConfig policy) => {
+    'preferredEngine': policy.preferredEngine,
+    'bufferMinMs': policy.bufferMinMs,
+    'bufferMaxMs': policy.bufferMaxMs,
+    'initialBufferMs': policy.initialBufferMs,
+    'retryMax': policy.retryMax,
+    'retryDelayMs': policy.retryDelayMs,
+    'reconnectEnabled': policy.reconnectEnabled,
+    'autoPlay': policy.autoPlay,
+    'defaultQuality': policy.defaultQuality,
+    'failoverToWebview': policy.failoverToWebview,
+    'hardwareAcceleration': policy.hardwareAcceleration,
+    'softwareDecodeFallback': policy.softwareDecodeFallback,
+    'backgroundPlayback': policy.backgroundPlayback,
+    'resumePlayback': policy.resumePlayback,
+    'networkTimeoutMs': policy.networkTimeoutMs,
+    'reconnectionPolicy': policy.reconnectionPolicy,
+  };
 
   static String _encodeFallbackStreams(List<PlaybackStream>? streams) {
     if (streams == null || streams.isEmpty) return '';

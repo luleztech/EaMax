@@ -17,16 +17,17 @@
         android:id="@+id/webview_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false"
         android:visibility="gone" />
 
-    <!-- Covers gateway WebView until video plays — never show third-party error pages. -->
     <FrameLayout
         android:id="@+id/web_loading_overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="#FF000000"
-        android:clickable="true"
-        android:focusable="true"
+        android:clickable="false"
+        android:focusable="false"
         android:visibility="gone">
 
         <ProgressBar
@@ -120,42 +121,26 @@
         android:layout_height="48dp"
         android:layout_gravity="top|start"
         android:layout_margin="16dp"
-        android:background="#80000000"
+        android:background="#CC000000"
+        android:clickable="true"
         android:contentDescription="@string/close_player"
-        android:elevation="12dp"
+        android:elevation="52dp"
+        android:focusable="true"
         android:src="@android:drawable/ic_menu_close_clear_cancel" />
 
-    <LinearLayout
-        android:id="@+id/player_top_actions"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="16dp"
-        android:layout_marginEnd="16dp"
-        android:elevation="24dp"
-        android:gravity="end"
-        android:orientation="horizontal"
-        android:visibility="gone">
-
-        <ImageButton
-            android:id="@+id/btn_player_language"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="#CC000000"
-            android:contentDescription="@string/badili_lugha"
-            android:padding="10dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_player_language" />
-
-        <ImageButton
-            android:id="@+id/btn_player_settings"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:background="#CC000000"
-            android:contentDescription="@string/player_settings"
-            android:padding="10dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_player_settings" />
-    </LinearLayout>
+    <ImageButton
+        android:id="@+id/btn_player_settings"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="16dp"
+        android:background="#8C000000"
+        android:clickable="true"
+        android:contentDescription="@string/player_settings"
+        android:elevation="52dp"
+        android:focusable="true"
+        android:padding="10dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_player_settings"
+        android:visibility="gone" />
 </FrameLayout>

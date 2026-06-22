@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { dashboardAPI, adminChannelsAPI } from '../../config/api';
+import { dashboardAPI, adminChannelsAPI, adminControlAPI } from '../../config/api';
 
 const { width } = Dimensions.get('window');
 
@@ -90,17 +90,20 @@ const AnalyticsSection = ({ isActive }) => {
   const wasActiveRef = useRef(false);
   const [stats, setStats] = useState(buildStats({}));
   const [mostWatchedPlatforms, setMostWatchedPlatforms] = useState(buildPlatforms([]));
+  const [playbackStats, setPlaybackStats] = useState(null);
 
   // Single source-of-truth fetch function
   const fetchAnalytics = useCallback(async () => {
     try {
       setRefreshing(true);
-      const [data, channels] = await Promise.all([
+      const [data, channels, playback] = await Promise.all([
         dashboardAPI.getStats(),
         adminChannelsAPI.getChannels().catch(() => []),
+        adminControlAPI.getPlaybackAnalytics(7).catch(() => null),
       ]);
       setStats(buildStats(data));
       setMostWatchedPlatforms(buildPlatforms(channels));
+      setPlaybackStats(playback?.summary || null);
     } catch (error) {
       console.error('Failed to fetch analytics stats:', error);
     } finally {
@@ -132,6 +135,31 @@ const AnalyticsSection = ({ isActive }) => {
           tintColor="#2563eb"
         />
       }>
+      {playbackStats ? (
+        <View style={styles.playbackCard}>
+          <Text style={styles.sectionTitle}>Playback (7 days)</Text>
+          <View style={styles.playbackGrid}>
+            <View style={styles.playbackStat}>
+              <Text style={styles.playbackValue}>{formatNumber(playbackStats.channelOpens)}</Text>
+              <Text style={styles.playbackLabel}>Channel opens</Text>
+            </View>
+            <View style={styles.playbackStat}>
+              <Text style={styles.playbackValue}>{formatNumber(playbackStats.streamFailures)}</Text>
+              <Text style={styles.playbackLabel}>Stream failures</Text>
+            </View>
+            <View style={styles.playbackStat}>
+              <Text style={styles.playbackValue}>{formatNumber(playbackStats.playerCrashes)}</Text>
+              <Text style={styles.playbackLabel}>Crashes</Text>
+            </View>
+            <View style={styles.playbackStat}>
+              <Text style={styles.playbackValue}>
+                {formatNumber(Math.round((playbackStats.totalWatchSeconds || 0) / 60))}
+              </Text>
+              <Text style={styles.playbackLabel}>Watch min</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
       {/* Stats Cards */}
       <View style={styles.statsContainer}>
         {stats.map((stat, index) => (
@@ -317,6 +345,41 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  playbackCard: {
+    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#1f2937',
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  playbackGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  playbackStat: {
+    width: (width - 64) / 2,
+    backgroundColor: 'rgba(31, 41, 55, 0.5)',
+    borderRadius: 12,
+    padding: 12,
+  },
+  playbackValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  playbackLabel: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginTop: 4,
   },
 });
 

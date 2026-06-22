@@ -2,6 +2,7 @@ package com.eamax
 
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Build
@@ -14,7 +15,6 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -60,6 +60,9 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private var adminAudioLanguage: String = AudioLanguageSupport.DEFAULT
     /** User-selected language (Swahili or English); starts from admin default. */
     private var selectedAudioLanguage: String = AudioLanguageSupport.DEFAULT
+    private var channelId: Int = 0
+    private var watchStartedAt: Long = 0L
+    private lateinit var btnPlayerSettings: ImageButton
 
     /** Close player silently on fatal playback errors (no technician popup). */
     private fun showChannelUnavailableAndFinish() {
@@ -68,88 +71,109 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         finish()
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    private lateinit var webContainer: FrameLayout
+    private lateinit var playerView: PlayerView
+    private lateinit var close: ImageButton
 
-        // FULL_USER honors system rotation lock (often traps player in portrait). FULL_SENSOR + manifest
-        // fullSensor tracks physical rotation for proper landscape fullscreen playback.
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        applyImmersiveFullscreen()
-
-        setContentView(R.layout.activity_native_player)
-
-        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            hasBeenLandscapeThisSession = true
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (!::playerManager.isInitialized) return
+        Log.d(TAG, "New channel — reloading player")
+        teardownPlayback()
+        if (!startPlaybackFromIntent(intent)) {
+            showChannelUnavailableAndFinish()
         }
+    }
 
-        val extras = intent.extras
-        if (extras == null) {
-            finish()
-            return
+    private fun teardownPlayback() {
+        phoneHintAnimator?.cancel()
+        phoneHintAnimator = null
+        if (::playerManager.isInitialized) {
+            playerManager.release()
         }
+        webViewSurfaceAttached = false
+        playbackReady = false
+        exoBoundToView = false
+        okoaAppliedOnTracks = false
+        unavailableDialogShown = false
+        hidePlayControls()
+        hideRotateHintOverlay()
+        if (::webContainer.isInitialized) {
+            webContainer.removeAllViews()
+            webContainer.visibility = View.GONE
+        }
+        if (::playerView.isInitialized) {
+            playerView.player = null
+            playerView.visibility = View.VISIBLE
+        }
+        showWebLoadingOverlay()
+    }
 
+    private fun startPlaybackFromIntent(intent: Intent): Boolean {
+        val extras = intent.extras ?: return false
         val sessions = try {
             StreamSessionBuilder.fromFlutterBundleWithFallbacks(extras)
         } catch (e: Exception) {
             Log.e(TAG, "Invalid playback bundle", e)
-            showChannelUnavailableAndFinish()
-            return
+            return false
         }
+        if (sessions.isEmpty() || sessions.first().mpdUrl.isEmpty()) return false
 
-        if (sessions.isEmpty() || sessions.first().mpdUrl.isEmpty()) {
-            showChannelUnavailableAndFinish()
-            return
-        }
+        channelId = intent.getIntExtra("channelId", 0)
+        applyPlayerPolicyFromIntent(intent)
 
         val session = sessions.first()
-
-        val playerView = findViewById<PlayerView>(R.id.player_view).apply {
-            applyResizeModeForOrientation()
-            setKeepScreenOn(true)
-            // Enable secure surface for DRM content to support Widevine L1
-            if (session.drmType != DrmType.NONE) {
-                (videoSurfaceView as? SurfaceView)?.setSecure(true)
-                Log.d(TAG, "Secure surface enabled for DRM: ${session.drmType}")
-            }
+        if (::playerView.isInitialized && session.drmType != DrmType.NONE) {
+            (playerView.videoSurfaceView as? SurfaceView)?.setSecure(true)
         }
-        val webContainer = findViewById<FrameLayout>(R.id.webview_container)
-        webLoadingOverlay = findViewById(R.id.web_loading_overlay)
-        rotateHintOverlay = findViewById(R.id.rotate_hint_overlay)
-        rotateHintPhone = findViewById(R.id.rotate_hint_phone)
-        findViewById<Button>(R.id.btn_rotate_hint_later).setOnClickListener {
-            rotateHintDismissedThisSession = true
-            hideRotateHintOverlay()
-        }
-        findViewById<Button>(R.id.btn_rotate_hint_never).setOnClickListener {
-            RotateHintPreferences.setNeverShowHint(this, true)
-            rotateHintDismissedThisSession = true
-            hideRotateHintOverlay()
-        }
-
-        val close = findViewById<ImageButton>(R.id.btn_close)
-        close.setOnClickListener { finish() }
-        val playerLanguage = findViewById<ImageButton>(R.id.btn_player_language)
-        playerLanguage.setOnClickListener { showLanguageDialog() }
-        val playerSettings = findViewById<ImageButton>(R.id.btn_player_settings)
-        playerSettings.setOnClickListener { showOkoaQualityDialog() }
-        val topActions = findViewById<LinearLayout>(R.id.player_top_actions)
-        applyTopActionInsets(topActions)
-
-        showWebLoadingOverlay()
 
         val channelEngine = intent.getStringExtra("playbackEngine")?.trim().orEmpty()
+        PlayerEnginePolicy.clearSessionEngine()
         if (channelEngine.isNotEmpty()) {
             PlayerEnginePolicy.setSessionEngine(channelEngine)
             Log.d(TAG, "Per-channel playback engine: $channelEngine")
         }
-        adminAudioLanguage = AudioLanguageSupport.normalize(
-            intent.getStringExtra("audioLanguage"),
-        )
+        adminAudioLanguage = AudioLanguageSupport.normalize(intent.getStringExtra("audioLanguage"))
         selectedAudioLanguage = adminAudioLanguage
         selectedOkoaQuality = RemotePlayerConfigHolder.defaultStreamQuality()
 
-        playerManager = PlayerManager(
+        playerManager = buildPlayerManager()
+        playerManager.initializeWithFailover(sessions)
+        return true
+    }
+
+    private fun applyPlayerPolicyFromIntent(intent: Intent) {
+        val policyJson = intent.getStringExtra("playerPolicyJson")?.trim().orEmpty()
+        if (policyJson.isEmpty()) return
+        try {
+            val obj = org.json.JSONObject(policyJson)
+            RemotePlayerConfigHolder.update(
+                preferredEngine = obj.optString("preferredEngine", null),
+                bufferMinMs = obj.optInt("bufferMinMs").takeIf { obj.has("bufferMinMs") },
+                bufferMaxMs = obj.optInt("bufferMaxMs").takeIf { obj.has("bufferMaxMs") },
+                initialBufferMs = obj.optInt("initialBufferMs").takeIf { obj.has("initialBufferMs") },
+                retryMax = obj.optInt("retryMax").takeIf { obj.has("retryMax") },
+                retryDelayMs = obj.optInt("retryDelayMs").takeIf { obj.has("retryDelayMs") },
+                failoverToWebview = if (obj.has("failoverToWebview")) obj.optBoolean("failoverToWebview") else null,
+                reconnectEnabled = if (obj.has("reconnectEnabled")) obj.optBoolean("reconnectEnabled") else null,
+                autoPlay = if (obj.has("autoPlay")) obj.optBoolean("autoPlay") else null,
+                defaultQuality = obj.optString("defaultQuality", null),
+                hardwareAcceleration = if (obj.has("hardwareAcceleration")) obj.optBoolean("hardwareAcceleration") else null,
+                softwareDecodeFallback = if (obj.has("softwareDecodeFallback")) obj.optBoolean("softwareDecodeFallback") else null,
+                backgroundPlayback = if (obj.has("backgroundPlayback")) obj.optBoolean("backgroundPlayback") else null,
+                resumePlayback = if (obj.has("resumePlayback")) obj.optBoolean("resumePlayback") else null,
+                networkTimeoutMs = obj.optInt("networkTimeoutMs").takeIf { obj.has("networkTimeoutMs") },
+                reconnectionPolicy = obj.optString("reconnectionPolicy", null),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse playerPolicyJson", e)
+        }
+    }
+
+    private fun buildPlayerManager(): PlayerManager = PlayerManager(
             context = this,
+            channelId = channelId,
             onStateChanged = { state ->
                 runOnUiThread {
                     if (playerManager.isWebViewPlayback()) {
@@ -158,9 +182,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 hideWebLoadingOverlay()
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 playerManager.getWebView()?.alpha = 1f
-                                applyDefaultOkoaQuality()
-                                applySelectedAudioLanguage()
-                                scheduleWebViewAudioLanguageRetries()
+                                showPlayControls()
                             }
                             PlaybackState.ENDED -> {
                                 // Ignore ENDED from WebView when Exo took over (live TV handoff).
@@ -217,8 +239,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                         }
                     }
-                    applySelectedAudioLanguage()
                     if (!playerManager.isWebViewPlayback()) {
+                        applySelectedAudioLanguage()
                         scheduleExoAudioLanguageRetries()
                     }
                 }
@@ -231,18 +253,14 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                     okoaAppliedOnTracks = false
                     try {
                         close.bringToFront()
-                        topActions.bringToFront()
                         if (playerManager.isWebViewPlayback()) {
                             playerView.player = null
-                            topActions.visibility = View.VISIBLE
                             playerView.visibility = View.GONE
                             attachWebViewIfNeeded(webContainer, playerView)
+                            hideWebLoadingOverlay()
+                            playerManager.getWebView()?.alpha = 1f
                             if (playerManager.wasWebViewPlaybackStarted()) {
-                                hideWebLoadingOverlay()
-                                playerManager.getWebView()?.alpha = 1f
-                            } else {
-                                showWebLoadingOverlay()
-                                playerManager.getWebView()?.alpha = 0f
+                                showPlayControls()
                             }
                         } else {
                             exoBoundToView = false
@@ -250,11 +268,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             webContainer.visibility = View.GONE
                             webContainer.removeAllViews()
                             playerView.visibility = View.VISIBLE
-                            topActions.visibility = View.VISIBLE
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)
+                            showPlayControls()
                         }
-                        applySelectedAudioLanguage()
+                        if (!playerManager.isWebViewPlayback()) {
+                            applySelectedAudioLanguage()
+                        }
                         maybeShowRotateHint()
                     } catch (e: Exception) {
                         Log.e(TAG, "onReady", e)
@@ -263,7 +283,45 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 }
             },
         )
-        playerManager.initializeWithFailover(sessions)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        applyImmersiveFullscreen()
+        setContentView(R.layout.activity_native_player)
+
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            hasBeenLandscapeThisSession = true
+        }
+
+        playerView = findViewById<PlayerView>(R.id.player_view).apply {
+            applyResizeModeForOrientation()
+            setKeepScreenOn(true)
+        }
+        webContainer = findViewById(R.id.webview_container)
+        webLoadingOverlay = findViewById(R.id.web_loading_overlay)
+        rotateHintOverlay = findViewById(R.id.rotate_hint_overlay)
+        rotateHintPhone = findViewById(R.id.rotate_hint_phone)
+        findViewById<Button>(R.id.btn_rotate_hint_later).setOnClickListener {
+            rotateHintDismissedThisSession = true
+            hideRotateHintOverlay()
+        }
+        findViewById<Button>(R.id.btn_rotate_hint_never).setOnClickListener {
+            RotateHintPreferences.setNeverShowHint(this, true)
+            rotateHintDismissedThisSession = true
+            hideRotateHintOverlay()
+        }
+
+        close = findViewById(R.id.btn_close)
+        close.setOnClickListener { finish() }
+        btnPlayerSettings = findViewById(R.id.btn_player_settings)
+        btnPlayerSettings.setOnClickListener { showPlayerSettingsDialog() }
+        applyPlayControlInsets(btnPlayerSettings)
+
+        showWebLoadingOverlay()
+        if (!startPlaybackFromIntent(intent)) {
+            showChannelUnavailableAndFinish()
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -320,42 +378,19 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     }
 
     private fun PlayerView.applyResizeModeForOrientation() {
-        // Landscape: zoom so video fills the display (true “fullscreen”); portrait: letterbox-fit.
-        resizeMode = when (resources.configuration.orientation) {
-            Configuration.ORIENTATION_LANDSCAPE ->
-                AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-        }
+        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
     }
 
     private fun syncExoVideoScalingForOrientation() {
         if (!::playerManager.isInitialized || playerManager.isWebViewPlayback()) return
         val p = playerManager.getExoPlayer() ?: return
-        p.videoScalingMode = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
-        } else {
-            C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-        }
+        p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
     }
 
     private fun syncWebViewVideoFitForOrientation() {
         if (!::playerManager.isInitialized || !playerManager.isWebViewPlayback()) return
-        val fit = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            "cover"
-        } else {
-            "contain"
-        }
-        playerManager.getWebView()?.evaluateJavascript(
-            """
-            (function(){
-              var fit='$fit';
-              document.querySelectorAll('video,.shaka-video,.video-js,.shaka-video-container').forEach(function(el){
-                el.style.objectFit=fit;
-              });
-            })();
-            """.trimIndent(),
-            null,
-        )
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        playerManager.centerWebViewVideo(landscape)
     }
 
     private fun maybeShowRotateHint() {
@@ -371,9 +406,22 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private fun showWebLoadingOverlay() {
         if (::webLoadingOverlay.isInitialized) {
             webLoadingOverlay.visibility = View.VISIBLE
-            webLoadingOverlay.bringToFront()
+            hidePlayControls()
             findViewById<ImageButton>(R.id.btn_close)?.bringToFront()
-            findViewById<LinearLayout>(R.id.player_top_actions)?.bringToFront()
+        }
+    }
+
+    private fun showPlayControls() {
+        if (!::btnPlayerSettings.isInitialized || isFinishing) return
+        if (::webLoadingOverlay.isInitialized && webLoadingOverlay.visibility == View.VISIBLE) return
+        btnPlayerSettings.visibility = View.VISIBLE
+        findViewById<ImageButton>(R.id.btn_close)?.bringToFront()
+        btnPlayerSettings.bringToFront()
+    }
+
+    private fun hidePlayControls() {
+        if (::btnPlayerSettings.isInitialized) {
+            btnPlayerSettings.visibility = View.GONE
         }
     }
 
@@ -395,26 +443,45 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyTopActionInsets(topActions: LinearLayout) {
-        val baseTop = (16 * resources.displayMetrics.density).toInt()
-        ViewCompat.setOnApplyWindowInsetsListener(topActions) { v, insets ->
-            val top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+    private fun applyPlayControlInsets(controls: View) {
+        val baseBottom = (20 * resources.displayMetrics.density).toInt()
+        val baseEnd = (16 * resources.displayMetrics.density).toInt()
+        ViewCompat.setOnApplyWindowInsetsListener(controls) { v, insets ->
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             val lp = v.layoutParams as? FrameLayout.LayoutParams
             if (lp != null) {
-                lp.topMargin = baseTop + top
+                lp.bottomMargin = baseBottom + bottom
+                lp.marginEnd = baseEnd
                 v.layoutParams = lp
             }
             insets
         }
-        ViewCompat.requestApplyInsets(topActions)
+        ViewCompat.requestApplyInsets(controls)
+    }
+
+    private fun showPlayerSettingsDialog() {
+        val options = arrayOf(
+            getString(R.string.player_settings_language),
+            getString(R.string.player_settings_quality),
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.player_settings)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showLanguageDialog()
+                    1 -> showOkoaQualityDialog()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun applyDefaultOkoaQuality() {
         playerManager.setQuality(selectedOkoaQuality, fromUser = false)
     }
 
-    private fun applySelectedAudioLanguage() {
-        playerManager.setAudioLanguage(selectedAudioLanguage)
+    private fun applySelectedAudioLanguage(fromUser: Boolean = false) {
+        playerManager.setAudioLanguage(selectedAudioLanguage, fromUser = fromUser)
     }
 
     private fun scheduleWebViewAudioLanguageRetries() {
@@ -427,7 +494,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
     private fun scheduleAudioLanguageRetries(requireWebView: Boolean) {
         val handler = window.decorView.handler ?: return
-        listOf(800L, 2000L, 4500L, 8000L).forEach { delayMs ->
+        listOf(2000L, 5000L).forEach { delayMs ->
             handler.postDelayed({
                 if (isFinishing) return@postDelayed
                 if (requireWebView != playerManager.isWebViewPlayback()) return@postDelayed
@@ -445,28 +512,18 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             if (it >= 0) it else 0
         }
         AlertDialog.Builder(this)
-            .setTitle(R.string.pick_language)
+            .setTitle(R.string.badili_lugha)
             .setSingleChoiceItems(
                 options.map { it.second }.toTypedArray(),
                 initial,
             ) { d, which ->
                 selectedAudioLanguage = options[which].first
-                applySelectedAudioLanguage()
-                scheduleLanguageSwitchRetries()
+                Log.d(TAG, "User picked audio language: $selectedAudioLanguage")
+                applySelectedAudioLanguage(fromUser = true)
                 d.dismiss()
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
-    }
-
-    private fun scheduleLanguageSwitchRetries() {
-        val handler = window.decorView.handler ?: return
-        listOf(400L, 1200L, 3000L, 6000L).forEach { delayMs ->
-            handler.postDelayed({
-                if (isFinishing) return@postDelayed
-                applySelectedAudioLanguage()
-            }, delayMs)
-        }
     }
 
     private fun showOkoaQualityDialog() {
@@ -486,6 +543,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 initial,
             ) { d, which ->
                 selectedOkoaQuality = qualities[which]
+                Log.d(TAG, "User picked quality: $selectedOkoaQuality")
                 playerManager.setQuality(selectedOkoaQuality, fromUser = true)
                 d.dismiss()
             }
@@ -547,11 +605,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             playerView.player = p
             p.volume = 1f
             p.playWhenReady = true
-            p.videoScalingMode = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
-            } else {
-                C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-            }
+            p.videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
             exoBoundToView = true
         } catch (e: Exception) {
             Log.e(TAG, "bindExoToPlayerViewIfNeeded", e)

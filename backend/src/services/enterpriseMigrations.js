@@ -2,20 +2,29 @@ const fs = require('fs');
 const path = require('path');
 const { query } = require('../db');
 
-const MIGRATION_FILE = path.join(__dirname, '../../sql/migrations/010_enterprise_control_plane.sql');
+const MIGRATIONS_DIR = path.join(__dirname, '../../sql/migrations');
+const MIGRATION_FILES = [
+  '010_enterprise_control_plane.sql',
+  '011_add_channel_audio_language.sql',
+  '012_player_system_v3.sql',
+];
 
 let ran = false;
 
 async function runEnterpriseMigrations() {
   if (ran) return;
   ran = true;
-  try {
-    const sql = fs.readFileSync(MIGRATION_FILE, 'utf8');
-    await query(sql);
-    // eslint-disable-next-line no-console
-    console.log('[Migrations] Enterprise control plane schema OK');
-  } catch (err) {
-    console.warn('[Migrations] Enterprise control plane (non-fatal):', err.message || err);
+  for (const file of MIGRATION_FILES) {
+    const migrationPath = path.join(MIGRATIONS_DIR, file);
+    if (!fs.existsSync(migrationPath)) continue;
+    try {
+      const sql = fs.readFileSync(migrationPath, 'utf8');
+      await query(sql);
+      // eslint-disable-next-line no-console
+      console.log(`[Migrations] ${file} OK`);
+    } catch (err) {
+      console.warn(`[Migrations] ${file} (non-fatal):`, err.message || err);
+    }
   }
 }
 

@@ -40,6 +40,7 @@
         <activity
             android:name=".EaMaxNativePlayerActivity"
             android:exported="false"
+            android:launchMode="singleTop"
             android:theme="@style/NativePlayerTheme"
             android:screenOrientation="fullSensor"
             android:resizeableActivity="true"

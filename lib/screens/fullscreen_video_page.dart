@@ -16,7 +16,6 @@ import '../player/web_player_html.dart';
 import '../player/web_stream_probe.dart';
 import '../widgets/chewie_video_player_view.dart';
 import '../widgets/native_video_player_view.dart';
-import '../widgets/webrtc_player_view.dart';
 import '../widgets/web_embedded_player.dart';
 import '../utils/player_orientation.dart';
 
@@ -26,6 +25,7 @@ class FullscreenVideoPage extends StatefulWidget {
     super.key,
     required this.videoUrl,
     this.channelName,
+    this.channelId,
     this.httpHeaders,
     this.drmType,
     this.licenseUrl,
@@ -33,10 +33,12 @@ class FullscreenVideoPage extends StatefulWidget {
     this.playbackToken,
     this.playbackMode = FlutterPlaybackMode.mediaKit,
     this.audioLanguage = 'sw',
+    this.defaultQuality = '360p',
   });
 
   final String videoUrl;
   final String? channelName;
+  final int? channelId;
   /// Optional HTTP headers for manifest/segment requests (e.g. Referer, Authorization).
   final Map<String, String>? httpHeaders;
   /// Server DRM settings — used by Flutter Web player (ClearKey / Widevine).
@@ -48,6 +50,8 @@ class FullscreenVideoPage extends StatefulWidget {
   final FlutterPlaybackMode playbackMode;
   /// Admin-set stream audio language (`auto` = player default).
   final String audioLanguage;
+  /// Admin default quality from Control Center / per-channel override.
+  final String defaultQuality;
 
   @override
   State<FullscreenVideoPage> createState() => _FullscreenVideoPageState();
@@ -67,6 +71,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   bool _isPlaying = false;
   bool _playbackConfirmed = false;
   bool _unavailableNotified = false;
+  bool _showControls = false;
+  Timer? _controlsTimer;
 
   /// First multi-track manifest: default to ~360p (“Okoa bando”) unless user changed quality.
   bool _appliedDefaultOkoa360 = false;
@@ -129,8 +135,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       return;
     }
     if (widget.playbackMode == FlutterPlaybackMode.chewie ||
-        widget.playbackMode == FlutterPlaybackMode.nativeVideo ||
-        widget.playbackMode == FlutterPlaybackMode.webrtc) {
+        widget.playbackMode == FlutterPlaybackMode.nativeVideo) {
       setState(() => _loading = false);
       return;
     }
@@ -150,6 +155,26 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await _notifyUnavailableAndExit();
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _showControlsTemporarily() {
+    _controlsTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _showControls = true);
+    _controlsTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (!mounted) return;
+      setState(() => _showControls = false);
+    });
+  }
+
+  void _toggleControls() {
+    if (!mounted) return;
+    if (_showControls) {
+      _controlsTimer?.cancel();
+      setState(() => _showControls = false);
+    } else {
+      _showControlsTemporarily();
     }
   }
 
@@ -350,15 +375,16 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       AudioTrack? fallback;
       for (final track in tracks.audio) {
         final trackLang = track.language?.trim().toLowerCase() ?? '';
-        if (trackLang.isEmpty) continue;
         if (_audioLangMatches(trackLang, lang)) {
           await p.setAudioTrack(track);
           return;
         }
-        if (fallback == null) fallback = track;
+        fallback ??= track;
       }
-      if (fallback != null && lang == 'sw') {
-        await p.setAudioTrack(fallback);
+      if (fallback != null) {
+        if (tracks.audio.length == 1 || lang == 'sw') {
+          await p.setAudioTrack(fallback);
+        }
       }
     } catch (e, st) {
       debugPrint('Admin audio language: $e\n$st');
@@ -385,18 +411,39 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
 
   void _maybeApplyDefaultOkoa360() {
     if (!mounted || _webView || _userChoseOkoaQuality || _appliedDefaultOkoa360) return;
-    final p = _player;
-    if (p == null) return;
-    try {
-      final videos = p.state.tracks.video.where((t) => (t.h ?? 0) > 0).toList();
-      if (videos.isEmpty) return;
-      if (videos.length >= 2) {
-        unawaited(_selectVideoTrackNearestMaxHeight(360));
+    final targetHeight = _qualityToHeight(widget.defaultQuality);
+    if (targetHeight <= 0) {
+      _appliedDefaultOkoa360 = true;
+      return;
+    }
+    final tracks = _player?.state.tracks.video ?? [];
+    if (tracks.length > 1) {
+      if (mounted) {
+        unawaited(_selectVideoTrackNearestMaxHeight(targetHeight));
       }
       _appliedDefaultOkoa360 = true;
-    } catch (e, st) {
-      debugPrint('Okoa default track: $e\n$st');
+    } else if (tracks.isNotEmpty) {
       _appliedDefaultOkoa360 = true;
+    }
+  }
+
+  int _qualityToHeight(String quality) {
+    switch (quality.toLowerCase().trim()) {
+      case 'auto':
+        return 0;
+      case '240p':
+        return 240;
+      case '480p':
+        return 480;
+      case '720p':
+        return 720;
+      case '1080p':
+      case '2k':
+        return 1080;
+      case '4k':
+        return 2160;
+      default:
+        return 360;
     }
   }
 
@@ -473,6 +520,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     final p = _player;
     if (p != null) {
       await _maybeApplyAdminAudioLanguage(p.state.tracks);
+      _showControlsTemporarily();
     }
   }
 
@@ -528,6 +576,45 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     } else {
       await _applyOkoaChoice(auto: false, maxHeight: choice);
     }
+    _showControlsTemporarily();
+  }
+
+  Future<void> _showPlayerSettingsSheet() async {
+    final selection = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xE6202020),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'MIPANGILIO YA PLAYER',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
+                ),
+              ),
+              ListTile(
+                title: const Text('Lugha', style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx, 'language'),
+              ),
+              ListTile(
+                title: const Text('Ubora', style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(ctx, 'quality'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || selection == null) return;
+    if (selection == 'language') {
+      await _showLanguageSheet();
+    } else if (selection == 'quality') {
+      await _showOkoaQualitySheet();
+    }
   }
 
   Future<void> _switchToWebView() async {
@@ -541,6 +628,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     } catch (_) {}
     _player = null;
     _videoController = null;
+    _showControls = false;
+    _controlsTimer?.cancel();
 
     _webView = true;
     setState(() {
@@ -610,23 +699,9 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
             }
           },
         );
-      case FlutterPlaybackMode.webrtc:
-        return WebRtcPlayerView(
-          url: widget.videoUrl,
-          httpHeaders: widget.httpHeaders ?? const {},
-          onError: (_) => unawaited(_notifyUnavailableAndExit()),
-          onPlaying: () {
-            if (mounted) {
-              setState(() {
-                _isPlaying = true;
-                _playbackConfirmed = true;
-                _loading = false;
-              });
-            }
-          },
-        );
       case FlutterPlaybackMode.shaka:
       case FlutterPlaybackMode.mediaKit:
+      case FlutterPlaybackMode.webrtc:
         if (_useWebPlayer) {
           return WebEmbeddedPlayer(
             config: WebPlaybackConfig(
@@ -675,6 +750,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_tracksSub?.cancel());
     unawaited(_playingSub?.cancel());
+    _controlsTimer?.cancel();
     WakelockPlus.disable();
     unawaited(PlayerOrientation.exitFullscreenPlayer());
     _player?.dispose();
@@ -712,6 +788,17 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
               ),
               if (_loading)
                 const Center(child: CircularProgressIndicator()),
+              if (widget.playbackMode == FlutterPlaybackMode.mediaKit &&
+                  !_webView &&
+                  !_useWebPlayer &&
+                  _player != null)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: _toggleControls,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
               Padding(
                 padding: controlPad,
                 child: Align(
@@ -727,32 +814,17 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
                   !_useWebPlayer &&
                   _player != null)
                 Padding(
-                  padding: controlPad,
+                  padding: controlPad.copyWith(top: 0, left: 0).add(const EdgeInsets.only(bottom: 20, right: 16)),
                   child: Align(
-                    alignment: Alignment.topRight,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Material(
-                          color: Colors.black.withValues(alpha: 0.55),
-                          shape: const CircleBorder(),
-                          child: IconButton(
-                            tooltip: 'Badili Lugha',
-                            icon: const Icon(Icons.language, color: Colors.white),
-                            onPressed: _showLanguageSheet,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Material(
-                          color: Colors.black.withValues(alpha: 0.55),
-                          shape: const CircleBorder(),
-                          child: IconButton(
-                            tooltip: 'Mipangilio',
-                            icon: const Icon(Icons.settings, color: Colors.white),
-                            onPressed: _showOkoaQualitySheet,
-                          ),
-                        ),
-                      ],
+                    alignment: Alignment.bottomRight,
+                    child: Material(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        tooltip: 'Mipangilio ya Player',
+                        icon: const Icon(Icons.settings, color: Colors.white),
+                        onPressed: _showPlayerSettingsSheet,
+                      ),
                     ),
                   ),
                 ),

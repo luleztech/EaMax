@@ -1,3 +1,5 @@
+import 'remote_config_bundle.dart';
+
 class ChannelPlaybackBundle {
   const ChannelPlaybackBundle({
     required this.channelId,
@@ -6,6 +8,8 @@ class ChannelPlaybackBundle {
     this.playbackEngine,
     this.effectiveEngine,
     this.audioLanguage,
+    this.streamType,
+    this.playerConfig,
   });
 
   final int channelId;
@@ -17,6 +21,8 @@ class ChannelPlaybackBundle {
   final String? effectiveEngine;
   /// Admin-set stream audio language (`auto` = player default).
   final String? audioLanguage;
+  final String? streamType;
+  final RemotePlayerConfig? playerConfig;
 
   PlaybackStream? get primary =>
       streams.isNotEmpty ? streams.first : null;
@@ -38,6 +44,10 @@ class ChannelPlaybackBundle {
             : null) ??
         playbackEngine;
     final audioLanguage = _readAudioLanguage(json['audioLanguage'] ?? json['audio_language']);
+    final playerConfigRaw = json['playerConfig'] ?? json['playbackPolicy'];
+    final playerConfig = playerConfigRaw is Map
+        ? RemotePlayerConfig.fromJson(Map<String, dynamic>.from(playerConfigRaw))
+        : null;
     return ChannelPlaybackBundle(
       channelId: int.tryParse('${json['channelId']}') ?? 0,
       name: json['name']?.toString() ?? '',
@@ -45,6 +55,8 @@ class ChannelPlaybackBundle {
       playbackEngine: playbackEngine,
       effectiveEngine: effectiveEngine,
       audioLanguage: audioLanguage,
+      streamType: json['streamType']?.toString(),
+      playerConfig: playerConfig,
     );
   }
 
@@ -59,7 +71,12 @@ class ChannelPlaybackBundle {
     if (raw == null) return 'sw';
     final lang = raw.toString().trim().toLowerCase();
     if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
-    return lang == 'en' ? 'en' : 'sw';
+    const allowed = {'sw', 'en', 'ar', 'fr', 'multi'};
+    if (allowed.contains(lang)) return lang;
+    if (lang.startsWith('en')) return 'en';
+    if (lang.startsWith('ar')) return 'ar';
+    if (lang.startsWith('fr')) return 'fr';
+    return 'sw';
   }
 
   /// Maps v2 stream fields to the legacy channelData shape used by playback helpers.

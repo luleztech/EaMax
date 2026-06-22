@@ -10,6 +10,8 @@ import '../config/payment_helpers.dart';
 import '../models/carousel_slide.dart';
 import '../models/channel_playback.dart';
 import '../models/channel_ui.dart';
+import '../player/core/playback_orchestrator.dart';
+import '../player/core/playback_session.dart';
 import '../services/player_playback_service.dart';
 import '../screens/payments_screen.dart';
 import '../screens/profile_screen.dart';
@@ -587,14 +589,30 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   Future<void> _openVideoPlayback({
     required String url,
     String? channelName,
+    int? channelId,
     Map<String, dynamic>? channelData,
     List<PlaybackStream>? fallbackStreams,
     String? playbackEngineOverride,
+    ChannelPlaybackBundle? playbackBundle,
   }) async {
+    if (playbackBundle != null) {
+      final session = PlaybackSession.fromBundle(playbackBundle);
+      await PlaybackOrchestrator.instance.openSession(
+        context: context,
+        session: session,
+        extractClearKey: _extractClearKeyPayload,
+        normalizeDrm: _normalizedDrmType,
+        extractToken: _extractPlaybackToken,
+        extractHeaders: _extractPlaybackHeaders,
+        extractAudioLanguage: _extractAudioLanguage,
+      );
+      return;
+    }
     await PlayerPlaybackService.open(
       context: context,
       url: url,
       channelName: channelName,
+      channelId: channelId,
       channelData: channelData,
       fallbackStreams: fallbackStreams,
       playbackEngineOverride: playbackEngineOverride,
@@ -670,7 +688,12 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final raw = channelData['audioLanguage'] ?? channelData['audio_language'];
     final lang = raw?.toString().trim().toLowerCase() ?? '';
     if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
-    return lang == 'en' ? 'en' : 'sw';
+    const allowed = {'sw', 'en', 'ar', 'fr', 'multi'};
+    if (allowed.contains(lang)) return lang;
+    if (lang.startsWith('en')) return 'en';
+    if (lang.startsWith('ar')) return 'ar';
+    if (lang.startsWith('fr')) return 'fr';
+    return 'sw';
   }
 
   /// ClearKey payload: hex string or JSON `{"keys":[...]}` from API (never shown to users).
@@ -789,15 +812,24 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         ch.id,
         playback.channelDataForStream(stream),
       );
-      final backups = playback.streams.length > 1
-          ? playback.streams.sublist(1)
-          : null;
+      final enriched = ChannelPlaybackBundle(
+        channelId: playback.channelId,
+        name: playback.name,
+        streams: playback.streams,
+        playbackEngine: playback.playbackEngine,
+        effectiveEngine: playback.effectiveEngine,
+        audioLanguage: _extractAudioLanguage(channelData),
+        streamType: playback.streamType,
+        playerConfig: playback.playerConfig,
+      );
+      _channelDataCache[ch.id] = Map<String, dynamic>.from(channelData);
+      _channelDataCacheTime[ch.id] = DateTime.now();
       await _openVideoPlayback(
         url: stream.url,
         channelName: ch.name,
+        channelId: ch.id,
         channelData: channelData,
-        fallbackStreams: backups,
-        playbackEngineOverride: playback.effectiveEngine,
+        playbackBundle: enriched,
       );
       return;
     }
@@ -815,6 +847,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       await _openVideoPlayback(
         url: quickUrl,
         channelName: ch.name,
+        channelId: ch.id,
         channelData: channelData,
         playbackEngineOverride: _playbackEngineFromData(channelData),
       );
@@ -831,6 +864,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       await _openVideoPlayback(
         url: legacyUrl,
         channelName: ch.name,
+        channelId: ch.id,
         channelData: channelData,
         playbackEngineOverride: _playbackEngineFromData(legacy ?? ch.apiRow),
       );
@@ -855,31 +889,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     if (canPlay) {
       if (_isChannelDisabledByEmergency(ch.id)) {
         if (mounted) await showChannelUnavailableModal(context);
-        return;
-      }
-
-      final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
-      final quickData = cachedData ?? ch.apiRow;
-      final quickUrl = _channelExternalUrl(ch, quickData);
-
-      // Instant open when list already has URL — always fetch fresh admin audio language.
-      if (quickUrl.isNotEmpty) {
-        unawaited(() async {
-          final channelData = await _mergeFreshAudioLanguage(
-            ch.id,
-            quickData != null
-                ? Map<String, dynamic>.from(quickData)
-                : ch.apiRow,
-          );
-          if (!mounted) return;
-          await _openVideoPlayback(
-            url: quickUrl,
-            channelName: ch.name,
-            channelData: channelData,
-            playbackEngineOverride: _playbackEngineFromData(channelData),
-          );
-        }());
-        unawaited(_resolveChannelPlayback(ch));
         return;
       }
 

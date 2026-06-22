@@ -118,7 +118,7 @@ class PlayerEngine {
       case nativeVideo:
         return FlutterPlaybackMode.nativeVideo;
       case webrtc:
-        return FlutterPlaybackMode.webrtc;
+        return FlutterPlaybackMode.mediaKit;
       default:
         return null;
     }

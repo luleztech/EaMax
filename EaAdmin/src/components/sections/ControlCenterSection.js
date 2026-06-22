@@ -116,11 +116,27 @@ const ControlCenterSection = () => {
     retryDelayMs: '1200',
     bufferMinMs: '800',
     bufferMaxMs: '12000',
+    initialBufferMs: '1500',
     reconnectEnabled: true,
     autoPlay: true,
     defaultQuality: '360p',
     failoverToWebview: true,
+    hardwareAcceleration: true,
+    softwareDecodeFallback: true,
+    backgroundPlayback: false,
+    resumePlayback: true,
+    networkTimeoutMs: '15000',
+    reconnectionPolicy: 'balanced',
   });
+
+  const [emergency, setEmergency] = useState({
+    maintenanceMode: false,
+    maintenanceMessageSw: '',
+    disablePayments: false,
+    disableChannels: false,
+    disabledChannelIds: '',
+  });
+  const [savingEmergency, setSavingEmergency] = useState(false);
 
   const showStatus = (title, message) => {
     setStatusModalTitle(title);
@@ -130,7 +146,10 @@ const ControlCenterSection = () => {
 
   const load = useCallback(async () => {
     try {
-      const playerRes = await adminControlAPI.getPlayerConfig();
+      const [playerRes, emergencyRes] = await Promise.all([
+        adminControlAPI.getPlayerConfig(),
+        adminControlAPI.getEmergencyControls(),
+      ]);
       const pc = playerRes?.config || {};
       setPlayerConfig({
         preferredEngine: normalizePlayerEngine(pc.preferredEngine) === 'default'
@@ -140,10 +159,27 @@ const ControlCenterSection = () => {
         retryDelayMs: String(pc.retryDelayMs ?? 1200),
         bufferMinMs: String(pc.bufferMinMs ?? 800),
         bufferMaxMs: String(pc.bufferMaxMs ?? 12000),
+        initialBufferMs: String(pc.initialBufferMs ?? 1500),
         reconnectEnabled: pc.reconnectEnabled !== false,
         autoPlay: pc.autoPlay !== false,
         defaultQuality: pc.defaultQuality || '360p',
         failoverToWebview: pc.failoverToWebview !== false,
+        hardwareAcceleration: pc.hardwareAcceleration !== false,
+        softwareDecodeFallback: pc.softwareDecodeFallback !== false,
+        backgroundPlayback: pc.backgroundPlayback === true,
+        resumePlayback: pc.resumePlayback !== false,
+        networkTimeoutMs: String(pc.networkTimeoutMs ?? 15000),
+        reconnectionPolicy: pc.reconnectionPolicy || 'balanced',
+      });
+      const ec = emergencyRes?.controls || {};
+      setEmergency({
+        maintenanceMode: ec.maintenanceMode === true,
+        maintenanceMessageSw: ec.maintenanceMessageSw || '',
+        disablePayments: ec.disablePayments === true,
+        disableChannels: ec.disableChannels === true,
+        disabledChannelIds: Array.isArray(ec.disabledChannelIds)
+          ? ec.disabledChannelIds.join(', ')
+          : '',
       });
     } catch (e) {
       showStatus('Hitilafu', e?.message || 'Imeshindwa kupakia');
@@ -172,16 +208,45 @@ const ControlCenterSection = () => {
         retryDelayMs: Number(playerConfig.retryDelayMs) || 1200,
         bufferMinMs: minBuf,
         bufferMaxMs: maxBuf,
+        initialBufferMs: Number(playerConfig.initialBufferMs) || 1500,
         reconnectEnabled: playerConfig.reconnectEnabled,
         autoPlay: playerConfig.autoPlay,
         defaultQuality: playerConfig.defaultQuality || '360p',
         failoverToWebview: playerConfig.failoverToWebview,
+        hardwareAcceleration: playerConfig.hardwareAcceleration,
+        softwareDecodeFallback: playerConfig.softwareDecodeFallback,
+        backgroundPlayback: playerConfig.backgroundPlayback,
+        resumePlayback: playerConfig.resumePlayback,
+        networkTimeoutMs: Number(playerConfig.networkTimeoutMs) || 15000,
+        reconnectionPolicy: playerConfig.reconnectionPolicy || 'balanced',
       });
       showStatus('Imefanikiwa', 'Player imehifadhiwa. Watumiaji wataitumia mara moja.');
     } catch (e) {
       showStatus('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
     } finally {
       setSavingPlayer(false);
+    }
+  };
+
+  const saveEmergency = async () => {
+    setSavingEmergency(true);
+    try {
+      const ids = emergency.disabledChannelIds
+        .split(',')
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      await adminControlAPI.updateEmergencyControls({
+        maintenanceMode: emergency.maintenanceMode,
+        maintenanceMessageSw: emergency.maintenanceMessageSw,
+        disablePayments: emergency.disablePayments,
+        disableChannels: emergency.disableChannels,
+        disabledChannelIds: ids,
+      });
+      showStatus('Imefanikiwa', 'Emergency controls zimehifadhiwa.');
+    } catch (e) {
+      showStatus('Hitilafu', e?.message || 'Imeshindwa kuhifadhi');
+    } finally {
+      setSavingEmergency(false);
     }
   };
 
@@ -310,6 +375,72 @@ const ControlCenterSection = () => {
             </View>
           </View>
 
+          <View style={cardStyles.inputRow}>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Initial buffer (ms)</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.initialBufferMs}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, initialBufferMs: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+            <View style={cardStyles.inputHalf}>
+              <Text style={cardStyles.fieldLabel}>Network timeout (ms)</Text>
+              <TextInput
+                style={cardStyles.input}
+                value={playerConfig.networkTimeoutMs}
+                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, networkTimeoutMs: v }))}
+                keyboardType="number-pad"
+              />
+            </View>
+          </View>
+
+          <Text style={cardStyles.fieldLabel}>Reconnection policy</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            {['aggressive', 'balanced', 'conservative'].map((p) => (
+              <TouchableOpacity
+                key={p}
+                style={[
+                  styles.chip,
+                  playerConfig.reconnectionPolicy === p && styles.chipActive,
+                ]}
+                onPress={() => setPlayerConfig((prev) => ({ ...prev, reconnectionPolicy: p }))}>
+                <Text
+                  style={[
+                    styles.chipText,
+                    playerConfig.reconnectionPolicy === p && styles.chipTextActive,
+                  ]}>
+                  {p}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <ToggleRow
+            label="Hardware acceleration"
+            value={playerConfig.hardwareAcceleration}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, hardwareAcceleration: v }))}
+          />
+
+          <ToggleRow
+            label="Software decode fallback"
+            value={playerConfig.softwareDecodeFallback}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, softwareDecodeFallback: v }))}
+          />
+
+          <ToggleRow
+            label="Resume playback"
+            value={playerConfig.resumePlayback}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, resumePlayback: v }))}
+          />
+
+          <ToggleRow
+            label="Background playback"
+            value={playerConfig.backgroundPlayback}
+            onChange={(v) => setPlayerConfig((p) => ({ ...p, backgroundPlayback: v }))}
+          />
+
           <ToggleRow
             label="Reconnect / retry on error"
             value={playerConfig.reconnectEnabled}
@@ -335,6 +466,55 @@ const ControlCenterSection = () => {
               <>
                 <Icon name="play-circle" size={18} color="#fff" />
                 <Text style={cardStyles.saveBtnText}>Hifadhi player</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <View style={cardStyles.card}>
+          <Text style={cardStyles.title}>Emergency controls</Text>
+          <ToggleRow
+            label="Maintenance mode"
+            value={emergency.maintenanceMode}
+            onChange={(v) => setEmergency((p) => ({ ...p, maintenanceMode: v }))}
+          />
+          <Text style={cardStyles.fieldLabel}>Maintenance message (Swahili)</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={emergency.maintenanceMessageSw}
+            onChangeText={(v) => setEmergency((p) => ({ ...p, maintenanceMessageSw: v }))}
+            placeholder="Programu iko chini ya matengenezo..."
+            placeholderTextColor="#6b7280"
+          />
+          <ToggleRow
+            label="Disable payments"
+            value={emergency.disablePayments}
+            onChange={(v) => setEmergency((p) => ({ ...p, disablePayments: v }))}
+          />
+          <ToggleRow
+            label="Disable all channels"
+            value={emergency.disableChannels}
+            onChange={(v) => setEmergency((p) => ({ ...p, disableChannels: v }))}
+          />
+          <Text style={cardStyles.fieldLabel}>Disabled channel IDs (comma-separated)</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={emergency.disabledChannelIds}
+            onChangeText={(v) => setEmergency((p) => ({ ...p, disabledChannelIds: v }))}
+            placeholder="12, 45, 78"
+            placeholderTextColor="#6b7280"
+            keyboardType="numbers-and-punctuation"
+          />
+          <TouchableOpacity
+            style={cardStyles.saveBtn}
+            onPress={saveEmergency}
+            disabled={savingEmergency}>
+            {savingEmergency ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Icon name="shield-alert" size={18} color="#fff" />
+                <Text style={cardStyles.saveBtnText}>Hifadhi emergency</Text>
               </>
             )}
           </TouchableOpacity>

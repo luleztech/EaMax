@@ -83,6 +83,18 @@ class MainActivity : FlutterActivity() {
                             args["audioLanguage"]?.toString(),
                         )
                         intent.putExtra("audioLanguage", audioLanguage)
+                        val channelId = (args["channelId"] as? Number)?.toInt()
+                            ?: args["channelId"]?.toString()?.toIntOrNull()
+                        if (channelId != null && channelId > 0) {
+                            intent.putExtra("channelId", channelId)
+                        }
+                        args["channelName"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            intent.putExtra("channelName", it)
+                        }
+                        args["playerPolicyJson"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            intent.putExtra("playerPolicyJson", it)
+                        }
+                        intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {
@@ -111,12 +123,19 @@ class MainActivity : FlutterActivity() {
                         preferredEngine = args["preferredEngine"]?.toString(),
                         bufferMinMs = intArg("bufferMinMs"),
                         bufferMaxMs = intArg("bufferMaxMs"),
+                        initialBufferMs = intArg("initialBufferMs"),
                         retryMax = intArg("retryMax"),
                         retryDelayMs = intArg("retryDelayMs"),
                         failoverToWebview = boolArg("failoverToWebview"),
                         reconnectEnabled = boolArg("reconnectEnabled"),
                         autoPlay = boolArg("autoPlay"),
                         defaultQuality = args["defaultQuality"]?.toString(),
+                        hardwareAcceleration = boolArg("hardwareAcceleration"),
+                        softwareDecodeFallback = boolArg("softwareDecodeFallback"),
+                        backgroundPlayback = boolArg("backgroundPlayback"),
+                        resumePlayback = boolArg("resumePlayback"),
+                        networkTimeoutMs = intArg("networkTimeoutMs"),
+                        reconnectionPolicy = args["reconnectionPolicy"]?.toString(),
                     )
                     result.success(null)
                 }

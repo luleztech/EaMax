@@ -1,20 +1,10 @@
 /**
- * VideoPlayer.js — Main React Native video player component
+ * VideoPlayer.js — DEPRECATED legacy React Native player.
  *
- * FIXES IN THIS VERSION:
- * 1. console.warn → console.log for channel-selected log
- *    (was causing LogBox warning overlay spam in DevTools).
- * 2. .php/.html streams go to a plain WebView — NOT MPDPlayer.
- *    MPDPlayer is only used for actual .mpd DASH streams.
- * 3. PHP WebView gets PHP_WEBVIEW_INJECTED_JS:
- *    - One-time autoplay setup (playsinline, no aggressive pause-fight loops).
- *    - Posts 'playing' / 'buffering' messages to React Native for loading UI.
- *    - Gentle stall recovery only after 20s of no progress (no seek-back).
- * 4. StreamEngine.prepareStream is skipped for pure web-page streams.
- * 5. ONE source of truth for default quality: DEFAULT_PLAYBACK_HEIGHT = 360.
- * 6. bufferConfig tuned for smooth mobile playback.
- * 7. selectedVideoTrack locks ExoPlayer to 360p.
- * 8. maxBitRate caps ExoPlayer ABR at 800kbps for 360p.
+ * Production user app uses Flutter + Kotlin native player (lib/player/core/playback_orchestrator.dart).
+ * This file remains for reference only; do not extend.
+ *
+ * @deprecated Use Flutter PlaybackOrchestrator + EaMaxNativePlayerActivity instead.
  */
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -309,6 +299,8 @@ export default function VideoPlayer({
   const [forceTokenRefresh,    setForceTokenRefresh]    = useState(false);
   const [selectedAudioTrack,   setSelectedAudioTrack]   = useState(null);
   const [activeAudioLanguage,  setActiveAudioLanguage]  = useState('sw');
+  const [selectedQuality,      setSelectedQuality]      = useState(DEFAULT_PLAYBACK_HEIGHT);
+  const [showControls,         setShowControls]         = useState(false);
 
   const recordedWatchRef         = useRef(null);
   const nativeLoadTimeoutRef     = useRef(null);
@@ -318,6 +310,7 @@ export default function VideoPlayer({
   const lastTrialUpdateRef       = useRef(Date.now());
   const manifestMalformedRetryRef = useRef(0);
   const playbackRetryCountRef    = useRef(0);
+  const controlsTimeoutRef       = useRef(null);
 
   // ─── Derived ─────────────────────────────────────────────────────────────
 
@@ -504,6 +497,9 @@ export default function VideoPlayer({
       setSourceKey(prev => prev + 1);
       setUseWebView(startWithWebView);
       setDrmSessionConfigured(false);
+      setSelectedQuality(DEFAULT_PLAYBACK_HEIGHT);
+      setShowControls(false);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
       StatusBar.setHidden(true, 'fade');
       unlockAllOrientations();
       if (sessionExpiry) {
@@ -517,12 +513,14 @@ export default function VideoPlayer({
       if (nativeLoadTimeoutRef.current)    clearTimeout(nativeLoadTimeoutRef.current);
       if (sessionCheckIntervalRef.current) clearInterval(sessionCheckIntervalRef.current);
       if (trialTimerRef.current)           clearInterval(trialTimerRef.current);
+      if (controlsTimeoutRef.current)      clearTimeout(controlsTimeoutRef.current);
       StatusBar.setHidden(false, 'fade'); lockToPortrait();
     }
     return () => {
       setPlayerVisible(false);
       if (sessionCheckIntervalRef.current) clearInterval(sessionCheckIntervalRef.current);
       if (trialTimerRef.current)           clearInterval(trialTimerRef.current);
+      if (controlsTimeoutRef.current)      clearTimeout(controlsTimeoutRef.current);
     };
   }, [visible, url, startWithWebView]);
 
@@ -539,8 +537,8 @@ export default function VideoPlayer({
   }, [visible, url, useWebView, isWebPage, loading]);
 
   useEffect(() => {
-    setSelectedAudioTrack(null);
-  }, [adminAudioLanguage, sourceKey, url]);
+    if (paused) { setShowControls(true); if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current); }
+  }, [paused]);
 
   // Analytics
   useEffect(() => {
@@ -580,6 +578,8 @@ export default function VideoPlayer({
     manifestMalformedRetryRef.current = 0; playbackRetryCountRef.current = 0;
     if (__DEV__) console.log('[VideoPlayer] onLoad', { format, duration: data?.duration });
     setLoading(false); setError(null); setDuration(data?.duration || 0);
+    setShowControls(false);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     if (nativeLoadTimeoutRef.current) clearTimeout(nativeLoadTimeoutRef.current);
     const tracks = data?.audioTracks;
     if (Array.isArray(tracks) && tracks.length > 0) {
@@ -621,6 +621,12 @@ export default function VideoPlayer({
     setError(errorMessage); setLoading(false);
   }, [isDrm, useWebView]);
 
+  useEffect(() => {
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, []);
+
   const onEnd = useCallback(() => { setPaused(true); }, []);
 
   const handleRetry = useCallback(() => {
@@ -634,23 +640,36 @@ export default function VideoPlayer({
     setLoadingMsg('Switching to browser player…'); setSourceKey(prev => prev + 1);
   }, []);
 
-  const handleClose = useCallback(() => { setPaused(true); onClose(); }, [onClose]);
+  const handleClose = useCallback(() => {
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    setShowControls(false);
+    setPaused(true);
+    onClose();
+  }, [onClose]);
+
+  const showControlsTemporarily = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3500);
+  }, []);
 
   const showQualityPicker = useCallback(() => {
+    showControlsTemporarily();
     Alert.alert(
       'OKOA BANDO',
       'Chagua ubora wa video',
       [
-        { text: 'Auto', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'auto' } }) },
-        { text: '360p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 360 } }) },
-        { text: '480p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 480 } }) },
-        { text: '720p', onPress: () => videoRef.current?.setNativeProps?.({ selectedVideoTrack: { type: 'resolution', value: 720 } }) },
-        { text: 'Ghairi', style: 'cancel' },
+        { text: 'Auto',  onPress: () => { setSelectedQuality(0);   showControlsTemporarily(); } },
+        { text: '360p',  onPress: () => { setSelectedQuality(360); showControlsTemporarily(); } },
+        { text: '480p',  onPress: () => { setSelectedQuality(480); showControlsTemporarily(); } },
+        { text: '720p',  onPress: () => { setSelectedQuality(720); showControlsTemporarily(); } },
+        { text: 'Ghairi', style: 'cancel', onPress: () => showControlsTemporarily() },
       ],
     );
-  }, []);
+  }, [showControlsTemporarily]);
 
   const showLanguagePicker = useCallback(() => {
+    showControlsTemporarily();
     Alert.alert(
       'Badili Lugha',
       'Chagua lugha ya sauti',
@@ -660,6 +679,7 @@ export default function VideoPlayer({
           onPress: () => {
             setActiveAudioLanguage('sw');
             setSelectedAudioTrack({ type: 'language', value: 'sw' });
+            showControlsTemporarily();
           },
         },
         {
@@ -667,12 +687,26 @@ export default function VideoPlayer({
           onPress: () => {
             setActiveAudioLanguage('en');
             setSelectedAudioTrack({ type: 'language', value: 'en' });
+            showControlsTemporarily();
           },
         },
-        { text: 'Ghairi', style: 'cancel' },
+        { text: 'Ghairi', style: 'cancel', onPress: () => showControlsTemporarily() },
       ],
     );
-  }, []);
+  }, [showControlsTemporarily]);
+
+  const showPlayerSettingsPicker = useCallback(() => {
+    showControlsTemporarily();
+    Alert.alert(
+      'Mipangilio ya player',
+      null,
+      [
+        { text: 'Lugha', onPress: showLanguagePicker },
+        { text: 'Ubora', onPress: showQualityPicker },
+        { text: 'Ghairi', style: 'cancel', onPress: () => showControlsTemporarily() },
+      ],
+    );
+  }, [showControlsTemporarily, showLanguagePicker, showQualityPicker]);
 
   const handleWebViewMessage = useCallback((e) => {
     try {
@@ -694,7 +728,7 @@ export default function VideoPlayer({
   const width   = hasLayout ? layoutSize.width  : win.width;
   const height  = hasLayout ? layoutSize.height : win.height;
   const videoStyle = [styles.video, { width, height }];
-  const cappedBitRate = getBitrateCap(DEFAULT_PLAYBACK_HEIGHT);
+  const cappedBitRate = selectedQuality === 0 ? 0 : getBitrateCap(selectedQuality);
 
   if (!visible) return null;
 
@@ -752,10 +786,14 @@ export default function VideoPlayer({
         /* CASE 5: Native ExoPlayer */
         ) : source && hasLayout ? (
           <Video
-            key={`video-${sourceKey}-${activeAudioLanguage}`}
+            key={`video-${sourceKey}`}
             ref={videoRef} source={source} style={videoStyle}
             resizeMode="contain" paused={paused} controls={false}
-            selectedVideoTrack={{ type: 'resolution', value: DEFAULT_PLAYBACK_HEIGHT }}
+            selectedVideoTrack={
+              selectedQuality === 0
+                ? { type: 'auto' }
+                : { type: 'resolution', value: selectedQuality }
+            }
             selectedAudioTrack={
               selectedAudioTrack || { type: 'language', value: activeAudioLanguage }
             }
@@ -786,22 +824,21 @@ export default function VideoPlayer({
         )}
 
         {source && hasLayout && !useWebView && (
-          <TouchableOpacity style={[StyleSheet.absoluteFill, styles.tapOverlay]} onPress={() => setPaused(p => !p)} activeOpacity={1} />
+          <TouchableOpacity
+            style={[StyleSheet.absoluteFill, styles.tapOverlay]}
+            onPress={() => { showControlsTemporarily(); setPaused(p => !p); }}
+            activeOpacity={1}
+          />
         )}
 
         <TouchableOpacity style={styles.closeBtn} onPress={handleClose} activeOpacity={0.8}>
           <Icon name="close" size={28} color="#fff" />
         </TouchableOpacity>
 
-        {source && hasLayout && !useWebView && !error && (
-          <>
-            <TouchableOpacity style={styles.langBtn} onPress={showLanguagePicker} activeOpacity={0.85}>
-              <Icon name="earth" size={22} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.settingsBtn} onPress={showQualityPicker} activeOpacity={0.85}>
-              <Icon name="cog" size={22} color="#fff" />
-            </TouchableOpacity>
-          </>
+        {source && hasLayout && !useWebView && !error && showControls && (
+          <TouchableOpacity style={styles.playerSettingsBtn} onPress={showPlayerSettingsPicker} activeOpacity={0.85}>
+            <Icon name="cog" size={22} color="#fff" />
+          </TouchableOpacity>
         )}
 
         {showPaywall && (
@@ -866,27 +903,15 @@ export default function VideoPlayer({
 const styles = StyleSheet.create({
   root:        { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 9999, elevation: 9999 },
   video:       { position: 'absolute', top: 0, left: 0 },
-  tapOverlay:  { zIndex: 9998 },
+  tapOverlay:  { zIndex: 0 },
   closeBtn: {
     position: 'absolute', top: Platform.OS === 'ios' ? 50 : 20, right: 20,
     width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center', alignItems: 'center', zIndex: 99999,
   },
-  langBtn: {
+  playerSettingsBtn: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 104 : 74,
-    right: 76,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 99999,
-  },
-  settingsBtn: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 104 : 74,
+    bottom: Platform.OS === 'ios' ? 36 : 20,
     right: 20,
     width: 44,
     height: 44,
