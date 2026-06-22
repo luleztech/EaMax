@@ -11,10 +11,14 @@
     <string name="language_swahili">Kiswahili</string>
     <string name="language_english">Kiingereza</string>
     <string name="pick_quality">Chagua ubora</string>
+    <string name="settings_pick_quality">Chagua ubora wa video</string>
+    <string name="settings_pick_language">Chagua lugha ya sauti</string>
     <string name="rotate_hint_message">Geuza simu yako kuona kwa ukubwa kamili</string>
     <string name="rotate_hint_later">Baadae</string>
     <string name="rotate_hint_never_again">Usioneshe tena</string>
     <string name="channel_unavailable_message"></string>
     <string name="player_connecting">Inaunganisha…</string>
     <string name="ok_understood">Sawa</string>
+    <string name="player_live">LIVE</string>
+    <string name="player_play_pause">Play / pause</string>
 </resources>

@@ -14,16 +14,12 @@ import okhttp3.Request
 /**
  * Resolves arbitrary stream entry URLs (e.g. https://bailatv.live/sp1.php) to a concrete
  * playback URI + format, or marks the URL as requiring full WebView embedding.
- * Ported from EaMax `StreamEngine.probePlaybackKind` + manifest extraction.
  */
 object StreamProbe {
 
     private const val TAG = "StreamProbe"
-    /** Only need the first ~2 KB to detect #EXTM3U / <?xml / <MPD / HTML signatures. */
     private const val RANGE_BYTES = 2047
-    /** Max bytes we ever read from the response body — 4 KB is more than enough. */
     private const val MAX_READ_BYTES = 4096
-    /** Probe results cached for this many ms — avoids re-probing the same URL. */
     private const val CACHE_TTL_MS = 10 * 60 * 1000L
 
     private data class CacheEntry(val result: Result, val expiresAt: Long)
@@ -33,19 +29,15 @@ object StreamProbe {
         EXO_HLS,
         EXO_DASH,
         EXO_PROGRESSIVE,
-        /** Let Media3 [androidx.media3.exoplayer.source.DefaultMediaSourceFactory] sniff manifest/playlist. */
         EXO_SNIFF,
         WEB_VIEW_PAGE,
     }
 
     data class Result(
         val kind: ResolvedKind,
-        /** URI to pass to ExoPlayer when kind is EXO_*; original URL when WEB_VIEW_PAGE. */
         val playbackUri: String,
         val finalUrlAfterRedirects: String,
-        /** Merge into StreamSession headers (Referer for CDN policies). */
         val headerOverlay: Map<String, String>,
-        /** Populated when a PHP gateway page was decrypted server-side. */
         val licenseUrl: String = "",
         val drmType: DrmType? = null,
         val authToken: String = "",
@@ -56,9 +48,6 @@ object StreamProbe {
     fun resolveForSession(session: StreamSession): Result {
         val original = session.mpdUrl.trim()
 
-        // ── Cache check ───────────────────────────────────────────────────────
-        // Skip all network probing if we resolved this URL recently.
-        // Do NOT use cache for PHP gateways — tokens expire quickly.
         val now = System.currentTimeMillis()
         val isPhp = StreamUrlClassifier.isPhpLikeUrl(original)
         if (!isPhp) {
@@ -75,8 +64,6 @@ object StreamProbe {
         val headers = buildRequestHeaders(session)
 
         fun cache(r: Result): Result {
-            // Do not cache PHP gateway results — extracted URLs contain time-sensitive tokens
-            // that expire quickly (causing 403 errors on replay). Always re-extract fresh.
             val skip = StreamUrlClassifier.isPhpLikeUrl(original)
             if (!skip) {
                 probeCache[original] = CacheEntry(r, now + CACHE_TTL_MS)
@@ -86,13 +73,16 @@ object StreamProbe {
             return r
         }
 
-        // ── Obvious manifests first — must beat gateway heuristics (/stream/, /play/ in path).
+        if (StreamUrlClassifier.isPhpLikeUrl(original)) {
+            return cache(tryResolvePhpGateway(original, headers))
+        }
+
         if (StreamUrlClassifier.hasObviousM3u8(original)) {
             Log.d(TAG, "fast-path HLS (m3u8 extension): ${original.take(80)}")
             return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
         }
 
-        if (StreamUrlClassifier.hasObviousMpd(original)) {
+        if (StreamUrlClassifier.hasObviousMpd(original) && !StreamUrlClassifier.isLikelyGatewayUrl(original)) {
             Log.d(TAG, "fast-path DASH (mpd extension): ${original.take(80)}")
             return cache(Result(ResolvedKind.EXO_DASH, original, original, refererOverlay(original, headers)))
         }
@@ -101,25 +91,14 @@ object StreamProbe {
             return cache(Result(ResolvedKind.EXO_PROGRESSIVE, original, original, refererOverlay(original, headers)))
         }
 
-        if (StreamUrlClassifier.isLikelyIptvLiveUrl(original)) {
-            Log.d(TAG, "fast-path HLS (IPTV/live URL): ${original.take(80)}")
+        val lowerOriginal = original.lowercase()
+        val isIptvPortUrl = Regex("""^https?://[^/]+:\d{2,5}/(live|stream|play|hls|iptv|channel|ch)/""").containsMatchIn(lowerOriginal) ||
+            Regex("""^https?://[^/]+:\d{2,5}/[^/]+/[^/]+/[^/?#]+$""").containsMatchIn(lowerOriginal.split("#")[0])
+        if (isIptvPortUrl) {
+            Log.d(TAG, "fast-path HLS (IPTV/Xtream port URL): ${original.take(80)}")
             return cache(Result(ResolvedKind.EXO_HLS, original, original, refererOverlay(original, headers)))
         }
 
-        // ── Gateway pages: start WebView immediately (WebViewEngine decrypts in parallel).
-        if (StreamUrlClassifier.isPhpLikeUrl(original) ||
-            StreamUrlClassifier.isLikelyGatewayUrl(original)
-        ) {
-            Log.d(TAG, "fast-path WEB_VIEW (gateway): ${original.take(80)}")
-            return Result(
-                ResolvedKind.WEB_VIEW_PAGE,
-                original,
-                original,
-                refererOverlay(original, headers),
-            )
-        }
-
-        // ── Ambiguous URLs: probe HTTP to determine format ────────────────────
         val useBrowserAccept = StreamUrlClassifier.isLikelyGatewayUrl(original)
         return try {
             cache(probeHttp(original, headers, useBrowserAccept))
@@ -131,27 +110,6 @@ object StreamProbe {
                 Result(ResolvedKind.EXO_SNIFF, original, original, refererOverlay(original, headers))
             }
             cache(fallback)
-        }
-    }
-
-    private fun safeProbeFirst(
-        original: String,
-        headers: Map<String, String>,
-        expectedKind: ResolvedKind,
-    ): Result {
-        return try {
-            val probed = probeHttp(original, headers, gatewayStyleAccept = false)
-            when (probed.kind) {
-                ResolvedKind.EXO_HLS,
-                ResolvedKind.EXO_DASH,
-                ResolvedKind.EXO_PROGRESSIVE,
-                ResolvedKind.EXO_SNIFF,
-                ResolvedKind.WEB_VIEW_PAGE -> probed
-            }
-        } catch (e: Exception) {
-            // Prefer sniffing over forcing DASH/HLS when probe fails — wrong format → malformed manifest.
-            Log.w(TAG, "probe failed for manifest URL, using EXO_SNIFF: ${e.message}")
-            Result(ResolvedKind.EXO_SNIFF, original, original, refererOverlay(original, headers))
         }
     }
 
@@ -168,8 +126,6 @@ object StreamProbe {
             else ->
                 h.putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
         }
-        // Always include a self-Referer + Origin so CDN/IPTV panels don’t 403 the probe.
-        // This gives us the real content-type and final URL rather than an error page.
         if (!h.keys.any { it.equals("Referer", ignoreCase = true) }) {
             try {
                 val u = Uri.parse(session.mpdUrl.trim())
@@ -210,8 +166,8 @@ object StreamProbe {
             putIfAbsent("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
             putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
         }
-        val client = EamaxHttpDataSource.fastProbeClient()
-        val b = okhttp3.Request.Builder().url(url)
+        val client = EamaxHttpDataSource.gatewayFetchClient
+        val b = Request.Builder().url(url)
         reqHeaders.forEach { (k, v) -> b.header(k, v) }
         return client.newCall(b.get().build()).execute().use { r ->
             if (!r.isSuccessful) throw IllegalStateException("HTTP ${r.code}")
@@ -237,9 +193,7 @@ object StreamProbe {
 
     private fun refererOverlay(original: String, existing: Map<String, String>): Map<String, String> {
         val hasRef = existing.keys.any { it.equals("Referer", true) || it.equals("referer", true) }
-        if (hasRef) return emptyMap()
-        val overlay = GatewayHttpHeaders.forGateway(stripHash(original), emptyMap())
-        return overlay.filterKeys { key -> !existing.containsKey(key) }
+        return if (hasRef) emptyMap() else mapOf("Referer" to stripHash(original))
     }
 
     private fun stripHash(url: String): String {
@@ -254,8 +208,7 @@ object StreamProbe {
             "application/dash+xml,application/vnd.apple.mpegurl,application/x-mpegURL,application/xml,text/xml,*/*;q=0.8"
         }
         val reqHeaders = HashMap(headers).apply { putIfAbsent("Accept", accept) }
-        // Use the fast probe client (short timeouts) so dead streams fail quickly.
-        val client = EamaxHttpDataSource.fastProbeClient()
+        val client = EamaxHttpDataSource.fastProbeClient
 
         fun buildRequest(withRange: Boolean): Request {
             val b = Request.Builder().url(url)
@@ -267,7 +220,6 @@ object StreamProbe {
         var response = client.newCall(buildRequest(true)).execute()
         var finalUrl = response.request.url.toString()
         var status = response.code
-        // Some CDNs return 404/403 for ranged GET on manifests; retry full GET once.
         if (status == 404 || status == 403) {
             response.close()
             response = client.newCall(buildRequest(false)).execute()
@@ -292,8 +244,7 @@ object StreamProbe {
             ctv to bodyText
         }
 
-        val headSample = body
-        val headTrim = headSample.trim()
+        val headTrim = body.trim()
         val headLower = headTrim.lowercase()
         val manifestPeek = headTrim
 
@@ -319,11 +270,9 @@ object StreamProbe {
             ) {
                 return Result(ResolvedKind.WEB_VIEW_PAGE, url, finalUrl, refererOverlay(url, headers))
             }
-            // Let ExoPlayer surface the HTTP error (BAD_HTTP_STATUS) instead of mis-parsing as DASH.
             return Result(ResolvedKind.EXO_SNIFF, url, finalUrl, refererOverlay(url, headers))
         }
 
-        // --- 200/206: classify by *body first* — wrong Content-Type is common; HTML login pages must not become DASH. ---
         val looksHtml = looksLikeHtmlDocument(manifestPeek)
         val looksLogin = looksLikeLoginOrAuthWall(manifestPeek)
         val isHlsBody = manifestPeek.startsWith("#EXTM3U")
@@ -336,9 +285,8 @@ object StreamProbe {
             return Result(ResolvedKind.EXO_DASH, finalUrl, finalUrl, refererOverlay(url, headers))
         }
 
-        // Content-Type says DASH/HLS but body is not — do not hand Exo a bogus type (→ malformed manifest).
         if (ct.contains("dash") && ct.contains("xml")) {
-            Log.w(TAG, "probe: Content-Type claims DASH but body is not MPD (login page or wrong file). Sniffing. url=$finalUrl")
+            Log.w(TAG, "probe: Content-Type claims DASH but body is not MPD. Sniffing. url=$finalUrl")
             return Result(ResolvedKind.EXO_SNIFF, finalUrl, finalUrl, refererOverlay(url, headers))
         }
         if (ct.contains("mpegurl") || ct.contains("m3u8") || ct.contains("x-mpegurl")) {
@@ -346,7 +294,6 @@ object StreamProbe {
             return Result(ResolvedKind.EXO_SNIFF, finalUrl, finalUrl, refererOverlay(url, headers))
         }
 
-        // HTML / login without a real manifest → extract, WebView, or sniff (never force DASH on HTML)
         if (looksHtml || looksLogin) {
             val extracted = ManifestUrlExtractor.extract(body, finalUrl)
             if (extracted != null) {
@@ -393,11 +340,9 @@ object StreamProbe {
         if (t.contains(">sign in<") || t.contains("sign in to") || t.contains("please log in")) return true
         if (t.contains("unauthorized") || t.contains("access denied") || t.contains("forbidden")) return true
         if (t.contains("session expired") || t.contains("authentication required")) return true
-        // Avoid matching "login" inside unrelated words (e.g. "blog").
         return Regex("""(?i)(^|[^a-z])login([^a-z]|$)""").containsMatchIn(t)
     }
 
-    /** True if the response body looks like an MPD (not HTML with a random `<mpd` string). */
     private fun looksLikeDashMpd(s: String): Boolean {
         val t = s.trim().take(98304)
         val tl = t.lowercase()
@@ -425,6 +370,5 @@ object StreamProbe {
         return out.toByteArray().decodeToString()
     }
 
-    /** Clear probe cache (e.g. on network change). */
     fun clearCache() = probeCache.clear()
 }

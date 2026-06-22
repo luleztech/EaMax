@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
-import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import com.eamax.domain.model.DrmData
 import com.eamax.domain.model.StreamSession
@@ -29,19 +28,15 @@ import java.util.concurrent.Executors
  */
 class PlayerManager(
     private val context: Context,
-    private val channelId: Int = 0,
     private val onStateChanged: (PlaybackState) -> Unit = {},
     private val onError: (String) -> Unit = {},
     private val onTracksAvailable: (Tracks) -> Unit = {},
     /** Called on main thread after Exo or WebView engine is created and initialized. */
     private val onReady: () -> Unit = {},
-    private val onAutoHeal: ((String) -> Unit)? = null,
 ) {
     private var engine: ExoPlayerEngine? = null
     private var webViewEngine: WebViewEngine? = null
     private var currentSession: StreamSession? = null
-    private var allSessions: List<StreamSession> = emptyList()
-    private var sessionIndex: Int = 0
     private var isInitialized = false
     /** If Exo fails with HTML/manifest errors, try WebView once with the original session URL. */
     private var webViewFallbackAttempted = false
@@ -49,19 +44,6 @@ class PlayerManager(
     private var gatewayExoPromotionAttempted = false
     private val probeExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var errorRetryCount = 0
-    private var pendingRetryRunnable: Runnable? = null
-    private var pendingOverlayTap: (() -> Unit)? = null
-    private var pendingOverlayCapabilities: ((Boolean, Boolean) -> Unit)? = null
-    private val healthWatchdog = HealthWatchdog { symptom ->
-        mainHandler.post {
-            onAutoHeal?.invoke(symptom)
-            Log.w(TAG, "Auto-heal: $symptom — restarting stream")
-            errorRetryCount = 0
-            cancelPendingRetry()
-            startCurrentSession()
-        }
-    }
 
     companion object {
         private const val TAG = "PlayerManager"
@@ -72,182 +54,15 @@ class PlayerManager(
      * or [WebViewEngine] when the page must play in-browser.
      */
     fun initialize(streamSession: StreamSession) {
-        initializeWithFailover(listOf(streamSession))
-    }
-
-    /** Try primary stream first, then backup streams from v2 playback API on fatal errors. */
-    fun initializeWithFailover(sessions: List<StreamSession>) {
-        val valid = sessions.filter { it.mpdUrl.isNotBlank() }
-        if (valid.isEmpty()) {
-            onError("No stream URL")
-            return
+        Log.d(TAG, "Initializing player with session: ${streamSession.sessionId}, url=${streamSession.mpdUrl}")
+        
+        if (isInitialized) {
+            release()
         }
-        allSessions = valid
-        sessionIndex = 0
-        errorRetryCount = 0
-        cancelPendingRetry()
-        if (valid.size > 1) {
-            Log.d(TAG, "Failover enabled: ${valid.size} streams")
-        }
-        startCurrentSession()
-    }
-
-    private fun cancelPendingRetry() {
-        pendingRetryRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingRetryRunnable = null
-    }
-
-    private fun launchExoPlayer(
-        mergedSession: StreamSession,
-        forced: ExoPlayerEngine.StreamFormat?,
-        originalSession: StreamSession,
-    ) {
-        engine = ExoPlayerEngine(
-            context = context,
-            onPlaybackStateChanged = { state ->
-                Log.d(TAG, "Playback state changed: $state")
-                when (state) {
-                    PlaybackState.PLAYING -> {
-                        healthWatchdog.onPlayingChanged(true)
-                        healthWatchdog.onBufferingChanged(false)
-                    }
-                    PlaybackState.BUFFERING -> {
-                        healthWatchdog.onPlayingChanged(false)
-                        healthWatchdog.onBufferingChanged(true)
-                    }
-                    PlaybackState.READY -> healthWatchdog.onReadyForDisplay()
-                    else -> { }
-                }
-                engine?.getPlayer()?.let { player ->
-                    healthWatchdog.onProgress(player.currentPosition)
-                }
-                onStateChanged(state)
-            },
-            onError = { error ->
-                Log.e(TAG, "Player error: $error")
-                mainHandler.post {
-                    if (!PlayerEnginePolicy.forceExo() &&
-                        !webViewFallbackAttempted &&
-                        webViewEngine == null &&
-                        RemotePlayerConfigHolder.failoverToWebview &&
-                        shouldFallbackExoToWebView(error)
-                    ) {
-                        webViewFallbackAttempted = true
-                        Log.w(TAG, "Exo manifest/HTML-style error — trying WebView fallback")
-                        try {
-                            engine?.release()
-                            engine = null
-                            val session = currentSession ?: originalSession
-                            webViewEngine = createWebViewEngine(session)
-                            webViewEngine?.initialize(session)
-                            if (webViewEngine?.getWebView() == null) {
-                                dispatchFatalError(error)
-                            } else {
-                                isInitialized = true
-                                notifyReady()
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "WebView fallback failed", e)
-                            dispatchFatalError(error)
-                        }
-                    } else {
-                        dispatchFatalError(error)
-                    }
-                }
-            },
-            onTracksChangedCallback = { tracks ->
-                Log.d(TAG, "Tracks available: ${tracks.groups.size} groups")
-                onTracksAvailable(tracks)
-            },
-        )
-        engine?.initialize(mergedSession, forcedStreamFormat = forced)
-        if (engine?.getPlayer() == null) {
-            val gateway = StreamUrlClassifier.isLikelyGatewayUrl(originalSession.mpdUrl) ||
-                StreamUrlClassifier.isPhpLikeUrl(originalSession.mpdUrl)
-            if (gateway) {
-                engine?.release()
-                engine = null
-                webViewEngine = createWebViewEngine(originalSession)
-                webViewEngine?.initialize(originalSession)
-                if (webViewEngine?.getWebView() == null) {
-                    dispatchFatalError("Playback failed for this stream")
-                    return
-                }
-            } else {
-                dispatchFatalError("Player could not start")
-                return
-            }
-        }
-        isInitialized = true
-        engine?.setAudioLanguage(mergedSession.preferredAudioLanguage)
-        engine?.setQuality(RemotePlayerConfigHolder.defaultStreamQuality())
-        notifyReady()
-    }
-
-    private fun notifyReady() {
-        errorRetryCount = 0
-        healthWatchdog.start()
-        onReady()
-    }
-
-    private fun startCurrentSession() {
-        val streamSession = allSessions.getOrNull(sessionIndex) ?: run {
-            dispatchFatalError("Playback failed for this stream")
-            return
-        }
-        Log.d(TAG, "Starting stream ${sessionIndex + 1}/${allSessions.size}: session=${streamSession.sessionId}, url=${streamSession.mpdUrl}")
-
-        engine?.release()
-        engine = null
-        webViewEngine?.release()
-        webViewEngine = null
-        isInitialized = false
-        webViewFallbackAttempted = false
-        gatewayExoPromotionAttempted = false
 
         currentSession = streamSession
-
-        if (PlayerEnginePolicy.forceWebView()) {
-            Log.d(TAG, "Admin engine → force WebView: ${PlayerEnginePolicy.normalize(RemotePlayerConfigHolder.preferredEngine)}")
-            mainHandler.post {
-                try {
-                    webViewEngine = createWebViewEngine(streamSession)
-                    webViewEngine?.initialize(streamSession)
-                    if (webViewEngine?.getWebView() == null) {
-                        dispatchFatalError("WebView init failed")
-                        return@post
-                    }
-                    isInitialized = true
-                    notifyReady()
-                } catch (e: Exception) {
-                    dispatchFatalError("Player init failed: ${e.message}")
-                }
-            }
-            return
-        }
-
-        // Gateway pages must use WebView — Exo cannot render PHP/HTML player pages.
-        val gatewayUrl = streamSession.mpdUrl.trim()
-        val isGateway = StreamUrlClassifier.isPhpLikeUrl(gatewayUrl) ||
-            StreamUrlClassifier.isLikelyGatewayUrl(gatewayUrl)
-        if (isGateway) {
-            Log.d(TAG, "Fast-start WEB_VIEW (gateway): ${gatewayUrl.take(80)}")
-            mainHandler.post {
-                try {
-                    webViewEngine = createWebViewEngine(streamSession)
-                    webViewEngine?.initialize(streamSession)
-                    if (webViewEngine?.getWebView() == null) {
-                        dispatchFatalError("WebView init failed")
-                        return@post
-                    }
-                    isInitialized = true
-                    notifyReady()
-                } catch (e: Exception) {
-                    dispatchFatalError("Player init failed: ${e.message}")
-                }
-            }
-            return
-        }
+        webViewFallbackAttempted = false
+        gatewayExoPromotionAttempted = false
 
         probeExecutor.execute {
             val resolved = StreamProbe.resolveForSession(streamSession)
@@ -260,11 +75,12 @@ class PlayerManager(
                             webViewEngine = createWebViewEngine(streamSession)
                             webViewEngine?.initialize(streamSession)
                             if (webViewEngine?.getWebView() == null) {
-                                dispatchFatalError("WebView init failed")
+                                onError("WebView init failed")
                                 return@post
                             }
                             isInitialized = true
-                            notifyReady()
+                            applyAudioLanguageFromSession()
+                            onReady()
                         }
                         else -> {
                             val forced = when (resolved.kind) {
@@ -275,49 +91,77 @@ class PlayerManager(
                                 else -> null
                             }
                             val mergedSession = mergeResolvedSession(streamSession, resolved)
-                            launchExoPlayer(mergedSession, forced, streamSession)
+                            engine = ExoPlayerEngine(
+                                context = context,
+                                onPlaybackStateChanged = { state ->
+                                    Log.d(TAG, "Playback state changed: $state")
+                                    onStateChanged(state)
+                                },
+                                onError = { error ->
+                                    Log.e(TAG, "Player error: $error")
+                                    mainHandler.post {
+                                        if (!webViewFallbackAttempted &&
+                                            webViewEngine == null &&
+                                            shouldFallbackExoToWebView(error)
+                                        ) {
+                                            webViewFallbackAttempted = true
+                                            Log.w(TAG, "Exo manifest/HTML-style error — trying WebView fallback")
+                                            try {
+                                                engine?.release()
+                                                engine = null
+                                                val session = currentSession ?: streamSession
+                                                webViewEngine = createWebViewEngine(session)
+                                                webViewEngine?.initialize(session)
+                                                if (webViewEngine?.getWebView() == null) {
+                                                    onError(error)
+                                                } else {
+                                                    isInitialized = true
+                                                    applyAudioLanguageFromSession()
+                                                    onReady()
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "WebView fallback failed", e)
+                                                onError(error)
+                                            }
+                                        } else {
+                                            onError(error)
+                                        }
+                                    }
+                                },
+                                onTracksChangedCallback = { tracks ->
+                                    Log.d(TAG, "Tracks available: ${tracks.groups.size} groups")
+                                    onTracksAvailable(tracks)
+                                }
+                            )
+                            engine?.initialize(mergedSession, forcedStreamFormat = forced)
+                            if (engine?.getPlayer() == null) {
+                                val gateway = StreamUrlClassifier.isLikelyGatewayUrl(streamSession.mpdUrl) ||
+                                    StreamUrlClassifier.isPhpLikeUrl(streamSession.mpdUrl)
+                                if (gateway) {
+                                    engine?.release()
+                                    engine = null
+                                    webViewEngine = createWebViewEngine(streamSession)
+                                    webViewEngine?.initialize(streamSession)
+                                    if (webViewEngine?.getWebView() == null) {
+                                        onError("Playback failed for this stream")
+                                        return@post
+                                    }
+                                } else {
+                                    onError("Player could not start")
+                                    return@post
+                                }
+                            }
+                            isInitialized = true
+                            applyAudioLanguageFromSession()
+                            onReady()
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "initialize failed", e)
-                    dispatchFatalError("Player init failed: ${e.message}")
+                    onError("Player init failed: ${e.message}")
                 }
             }
         }
-    }
-
-    private fun dispatchFatalError(message: String) {
-        if (RecoveryPolicy.shouldRetrySameStream(errorRetryCount)) {
-            errorRetryCount++
-            val delay = RecoveryPolicy.retryDelayMs(errorRetryCount)
-            Log.w(
-                TAG,
-                "Retry $errorRetryCount/${RemotePlayerConfigHolder.retryMax} in ${delay}ms",
-            )
-            cancelPendingRetry()
-            val retry = Runnable {
-                pendingRetryRunnable = null
-                startCurrentSession()
-            }
-            pendingRetryRunnable = retry
-            mainHandler.postDelayed(retry, delay)
-            return
-        }
-        if (tryAdvanceToNextStream()) {
-            Log.w(TAG, "Failover → stream ${sessionIndex + 1}/${allSessions.size} (channel=$channelId)")
-            return
-        }
-        healthWatchdog.stop()
-        onError(message)
-    }
-
-    private fun tryAdvanceToNextStream(): Boolean {
-        if (sessionIndex + 1 >= allSessions.size) return false
-        sessionIndex++
-        errorRetryCount = 0
-        cancelPendingRetry()
-        startCurrentSession()
-        return true
     }
 
     /**
@@ -361,9 +205,6 @@ class PlayerManager(
      */
     fun release() {
         Log.d(TAG, "Releasing player")
-        healthWatchdog.stop()
-        cancelPendingRetry()
-        errorRetryCount = 0
         engine?.release()
         engine = null
         webViewEngine?.release()
@@ -372,12 +213,10 @@ class PlayerManager(
         webViewFallbackAttempted = false
         gatewayExoPromotionAttempted = false
         currentSession = null
-        allSessions = emptyList()
-        sessionIndex = 0
     }
 
     private fun createWebViewEngine(baseSession: StreamSession): WebViewEngine {
-        val engine = WebViewEngine(
+        return WebViewEngine(
             context = context,
             onPlaybackStateChanged = { state ->
                 Log.d(TAG, "WebView state: $state")
@@ -385,32 +224,19 @@ class PlayerManager(
             },
             onError = { err ->
                 Log.e(TAG, "WebView error: $err")
-                dispatchFatalError(err)
+                onError(err)
             },
             onStreamExtracted = { extracted ->
                 mainHandler.post {
-                    if (gatewayExoPromotionAttempted) {
-                        if (extracted.licenseUrl.isNotEmpty() || extracted.clearKeys.isNotEmpty()) {
-                            repromoteGatewayToExo(baseSession, extracted)
-                        }
-                        return@post
+                    if (!gatewayExoPromotionAttempted) {
+                        promoteGatewayToExo(baseSession, extracted)
+                    } else if (extracted.licenseUrl.isNotEmpty() || extracted.clearKeys.isNotEmpty()) {
+                        repromoteGatewayToExo(baseSession, extracted)
                     }
-                    if (!StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted) &&
-                        webViewEngine?.wasPlaybackStarted() == true
-                    ) {
-                        gatewayExoPromotionAttempted = true
-                        Log.d(TAG, "Gateway stream locked to WebView Shaka playback")
-                        return@post
-                    }
-                    promoteGatewayToExo(baseSession, extracted)
                 }
             },
             onShakaFailed = { extracted ->
                 mainHandler.post {
-                    if (shouldSuppressPlaybackError()) {
-                        Log.d(TAG, "Ignoring Shaka failure — native playback active or starting")
-                        return@post
-                    }
                     if (!gatewayExoPromotionAttempted) {
                         if (StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted)) {
                             promoteGatewayToExo(baseSession, extracted)
@@ -418,20 +244,14 @@ class PlayerManager(
                             gatewayExoPromotionAttempted = true
                             Log.d(TAG, "Shaka failed native path — keeping WebView playback")
                         } else {
-                            dispatchFatalError("unavailable")
+                            onError("unavailable")
                         }
-                    } else if (!shouldSuppressPlaybackError()) {
-                        dispatchFatalError("unavailable")
+                    } else if (webViewEngine?.wasPlaybackStarted() != true) {
+                        onError("unavailable")
                     }
                 }
             },
         )
-        val tap = pendingOverlayTap
-        val caps = pendingOverlayCapabilities
-        if (tap != null && caps != null) {
-            engine.setOverlayCallbacks(tap, caps)
-        }
-        return engine
     }
 
     private fun mergeResolvedSession(
@@ -499,12 +319,7 @@ class PlayerManager(
             extracted.licenseUrl.isEmpty() &&
             StreamUrlClassifier.likelyRequiresWidevine(extracted.streamUrl)
         ) {
-            if (webViewEngine?.wasPlaybackStarted() == true) {
-                gatewayExoPromotionAttempted = true
-                Log.d(TAG, "Azam/Widevine gateway — keeping WebView playback (no native license)")
-            } else {
-                Log.w(TAG, "Encrypted gateway stream without license — waiting for DRM URL")
-            }
+            Log.w(TAG, "Encrypted gateway stream without license — waiting for DRM URL")
             return
         }
         if (!StreamUrlClassifier.canPromoteGatewayToNativeExo(extracted)) {
@@ -560,7 +375,7 @@ class PlayerManager(
                             onStateChanged(PlaybackState.PLAYING)
                             return@post
                         }
-                        dispatchFatalError(error)
+                        onError(error)
                     }
                 },
                 onTracksChangedCallback = { tracks ->
@@ -568,7 +383,6 @@ class PlayerManager(
                     onTracksAvailable(tracks)
                 },
             )
-            webViewEngine?.suspendPlayback()
             webViewEngine?.getWebView()?.let { w ->
                 w.alpha = 0f
                 (w.parent as? android.view.ViewGroup)?.removeView(w)
@@ -580,22 +394,16 @@ class PlayerManager(
                 webViewLicenseBridge = licenseBridge,
             )
             if (engine?.getPlayer() == null) {
-                dispatchFatalError("Playback failed for this stream")
+                onError("Playback failed for this stream")
                 return
             }
-            engine?.setAudioLanguage(merged.preferredAudioLanguage)
-            engine?.setQuality(RemotePlayerConfigHolder.defaultStreamQuality())
             isInitialized = true
-            notifyReady()
+            applyAudioLanguageFromSession()
+            onReady()
             engine?.play()
         } catch (e: Exception) {
             Log.e(TAG, "promoteGatewayToExo failed", e)
             gatewayExoPromotionAttempted = false
-            if (webViewEngine?.wasPlaybackStarted() == true) {
-                onStateChanged(PlaybackState.PLAYING)
-            } else {
-                dispatchFatalError("Playback failed for this stream")
-            }
         }
     }
 
@@ -616,25 +424,23 @@ class PlayerManager(
      * @param fromUser false when applying the default 360p cap on startup
      */
     fun setQuality(quality: StreamQuality, fromUser: Boolean = true) {
-        if (isWebViewPlayback()) {
-            webViewEngine?.setQuality(quality, fromUser)
-        } else {
-            engine?.setQuality(quality)
-        }
+        webViewEngine?.setQuality(quality, fromUser)
+        engine?.setQuality(quality)
         Log.d(TAG, "Quality changed to: $quality (fromUser=$fromUser)")
     }
 
     /**
      * Set preferred audio language
      */
-    fun setAudioLanguage(language: String, fromUser: Boolean = false) {
-        val lang = AudioLanguageSupport.normalize(language)
-        if (isWebViewPlayback()) {
-            webViewEngine?.setAudioLanguage(lang, fromUser)
-        } else {
-            engine?.setAudioLanguage(lang)
-        }
-        Log.d(TAG, "Audio language changed to: $lang (fromUser=$fromUser)")
+    fun setAudioLanguage(language: String) {
+        webViewEngine?.setAudioLanguage(language)
+        engine?.setAudioLanguage(language)
+        Log.d(TAG, "Audio language changed to: $language")
+    }
+
+    private fun applyAudioLanguageFromSession() {
+        val lang = currentSession?.preferredAudioLanguage ?: return
+        setAudioLanguage(lang)
     }
 
     /**
@@ -649,8 +455,7 @@ class PlayerManager(
      * Get current playback position (in milliseconds)
      */
     fun getCurrentPosition(): Long {
-        engine?.getCurrentPosition()?.takeIf { it > 0L }?.let { return it }
-        return if (webViewEngine?.wasPlaybackStarted() == true) 0L else 0L
+        return engine?.getCurrentPosition() ?: 0L
     }
 
     /**
@@ -664,9 +469,10 @@ class PlayerManager(
      * Check if player is currently playing
      */
     fun isPlaying(): Boolean {
-        if (engine?.isPlaying() == true) return true
-        if (webViewEngine?.wasPlaybackStarted() == true) return true
-        return false
+        if (webViewEngine != null && engine == null) {
+            return webViewEngine?.isPlaying() == true
+        }
+        return engine?.isPlaying() ?: false
     }
 
     /**
@@ -674,6 +480,14 @@ class PlayerManager(
      */
     fun getAvailableTracks(): Tracks {
         return engine?.getAvailableTracks() ?: Tracks.EMPTY
+    }
+
+    fun listSelectableAudioTracks(): List<ExoPlayerEngine.SelectableAudioTrack> {
+        return engine?.listSelectableAudioTracks() ?: emptyList()
+    }
+
+    fun selectAudioTrack(group: Tracks.Group, trackIndex: Int) {
+        engine?.setTrack(group, trackIndex)
     }
 
     /**
@@ -684,42 +498,7 @@ class PlayerManager(
     /** Embed gateway playback — add this [WebView] to your layout when non-null. */
     fun getWebView(): WebView? = webViewEngine?.getWebView()
 
-    /** True only when WebView is the active renderer (not after gateway→Exo promotion). */
-    fun isWebViewPlayback(): Boolean =
-        webViewEngine != null && engine?.getPlayer() == null
-
-    fun setPlayerOverlayCallbacks(
-        onTap: () -> Unit,
-        onCapabilities: (Boolean, Boolean) -> Unit,
-    ) {
-        pendingOverlayTap = onTap
-        pendingOverlayCapabilities = onCapabilities
-        webViewEngine?.setOverlayCallbacks(onTap, onCapabilities)
-    }
-
-    fun centerWebViewVideo(landscape: Boolean) {
-        webViewEngine?.centerVideoForOrientation(landscape)
-    }
-
-    fun wasWebViewPlaybackStarted(): Boolean =
-        webViewEngine?.wasPlaybackStarted() == true
-
-    /**
-     * True when playback is active or Exo is still starting after a WebView→Exo handoff.
-     * Prevents false "channel unavailable" dialogs from stale WebView/Shaka errors.
-     */
-    fun shouldSuppressPlaybackError(): Boolean {
-        if (engine?.isPlaying() == true) return true
-        val p = engine?.getPlayer()
-        if (p != null) {
-            when (p.playbackState) {
-                Player.STATE_BUFFERING, Player.STATE_READY -> return true
-            }
-        }
-        if (webViewEngine?.wasPlaybackStarted() == true) return true
-        if (gatewayExoPromotionAttempted && engine != null) return true
-        return false
-    }
+    fun isWebViewPlayback(): Boolean = webViewEngine != null && engine == null
 
     /**
      * After a failed Exo promotion, restore in-WebView Shaka playback if it was working.

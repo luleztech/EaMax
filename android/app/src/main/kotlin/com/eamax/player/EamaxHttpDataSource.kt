@@ -70,7 +70,6 @@ object EamaxHttpDataSource {
     /**
      * Short-timeout client used only by [StreamProbe] for format detection.
      * Falls back fast so users see playback (or error) without waiting 60s.
-     * 8s connect / 10s read is generous enough for high-latency mobile networks.
      */
     val fastProbeClient: OkHttpClient by lazy {
         sharedClient.newBuilder()
@@ -80,18 +79,16 @@ object EamaxHttpDataSource {
             .build()
     }
 
-    /** Parallel gateway HTML prefetch while WebView loads the same page. */
-    val gatewayFastClient: OkHttpClient by lazy {
+    /** PHP gateway HTML fetch — fail fast so Exo can start sooner. */
+    val gatewayFetchClient: OkHttpClient by lazy {
         sharedClient.newBuilder()
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(5, TimeUnit.SECONDS)
-            .callTimeout(6, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(6, TimeUnit.SECONDS)
+            .callTimeout(8, TimeUnit.SECONDS)
             .build()
     }
 
-    fun fastProbeClient(): OkHttpClient = fastProbeClient
-
-    fun gatewayFastClient(): OkHttpClient = gatewayFastClient
+    fun gatewayFastClient(): OkHttpClient = gatewayFetchClient
 
     @Suppress("UNUSED_PARAMETER")
     fun factory(

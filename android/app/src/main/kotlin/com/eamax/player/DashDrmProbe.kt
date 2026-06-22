@@ -23,7 +23,7 @@ object DashDrmProbe {
                 putIfAbsent("Accept", "application/dash+xml,application/xml,text/xml,*/*")
                 putIfAbsent("User-Agent", PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT)
             }
-            val client = EamaxHttpDataSource.fastProbeClient()
+            val client = EamaxHttpDataSource.fastProbeClient
             val b = okhttp3.Request.Builder().url(manifestUrl)
             reqHeaders.forEach { (k, v) -> b.header(k, v) }
             val body = client.newCall(b.get().build()).execute().use { r ->

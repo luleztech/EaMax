@@ -804,14 +804,55 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
+  Future<void> _prefetchPlaybackBundle(ChannelUi ch) async {
+    if (_isChannelDisabledByEmergency(ch.id)) return;
+    try {
+      final playback = await _resolveChannelPlayback(ch);
+      if (playback == null || playback.streams.isEmpty) return;
+      final stream = playback.primary!;
+      final channelData = playback.channelDataForStream(stream);
+      _channelDataCache[ch.id] = Map<String, dynamic>.from(channelData);
+      _channelDataCacheTime[ch.id] = DateTime.now();
+    } catch (_) {
+      // Non-fatal — instant open already used list URL.
+    }
+  }
+
+  /// One-tap open: use URL already on the channel card — no network wait.
+  Future<void> _instantOpenFromList(ChannelUi ch) async {
+    final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
+    final quickData = cachedData ?? ch.apiRow;
+    final quickUrl = _channelExternalUrl(ch, quickData);
+    if (quickUrl.isEmpty) return;
+
+    final channelData = quickData != null
+        ? Map<String, dynamic>.from(quickData)
+        : (ch.apiRow != null
+            ? Map<String, dynamic>.from(ch.apiRow!)
+            : <String, dynamic>{});
+
+    await _openVideoPlayback(
+      url: quickUrl,
+      channelName: ch.name,
+      channelId: ch.id,
+      channelData: channelData,
+      playbackEngineOverride: _playbackEngineFromData(channelData),
+    );
+    unawaited(_prefetchPlaybackBundle(ch));
+  }
+
   Future<void> _launchChannelPlayback(ChannelUi ch) async {
+    final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
+    final quickUrl = _channelExternalUrl(ch, cachedData ?? ch.apiRow);
+    if (quickUrl.isNotEmpty) {
+      await _instantOpenFromList(ch);
+      return;
+    }
+
     final playback = await _resolveChannelPlayback(ch);
     if (playback != null && playback.streams.isNotEmpty) {
       final stream = playback.primary!;
-      final channelData = await _mergeFreshAudioLanguage(
-        ch.id,
-        playback.channelDataForStream(stream),
-      );
+      final channelData = playback.channelDataForStream(stream);
       final enriched = ChannelPlaybackBundle(
         channelId: playback.channelId,
         name: playback.name,
@@ -834,39 +875,16 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       return;
     }
 
-    final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
-    final quickData = cachedData ?? ch.apiRow;
-    final quickUrl = _channelExternalUrl(ch, quickData);
-    if (quickUrl.isNotEmpty) {
-      final channelData = await _mergeFreshAudioLanguage(
-        ch.id,
-        quickData != null
-            ? Map<String, dynamic>.from(quickData)
-            : ch.apiRow,
-      );
-      await _openVideoPlayback(
-        url: quickUrl,
-        channelName: ch.name,
-        channelId: ch.id,
-        channelData: channelData,
-        playbackEngineOverride: _playbackEngineFromData(channelData),
-      );
-      return;
-    }
-
     final legacy = await _legacyChannelData(ch);
     final legacyUrl = _channelExternalUrl(ch, legacy);
     if (legacyUrl.isNotEmpty && mounted) {
-      final channelData = await _mergeFreshAudioLanguage(
-        ch.id,
-        legacy ?? ch.apiRow,
-      );
+      final channelData = legacy ?? ch.apiRow;
       await _openVideoPlayback(
         url: legacyUrl,
         channelName: ch.name,
         channelId: ch.id,
         channelData: channelData,
-        playbackEngineOverride: _playbackEngineFromData(legacy ?? ch.apiRow),
+        playbackEngineOverride: _playbackEngineFromData(channelData),
       );
       return;
     }
@@ -889,6 +907,16 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     if (canPlay) {
       if (_isChannelDisabledByEmergency(ch.id)) {
         if (mounted) await showChannelUnavailableModal(context);
+        return;
+      }
+
+      final quickUrl = _channelExternalUrl(ch, ch.apiRow);
+      if (quickUrl.isNotEmpty) {
+        try {
+          await _instantOpenFromList(ch);
+        } catch (_) {
+          if (mounted) await showChannelUnavailableModal(context);
+        }
         return;
       }
 

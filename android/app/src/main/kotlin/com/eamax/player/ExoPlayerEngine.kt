@@ -7,10 +7,10 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Tracks
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
@@ -102,28 +102,28 @@ class ExoPlayerEngine(
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val trackSelector = DefaultTrackSelector(context)
-    /** Kotlin-owned quality; default from admin config (~360p “Okoa bando”) until user changes it. */
-    private var selectedQuality: StreamQuality = RemotePlayerConfigHolder.defaultStreamQuality()
+    /** Kotlin-owned quality; default ~360p (“Okoa bando”) until user picks Auto or higher. */
+    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var preferredAudioLanguage: String = AudioLanguageSupport.DEFAULT
     private var currentSession: StreamSession? = null
     private var currentFormat: StreamFormat? = null
     private var malformedManifestRecovered = false
     private var blockedHeadersRecovered = false
     private var networkFallbackRecovered = false
     private var webViewLicenseBridge: WebViewLicenseBridge? = null
-    private var pendingAudioLanguage: String = AudioLanguageSupport.DEFAULT
 
     companion object {
         private const val TAG = "ExoPlayerEngine"
         
-        // Buffer configuration tuned for live IPTV on mobile networks.
-        private const val MIN_BUFFER_MS = 10000       // maintain 10s buffer
-        private const val MAX_BUFFER_MS = 30000       // cap at 30s to save memory
-        private const val BUFFER_FOR_PLAYBACK_MS = 250
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 500
+        // Buffer configuration tuned for fast live IPTV start on mobile networks.
+        private const val MIN_BUFFER_MS = 5000
+        private const val MAX_BUFFER_MS = 20000
+        private const val BUFFER_FOR_PLAYBACK_MS = 500
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 1000
 
         // Timeouts: fail fast → surface error → retry rather than hanging silently.
-        private const val CONNECT_TIMEOUT_MS = 10000  // 10s connect (was 30s)
-        private const val READ_TIMEOUT_MS = 20000     // 20s read (was 30s)
+        private const val CONNECT_TIMEOUT_MS = 8000
+        private const val READ_TIMEOUT_MS = 15000
     }
 
     /**
@@ -136,7 +136,7 @@ class ExoPlayerEngine(
         webViewLicenseBridge: WebViewLicenseBridge? = null,
     ) {
         currentSession = streamSession
-        pendingAudioLanguage = AudioLanguageSupport.normalize(streamSession.preferredAudioLanguage)
+        preferredAudioLanguage = AudioLanguageSupport.normalize(streamSession.preferredAudioLanguage)
         this.webViewLicenseBridge = webViewLicenseBridge
         if (resetRecoveryFlags) {
             malformedManifestRecovered = false
@@ -184,17 +184,14 @@ class ExoPlayerEngine(
             // Step 6: Build and configure player
             val renderersFactory = DefaultRenderersFactory(context)
                 .setEnableDecoderFallback(true)
-            val cfg = RemotePlayerConfigHolder
-            val minBuf = cfg.bufferMinMs.coerceIn(500, 60_000)
-            val maxBuf = cfg.bufferMaxMs.coerceIn(minBuf + 500, 120_000)
-            val initialBuf = cfg.initialBufferMs.coerceIn(200, 30_000)
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    minBuf,
-                    maxBuf,
-                    initialBuf,
-                    (initialBuf * 2).coerceAtMost(maxBuf),
+                    MIN_BUFFER_MS,
+                    MAX_BUFFER_MS,
+                    BUFFER_FOR_PLAYBACK_MS,
+                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
                 )
+                .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
             exoPlayer = ExoPlayer.Builder(context, renderersFactory)
                 .setLoadControl(loadControl)
@@ -202,19 +199,12 @@ class ExoPlayerEngine(
                 .build()
                 .apply {
                     val ts = this@ExoPlayerEngine.trackSelector
-                    selectedQuality = RemotePlayerConfigHolder.defaultStreamQuality()
-                    val paramsBuilder = ts.buildUponParameters()
-                        .setForceHighestSupportedBitrate(selectedQuality == StreamQuality.AUTO)
-                    if (selectedQuality == StreamQuality.AUTO) {
-                        paramsBuilder
-                            .clearVideoSizeConstraints()
-                            .setMaxVideoBitrate(Int.MAX_VALUE)
-                    } else {
-                        paramsBuilder
-                            .setMaxVideoSize(Int.MAX_VALUE, selectedQuality.height)
-                            .setMaxVideoBitrate(maxBitrateForQuality(selectedQuality))
-                    }
-                    ts.parameters = paramsBuilder.build()
+                    // Default “Okoa bando”: cap ABR to ~360p until user picks Auto or higher in the UI.
+                    ts.parameters = ts.buildUponParameters()
+                        .setMaxVideoSize(Int.MAX_VALUE, StreamQuality.QUALITY_360P.height)
+                        .setForceHighestSupportedBitrate(false)
+                        .setPreferredAudioLanguage(preferredAudioLanguage)
+                        .build()
 
                     setAudioAttributes(
                         AudioAttributes.Builder()
@@ -229,8 +219,8 @@ class ExoPlayerEngine(
                     addListener(PlayerEventListener())
                     setMediaSource(mediaSource)
                     prepare()
-                    playWhenReady = RemotePlayerConfigHolder.autoPlay
-                    Log.d(TAG, "✅ Player prepared with playWhenReady=${RemotePlayerConfigHolder.autoPlay}")
+                    playWhenReady = true
+                    Log.d(TAG, "✅ Player prepared with playWhenReady=true")
                 }
 
         } catch (e: Exception) {
@@ -314,12 +304,7 @@ class ExoPlayerEngine(
             
             // Priority 3: Add standard browser-like headers (lowest priority, won't override)
             putIfAbsent("Accept", "*/*")
-            putIfAbsent(
-                "Accept-Language",
-                AudioLanguageSupport.acceptLanguageHeader(
-                    currentSession?.preferredAudioLanguage ?: pendingAudioLanguage,
-                ),
-            )
+            putIfAbsent("Accept-Language", "en-US,en;q=0.9")
             putIfAbsent("Connection", "keep-alive")
 
             // Priority 4: User-Agent — many .mpd/.m3u8 CDNs block generic ExoPlayer UAs.
@@ -652,10 +637,12 @@ class ExoPlayerEngine(
         dataSourceFactory: HttpDataSource.Factory,
         headers: Map<String, String>
     ): MediaSource {
-        // Reference player used `false` here for broader HLS server compatibility; chunkless can
-        // break some IPTV origins that require a full playlist read before preparation.
+        // Chunkless prep starts live HLS faster; disabled for gateway/sniff URLs that need full playlist.
+        val allowChunkless = StreamUrlClassifier.hasObviousM3u8(streamSession.mpdUrl) &&
+            !StreamUrlClassifier.isLikelyGatewayUrl(streamSession.mpdUrl) &&
+            !StreamUrlClassifier.isPhpLikeUrl(streamSession.mpdUrl)
         val hlsFactory = HlsMediaSource.Factory(dataSourceFactory)
-            .setAllowChunklessPreparation(false)
+            .setAllowChunklessPreparation(allowChunkless)
 
         // Add DRM session manager if needed (for SAMPLE-AES encryption)
         if (streamSession.drmType != DrmType.NONE) {
@@ -857,7 +844,6 @@ class ExoPlayerEngine(
     fun setQuality(quality: StreamQuality) {
         selectedQuality = quality
         applySelectedQuality()
-        applyPendingAudioLanguage()
         Log.d(TAG, "🎨 Quality set to: $quality")
     }
 
@@ -926,54 +912,47 @@ class ExoPlayerEngine(
     }
 
     fun setAudioLanguage(language: String) {
-        pendingAudioLanguage = AudioLanguageSupport.normalize(language)
-        applyPendingAudioLanguage()
+        preferredAudioLanguage = AudioLanguageSupport.normalize(language)
+        applyPreferredAudioLanguage(preferredAudioLanguage)
     }
 
-    private fun applyPendingAudioLanguage() {
-        val target = pendingAudioLanguage
+    private fun applyPreferredAudioLanguage(language: String) {
+        val lang = AudioLanguageSupport.normalize(language)
+        val params = trackSelector.buildUponParameters()
+            .setPreferredAudioLanguage(lang)
+            .build()
+        trackSelector.setParameters(params)
+        exoPlayer?.trackSelectionParameters = params
+        trySelectAudioTrackExplicit(lang)
+        Log.d(TAG, "🔊 Audio language set to: $lang")
+    }
+
+    private fun trySelectAudioTrackExplicit(preferred: String) {
         val player = exoPlayer ?: return
-        val tracks = player.currentTracks
-        val builder = player.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-
-        var matchedGroup: Tracks.Group? = null
-        var matchedIndex = -1
-
-        for (group in tracks.groups) {
-            if (group.type != C.TRACK_TYPE_AUDIO || group.length <= 0) continue
+        for (group in player.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            var bestIndex = -1
             for (i in 0 until group.length) {
                 if (!group.isTrackSupported(i)) continue
                 val format = group.getTrackFormat(i)
-                if (AudioLanguageSupport.matchesTrackLanguage(format.language, target) ||
-                    AudioLanguageSupport.matchesTrackLabel(format.label, target)
+                if (AudioLanguageSupport.matchesTrackLanguage(format.language, preferred) ||
+                    AudioLanguageSupport.matchesTrackLabel(format.label, preferred)
                 ) {
-                    matchedGroup = group
-                    matchedIndex = i
+                    bestIndex = i
                     break
                 }
             }
-            if (matchedGroup != null) break
-        }
-
-        if (matchedGroup != null && matchedIndex >= 0) {
-            builder.addOverride(TrackSelectionOverride(matchedGroup.mediaTrackGroup, matchedIndex))
-            val format = matchedGroup.getTrackFormat(matchedIndex)
-            Log.d(
-                TAG,
-                "🔊 Audio track override: lang=${format.language} label=${format.label} → target=$target (index=$matchedIndex)",
-            )
-        } else {
-            AudioLanguageSupport.aliases(target).forEach { alias ->
-                builder.setPreferredAudioLanguage(alias)
+            if (bestIndex >= 0) {
+                val overrideParams = player.trackSelectionParameters
+                    .buildUpon()
+                    .addOverride(TrackSelectionOverride(group.mediaTrackGroup, bestIndex))
+                    .build()
+                player.trackSelectionParameters = overrideParams
+                trackSelector.setParameters(overrideParams)
+                Log.d(TAG, "🔊 Explicit audio track selected: $preferred idx=$bestIndex")
+                return
             }
-            Log.d(TAG, "🔊 Audio preferred languages: ${AudioLanguageSupport.aliases(target)}")
         }
-
-        val params = builder.build()
-        player.trackSelectionParameters = params
-        trackSelector.setParameters(params)
     }
 
     fun setTrack(group: Tracks.Group, trackIndex: Int) {
@@ -996,6 +975,47 @@ class ExoPlayerEngine(
     fun getPlayer(): ExoPlayer? = exoPlayer
 
     fun getAvailableTracks(): Tracks = exoPlayer?.currentTracks ?: Tracks.EMPTY
+
+    data class SelectableAudioTrack(
+        val displayLabel: String,
+        val languageCode: String,
+        val group: Tracks.Group,
+        val trackIndex: Int,
+    )
+
+    fun listSelectableAudioTracks(): List<SelectableAudioTrack> {
+        val player = exoPlayer ?: return emptyList()
+        val out = LinkedHashMap<String, SelectableAudioTrack>()
+        for (group in player.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (!group.isTrackSupported(i)) continue
+                val format = group.getTrackFormat(i)
+                val lang = format.language?.trim().orEmpty()
+                val label = format.label?.trim().orEmpty()
+                val display = when {
+                    label.isNotEmpty() && lang.isNotEmpty() -> "$label ($lang)"
+                    label.isNotEmpty() -> label
+                    lang.isNotEmpty() -> AudioLanguageSupport.displayName(lang).let {
+                        if (it != lang) it else lang.uppercase()
+                    }
+                    else -> "Audio ${i + 1}"
+                }
+                val code = if (lang.isNotEmpty()) lang else AudioLanguageSupport.normalize(label)
+                val key = "$display|$code|$i"
+                out.putIfAbsent(
+                    key,
+                    SelectableAudioTrack(
+                        displayLabel = display,
+                        languageCode = code,
+                        group = group,
+                        trackIndex = i,
+                    ),
+                )
+            }
+        }
+        return out.values.toList()
+    }
 
     fun refreshSession(newSession: StreamSession) {
         Log.d(TAG, "🔄 Refreshing session...")
@@ -1063,7 +1083,7 @@ class ExoPlayerEngine(
             if (selectedQuality != StreamQuality.AUTO) {
                 applySelectedQuality()
             }
-            applyPendingAudioLanguage()
+            applyPreferredAudioLanguage(preferredAudioLanguage)
             
             onTracksChangedCallback(tracks)
         }

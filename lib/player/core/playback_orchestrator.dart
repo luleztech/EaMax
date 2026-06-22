@@ -61,7 +61,7 @@ class PlaybackOrchestrator {
     ));
 
     final policy = session.policy;
-    await _syncNativePolicy(policy);
+    unawaited(_syncNativePolicy(policy));
 
     final channelData = session.channelData;
     final gatewayPage = isGatewayUrl(url) || useWebViewForUrl(url);
@@ -154,7 +154,7 @@ class PlaybackOrchestrator {
     if (url.isEmpty) return;
 
     final policy = policyOverride ?? _globalPolicy;
-    await _syncNativePolicy(policy);
+    unawaited(_syncNativePolicy(policy));
 
     if (channelId != null) {
       unawaited(PlaybackAnalytics.trackChannelOpen(

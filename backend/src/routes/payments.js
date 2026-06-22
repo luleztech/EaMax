@@ -322,13 +322,33 @@ const AURAX_HTTP_TIMEOUT_MS = Math.min(
   55000,
 );
 
-/** Aurax Pay requires E.164 +255… (e.g. +255712345678). DB buyer_phone stays local 0…. */
+/**
+ * Aurax Pay buyerPhone:
+ * - HALOPESA (061–063): local Tanzania format only (`0621234567`) — +255 is rejected.
+ * - Other channels: `255XXXXXXXXX` (12-digit MSISDN, no `+`).
+ * DB `buyer_phone` stays local `0…`.
+ */
 const formatPhoneForAuraxPayApi = (local0) => {
   const local = formatBuyerPhoneLocal(local0);
-  if (local.startsWith('+255')) return local;
-  if (local.startsWith('0')) return `+255${local.slice(1)}`;
-  if (local.startsWith('255')) return `+${local}`;
-  return `+255${local}`;
+  if (isHalotelLocalPhone(local)) {
+    return local;
+  }
+  if (local.startsWith('0')) return `255${local.slice(1)}`;
+  if (local.startsWith('+255')) return local.slice(1);
+  if (local.startsWith('255')) return local.slice(0, 12);
+  return `255${local}`.slice(0, 12);
+};
+
+/** Phone formats to try with Aurax (Halopesa: local only; others: 255 then +255). */
+const auraxPhoneCandidatesForApi = (normalizedPhone) => {
+  const local = formatBuyerPhoneLocal(normalizedPhone);
+  if (!local) return [];
+  if (isHalotelLocalPhone(local)) {
+    return [local];
+  }
+  const intl255 = formatPhoneForAuraxPayApi(local);
+  const e164plus = local.startsWith('0') ? `+255${local.slice(1)}` : `+${intl255}`;
+  return [...new Set([intl255, e164plus, local].filter((p) => p && p.length >= 9))];
 };
 
 /** Map Tanzanian MSISDN prefix to Aurax channel enum. */
@@ -364,60 +384,81 @@ const initiateAuraxPayment = async ({
   callbackUrl,
   orderId,
 }) => {
-  const phoneForAurax = formatPhoneForAuraxPayApi(normalizedPhone);
-  const payload = {
-    amount: amountToSend,
-    currency: 'TZS',
-    channel: resolveAuraxChannelFromPhone(normalizedPhone),
-    buyerPhone: phoneForAurax,
-    buyerName: data.name || externalId || 'EaMax User',
-    buyerEmail: data.email || 'user@eamax.app',
-    description: `EaMax ${data.bundle || 'subscription'}`,
-    callbackUrl,
-    metadata: {
-      orderId,
-      externalId,
-      bundle: data.bundle || null,
-    },
-  };
+  const channel = resolveAuraxChannelFromPhone(normalizedPhone);
+  const phoneCandidates = auraxPhoneCandidatesForApi(normalizedPhone);
+  const candidates = phoneCandidates.length > 0 ? phoneCandidates : [formatPhoneForAuraxPayApi(normalizedPhone)];
 
   const maxAttempts = 2;
   let last = {
     response: { ok: false, status: 500 },
     auraxData: { success: false, message: 'Failed to start payment request' },
-    phoneUsed: phoneForAurax,
+    phoneUsed: candidates[0],
   };
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const { response, data: auraxData } = await gatewayFetchJson(
-        `${AURAXPAY_API_BASE}/payments`,
-        {
-          method: 'POST',
-          headers: getAuraxPayRequestHeaders(),
-          body: JSON.stringify(payload),
-        },
-        AURAX_HTTP_TIMEOUT_MS,
-      );
-      last = { response, auraxData, phoneUsed: phoneForAurax };
-      if (isAuraxInitiateSuccess(auraxData, response)) return last;
-      if (
-        attempt < maxAttempts &&
-        isRetriableAuraxInitiateFailure(response.ok, auraxData, response.status)
-      ) {
-        console.warn('[AuraxPay] Retrying initiate', { attempt, phone: phoneForAurax });
-        continue;
+  for (const phoneForAurax of candidates) {
+    const payload = {
+      amount: amountToSend,
+      currency: 'TZS',
+      channel,
+      buyerPhone: phoneForAurax,
+      buyerName: data.name || externalId || 'EaMax User',
+      buyerEmail: data.email || 'user@eamax.app',
+      description: `EaMax ${data.bundle || 'subscription'}`,
+      callbackUrl,
+      metadata: {
+        orderId,
+        externalId,
+        bundle: data.bundle || null,
+      },
+    };
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const { response, data: auraxData } = await gatewayFetchJson(
+          `${AURAXPAY_API_BASE}/payments`,
+          {
+            method: 'POST',
+            headers: getAuraxPayRequestHeaders(),
+            body: JSON.stringify(payload),
+          },
+          AURAX_HTTP_TIMEOUT_MS,
+        );
+        last = { response, auraxData, phoneUsed: phoneForAurax };
+        if (isAuraxInitiateSuccess(auraxData, response)) return last;
+        if (
+          attempt < maxAttempts &&
+          isRetriableAuraxInitiateFailure(response.ok, auraxData, response.status)
+        ) {
+          console.warn('[AuraxPay] Retrying initiate', { attempt, phone: phoneForAurax, channel });
+          continue;
+        }
+        break;
+      } catch (fetchErr) {
+        last = {
+          response: { ok: false, status: 502 },
+          auraxData: { success: false, message: String(fetchErr?.message || fetchErr || 'network') },
+          phoneUsed: phoneForAurax,
+        };
+        if (attempt < maxAttempts) continue;
+        break;
       }
-      break;
-    } catch (fetchErr) {
-      last = {
-        response: { ok: false, status: 502 },
-        auraxData: { success: false, message: String(fetchErr?.message || fetchErr || 'network') },
-        phoneUsed: phoneForAurax,
-      };
-      if (attempt < maxAttempts) continue;
-      break;
     }
+
+    if (isAuraxInitiateSuccess(last.auraxData, last.response)) return last;
+
+    const errText = `${last.auraxData?.message || ''} ${last.auraxData?.error || ''}`.toLowerCase();
+    const looksLikePhoneReject =
+      /phone|msisdn|mobile|number|invalid.*buyer|buyerphone/i.test(errText) ||
+      last.response?.status === 400 ||
+      last.response?.status === 422;
+    if (looksLikePhoneReject && candidates.length > 1) {
+      console.warn('[AuraxPay] Phone format rejected — trying next candidate', {
+        tried: phoneForAurax,
+        channel,
+      });
+      continue;
+    }
+    break;
   }
   return last;
 };
@@ -985,13 +1026,12 @@ async function handlePaymentStart(req, res, next) {
     }
 
     const skipSonicForHalotel =
-      isSonicAuraxFallbackAllowed() &&
       paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
       isHalotelLocalPhone(normalizedPhone) &&
       auraxReady;
 
     if (skipSonicForHalotel) {
-      console.log('[Payment] Halotel MSISDN — using Aurax Pay (ALLOW_SONIC_AURAX_FALLBACK=1 only)');
+      console.log('[Payment] Halotel MSISDN (061–063) — routing to Aurax Pay with local phone format');
       paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
       usedAuraxFallbackFromSonic = true;
     } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
@@ -1098,6 +1138,7 @@ async function handlePaymentStart(req, res, next) {
     console.log('[AuraxPay] Sending payment request:', {
       orderId,
       phone: phoneForAurax,
+      phoneCandidates: auraxPhoneCandidatesForApi(normalizedPhone),
       channel: resolveAuraxChannelFromPhone(normalizedPhone),
       amount: amountToSend,
       bundle: planKey,

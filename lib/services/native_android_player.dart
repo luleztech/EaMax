@@ -52,7 +52,7 @@ class NativeAndroidPlayer {
     });
   }
 
-  /// Push server-driven player settings to Kotlin [RemotePlayerConfigHolder].
+  /// Push server-driven player settings to native Kotlin (no-op with Supasoka player stack).
   static Future<void> syncPlayerConfig({
     required String preferredEngine,
     required int bufferMinMs,

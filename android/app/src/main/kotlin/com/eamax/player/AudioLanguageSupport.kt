@@ -1,43 +1,41 @@
 package com.eamax.player
 
-/** Admin stream language: Swahili (default) or English. */
+/** Normalizes admin/playback audio language codes for ExoPlayer and WebView players. */
 object AudioLanguageSupport {
     const val DEFAULT = "sw"
 
     fun normalize(raw: String?): String {
-        val lang = raw?.trim()?.lowercase().orEmpty()
+        val r = raw?.trim()?.lowercase().orEmpty()
         return when {
-            lang.isEmpty() || lang == "auto" || lang == "default" -> DEFAULT
-            lang == "en" || lang == "eng" || lang.startsWith("en-") -> "en"
-            lang == "sw" || lang == "swa" || lang.startsWith("sw-") -> DEFAULT
+            r.isEmpty() -> DEFAULT
+            r == "en" || r.startsWith("en-") || r == "english" || r == "eng" -> "en"
+            r == "sw" || r.startsWith("sw-") || r == "swahili" || r == "kiswahili" || r == "swa" -> "sw"
             else -> DEFAULT
         }
     }
 
-    fun aliases(lang: String): List<String> = when (normalize(lang)) {
-        "en" -> listOf("en", "eng", "en-us", "en-gb", "en-au")
-        else -> listOf("sw", "swa", "sw-tz", "sw-ke")
-    }
-
-    fun acceptLanguageHeader(lang: String): String = when (normalize(lang)) {
-        "en" -> "en-US,en;q=0.9,sw;q=0.8"
-        else -> "sw-TZ,sw;q=0.9,en;q=0.8"
-    }
-
-    fun matchesTrackLanguage(trackLang: String?, target: String): Boolean {
+    fun matchesTrackLanguage(trackLang: String?, preferred: String): Boolean {
         val t = trackLang?.trim()?.lowercase().orEmpty()
         if (t.isEmpty()) return false
-        return aliases(target).any { alias ->
-            t == alias || t.startsWith("$alias-")
+        return when (normalize(preferred)) {
+            "en" -> t == "en" || t.startsWith("en-") || t == "eng"
+            "sw" -> t == "sw" || t.startsWith("sw-") || t == "swa"
+            else -> t == preferred || t.startsWith("$preferred-")
         }
     }
 
-    fun matchesTrackLabel(label: String?, target: String): Boolean {
+    fun matchesTrackLabel(label: String?, preferred: String): Boolean {
         val t = label?.trim()?.lowercase().orEmpty()
         if (t.isEmpty()) return false
-        return when (normalize(target)) {
-            "en" -> t.contains("english") || t.contains(" eng") || t.startsWith("eng")
-            else -> t.contains("swahili") || t.contains("kiswahili") || t.contains("swa")
+        return when (normalize(preferred)) {
+            "en" -> t.contains("english") || t.contains("eng")
+            "sw" -> t.contains("swahili") || t.contains("kiswahili") || t.contains("swa")
+            else -> false
         }
+    }
+
+    fun displayName(code: String): String = when (normalize(code)) {
+        "en" -> "Kiingereza (English)"
+        else -> "Kiswahili"
     }
 }

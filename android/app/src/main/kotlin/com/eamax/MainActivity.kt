@@ -2,10 +2,10 @@ package com.eamax
 
 import android.content.Intent
 import android.os.Bundle
+import com.eamax.player.GatewayWebPlayerFactory
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import com.eamax.player.RemotePlayerConfigHolder
 
 class MainActivity : FlutterActivity() {
 
@@ -16,6 +16,13 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngine
+            .platformViewsController
+            .registry
+            .registerViewFactory(
+                "com.eamax/gateway_web_player",
+                GatewayWebPlayerFactory(flutterEngine.dartExecutor.binaryMessenger),
+            )
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.eamax/app_data",
@@ -74,71 +81,17 @@ class MainActivity : FlutterActivity() {
                         ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
                         intent.putExtra("clearKeyHex", mergedClearKey)
                         intent.putExtra("headersJson", args["headersJson"]?.toString().orEmpty())
-                        intent.putExtra("fallbackStreamsJson", args["fallbackStreamsJson"]?.toString().orEmpty())
-                        val playbackEngine = args["playbackEngine"]?.toString()?.trim().orEmpty()
-                        if (playbackEngine.isNotEmpty()) {
-                            intent.putExtra("playbackEngine", playbackEngine)
-                        }
-                        val audioLanguage = com.eamax.player.AudioLanguageSupport.normalize(
-                            args["audioLanguage"]?.toString(),
+                        intent.putExtra(
+                            "audioLanguage",
+                            args["audioLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
-                        intent.putExtra("audioLanguage", audioLanguage)
-                        val channelId = (args["channelId"] as? Number)?.toInt()
-                            ?: args["channelId"]?.toString()?.toIntOrNull()
-                        if (channelId != null && channelId > 0) {
-                            intent.putExtra("channelId", channelId)
-                        }
-                        args["channelName"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                            intent.putExtra("channelName", it)
-                        }
-                        args["playerPolicyJson"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                            intent.putExtra("playerPolicyJson", it)
-                        }
-                        intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
                     }
                 }
-                "openExternal" -> {
-                    // Deprecated — all playback stays in-app (no VLC/MX / system chooser).
-                    result.success(false)
-                }
-                "updatePlayerConfig" -> {
-                    @Suppress("UNCHECKED_CAST")
-                    val args = call.arguments as? Map<String, Any?>
-                    if (args == null) {
-                        result.error("bad_args", "Expected map", null)
-                        return@setMethodCallHandler
-                    }
-                    fun intArg(key: String): Int? =
-                        (args[key] as? Number)?.toInt()
-                            ?: args[key]?.toString()?.toIntOrNull()
-                    fun boolArg(key: String): Boolean? = when (val v = args[key]) {
-                        is Boolean -> v
-                        else -> v?.toString()?.equals("true", ignoreCase = true)
-                    }
-                    RemotePlayerConfigHolder.update(
-                        preferredEngine = args["preferredEngine"]?.toString(),
-                        bufferMinMs = intArg("bufferMinMs"),
-                        bufferMaxMs = intArg("bufferMaxMs"),
-                        initialBufferMs = intArg("initialBufferMs"),
-                        retryMax = intArg("retryMax"),
-                        retryDelayMs = intArg("retryDelayMs"),
-                        failoverToWebview = boolArg("failoverToWebview"),
-                        reconnectEnabled = boolArg("reconnectEnabled"),
-                        autoPlay = boolArg("autoPlay"),
-                        defaultQuality = args["defaultQuality"]?.toString(),
-                        hardwareAcceleration = boolArg("hardwareAcceleration"),
-                        softwareDecodeFallback = boolArg("softwareDecodeFallback"),
-                        backgroundPlayback = boolArg("backgroundPlayback"),
-                        resumePlayback = boolArg("resumePlayback"),
-                        networkTimeoutMs = intArg("networkTimeoutMs"),
-                        reconnectionPolicy = args["reconnectionPolicy"]?.toString(),
-                    )
-                    result.success(null)
-                }
+                "updatePlayerConfig" -> result.success(null)
                 else -> result.notImplemented()
             }
         }

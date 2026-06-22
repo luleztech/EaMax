@@ -35,23 +35,8 @@ object GatewayHttpHeaders {
         }
         if (manifestUrl.startsWith("http", ignoreCase = true)) {
             mergeCookies(h, manifestUrl)
-            // Azam/Nagra CDNs validate Referer against the tokenized manifest URL.
-            if (manifestUrl.contains("azamtvltd", ignoreCase = true) ||
-                manifestUrl.contains("cdntoken=", ignoreCase = true)
-            ) {
-                val manifestRef = stripQuery(manifestUrl)
-                h["Referer"] = manifestRef
-                originFromUrl(manifestUrl)?.let { h["Origin"] = it }
-            }
         }
         return h
-    }
-
-    private fun stripQuery(url: String): String {
-        val hash = url.indexOf('#')
-        val base = if (hash >= 0) url.substring(0, hash) else url
-        val q = base.indexOf('?')
-        return if (q >= 0) base.substring(0, q) else base
     }
 
     fun mergeCookies(headers: MutableMap<String, String>, url: String) {
