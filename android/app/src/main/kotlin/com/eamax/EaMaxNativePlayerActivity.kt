@@ -63,6 +63,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     private var preferredAudioLanguage: String = AudioLanguageSupport.DEFAULT
     private lateinit var playerTopTools: LinearLayout
     private lateinit var playerViewRef: PlayerView
+    private lateinit var okoaBundleButton: Button
 
     private sealed class LanguageChoice {
         data class Preset(val code: String) : LanguageChoice()
@@ -218,6 +219,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             if (!webAlreadyPlaying) {
                                 playerManager.setQuality(selectedOkoaQuality, fromUser = false)
                             }
+                            updateOkoaButtonLabel()
                         } else {
                             if (playbackReady) {
                                 playerOverlay.markStreamHandoff()
@@ -228,6 +230,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                             playerView.visibility = View.VISIBLE
                             showPlayerTopTools()
                             playerManager.setQuality(selectedOkoaQuality, fromUser = false)
+                            updateOkoaButtonLabel()
                             bindExoToPlayerViewIfNeeded(playerView, strictNull = true)
                             playerManager.getExoPlayer()?.let { playerOverlay.attachExoPlayer(it) }
                             playerView.showController()
@@ -256,9 +259,25 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
         findViewById<ImageButton>(R.id.btn_close).setOnClickListener { finish() }
         playerTopTools = findViewById(R.id.player_top_tools)
+        playerTopTools.isClickable = true
+        okoaBundleButton = findViewById(R.id.btn_okoa_bundle)
         findViewById<ImageButton>(R.id.btn_player_language).setOnClickListener { showLanguageDialog() }
-        findViewById<ImageButton>(R.id.btn_player_settings).setOnClickListener { showPlayerSettingsDialog() }
-        findViewById<Button>(R.id.btn_okoa_bundle).setOnClickListener { showOkoaQualityDialog() }
+        findViewById<ImageButton>(R.id.btn_player_settings).setOnClickListener { openPlayerSettings() }
+        okoaBundleButton.setOnClickListener { showOkoaQualityDialog() }
+        wireControllerSettingsButton()
+        updateOkoaButtonLabel()
+    }
+
+    /** Top gear and bottom-right controller gear open the same settings menu. */
+    private fun openPlayerSettings() {
+        playerViewRef.hideController()
+        showPlayerSettingsDialog()
+    }
+
+    private fun wireControllerSettingsButton() {
+        playerViewRef.findViewById<ImageButton>(R.id.btn_exo_player_settings)?.setOnClickListener {
+            openPlayerSettings()
+        }
     }
 
     private fun showPlayerTopTools() {
@@ -444,6 +463,23 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyOkoaQuality(quality: StreamQuality) {
+        selectedOkoaQuality = quality
+        if (::playerManager.isInitialized) {
+            playerManager.setQuality(quality, fromUser = true)
+        }
+        updateOkoaButtonLabel()
+    }
+
+    private fun updateOkoaButtonLabel() {
+        if (!::okoaBundleButton.isInitialized) return
+        val suffix = when (selectedOkoaQuality) {
+            StreamQuality.AUTO -> "Auto"
+            else -> selectedOkoaQuality.label
+        }
+        okoaBundleButton.text = "${getString(R.string.okoa_bundle)} · $suffix"
+    }
+
     private fun showOkoaQualityDialog() {
         if (!::playerManager.isInitialized) return
         val qualities = listOf(
@@ -461,8 +497,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 qualities.map { it.label }.toTypedArray(),
                 initial,
             ) { d, which ->
-                selectedOkoaQuality = qualities[which]
-                playerManager.setQuality(selectedOkoaQuality, fromUser = true)
+                applyOkoaQuality(qualities[which])
                 d.dismiss()
             }
             .setNegativeButton(android.R.string.cancel, null)

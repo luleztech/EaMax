@@ -893,6 +893,29 @@ class ExoPlayerEngine(
         if (bestGroup != null && bestIndex >= 0) {
             builder.addOverride(TrackSelectionOverride(bestGroup.mediaTrackGroup, bestIndex))
             Log.d(TAG, "🎨 Selected video track ${quality.height}p (actual=${bestHeight}p, idx=$bestIndex)")
+        } else if (quality.height > 0) {
+            var lowGroup: Tracks.Group? = null
+            var lowIndex = -1
+            var lowBitrate = Int.MAX_VALUE
+            for (group in player.currentTracks.groups) {
+                if (group.type != C.TRACK_TYPE_VIDEO) continue
+                for (i in 0 until group.length) {
+                    if (!group.isTrackSupported(i)) continue
+                    val br = group.getTrackFormat(i).bitrate
+                    val effective = if (br > 0) br else Int.MAX_VALUE
+                    if (effective < lowBitrate) {
+                        lowBitrate = effective
+                        lowGroup = group
+                        lowIndex = i
+                    }
+                }
+            }
+            if (lowGroup != null && lowIndex >= 0 && quality.height <= 480) {
+                builder.addOverride(TrackSelectionOverride(lowGroup.mediaTrackGroup, lowIndex))
+                Log.d(TAG, "🎨 Selected lowest video track for ${quality.label} cap (bitrate=$lowBitrate)")
+            } else {
+                Log.d(TAG, "🎨 Capped video to ${quality.height}p via max size/bitrate (no override yet)")
+            }
         } else {
             Log.d(TAG, "🎨 Capped video to ${quality.height}p via max size/bitrate (no override yet)")
         }

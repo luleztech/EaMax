@@ -974,7 +974,11 @@ class WebViewEngine(
     }
 
     private fun scheduleOkoaQualityRetries(mode: String, onlyIfDefault: Boolean = false) {
-        val delays = if (onlyIfDefault) listOf(600L, 1500L, 3000L) else listOf(400L, 800L, 1600L, 3200L)
+        val delays = if (onlyIfDefault) {
+            listOf(600L, 1500L, 3000L)
+        } else {
+            listOf(0L, 400L, 800L, 1600L, 3200L, 5000L)
+        }
         delays.forEach { delayMs ->
             mainHandler.postDelayed({
                 if (released) return@postDelayed

@@ -323,32 +323,31 @@ const AURAX_HTTP_TIMEOUT_MS = Math.min(
 );
 
 /**
- * Aurax Pay buyerPhone:
- * - HALOPESA (061–063): local Tanzania format only (`0621234567`) — +255 is rejected.
- * - Other channels: `255XXXXXXXXX` (12-digit MSISDN, no `+`).
+ * Aurax Pay buyerPhone: E.164 `+255XXXXXXXXX` for every channel (MPESA, TIGO_PESA, AIRTEL_MONEY, HALOPESA).
+ * Local `0…` and bare `255…` (no `+`) are rejected by the API.
  * DB `buyer_phone` stays local `0…`.
  */
 const formatPhoneForAuraxPayApi = (local0) => {
   const local = formatBuyerPhoneLocal(local0);
-  if (isHalotelLocalPhone(local)) {
-    return local;
+  if (local.startsWith('+255')) {
+    const national = local.slice(4).replace(/\D/g, '').slice(0, 9);
+    return national ? `+255${national}` : local;
   }
-  if (local.startsWith('0')) return `255${local.slice(1)}`;
-  if (local.startsWith('+255')) return local.slice(1);
-  if (local.startsWith('255')) return local.slice(0, 12);
-  return `255${local}`.slice(0, 12);
+  let national = local.replace(/\D/g, '');
+  if (national.startsWith('255') && national.length >= 12) {
+    national = national.slice(3);
+  }
+  if (national.startsWith('0')) {
+    national = national.slice(1);
+  }
+  national = national.slice(0, 9);
+  return national ? `+255${national}` : local;
 };
 
-/** Phone formats to try with Aurax (Halopesa: local only; others: 255 then +255). */
+/** Aurax accepts only +255…; keep a single canonical candidate per MSISDN. */
 const auraxPhoneCandidatesForApi = (normalizedPhone) => {
-  const local = formatBuyerPhoneLocal(normalizedPhone);
-  if (!local) return [];
-  if (isHalotelLocalPhone(local)) {
-    return [local];
-  }
-  const intl255 = formatPhoneForAuraxPayApi(local);
-  const e164plus = local.startsWith('0') ? `+255${local.slice(1)}` : `+${intl255}`;
-  return [...new Set([intl255, e164plus, local].filter((p) => p && p.length >= 9))];
+  const e164 = formatPhoneForAuraxPayApi(normalizedPhone);
+  return e164.startsWith('+255') && e164.length >= 13 ? [e164] : [];
 };
 
 /** Map Tanzanian MSISDN prefix to Aurax channel enum. */
@@ -1031,7 +1030,7 @@ async function handlePaymentStart(req, res, next) {
       auraxReady;
 
     if (skipSonicForHalotel) {
-      console.log('[Payment] Halotel MSISDN (061–063) — routing to Aurax Pay with local phone format');
+      console.log('[Payment] Halotel MSISDN (061–063) — routing to Aurax Pay (+255 E.164)');
       paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
       usedAuraxFallbackFromSonic = true;
     } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
