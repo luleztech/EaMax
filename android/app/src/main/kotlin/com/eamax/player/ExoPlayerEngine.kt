@@ -1,21 +1,17 @@
 package com.eamax.player
 
 import android.content.Context
-import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.OptIn
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.Tracks
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
-import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -33,9 +29,7 @@ import com.eamax.domain.model.StreamQuality
 import com.eamax.domain.model.PlaybackState
 import org.json.JSONObject
 import org.json.JSONArray
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
+import java.util.UUID
 
 /**
  * ========================================================================
@@ -87,11 +81,6 @@ import java.net.UnknownHostException
  * - Performance optimizations for low-end devices
  * 
  * ========================================================================
- *
- * Kept in sync with concepts from `~/MySecretes/player` (reference snapshot), with fixes:
- * — OkHttp + [EamaxHttpDataSource] retained (reference used DefaultHttpDataSource only).
- * — No empty Widevine DRM `else` branch; gateway URLs use [StreamFormat.SNIFFING], not blind DASH.
- * — [StreamProbe] uses OkHttp + [EXO_SNIFF] / error handling (reference used HttpURLConnection + UNKNOWN).
  */
 @OptIn(UnstableApi::class)
 class ExoPlayerEngine(
@@ -102,47 +91,27 @@ class ExoPlayerEngine(
 ) {
     private var exoPlayer: ExoPlayer? = null
     private val trackSelector = DefaultTrackSelector(context)
-    /** Kotlin-owned quality; default ~360p (“Okoa bando”) until user picks Auto or higher. */
-    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
-    private var preferredAudioLanguage: String = AudioLanguageSupport.DEFAULT
     private var currentSession: StreamSession? = null
-    private var currentFormat: StreamFormat? = null
-    private var malformedManifestRecovered = false
-    private var blockedHeadersRecovered = false
-    private var networkFallbackRecovered = false
-    private var webViewLicenseBridge: WebViewLicenseBridge? = null
+    private var preferredAudioLanguage = "sw"
+    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
 
     companion object {
         private const val TAG = "ExoPlayerEngine"
         
-        // Buffer configuration tuned for fast live IPTV start on mobile networks.
-        private const val MIN_BUFFER_MS = 5000
-        private const val MAX_BUFFER_MS = 20000
-        private const val BUFFER_FOR_PLAYBACK_MS = 500
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 1000
-
-        // Timeouts: fail fast → surface error → retry rather than hanging silently.
-        private const val CONNECT_TIMEOUT_MS = 8000
-        private const val READ_TIMEOUT_MS = 15000
+        // Buffer configuration (optimized for mobile streaming)
+        private const val MIN_BUFFER_MS = 15000  // 15 seconds
+        private const val MAX_BUFFER_MS = 50000  // 50 seconds
+        private const val BUFFER_FOR_PLAYBACK_MS = 2500  // Start playback after 2.5s
+        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5000  // 5s after rebuffer
+        
+        // Timeout configuration
+        private const val CONNECT_TIMEOUT_MS = 30000  // 30 seconds
+        private const val READ_TIMEOUT_MS = 30000     // 30 seconds
     }
 
-    /**
-     * @param forcedStreamFormat If non-null, skips URL sniffing (use after [StreamProbe] resolved the real manifest).
-     */
-    fun initialize(
-        streamSession: StreamSession,
-        forcedStreamFormat: StreamFormat? = null,
-        resetRecoveryFlags: Boolean = true,
-        webViewLicenseBridge: WebViewLicenseBridge? = null,
-    ) {
+    fun initialize(streamSession: StreamSession) {
         currentSession = streamSession
-        preferredAudioLanguage = AudioLanguageSupport.normalize(streamSession.preferredAudioLanguage)
-        this.webViewLicenseBridge = webViewLicenseBridge
-        if (resetRecoveryFlags) {
-            malformedManifestRecovered = false
-            blockedHeadersRecovered = false
-            networkFallbackRecovered = false
-        }
+        preferredAudioLanguage = normalizeAudioLanguage(streamSession.preferredAudioLanguage)
         
         Log.d(TAG, "=".repeat(70))
         Log.d(TAG, "INITIALIZING UNIVERSAL STREAM PLAYER v4.0")
@@ -158,17 +127,16 @@ class ExoPlayerEngine(
             val headers = buildHeaders(streamSession)
             Log.d(TAG, "✅ Headers prepared: ${headers.keys.joinToString(", ")}")
 
-            // Step 2: Create data source factory with headers and manifest decryption support
-            val dataSourceFactory = createDataSourceFactory(headers, streamSession)
+            // Step 2: Create data source factory with headers
+            val dataSourceFactory = createDataSourceFactory(headers)
             Log.d(TAG, "✅ Data source factory created")
 
-            // Step 3: Detect stream format from URL (or use probe result)
-            val streamFormat = forcedStreamFormat ?: detectStreamFormat(streamSession.mpdUrl)
-            currentFormat = streamFormat
-            Log.d(TAG, "✅ Stream format: $streamFormat (forced=${forcedStreamFormat != null})")
+            // Step 3: Detect stream format from URL
+            val streamFormat = detectStreamFormat(streamSession.mpdUrl)
+            Log.d(TAG, "✅ Detected stream format: $streamFormat")
 
             // Step 4: Build media item with DRM configuration
-            val mediaItem = buildMediaItem(streamSession, headers, streamFormat)
+            val mediaItem = buildMediaItem(streamSession, headers)
             Log.d(TAG, "✅ Media item built (DRM: ${streamSession.drmType})")
 
             // Step 5: Create appropriate media source
@@ -182,46 +150,27 @@ class ExoPlayerEngine(
             Log.d(TAG, "✅ Media source created: $streamFormat")
 
             // Step 6: Build and configure player
-            val renderersFactory = DefaultRenderersFactory(context)
-                .setEnableDecoderFallback(true)
-            val loadControl = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(
-                    MIN_BUFFER_MS,
-                    MAX_BUFFER_MS,
-                    BUFFER_FOR_PLAYBACK_MS,
-                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
-                )
-                .setPrioritizeTimeOverSizeThresholds(true)
-                .build()
-            exoPlayer = ExoPlayer.Builder(context, renderersFactory)
-                .setLoadControl(loadControl)
+            exoPlayer = ExoPlayer.Builder(context)
                 .setTrackSelector(trackSelector)
                 .build()
                 .apply {
-                    val ts = this@ExoPlayerEngine.trackSelector
-                    // Default “Okoa bando”: cap ABR to ~360p until user picks Auto or higher in the UI.
-                    ts.parameters = ts.buildUponParameters()
-                        .setMaxVideoSize(Int.MAX_VALUE, StreamQuality.QUALITY_360P.height)
-                        .setForceHighestSupportedBitrate(false)
-                        .setPreferredAudioLanguage(preferredAudioLanguage)
-                        .build()
-
-                    setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                            .setUsage(C.USAGE_MEDIA)
-                            .build(),
-                        true,
-                    )
-                    setHandleAudioBecomingNoisy(true)
-                    volume = 1f
-
+                    // Configure track selector for better adaptive streaming
+                    trackSelector?.let { selector ->
+                        selector.parameters = selector.getParameters().buildUpon()
+                            .setForceHighestSupportedBitrate(false)  // Enable adaptive bitrate
+                            .setPreferredAudioLanguage(preferredAudioLanguage)
+                            .build()
+                    }
+                    
                     addListener(PlayerEventListener())
                     setMediaSource(mediaSource)
                     prepare()
+                    // 🔥 FIX: Set playWhenReady to true to avoid black screen
                     playWhenReady = true
                     Log.d(TAG, "✅ Player prepared with playWhenReady=true")
                 }
+
+            setQuality(StreamQuality.QUALITY_360P)
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Initialization failed", e)
@@ -265,30 +214,13 @@ class ExoPlayerEngine(
             urlLower.contains("/relay/stream") -> StreamFormat.DASH  // Most relay streams are DASH
             urlLower.contains("/relay/m3u8") -> StreamFormat.HLS
             urlLower.contains("/api/relay/") -> StreamFormat.DASH
-
-            StreamUrlClassifier.isPhpLikeUrl(url) || StreamUrlClassifier.isLikelyGatewayUrl(url) -> {
-                Log.w(TAG, "⚠️ Gateway URL without prior probe — using Media3 sniffing")
-                StreamFormat.SNIFFING
-            }
-
+            
+            // Default to DASH for unknown formats (most adaptive streaming)
             else -> {
-                Log.w(TAG, "⚠️ Unknown format, using Media3 sniffing: $url")
-                StreamFormat.SNIFFING
+                Log.w(TAG, "⚠️ Unknown format, defaulting to DASH: $url")
+                StreamFormat.DASH
             }
         }
-    }
-
-    /** Headers for Widevine license POST — separate from manifest/CDN headers. */
-    private fun buildLicenseHeaders(streamSession: StreamSession): Map<String, String> {
-        val headers = LinkedHashMap<String, String>()
-        streamSession.drmData.headers?.forEach { (k, v) -> if (v.isNotBlank()) headers[k] = v }
-        headers.putIfAbsent("Content-Type", "application/octet-stream")
-        headers.putIfAbsent("Accept", "*/*")
-        if (!headers.keys.any { it.equals("User-Agent", ignoreCase = true) }) {
-            headers["User-Agent"] = PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
-        }
-        Log.d(TAG, "🔑 License POST headers: ${headers.keys.joinToString()}")
-        return headers
     }
 
     /**
@@ -296,75 +228,40 @@ class ExoPlayerEngine(
      */
     private fun buildHeaders(streamSession: StreamSession): Map<String, String> {
         val headers = HashMap<String, String>().apply {
-            // Session-level headers for manifest/segments (license headers are separate).
-            streamSession.headers.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
-            if (streamSession.headers.isNotEmpty()) {
-                Log.d(TAG, "  Added ${streamSession.headers.size} session headers")
+            // Priority 1: Add DRM-specific headers first (highest priority)
+            streamSession.drmData.headers?.let { drmHeaders ->
+                putAll(drmHeaders)
+                Log.d(TAG, "  Added ${drmHeaders.size} DRM headers")
+            }
+            
+            // Priority 2: Add session-level headers (may override defaults)
+            streamSession.headers?.let { sessionHeaders ->
+                putAll(sessionHeaders)
+                Log.d(TAG, "  Added ${sessionHeaders.size} session headers")
             }
             
             // Priority 3: Add standard browser-like headers (lowest priority, won't override)
             putIfAbsent("Accept", "*/*")
-            putIfAbsent("Accept-Language", "en-US,en;q=0.9")
+            putIfAbsent(
+                "Accept-Language",
+                if (preferredAudioLanguage == "en") "en-US,en;q=0.9,sw;q=0.8"
+                else "sw-TZ,sw;q=0.9,en;q=0.8",
+            )
+            putIfAbsent("Accept-Encoding", "gzip, deflate")
             putIfAbsent("Connection", "keep-alive")
-
-            // Priority 4: User-Agent — many .mpd/.m3u8 CDNs block generic ExoPlayer UAs.
-            if (!keys.any { it.equals("User-Agent", ignoreCase = true) }) {
-                val ul = streamSession.mpdUrl.lowercase()
-                val manifestLikely = ul.contains(".mpd") || ul.contains(".m3u8")
-                put(
-                    "User-Agent",
-                    PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT
-                )
-            }
             
-            // Priority 5: Add authorization token only when likely needed by protected streams.
-            val likelyProtected =
-                streamSession.drmType != DrmType.NONE ||
-                streamSession.headers.keys.any { k ->
-                    val l = k.lowercase()
-                    l.contains("auth") || l.contains("token") || l.contains("key")
-                } ||
-                streamSession.mpdUrl.contains("token=", ignoreCase = true) ||
-                streamSession.mpdUrl.contains("auth=", ignoreCase = true)
-            if (likelyProtected && streamSession.token.isNotEmpty() && !containsKey("Authorization")) {
+            // Priority 4: Add default User-Agent if not present
+            putIfAbsent("User-Agent", "ExoPlayerLib/2.18.0 (Linux;Android 11) ReactNativeVideo/3.0")
+            
+            // Priority 5: Add authorization token if present and not already set
+            if (streamSession.token.isNotEmpty() && !containsKey("Authorization")) {
                 put("Authorization", "Bearer ${streamSession.token}")
             }
-
-            // Priority 6: Referer + Origin — gateways, DRM, auth, and typical .mpd/.m3u8 hosts that 403 bare clients.
-            try {
-                val raw = streamSession.mpdUrl.trim()
-                val shouldAttachReferrerOrigin =
-                    raw.startsWith("http://", ignoreCase = true) ||
-                    raw.startsWith("https://", ignoreCase = true)
-                if (raw.isNotEmpty() && shouldAttachReferrerOrigin) {
-                    val referer = entries.firstOrNull { (k, _) ->
-                        k.equals("Referer", ignoreCase = true) || k.equals("referer", ignoreCase = true)
-                    }?.value?.trim().orEmpty()
-                    if (referer.startsWith("http", ignoreCase = true)) {
-                        if (!keys.any { it.equals("Origin", ignoreCase = true) }) {
-                            GatewayHttpHeaders.originFromUrl(referer)?.let { put("Origin", it) }
-                        }
-                    } else {
-                        val u = Uri.parse(raw)
-                        if (u.scheme != null && u.host != null) {
-                            if (!keys.any { it.equals("Referer", true) || it.equals("referer", true) }) {
-                                val portPart = when {
-                                    u.port <= 0 || u.port == 80 || u.port == 443 -> ""
-                                    else -> ":${u.port}"
-                                }
-                                put("Referer", "${u.scheme}://${u.host}$portPart/")
-                            }
-                            if (!keys.any { it.equals("Origin", true) }) {
-                                val portPart = when {
-                                    u.port <= 0 || u.port == 80 || u.port == 443 -> ""
-                                    else -> ":${u.port}"
-                                }
-                                put("Origin", "${u.scheme}://${u.host}$portPart")
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) { }
+            
+            // Priority 6: Add default Referer and Origin for compatibility (if not set)
+            // These are important for CORS and some DRM systems
+            // putIfAbsent("Referer", "http://167.235.61.143:8080/")
+            // putIfAbsent("Origin", "http://167.235.61.143:8080/")
         }
         
         Log.d(TAG, "📋 Final headers count: ${headers.size}")
@@ -385,53 +282,27 @@ class ExoPlayerEngine(
     /**
      * Helper function for putIfAbsent (not available in all Android versions)
      */
-    private fun <K, V> MutableMap<K, V>.putIfAbsent(key: K, value: V) {
-        if (!containsKey(key)) put(key, value)
+    private fun <K, V> MutableMap<K, V>.putIfAbsent(key: K, value: V): V? {
+        var v = get(key)
+        if (v == null) {
+            v = put(key, value)
+        }
+        return v
     }
 
     /**
      * Creates a data source factory with custom headers and timeouts
      */
-    private fun createDataSourceFactory(headers: Map<String, String>, streamSession: StreamSession): HttpDataSource.Factory {
-        Log.d(TAG, "🌐 Data source: OkHttp + IPv4-first DNS, connect=${CONNECT_TIMEOUT_MS}ms, read=${READ_TIMEOUT_MS}ms")
-        return EamaxHttpDataSource.factory(
-            headers,
-            CONNECT_TIMEOUT_MS,
-            READ_TIMEOUT_MS,
-            getClearKeyBytesForManifest(streamSession)
-        )
-    }
-
-    private fun getClearKeyBytesForManifest(streamSession: StreamSession): List<ByteArray>? {
-        if (streamSession.drmType != DrmType.CLEARKEY) return null
-        val keys = streamSession.drmData.keys ?: return null
-        return keys.mapNotNull {
-            try {
-                decodeBase64UrlSafe(it.k)
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Skipping invalid ClearKey value for manifest decryption: ${e.message}")
-                null
+    private fun createDataSourceFactory(headers: Map<String, String>): HttpDataSource.Factory {
+        return DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(headers)
+            .setAllowCrossProtocolRedirects(true)  // Important for CDN redirects
+            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(READ_TIMEOUT_MS)
+            .setKeepPostFor302Redirects(true)  // Keep POST method on redirects
+            .apply {
+                Log.d(TAG, "🌐 Data source: connect=${CONNECT_TIMEOUT_MS}ms, read=${READ_TIMEOUT_MS}ms, cross-protocol=true")
             }
-        }.takeIf { it.isNotEmpty() }
-    }
-
-    private fun decodeBase64UrlSafe(value: String): ByteArray {
-        val normalized = value
-            .replace('-', '+')
-            .replace('_', '/')
-            .let {
-                when (it.length % 4) {
-                    2 -> it + "=="
-                    3 -> it + "="
-                    else -> it
-                }
-            }
-        return Base64.decode(normalized, Base64.NO_WRAP)
-    }
-
-    private fun toBase64Url(bytes: ByteArray): String {
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        return b64.replace('+', '-').replace('/', '_').trimEnd('=')
     }
 
     /**
@@ -439,39 +310,26 @@ class ExoPlayerEngine(
      */
     private fun buildMediaItem(
         streamSession: StreamSession,
-        headers: Map<String, String>,
-        format: StreamFormat
+        headers: Map<String, String>
     ): MediaItem {
-        val mimeType = when (format) {
+        // Detect format early to set MimeType
+        val format = detectStreamFormat(streamSession.mpdUrl)
+
+        val mimeType = when(format) {
             StreamFormat.HLS -> "application/x-mpegurl" // ✅ Crucial for HLS
-            StreamFormat.DASH -> "application/dash+xml" // ✅ CRITICAL for DASH parsing
+            StreamFormat.DASH -> "application/dash+xml"
             StreamFormat.PROGRESSIVE -> null // Let extractor figure it out
-            StreamFormat.SNIFFING -> {
-                // For sniffing, try to detect from URL if it's obvious
-                when {
-                    streamSession.mpdUrl.contains(".mpd", ignoreCase = true) -> "application/dash+xml"
-                    streamSession.mpdUrl.contains(".m3u8", ignoreCase = true) -> "application/x-mpegurl"
-                    else -> null
-                }
-            }
         }
 
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(streamSession.mpdUrl)
-            .setMimeType(mimeType) // ✅ EXPLICIT MIME TYPE PREVENTS MISCLASSIFICATION
+            .setMimeType(mimeType) // ✅ ADD THIS
 
-        // Add DRM configuration if needed (license required for server-backed DRM)
+        // Add DRM configuration if needed
         if (streamSession.drmType != DrmType.NONE) {
-            if (streamSession.drmType != DrmType.CLEARKEY &&
-                streamSession.licenseUrl.isBlank()
-            ) {
-                Log.w(TAG, "⚠️ Skipping DRM (missing license URL) for ${streamSession.drmType}")
-            } else {
-                val licenseHeaders = buildLicenseHeaders(streamSession)
-                val drmConfig = buildDrmConfiguration(streamSession, licenseHeaders)
-                mediaItemBuilder.setDrmConfiguration(drmConfig)
-                Log.d(TAG, "🔐 DRM configuration added: ${streamSession.drmType}")
-            }
+            val drmConfig = buildDrmConfiguration(streamSession, headers)
+            mediaItemBuilder.setDrmConfiguration(drmConfig)
+            Log.d(TAG, "🔐 DRM configuration added: ${streamSession.drmType}")
         }
 
         return mediaItemBuilder.build()
@@ -520,16 +378,15 @@ class ExoPlayerEngine(
             DrmType.CLEARKEY -> {
                 Log.d(TAG, "🔐 Building ClearKey DRM config")
                 // ClearKey keys are embedded in the session, no license URI needed
-                // Multi-session=true allows proper key reuse across segments
                 MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID)
-                    .setMultiSession(true)
-                    .setForceDefaultLicenseUri(false)
+                    .setMultiSession(false)
                     .build()
             }
             
             else -> {
-                Log.e(TAG, "Unsupported DRM type: ${streamSession.drmType}")
-                throw IllegalArgumentException("Unsupported DRM: ${streamSession.drmType}")
+                Log.w(TAG, "⚠️ Unknown DRM type, using default Widevine config")
+                MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
+                    .build()
             }
         }
     }
@@ -557,40 +414,6 @@ class ExoPlayerEngine(
                 Log.d(TAG, "🎬 Creating Progressive media source")
                 createProgressiveMediaSource(mediaItem, dataSourceFactory)
             }
-            StreamFormat.SNIFFING -> {
-                Log.d(TAG, "🎬 Creating sniffing media source (DASH/HLS/SS/progressive)")
-                createSniffingMediaSource(streamSession, mediaItem, dataSourceFactory, headers)
-            }
-        }
-    }
-
-    private fun createSniffingMediaSource(
-        streamSession: StreamSession,
-        mediaItem: MediaItem,
-        dataSourceFactory: HttpDataSource.Factory,
-        headers: Map<String, String>,
-    ): MediaSource {
-        val factory = DefaultMediaSourceFactory(dataSourceFactory)
-        
-        // CRITICAL: Attach DRM BEFORE creating media source for proper initialization
-        if (streamSession.drmType != DrmType.NONE) {
-            try {
-                val drmSessionManager = createDrmSessionManager(streamSession, dataSourceFactory, headers)
-                factory.setDrmSessionManagerProvider { drmSessionManager }
-                Log.d(TAG, "✅ DRM session manager attached to sniffing source (${streamSession.drmType})")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ DRM for sniffing source: ${e.message}", e)
-                throw e
-            }
-        }
-        
-        return try {
-            val source = factory.createMediaSource(mediaItem)
-            Log.d(TAG, "✅ Sniffing media source created with DRM: ${streamSession.drmType}")
-            source
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Sniffing source creation failed: ${e.message}", e)
-            throw e
         }
     }
 
@@ -610,22 +433,14 @@ class ExoPlayerEngine(
             try {
                 val drmSessionManager = createDrmSessionManager(streamSession, dataSourceFactory, headers)
                 dashFactory.setDrmSessionManagerProvider { drmSessionManager }
-                Log.d(TAG, "✅ DRM session manager attached to DASH source (${streamSession.drmType})")
+                Log.d(TAG, "✅ DRM session manager attached to DASH source")
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Failed to create DRM session manager: ${e.message}", e)
+                Log.e(TAG, "❌ Failed to create DRM session manager: ${e.message}")
                 throw e
             }
         }
 
-        return try {
-            dashFactory.createMediaSource(mediaItem)
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ DASH media source creation failed: ${e.message}", e)
-            if (e.message?.contains("manifest", ignoreCase = true) == true) {
-                Log.e(TAG, "⚠️ Manifest parsing error - server likely returned HTML/login page instead of MPD XML")
-            }
-            throw e
-        }
+        return dashFactory.createMediaSource(mediaItem)
     }
 
     /**
@@ -637,12 +452,8 @@ class ExoPlayerEngine(
         dataSourceFactory: HttpDataSource.Factory,
         headers: Map<String, String>
     ): MediaSource {
-        // Chunkless prep starts live HLS faster; disabled for gateway/sniff URLs that need full playlist.
-        val allowChunkless = StreamUrlClassifier.hasObviousM3u8(streamSession.mpdUrl) &&
-            !StreamUrlClassifier.isLikelyGatewayUrl(streamSession.mpdUrl) &&
-            !StreamUrlClassifier.isPhpLikeUrl(streamSession.mpdUrl)
         val hlsFactory = HlsMediaSource.Factory(dataSourceFactory)
-            .setAllowChunklessPreparation(allowChunkless)
+            .setAllowChunklessPreparation(false) // ✅ Change to FALSE for better compatibility
 
         // Add DRM session manager if needed (for SAMPLE-AES encryption)
         if (streamSession.drmType != DrmType.NONE) {
@@ -651,19 +462,8 @@ class ExoPlayerEngine(
                 hlsFactory.setDrmSessionManagerProvider { drmSessionManager }
                 Log.d(TAG, "✅ DRM session manager attached to HLS source")
             } catch (e: Exception) {
-                when (streamSession.drmType) {
-                    DrmType.CLEARKEY,
-                    DrmType.WIDEVINE,
-                    DrmType.WIDEVINE_L1,
-                    DrmType.WIDEVINE_L3,
-                    DrmType.PLAYREADY -> {
-                        Log.e(TAG, "❌ HLS DRM required but failed: ${e.message}", e)
-                        throw e
-                    }
-                    else -> {
-                        Log.w(TAG, "⚠️ DRM manager creation failed for HLS, continuing without DRM: ${e.message}")
-                    }
-                }
+                Log.w(TAG, "⚠️ DRM manager creation failed for HLS, continuing without DRM: ${e.message}")
+                // HLS can work without DRM manager if using AES-128 (handled by HLS library)
             }
         }
 
@@ -687,31 +487,20 @@ class ExoPlayerEngine(
     private fun createDrmSessionManager(
         streamSession: StreamSession,
         dataSourceFactory: HttpDataSource.Factory,
-        @Suppress("UNUSED_PARAMETER") manifestHeaders: Map<String, String>,
+        headers: Map<String, String>
     ): DefaultDrmSessionManager {
-        val licenseHeaders = buildLicenseHeaders(streamSession)
         return when (streamSession.drmType) {
             DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 -> {
                 Log.d(TAG, "🔑 Creating Widevine DRM session manager")
                 Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
                 
-                val nativeCallback = HttpMediaDrmCallback(
+                val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    EamaxHttpDataSource.factory(licenseHeaders, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
+                    DefaultHttpDataSource.Factory()
+                        .setDefaultRequestProperties(headers)
+                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
+                        .setReadTimeoutMs(READ_TIMEOUT_MS)
                 )
-                val drmCallback: androidx.media3.exoplayer.drm.MediaDrmCallback =
-                    if (webViewLicenseBridge != null &&
-                        StreamUrlClassifier.isNagraLicense(streamSession.licenseUrl)
-                    ) {
-                        GatewayMediaDrmCallback(
-                            licenseUrl = streamSession.licenseUrl,
-                            licenseHeaders = licenseHeaders,
-                            nativeCallback = nativeCallback,
-                            webViewBridge = webViewLicenseBridge,
-                        )
-                    } else {
-                        nativeCallback
-                    }
                 
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(
@@ -727,7 +516,10 @@ class ExoPlayerEngine(
                 
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
-                    EamaxHttpDataSource.factory(licenseHeaders, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS),
+                    DefaultHttpDataSource.Factory()
+                        .setDefaultRequestProperties(headers)
+                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
+                        .setReadTimeoutMs(READ_TIMEOUT_MS)
                 )
                 
                 DefaultDrmSessionManager.Builder()
@@ -773,49 +565,22 @@ class ExoPlayerEngine(
         Log.d(TAG, "🔑 Building ClearKey JSON with ${keys.size} key(s)")
         
         for ((index, clearKey) in keys.withIndex()) {
-            // Validate key format (should be base64url encoded)
-            if (!isValidBase64Like(clearKey.kid) || !isValidBase64Like(clearKey.k)) {
-                Log.e(TAG, "❌ Invalid ClearKey format at index $index - kid/k must be base64url encoded")
-                throw IllegalArgumentException("ClearKey $index has invalid format: keys must be base64url encoded")
-            }
-
-            val normalizedKid = try {
-                toBase64Url(decodeBase64UrlSafe(clearKey.kid))
-            } catch (e: Exception) {
-                throw IllegalArgumentException("ClearKey $index has invalid kid", e)
-            }
-            val normalizedKey = try {
-                toBase64Url(decodeBase64UrlSafe(clearKey.k))
-            } catch (e: Exception) {
-                throw IllegalArgumentException("ClearKey $index has invalid key", e)
-            }
-            
             val keyObj = JSONObject().apply {
                 put("kty", "oct")
-                put("kid", normalizedKid)
-                put("k", normalizedKey)
+                put("kid", clearKey.kid)
+                put("k", clearKey.k)
             }
             keysArray.put(keyObj)
-            Log.d(TAG, "  Key $index: kid=${normalizedKid.take(16)}..., k=${normalizedKey.take(16)}...")
+            Log.d(TAG, "  Key $index: kid=${clearKey.kid.take(16)}..., k=${clearKey.k.take(16)}...")
         }
         
         jsonObject.put("keys", keysArray)
         jsonObject.put("type", "temporary")
         
         val jsonString = jsonObject.toString()
-        Log.v(TAG, "✅ ClearKey JSON payload created successfully")
+        Log.v(TAG, "ClearKey JSON: $jsonString")
         
         return jsonString.toByteArray(Charsets.UTF_8)
-    }
-    
-    /**
-     * Validates base64url format (A-Z, a-z, 0-9, -, _)
-     */
-    private fun isValidBase64Like(s: String): Boolean {
-        if (s.isEmpty()) return false
-        return s.all {
-            it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' || it == '=' || it == '+' || it == '/'
-        }
     }
 
     // ========== PLAYBACK CONTROL METHODS ==========
@@ -843,136 +608,97 @@ class ExoPlayerEngine(
 
     fun setQuality(quality: StreamQuality) {
         selectedQuality = quality
-        applySelectedQuality()
+        val builder = trackSelector.buildUponParameters()
+            .setForceHighestSupportedBitrate(false)
+        if (quality == StreamQuality.AUTO) {
+            builder.clearVideoSizeConstraints()
+                .setMaxVideoBitrate(Int.MAX_VALUE)
+        } else {
+            val maxBitrate = when (quality) {
+                StreamQuality.QUALITY_240P -> 400_000
+                StreamQuality.QUALITY_360P -> 800_000
+                StreamQuality.QUALITY_480P -> 1_400_000
+                StreamQuality.QUALITY_720P -> 2_500_000
+                StreamQuality.QUALITY_1080P -> 4_000_000
+                else -> Int.MAX_VALUE
+            }
+            builder.setMaxVideoSize(Int.MAX_VALUE, quality.height)
+                .setMaxVideoBitrate(maxBitrate)
+        }
+        trackSelector.setParameters(builder.build())
+        applyVideoTrackOverride(quality)
         Log.d(TAG, "🎨 Quality set to: $quality")
     }
 
-    /** Applies [selectedQuality] using track overrides when manifest tracks are available. */
-    private fun applySelectedQuality() {
+    private fun applyVideoTrackOverride(quality: StreamQuality) {
+        if (quality == StreamQuality.AUTO) return
         val player = exoPlayer ?: return
-        val quality = selectedQuality
-
-        if (quality == StreamQuality.AUTO) {
-            val params = player.trackSelectionParameters
-                .buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                .clearVideoSizeConstraints()
-                .setMaxVideoBitrate(Int.MAX_VALUE)
-                .setForceHighestSupportedBitrate(false)
-                .build()
-            player.trackSelectionParameters = params
-            trackSelector.setParameters(params)
-            return
-        }
-
-        var bestGroup: Tracks.Group? = null
-        var bestIndex = -1
-        var bestHeight = -1
         for (group in player.currentTracks.groups) {
             if (group.type != C.TRACK_TYPE_VIDEO) continue
+            var bestIdx = -1
+            var bestHeight = 0
             for (i in 0 until group.length) {
-                if (!group.isTrackSupported(i)) continue
                 val h = group.getTrackFormat(i).height
-                if (h <= 0) continue
-                if (h <= quality.height && h > bestHeight) {
+                if (h > 0 && h <= quality.height && h >= bestHeight) {
                     bestHeight = h
-                    bestGroup = group
-                    bestIndex = i
+                    bestIdx = i
                 }
             }
-        }
-
-        val maxBitrate = maxBitrateForQuality(quality)
-        val builder = player.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-            .setMaxVideoSize(Int.MAX_VALUE, quality.height)
-            .setMaxVideoBitrate(maxBitrate)
-            .setForceHighestSupportedBitrate(false)
-
-        if (bestGroup != null && bestIndex >= 0) {
-            builder.addOverride(TrackSelectionOverride(bestGroup.mediaTrackGroup, bestIndex))
-            Log.d(TAG, "🎨 Selected video track ${quality.height}p (actual=${bestHeight}p, idx=$bestIndex)")
-        } else if (quality.height > 0) {
-            var lowGroup: Tracks.Group? = null
-            var lowIndex = -1
-            var lowBitrate = Int.MAX_VALUE
-            for (group in player.currentTracks.groups) {
-                if (group.type != C.TRACK_TYPE_VIDEO) continue
-                for (i in 0 until group.length) {
-                    if (!group.isTrackSupported(i)) continue
-                    val br = group.getTrackFormat(i).bitrate
-                    val effective = if (br > 0) br else Int.MAX_VALUE
-                    if (effective < lowBitrate) {
-                        lowBitrate = effective
-                        lowGroup = group
-                        lowIndex = i
-                    }
-                }
+            if (bestIdx >= 0) {
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    .addOverride(TrackSelectionOverride(group.mediaTrackGroup, bestIdx))
+                    .build()
+                Log.d(TAG, "🎨 Video track override: index=$bestIdx height=$bestHeight")
+                return
             }
-            if (lowGroup != null && lowIndex >= 0 && quality.height <= 480) {
-                builder.addOverride(TrackSelectionOverride(lowGroup.mediaTrackGroup, lowIndex))
-                Log.d(TAG, "🎨 Selected lowest video track for ${quality.label} cap (bitrate=$lowBitrate)")
-            } else {
-                Log.d(TAG, "🎨 Capped video to ${quality.height}p via max size/bitrate (no override yet)")
-            }
-        } else {
-            Log.d(TAG, "🎨 Capped video to ${quality.height}p via max size/bitrate (no override yet)")
         }
-
-        val params = builder.build()
-        player.trackSelectionParameters = params
-        trackSelector.setParameters(params)
-    }
-
-    private fun maxBitrateForQuality(quality: StreamQuality): Int = when (quality) {
-        StreamQuality.QUALITY_240P -> 400_000
-        StreamQuality.QUALITY_360P -> 800_000
-        StreamQuality.QUALITY_480P -> 1_400_000
-        StreamQuality.QUALITY_720P -> 2_500_000
-        StreamQuality.QUALITY_1080P -> 4_000_000
-        else -> Int.MAX_VALUE
     }
 
     fun setAudioLanguage(language: String) {
-        preferredAudioLanguage = AudioLanguageSupport.normalize(language)
-        applyPreferredAudioLanguage(preferredAudioLanguage)
-    }
-
-    private fun applyPreferredAudioLanguage(language: String) {
-        val lang = AudioLanguageSupport.normalize(language)
-        val params = trackSelector.buildUponParameters()
-            .setPreferredAudioLanguage(lang)
-            .build()
-        trackSelector.setParameters(params)
-        exoPlayer?.trackSelectionParameters = params
-        trySelectAudioTrackExplicit(lang)
+        val lang = normalizeAudioLanguage(language)
+        preferredAudioLanguage = lang
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+                .setPreferredAudioLanguage(lang)
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .build(),
+        )
+        applyAudioTrackOverride(lang)
         Log.d(TAG, "🔊 Audio language set to: $lang")
     }
 
-    private fun trySelectAudioTrackExplicit(preferred: String) {
+    private fun normalizeAudioLanguage(raw: String): String {
+        val v = raw.trim().lowercase()
+        return if (v == "en" || v.startsWith("en-") || v == "eng") "en" else "sw"
+    }
+
+    private fun matchesAudioLanguage(trackLang: String?, preferred: String): Boolean {
+        val t = trackLang?.trim()?.lowercase().orEmpty()
+        if (t.isEmpty()) return false
+        return when (preferred) {
+            "en" -> t == "en" || t.startsWith("en-") || t == "eng" || t.contains("english")
+            "sw" -> t == "sw" || t.startsWith("sw-") || t == "swa" ||
+                t.contains("swahili") || t.contains("kiswahili") || t == "ki"
+            else -> t == preferred || t.startsWith("$preferred-")
+        }
+    }
+
+    private fun applyAudioTrackOverride(language: String) {
         val player = exoPlayer ?: return
         for (group in player.currentTracks.groups) {
             if (group.type != C.TRACK_TYPE_AUDIO) continue
-            var bestIndex = -1
             for (i in 0 until group.length) {
-                if (!group.isTrackSupported(i)) continue
                 val format = group.getTrackFormat(i)
-                if (AudioLanguageSupport.matchesTrackLanguage(format.language, preferred) ||
-                    AudioLanguageSupport.matchesTrackLabel(format.label, preferred)
-                ) {
-                    bestIndex = i
-                    break
-                }
-            }
-            if (bestIndex >= 0) {
-                val overrideParams = player.trackSelectionParameters
+                if (!matchesAudioLanguage(format.language, language) &&
+                    !matchesAudioLanguage(format.label?.toString(), language)
+                ) continue
+                player.trackSelectionParameters = player.trackSelectionParameters
                     .buildUpon()
-                    .addOverride(TrackSelectionOverride(group.mediaTrackGroup, bestIndex))
+                    .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                    .addOverride(TrackSelectionOverride(group.mediaTrackGroup, i))
                     .build()
-                player.trackSelectionParameters = overrideParams
-                trackSelector.setParameters(overrideParams)
-                Log.d(TAG, "🔊 Explicit audio track selected: $preferred idx=$bestIndex")
                 return
             }
         }
@@ -999,54 +725,13 @@ class ExoPlayerEngine(
 
     fun getAvailableTracks(): Tracks = exoPlayer?.currentTracks ?: Tracks.EMPTY
 
-    data class SelectableAudioTrack(
-        val displayLabel: String,
-        val languageCode: String,
-        val group: Tracks.Group,
-        val trackIndex: Int,
-    )
-
-    fun listSelectableAudioTracks(): List<SelectableAudioTrack> {
-        val player = exoPlayer ?: return emptyList()
-        val out = LinkedHashMap<String, SelectableAudioTrack>()
-        for (group in player.currentTracks.groups) {
-            if (group.type != C.TRACK_TYPE_AUDIO) continue
-            for (i in 0 until group.length) {
-                if (!group.isTrackSupported(i)) continue
-                val format = group.getTrackFormat(i)
-                val lang = format.language?.trim().orEmpty()
-                val label = format.label?.trim().orEmpty()
-                val display = when {
-                    label.isNotEmpty() && lang.isNotEmpty() -> "$label ($lang)"
-                    label.isNotEmpty() -> label
-                    lang.isNotEmpty() -> AudioLanguageSupport.displayName(lang).let {
-                        if (it != lang) it else lang.uppercase()
-                    }
-                    else -> "Audio ${i + 1}"
-                }
-                val code = if (lang.isNotEmpty()) lang else AudioLanguageSupport.normalize(label)
-                val key = "$display|$code|$i"
-                out.putIfAbsent(
-                    key,
-                    SelectableAudioTrack(
-                        displayLabel = display,
-                        languageCode = code,
-                        group = group,
-                        trackIndex = i,
-                    ),
-                )
-            }
-        }
-        return out.values.toList()
-    }
-
     fun refreshSession(newSession: StreamSession) {
         Log.d(TAG, "🔄 Refreshing session...")
         val currentPosition = getCurrentPosition()
         val wasPlaying = isPlaying()
         
         release()
-        initialize(newSession, forcedStreamFormat = null)
+        initialize(newSession)
         
         exoPlayer?.seekTo(currentPosition)
         // Ensure it starts playing automatically after refresh
@@ -1102,13 +787,10 @@ class ExoPlayerEngine(
                 }
                 Log.v(TAG, "  Group $index: type=$trackType, tracks=${group.length}, selected=${group.isSelected}")
             }
-
-            if (selectedQuality != StreamQuality.AUTO) {
-                applySelectedQuality()
-            }
-            applyPreferredAudioLanguage(preferredAudioLanguage)
             
             onTracksChangedCallback(tracks)
+            applyAudioTrackOverride(preferredAudioLanguage)
+            applyVideoTrackOverride(selectedQuality)
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -1117,27 +799,13 @@ class ExoPlayerEngine(
             Log.e(TAG, "  Cause: ${error.cause?.message}")
             Log.e(TAG, "  Stacktrace: ${error.stackTraceToString()}")
             
-            if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED &&
-                maybeRecoverFromMalformedManifest(error)
-            ) {
-                return
-            }
-            if (maybeRecoverFromNetworkFallback(error)) {
-                return
-            }
-            if (maybeRecoverFromBlockedHeaders(error)) {
-                return
-            }
-
-            val httpDetail = describeHttpError(error)
-            val networkDetail = describeNetworkError(error)
             val errorMessage = when (error.errorCode) {
                 androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> 
-                    networkDetail ?: "Network connection failed. Please check your internet connection."
+                    "Network connection failed. Please check your internet connection."
                 androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> 
-                    networkDetail ?: "Connection timeout. Please try again."
+                    "Connection timeout. Please try again."
                 androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-                    signedUrlHint(error) ?: httpDetail ?: "Server returned an error (HTTP). Check the stream URL or access rights."
+                    "Server returned an error. Please try again later."
                 androidx.media3.common.PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED -> 
                     "DRM license acquisition failed. Stream may not be authorized."
                 androidx.media3.common.PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED -> 
@@ -1146,294 +814,15 @@ class ExoPlayerEngine(
                     "DRM device revoked. Please contact support."
                 androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> 
                     "Video decoder initialization failed. Format may not be supported."
-                androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED -> {
-                    val causeMsg = error.cause?.message.orEmpty().lowercase()
-                    when {
-                        causeMsg.contains("unexpected token") || causeMsg.contains("unterminated entity") ->
-                            "🔐 Encrypted manifest detected - ClearKey decryption may be required. Ensure DRM keys are correct."
-                        else -> httpDetail ?: "Invalid stream manifest. The server may have returned a login page or wrong file."
-                    }
-                }
+                androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ->
+                    "Invalid stream manifest. Stream may be corrupted."
                 androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ->
                     "Invalid video container. Format may be corrupted."
-                else -> httpDetail ?: "Playback error: ${error.message ?: "Unknown error"}"
+                else -> "Playback error: ${error.message ?: "Unknown error"}"
             }
             
             onError(errorMessage)
         }
-    }
-
-    /**
-     * Surfaces HTTP status from [InvalidResponseCodeException] (often wrapped) for clearer UX than
-     * generic "invalid manifest" when the CDN returned 403/404 HTML or an error body.
-     */
-    private fun describeHttpError(error: androidx.media3.common.PlaybackException): String? {
-        var t: Throwable? = error
-        while (t != null) {
-            if (t is InvalidResponseCodeException) {
-                return when (t.responseCode) {
-                    401 -> "Access denied (401). Check login or token."
-                    403 -> "Forbidden (403). Stream may require Referer or subscription headers."
-                    404 -> "Not found (404). The stream URL may be wrong or expired."
-                    410 -> "Gone (410). This stream is no longer available."
-                    429 -> "Too many requests (429). Try again later."
-                    in 500..599 -> "Server error (${t.responseCode}). Try again later."
-                    else -> "HTTP ${t.responseCode}. ${t.message?.take(120) ?: ""}".trim()
-                }
-            }
-            t = t.cause
-        }
-        return null
-    }
-
-    /**
-     * Distinguishes "device internet down" vs "stream server unreachable/blocked".
-     */
-    private fun describeNetworkError(error: androidx.media3.common.PlaybackException): String? {
-        var t: Throwable? = error
-        while (t != null) {
-            when (t) {
-                is UnknownHostException -> {
-                    return "DNS/host lookup failed. Check stream host or internet connection."
-                }
-                is SocketTimeoutException -> {
-                    return "Connection timed out while contacting stream server."
-                }
-                is ConnectException -> {
-                    val m = t.message.orEmpty().lowercase()
-                    return when {
-                        m.contains("ehostunreach") || m.contains("no route to host") ->
-                            "Stream server is unreachable from current network (no route to host)."
-                        m.contains("refused") ->
-                            "Stream server refused connection. Service may be offline."
-                        else ->
-                            "Could not connect to stream server."
-                    }
-                }
-            }
-            val msg = t.message.orEmpty().lowercase()
-            if (msg.contains("ehostunreach") || msg.contains("no route to host")) {
-                return "Stream server is unreachable from current network (no route to host)."
-            }
-            t = t.cause
-        }
-        return null
-    }
-
-    private fun maybeRecoverFromMalformedManifest(error: androidx.media3.common.PlaybackException): Boolean {
-        if (malformedManifestRecovered) return false
-        val session = currentSession ?: return false
-        val format = currentFormat ?: return false
-        if (format == StreamFormat.SNIFFING) return false
-
-        // Check if this looks like an encrypted manifest error
-        val errorMsg = error.cause?.message.orEmpty().lowercase()
-        val isEncryptedManifestError = errorMsg.contains("unexpected token") || 
-                                       errorMsg.contains("unterminated entity ref") ||
-                                       errorMsg.contains("malformed")
-
-        if (isEncryptedManifestError && session.drmType == DrmType.CLEARKEY) {
-            Log.w(TAG, "⚠️ Manifest parsing error detected - likely encrypted DASH manifest")
-            Log.w(TAG, "ℹ️ Attempting to use sniffing source which may have decryption support")
-        }
-
-        malformedManifestRecovered = true
-        Log.w(
-            TAG,
-            "⚠️ Manifest parsing failed for $format. Retrying once with sniffing source. cause=${error.cause?.message}"
-        )
-        try {
-            release()
-            initialize(
-                session,
-                forcedStreamFormat = StreamFormat.SNIFFING,
-                resetRecoveryFlags = false
-            )
-            return true
-        } catch (retryError: Exception) {
-            Log.e(TAG, "❌ Sniffing retry failed", retryError)
-            return false
-        }
-    }
-
-    private fun maybeRecoverFromBlockedHeaders(error: androidx.media3.common.PlaybackException): Boolean {
-        if (blockedHeadersRecovered) return false
-        val session = currentSession ?: return false
-        if (session.drmType != DrmType.NONE) return false
-        // Tokenized / gateway CDNs need Referer+Origin; stripping them causes 403 on Azam-style hosts.
-        if (StreamUrlClassifier.likelyRequiresWidevine(session.mpdUrl)) return false
-        if (session.headers.keys.any { it.equals("Referer", ignoreCase = true) }) return false
-
-        var t: Throwable? = error
-        var blockedHttp = false
-        while (t != null) {
-            if (t is InvalidResponseCodeException) {
-                val code = t.responseCode
-                val msg = (t.message ?: "").lowercase()
-                if (code == 401 || code == 403 || msg.contains("blocked")) {
-                    blockedHttp = true
-                    break
-                }
-            }
-            t = t.cause
-        }
-        if (!blockedHttp) {
-            val m = (error.message ?: "").lowercase()
-            if (!m.contains("blocked")) return false
-        }
-
-        blockedHeadersRecovered = true
-        Log.w(TAG, "⚠️ Possible header-based blocking detected; retrying once with relaxed headers")
-        val relaxedHeaders = session.headers.filterKeys { key ->
-            !key.equals("authorization", ignoreCase = true) &&
-                !key.equals("referer", ignoreCase = true) &&
-                !key.equals("origin", ignoreCase = true)
-        }
-
-        return try {
-            release()
-            initialize(
-                session.copy(token = "", headers = relaxedHeaders),
-                forcedStreamFormat = currentFormat,
-                resetRecoveryFlags = false
-            )
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Relaxed-header retry failed", e)
-            false
-        }
-    }
-
-    private fun maybeRecoverFromNetworkFallback(error: androidx.media3.common.PlaybackException): Boolean {
-        if (networkFallbackRecovered) return false
-        val session = currentSession ?: return false
-        val format = currentFormat ?: return false
-        val url = session.mpdUrl.lowercase()
-        val isM3u8 = url.contains(".m3u8")
-        val isMpd = url.contains(".mpd")
-
-        val networkIssue =
-            error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
-        if (!networkIssue) return false
-
-        if (isNoRouteToHost(error)) {
-            val hostFallback = buildHostHeaderUrlFallback(session)
-            if (hostFallback != null) {
-                networkFallbackRecovered = true
-                Log.w(TAG, "⚠️ Stream host IP unreachable; retrying once with Host-header domain URL")
-                return try {
-                    release()
-                    initialize(
-                        hostFallback,
-                        forcedStreamFormat = format,
-                        resetRecoveryFlags = false
-                    )
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Host-header URL retry failed", e)
-                    false
-                }
-            }
-        }
-
-        val targetFormat = when {
-            isM3u8 && format == StreamFormat.SNIFFING -> StreamFormat.HLS
-            isMpd && format == StreamFormat.SNIFFING -> StreamFormat.DASH
-            else -> null
-        } ?: return false
-
-        networkFallbackRecovered = true
-        Log.w(TAG, "⚠️ Network/source issue in sniffing mode; retrying once with forced format=$targetFormat")
-        return try {
-            release()
-            initialize(
-                session,
-                forcedStreamFormat = targetFormat,
-                resetRecoveryFlags = false
-            )
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Forced-format retry failed", e)
-            false
-        }
-    }
-
-    private fun isNoRouteToHost(error: androidx.media3.common.PlaybackException): Boolean {
-        var t: Throwable? = error
-        while (t != null) {
-            val msg = t.message.orEmpty().lowercase()
-            if (msg.contains("ehostunreach") || msg.contains("no route to host")) {
-                return true
-            }
-            t = t.cause
-        }
-        return false
-    }
-
-    private fun buildHostHeaderUrlFallback(session: StreamSession): StreamSession? {
-        val uri = try {
-            Uri.parse(session.mpdUrl)
-        } catch (_: Exception) {
-            return null
-        }
-        val currentHost = uri.host ?: return null
-        if (!isIpv4Host(currentHost)) return null
-
-        val hostHeaderValue = session.headers.entries.firstOrNull { (k, v) ->
-            k.equals("host", ignoreCase = true) && v.isNotBlank()
-        }?.value?.trim() ?: return null
-
-        val targetAuthority = if (hostHeaderValue.contains(":")) {
-            hostHeaderValue
-        } else {
-            if (uri.port > 0) "${hostHeaderValue}:${uri.port}" else hostHeaderValue
-        }
-
-        return try {
-            val rewritten = uri.buildUpon().encodedAuthority(targetAuthority).build().toString()
-            if (rewritten.equals(session.mpdUrl, ignoreCase = true)) {
-                null
-            } else {
-                // Drop explicit Host override after URL host rewrite so DNS/socket target stays consistent.
-                val adjustedHeaders = session.headers.filterKeys { !it.equals("host", ignoreCase = true) }
-                session.copy(mpdUrl = rewritten, headers = adjustedHeaders)
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun isIpv4Host(host: String): Boolean {
-        return Regex("""^\d{1,3}(\.\d{1,3}){3}$""").matches(host)
-    }
-
-    private fun signedUrlHint(error: androidx.media3.common.PlaybackException): String? {
-        var t: Throwable? = error
-        while (t != null) {
-            if (t is InvalidResponseCodeException && t.responseCode == 403) {
-                val url = currentSession?.mpdUrl.orEmpty()
-                if (looksLikePossiblyExpiredSignedUrl(url)) {
-                    return "Access denied (403). Signed stream URL may be expired; refresh channel link and retry."
-                }
-            }
-            t = t.cause
-        }
-        return null
-    }
-
-    private fun looksLikePossiblyExpiredSignedUrl(url: String): Boolean {
-        val u = url.trim()
-        if (u.isEmpty()) return false
-        val parsed = try { Uri.parse(u) } catch (_: Exception) { return false }
-        val hasTokenLike = listOf("token", "signature", "sig", "expires", "exp", "e")
-            .any { k -> parsed.getQueryParameter(k) != null }
-        if (!hasTokenLike) return false
-
-        val nowSec = System.currentTimeMillis() / 1000
-        val expiryCandidates = listOf("e", "exp", "expires")
-            .mapNotNull { k -> parsed.getQueryParameter(k)?.toLongOrNull() }
-        return expiryCandidates.any { it in 1_500_000_000L..4_000_000_000L && it < nowSec }
     }
 
     /**
@@ -1442,7 +831,6 @@ class ExoPlayerEngine(
     enum class StreamFormat {
         DASH,          // MPEG-DASH (.mpd)
         HLS,           // HTTP Live Streaming (.m3u8)
-        PROGRESSIVE,   // Progressive download (MP4, WebM, MKV, etc.)
-        SNIFFING,      // DefaultMediaSourceFactory (DASH/HLS/SmoothStreaming/progressive)
+        PROGRESSIVE    // Progressive download (MP4, WebM, MKV, etc.)
     }
 }

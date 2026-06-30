@@ -614,12 +614,13 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
     try {
       final res = await paymentsApi.checkPaymentStatus(pending);
-      final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
-      if (isPaymentCompleted(st)) {
+      if (isPaymentSuccessResponse(res)) {
         await prefs.remove('pendingPaymentOrderId');
         final userPayload = userPayloadFromPaymentResponse(res);
         await _onPaymentSuccess(userPayload: userPayload);
-      } else if (isPaymentTerminalFailure(st)) {
+      } else if (isPaymentTerminalFailure(
+        res['status'] ?? res['raw']?['data']?[0]?['payment_status'],
+      )) {
         await prefs.remove('pendingPaymentOrderId');
       }
     } catch (_) {

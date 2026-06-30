@@ -71,13 +71,9 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   bool _isPlaying = false;
   bool _playbackConfirmed = false;
   bool _unavailableNotified = false;
-  bool _showControls = false;
-  Timer? _controlsTimer;
 
-  /// First multi-track manifest: default to ~360p (“Okoa bando”) unless user changed quality.
+  /// First multi-track manifest: apply admin default quality cap once at startup.
   bool _appliedDefaultOkoa360 = false;
-  bool _userChoseOkoaQuality = false;
-  late String _activeAudioLanguage;
 
   /** After landscape once this session, do not show hint again (until new page). */
   bool _hasSeenLandscapeSession = false;
@@ -89,20 +85,9 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     );
   }
 
-  EdgeInsets _controlPadding(BuildContext context, bool isLandscape) {
-    if (!isLandscape) return EdgeInsets.zero;
-    final mq = MediaQuery.paddingOf(context);
-    return EdgeInsets.only(
-      top: mq.top > 0 ? mq.top : 8,
-      left: mq.left > 0 ? mq.left : 8,
-      right: mq.right > 0 ? mq.right : 8,
-    );
-  }
-
   @override
   void initState() {
     super.initState();
-    _activeAudioLanguage = _normalizeAudioLanguage(widget.audioLanguage);
     WidgetsBinding.instance.addObserver(this);
     _useWebPlayer = kIsWeb || widget.playbackMode == FlutterPlaybackMode.webEmbedded;
     _webView = !kIsWeb &&
@@ -155,26 +140,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await _notifyUnavailableAndExit();
     } finally {
       if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _showControlsTemporarily() {
-    _controlsTimer?.cancel();
-    if (!mounted) return;
-    setState(() => _showControls = true);
-    _controlsTimer = Timer(const Duration(milliseconds: 3500), () {
-      if (!mounted) return;
-      setState(() => _showControls = false);
-    });
-  }
-
-  void _toggleControls() {
-    if (!mounted) return;
-    if (_showControls) {
-      _controlsTimer?.cancel();
-      setState(() => _showControls = false);
-    } else {
-      _showControlsTemporarily();
     }
   }
 
@@ -315,15 +280,12 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
       await player.play();
 
       await _tracksSub?.cancel();
-      _tracksSub = player.stream.tracks.listen((tracks) {
-        unawaited(_maybeApplyAdminAudioLanguage(tracks));
+      _tracksSub = player.stream.tracks.listen((_) {
         _maybeApplyDefaultOkoa360();
       });
 
       // Manifest may expose tracks slightly after play().
       unawaited(Future<void>.delayed(const Duration(milliseconds: 300), () {
-        final tracks = player.state.tracks;
-        unawaited(_maybeApplyAdminAudioLanguage(tracks));
         _maybeApplyDefaultOkoa360();
       }));
 
@@ -367,50 +329,8 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     return _isPlaying;
   }
 
-  Future<void> _maybeApplyAdminAudioLanguage(Tracks tracks) async {
-    final lang = _activeAudioLanguage;
-    final p = _player;
-    if (p == null) return;
-    try {
-      AudioTrack? fallback;
-      for (final track in tracks.audio) {
-        final trackLang = track.language?.trim().toLowerCase() ?? '';
-        if (_audioLangMatches(trackLang, lang)) {
-          await p.setAudioTrack(track);
-          return;
-        }
-        fallback ??= track;
-      }
-      if (fallback != null) {
-        if (tracks.audio.length == 1 || lang == 'sw') {
-          await p.setAudioTrack(fallback);
-        }
-      }
-    } catch (e, st) {
-      debugPrint('Admin audio language: $e\n$st');
-    }
-  }
-
-  String _normalizeAudioLanguage(String raw) {
-    final lang = raw.trim().toLowerCase();
-    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
-    return lang == 'en' ? 'en' : 'sw';
-  }
-
-  bool _audioLangMatches(String trackLang, String target) {
-    final t = trackLang.toLowerCase();
-    if (target == 'en') {
-      if (t.contains('english') || t.contains('eng')) return true;
-      return t == 'en' || t.startsWith('en-');
-    }
-    if (t.contains('swahili') || t.contains('kiswahili') || t.contains('swa')) {
-      return true;
-    }
-    return t == 'sw' || t.startsWith('sw-');
-  }
-
   void _maybeApplyDefaultOkoa360() {
-    if (!mounted || _webView || _userChoseOkoaQuality || _appliedDefaultOkoa360) return;
+    if (!mounted || _webView || _appliedDefaultOkoa360) return;
     final targetHeight = _qualityToHeight(widget.defaultQuality);
     if (targetHeight <= 0) {
       _appliedDefaultOkoa360 = true;
@@ -470,153 +390,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     }
   }
 
-  Future<void> _applyOkoaChoice({required bool auto, int? maxHeight}) async {
-    final p = _player;
-    if (p == null) return;
-    setState(() => _userChoseOkoaQuality = true);
-    try {
-      if (auto || maxHeight == null) {
-        await p.setVideoTrack(VideoTrack.auto());
-      } else {
-        await _selectVideoTrackNearestMaxHeight(maxHeight);
-      }
-    } catch (e, st) {
-      debugPrint('Okoa choice: $e\n$st');
-    }
-  }
-
-  Future<void> _showLanguageSheet() async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: const Color(0xE6202020),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text(
-                  'Badili Lugha',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                ),
-              ),
-              ListTile(
-                title: const Text('Kiswahili', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 'sw'),
-              ),
-              ListTile(
-                title: const Text('Kiingereza', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 'en'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-    if (!mounted || choice == null) return;
-    setState(() => _activeAudioLanguage = choice);
-    final p = _player;
-    if (p != null) {
-      await _maybeApplyAdminAudioLanguage(p.state.tracks);
-      _showControlsTemporarily();
-    }
-  }
-
-  Future<void> _showOkoaQualitySheet() async {
-    final choice = await showModalBottomSheet<int?>(
-      context: context,
-      backgroundColor: const Color(0xE6202020),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text(
-                  'OKOA BANDO — ubora wa video',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                ),
-              ),
-              ListTile(
-                title: const Text('Auto (adapt)', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, -1),
-              ),
-              ListTile(
-                title: const Text('1080p', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 1080),
-              ),
-              ListTile(
-                title: const Text('720p', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 720),
-              ),
-              ListTile(
-                title: const Text('480p', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 480),
-              ),
-              ListTile(
-                title: const Text('360p (chaguo-msingi)', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 360),
-              ),
-              ListTile(
-                title: const Text('240p', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 240),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-    if (!mounted || choice == null) return;
-    if (choice == -1) {
-      await _applyOkoaChoice(auto: true, maxHeight: null);
-    } else {
-      await _applyOkoaChoice(auto: false, maxHeight: choice);
-    }
-    _showControlsTemporarily();
-  }
-
-  Future<void> _showPlayerSettingsSheet() async {
-    final selection = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: const Color(0xE6202020),
-      builder: (ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text(
-                  'MIPANGILIO YA PLAYER',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16),
-                ),
-              ),
-              ListTile(
-                title: const Text('Lugha', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 'language'),
-              ),
-              ListTile(
-                title: const Text('Ubora', style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, 'quality'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-    if (!mounted || selection == null) return;
-    if (selection == 'language') {
-      await _showLanguageSheet();
-    } else if (selection == 'quality') {
-      await _showOkoaQualitySheet();
-    }
-  }
-
   Future<void> _switchToWebView() async {
     await _tracksSub?.cancel();
     _tracksSub = null;
@@ -628,8 +401,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     } catch (_) {}
     _player = null;
     _videoController = null;
-    _showControls = false;
-    _controlsTimer?.cancel();
 
     _webView = true;
     setState(() {
@@ -750,7 +521,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_tracksSub?.cancel());
     unawaited(_playingSub?.cancel());
-    _controlsTimer?.cancel();
     WakelockPlus.disable();
     unawaited(PlayerOrientation.exitFullscreenPlayer());
     _player?.dispose();
@@ -771,7 +541,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
 
         final isLandscape = orientation == Orientation.landscape;
         final videoFit = isLandscape ? BoxFit.cover : BoxFit.contain;
-        final controlPad = _controlPadding(context, isLandscape);
 
         return Scaffold(
           backgroundColor: Colors.black,
@@ -788,64 +557,6 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
               ),
               if (_loading)
                 const Center(child: CircularProgressIndicator()),
-              if (widget.playbackMode == FlutterPlaybackMode.mediaKit &&
-                  !_webView &&
-                  !_useWebPlayer &&
-                  _player != null)
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _toggleControls,
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              Padding(
-                padding: controlPad,
-                child: Align(
-                  alignment: Alignment.topLeft,
-                  child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white, size: 28),
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ),
-              ),
-              if (widget.playbackMode == FlutterPlaybackMode.mediaKit &&
-                  !_webView &&
-                  !_useWebPlayer &&
-                  _player != null)
-                Padding(
-                  padding: controlPad.copyWith(top: 0, left: 0).add(const EdgeInsets.only(bottom: 20, right: 16)),
-                  child: Align(
-                    alignment: Alignment.bottomRight,
-                    child: Material(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      shape: const CircleBorder(),
-                      child: IconButton(
-                        tooltip: 'Mipangilio ya Player',
-                        icon: const Icon(Icons.settings, color: Colors.white),
-                        onPressed: _showPlayerSettingsSheet,
-                      ),
-                    ),
-                  ),
-                ),
-              if (widget.channelName != null)
-                Padding(
-                  padding: controlPad.add(const EdgeInsets.only(top: 8, left: 52, right: 130)),
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: Text(
-                      widget.channelName!,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
             ],
           ),
         );

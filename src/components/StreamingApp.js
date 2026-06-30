@@ -33,6 +33,7 @@ import {
   resolvePremiumFromRealtimePayload,
   resolvePremiumFromUserData,
 } from '../utils/premiumStatus';
+import { isPaymentSuccessResponse } from '../utils/paymentHelpers';
 
 const StreamingApp = () => {
   const [isPremium, setIsPremium] = useState(false);
@@ -181,8 +182,7 @@ const StreamingApp = () => {
           if (pendingOrderId && typeof pendingOrderId === 'string' && pendingOrderId.trim()) {
             try {
               const res = await paymentsAPI.checkPaymentStatus(pendingOrderId.trim());
-              const status = (res && (res.status || res.raw?.data?.[0]?.payment_status)) || '';
-              if (String(status).toUpperCase() === 'COMPLETED') {
+              if (isPaymentSuccessResponse(res)) {
                 await AsyncStorage.removeItem('pendingPaymentOrderId');
                 await refreshUserPoints();
               }
@@ -209,6 +209,23 @@ const StreamingApp = () => {
 
     // Register sync task to retry pending user registrations
     backgroundSyncService.registerTask('retry_pending_registrations', retryPendingRegistrations, 30000); // 30 seconds
+
+    // Verify pending mobile-money orders (user may have paid after the in-app wait window).
+    backgroundSyncService.registerTask(
+      'check_pending_payment',
+      async () => {
+        try {
+          const pending = await AsyncStorage.getItem('pendingPaymentOrderId');
+          if (!pending || !pending.trim()) return;
+          const res = await paymentsAPI.checkPaymentStatus(pending.trim());
+          if (isPaymentSuccessResponse(res)) {
+            await AsyncStorage.removeItem('pendingPaymentOrderId');
+            await refreshUserPoints();
+          }
+        } catch (_) {}
+      },
+      15000,
+    );
 
     // Start sync timer
     backgroundSyncService.startSyncTimer(30000); // Check every 30 seconds

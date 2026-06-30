@@ -16,20 +16,17 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { settingsAPI, paymentsAPI } from '../config/api';
+import {
+  isPaymentSuccessResponse,
+  isPaymentStillApplying,
+  isPaymentTerminalFailure as isTerminalPaymentStatus,
+} from '../utils/paymentHelpers';
 
 const ACCENT = '#22c55e';
 const ACCENT_DARK = '#16a34a';
 
 /** Tanzanian GSM prefixes — must match backend `payments.js` */
 const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
-
-const PAYMENT_TERMINAL_STATUSES = new Set([
-  'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'DECLINED', 'VOID', 'CANCEL', 'ERROR',
-]);
-
-function isTerminalPaymentStatus(status) {
-  return PAYMENT_TERMINAL_STATUSES.has(String(status || '').toUpperCase().trim());
-}
 
 function isCancelledPaymentStatus(status) {
   const u = String(status || '').toUpperCase().trim();
@@ -143,7 +140,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         if (!pending || !pending.trim()) return;
         const res = await paymentsAPI.checkPaymentStatus(pending.trim());
         const status = res?.status || res?.raw?.data?.[0]?.payment_status;
-        if (String(status).toUpperCase() === 'COMPLETED') {
+        if (isPaymentSuccessResponse(res)) {
           await AsyncStorage.removeItem('pendingPaymentOrderId');
           if (onPaymentSuccess) await Promise.resolve(onPaymentSuccess(res?.user));
         } else {
@@ -201,11 +198,16 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           return;
         }
 
-        if (paymentStatus === 'COMPLETED') {
+        if (isPaymentStillApplying(response)) {
+          console.log('[Payment] Gateway paid — server still applying premium…');
+          return;
+        }
+
+        if (isPaymentSuccessResponse(response)) {
           stopPolling();
           await AsyncStorage.removeItem('pendingPaymentOrderId');
 
-          console.log('[Payment] Payment COMPLETED! Triggering immediate upgrade...');
+          console.log('[Payment] Payment confirmed! Triggering immediate upgrade...');
 
           if (onPaymentSuccess) {
             try {

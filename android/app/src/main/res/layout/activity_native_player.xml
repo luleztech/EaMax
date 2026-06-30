@@ -9,13 +9,11 @@
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:animation_enabled="true"
-        app:controller_layout_id="@layout/eamax_player_controls"
-        app:hide_on_touch="true"
-        app:show_buffering="never"
-        app:show_timeout="6000"
+        app:animation_enabled="false"
+        app:show_buffering="when_playing"
+        app:show_subtitle_button="false"
         app:surface_type="surface_view"
-        app:use_controller="true" />
+        app:use_controller="false" />
 
     <FrameLayout
         android:id="@+id/webview_container"
@@ -50,27 +48,6 @@
             android:layout_gravity="center"
             android:indeterminateTint="#2196F3" />
     </FrameLayout>
-
-    <!-- Floating LIVE badge (WebView + live Exo) -->
-    <TextView
-        android:id="@+id/live_badge"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:layout_marginStart="16dp"
-        android:layout_marginBottom="72dp"
-        android:background="@drawable/live_badge_background"
-        android:elevation="8dp"
-        android:letterSpacing="0.1"
-        android:paddingStart="10dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="10dp"
-        android:paddingBottom="4dp"
-        android:text="@string/player_live"
-        android:textColor="#FFFFFFFF"
-        android:textSize="12sp"
-        android:textStyle="bold"
-        android:visibility="gone" />
 
     <FrameLayout
         android:id="@+id/rotate_hint_overlay"
@@ -140,28 +117,17 @@
         </LinearLayout>
     </FrameLayout>
 
-    <ImageButton
-        android:id="@+id/btn_close"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="top|start"
-        android:layout_margin="16dp"
-        android:background="#80000000"
-        android:clickable="true"
-        android:contentDescription="@string/close_player"
-        android:elevation="14dp"
-        android:focusable="true"
-        android:src="@android:drawable/ic_menu_close_clear_cancel" />
-
     <LinearLayout
         android:id="@+id/player_top_tools"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="12dp"
+        android:layout_gravity="bottom|end"
         android:layout_marginEnd="12dp"
-        android:clickable="false"
-        android:elevation="14dp"
+        android:layout_marginBottom="20dp"
+        android:clickable="true"
+        android:elevation="48dp"
+        android:focusable="true"
+        android:translationZ="48dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone">
@@ -183,7 +149,6 @@
             android:id="@+id/btn_player_settings"
             android:layout_width="48dp"
             android:layout_height="48dp"
-            android:layout_marginEnd="6dp"
             android:background="@drawable/player_toolbar_button_bg"
             android:clickable="true"
             android:contentDescription="@string/player_settings"
@@ -191,20 +156,6 @@
             android:padding="12dp"
             android:scaleType="centerInside"
             android:src="@drawable/ic_player_settings" />
-
-        <Button
-            android:id="@+id/btn_okoa_bundle"
-            android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:backgroundTint="#CC000000"
-            android:clickable="true"
-            android:focusable="true"
-            android:minHeight="48dp"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp"
-            android:text="@string/okoa_bundle"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
-            android:textSize="13sp" />
     </LinearLayout>
+
 </FrameLayout>

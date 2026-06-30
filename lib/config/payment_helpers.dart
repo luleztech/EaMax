@@ -1,3 +1,5 @@
+import '../utils/premium_snapshot.dart';
+
 /// Normalizes Aurax Pay / backend payment status strings from polling or webhooks.
 String normalizedPaymentStatus(Object? status) {
   return status?.toString().toUpperCase().trim() ?? '';
@@ -57,6 +59,22 @@ Map<String, dynamic>? userPayloadFromPaymentResponse(Map<String, dynamic> respon
   if (user is Map) return Map<String, dynamic>.from(user);
   return null;
 }
+
+/// True when polling response means payment succeeded and premium should unlock.
+bool isPaymentSuccessResponse(Map<String, dynamic> response) {
+  final st = response['status'] ?? response['raw']?['data']?[0]?['payment_status'];
+  if (isPaymentCompleted(st)) return true;
+  final user = userPayloadFromPaymentResponse(response);
+  if (user != null) {
+    final snap = PremiumSnapshot.fromDynamic(user);
+    if (snap?.isPremium == true) return true;
+  }
+  return false;
+}
+
+/// Keep polling while the server is still applying premium after gateway confirmation.
+bool isPaymentStillApplying(Map<String, dynamic> response) =>
+    response['applying'] == true;
 
 /// Called after payment success or admin grant to unlock channels.
 typedef PremiumUnlockCallback = Future<void> Function({Map<String, dynamic>? userPayload});

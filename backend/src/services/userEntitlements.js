@@ -223,16 +223,7 @@ const clearAllExpiredPremiumFlags = async () => {
 };
 
 const repairCompletedPaymentsMissingPremium = async () => {
-  const PLAN_INTERVALS = { week: '7 days', month: '30 days', year: '90 days' };
-  const resolveInterval = (plan) => {
-    const key = String(plan || '').toLowerCase();
-    if (key.startsWith('offer:')) {
-      const days = parseInt(key.split(':')[1], 10);
-      if (Number.isFinite(days) && days > 0 && days <= 366) return `${days} days`;
-      return null;
-    }
-    return PLAN_INTERVALS[key] || null;
-  };
+  const { resolvePremiumInterval } = require('./subscriptionPlansService');
 
   const rows = await query(
     `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan
@@ -247,7 +238,7 @@ const repairCompletedPaymentsMissingPremium = async () => {
 
   let repaired = 0;
   for (const row of rows.rows) {
-    const interval = resolveInterval(row.plan);
+    const interval = await resolvePremiumInterval(row.plan);
     if (!interval) continue;
     const ok = await repairUserEntitlementsIfNeeded(Number(row.user_id), interval);
     if (ok) repaired += 1;

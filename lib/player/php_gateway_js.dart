@@ -26,7 +26,8 @@ const String kPhpGatewayRecoveryJs = '''
     video.setAttribute('playsinline', 'true');
     video.setAttribute('webkit-playsinline', 'true');
     try { video.muted = false; } catch (e) {}
-    video.controls = true;
+    video.controls = false;
+    video.removeAttribute('controls');
 
     video.addEventListener('playing', function () {
       window.__eaMaxPlaybackLocked = true;

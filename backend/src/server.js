@@ -456,6 +456,21 @@ try {
     repairCompletedPaymentsMissingPremium().catch((err) => {
       console.warn('[Entitlements] Boot repair failed:', err.message || err);
     });
+    try {
+      const { reconcilePendingSubscriptionPayments } = require('./routes/payments');
+      if (typeof reconcilePendingSubscriptionPayments === 'function') {
+        reconcilePendingSubscriptionPayments().catch((err) => {
+          console.warn('[Payment] Boot reconcile failed:', err.message || err);
+        });
+        setInterval(() => {
+          reconcilePendingSubscriptionPayments().catch((err) => {
+            console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
+          });
+        }, 5 * 60 * 1000);
+      }
+    } catch (e) {
+      console.warn('[Payment] Reconcile scheduler not started:', e.message || e);
+    }
   }, 120000);
 } catch (e) {
   console.warn('[ExpiredReminder] scheduler not started:', e.message || e);

@@ -178,7 +178,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       try {
         final res = await paymentsApi.checkPaymentStatus(pending);
         final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
-        if (isPaymentCompleted(st)) {
+        if (isPaymentSuccessResponse(res)) {
           await _markPaymentCompleted(
             title: 'Hongera — malipo yamehakikiwa',
             message:
@@ -246,11 +246,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (orderId == null || orderId.isEmpty) return;
 
     var polls = 0;
+    var applyingStreak = 0;
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       polls++;
       if (!mounted) return;
       try {
         final response = await paymentsApi.checkPaymentStatus(orderId);
+        if (isPaymentStillApplying(response)) {
+          applyingStreak++;
+        } else {
+          applyingStreak = 0;
+        }
         final paymentStatus =
             response['status'] ??
             response['raw']?['data']?[0]?['payment_status'];
@@ -261,7 +267,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           );
           return;
         }
-        if (isPaymentCompleted(paymentStatus)) {
+        if (isPaymentSuccessResponse(response)) {
           await _markPaymentCompleted(
             title: 'Hongera — malipo yamehakikiwa',
             message:
@@ -298,7 +304,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           }
         }
       }
-      if (polls >= 90) {
+      if (polls >= 90 && applyingStreak < 3) {
         _pollTimer?.cancel();
         _pollTimer = null;
         _waitingTimer?.cancel();

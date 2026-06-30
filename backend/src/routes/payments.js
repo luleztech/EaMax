@@ -62,7 +62,8 @@ const getSonicPesaRequestHeaders = () => {
 };
 
 const SONIC_WEBHOOK_PAID_STATUSES = new Set([
-  'SUCCESS', 'COMPLETED', 'PAID', 'COMPLETE', 'SUCCEEDED', 'APPROVED', 'CONFIRMED', 'SETTLED',
+  'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED', 'APPROVED',
+  'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS',
 ]);
 
 const ensureSonicPesaConfigured = () => {
@@ -96,9 +97,19 @@ const getSelectedPaymentProvider = async () => {
   return normalizeStoredPaymentProvider(rawValue) || envDefault;
 };
 
-/** Off by default — when SonicPesa is admin-active, money must not silently go to Aurax. */
-const isSonicAuraxFallbackAllowed = () =>
-  String(process.env.ALLOW_SONIC_AURAX_FALLBACK || process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1';
+/** Opt out with DISABLE_SONIC_AURAX_FALLBACK=1. Otherwise fall back to Aurax when Sonic STK cannot be sent. */
+const isSonicAuraxFallbackDisabled = () =>
+  String(process.env.DISABLE_SONIC_AURAX_FALLBACK || '').trim() === '1';
+
+const isSonicAuraxFallbackAllowed = () => {
+  if (isSonicAuraxFallbackDisabled()) return false;
+  if (
+    String(process.env.ALLOW_SONIC_AURAX_FALLBACK || process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1'
+  ) {
+    return true;
+  }
+  return isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
+};
 
 const paymentRefWhereSql = 'provider_ref = $1 OR gateway_ref = $1';
 
@@ -238,11 +249,16 @@ const formatPhoneForSonicPesaApi = (local0) => {
   return intl;
 };
 
+const isAirtelLocalPhone = (local0) => {
+  const p = String(local0 || '');
+  return p.startsWith('068') || p.startsWith('069') || p.startsWith('078');
+};
+
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  // Halopesa (061–063) often rejects 255… on Sonic; try local 0… first.
-  if (isHalotelLocalPhone(normalizedPhone)) {
+  // Halopesa (061–063) and Airtel (068–069, 078) often reject 255… on Sonic; try local 0… first.
+  if (isHalotelLocalPhone(normalizedPhone) || isAirtelLocalPhone(normalizedPhone)) {
     return [...new Set([local, api255].filter(Boolean))];
   }
   return [...new Set([api255, local].filter((p) => p && p.length > 0))];
@@ -306,6 +322,11 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}
     if (isHalotelLocalPhone(localPhone)) {
       return (
         'Halopesa (061–063) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
+      );
+    }
+    if (isAirtelLocalPhone(localPhone)) {
+      return (
+        'Airtel Money haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
       );
     }
     return (
@@ -590,6 +611,7 @@ const isSonicPaidRaw = (rawUpper) => {
   if (!rawUpper) return false;
   const u = String(rawUpper).toUpperCase().trim();
   if (SONIC_WEBHOOK_PAID_STATUSES.has(u)) return true;
+  if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS)/.test(u)) return true;
   const lower = u.toLowerCase();
   return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
 };
@@ -1029,8 +1051,14 @@ async function handlePaymentStart(req, res, next) {
       isHalotelLocalPhone(normalizedPhone) &&
       auraxReady;
 
-    if (skipSonicForHalotel) {
-      console.log('[Payment] Halotel MSISDN (061–063) — routing to Aurax Pay (+255 E.164)');
+    const skipSonicForAirtel =
+      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
+      isAirtelLocalPhone(normalizedPhone) &&
+      auraxReady;
+
+    if (skipSonicForHalotel || skipSonicForAirtel) {
+      const carrier = skipSonicForHalotel ? 'Halopesa (061–063)' : 'Airtel Money (068–069, 078)';
+      console.log(`[Payment] ${carrier} — routing to Aurax Pay (+255 E.164)`);
       paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
       usedAuraxFallbackFromSonic = true;
     } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
@@ -1216,7 +1244,9 @@ async function handlePaymentStart(req, res, next) {
         (usedAuraxFallbackFromSonic
           ? isHalotelLocalPhone(normalizedPhone)
             ? 'Ombi limetumwa kupitia Aurax Pay (Halopesa). Angalia simu yako na uingize PIN.'
-            : 'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo.'
+            : isAirtelLocalPhone(normalizedPhone)
+              ? 'Ombi limetumwa kupitia Aurax Pay (Airtel Money). Angalia simu yako na uingize PIN.'
+              : 'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo.'
           : providerResponseMessage),
       provider: PAYMENT_PROVIDERS.AURAX,
       activeProvider: provider,
@@ -1233,19 +1263,56 @@ async function handlePaymentStart(req, res, next) {
 router.post('/aurax/start', handlePaymentStart);
 router.post('/start', handlePaymentStart);
 
+const LEGACY_PLAN_INTERVALS = { week: '7 days', month: '30 days', year: '90 days' };
+
 const resolvePlanIntervalForPayment = async (plan, amountCents) => {
+  const planKey = String(plan || '').toLowerCase();
   const planInterval = await resolvePremiumInterval(plan);
   if (planInterval) return planInterval;
+
+  if (planKey.startsWith('offer:')) {
+    const days = parseInt(planKey.split(':')[1], 10);
+    if (Number.isFinite(days) && days > 0 && days <= 366) return `${days} days`;
+  }
+
   try {
     const plans = await getActivePlans();
-    const match = plans.find((p) => Number(p.priceTzs) === Number(amountCents));
-    const inferred = intervalForPlan(match);
-    if (inferred) {
-      console.warn('[Payment] Inferred plan interval from amount', { plan, amountCents, inferred });
-      return inferred;
+    const amount = Number(amountCents);
+    if (Number.isFinite(amount) && amount > 0) {
+      const exact = plans.find((p) => Number(p.priceTzs) === amount);
+      const exactInterval = intervalForPlan(exact);
+      if (exactInterval) {
+        console.warn('[Payment] Inferred plan interval from exact amount', { plan: planKey, amountCents, exactInterval });
+        return exactInterval;
+      }
+      let closest = null;
+      let closestDiff = Infinity;
+      for (const p of plans) {
+        const diff = Math.abs(Number(p.priceTzs) - amount);
+        if (diff < closestDiff) {
+          closestDiff = diff;
+          closest = p;
+        }
+      }
+      const closestInterval = intervalForPlan(closest);
+      if (closestInterval) {
+        console.warn('[Payment] Inferred plan interval from closest amount', {
+          plan: planKey,
+          amountCents,
+          closestSlug: closest?.slug,
+          closestInterval,
+        });
+        return closestInterval;
+      }
     }
-  } catch (_) {}
-  return null;
+  } catch (err) {
+    console.warn('[Payment] Plan inference failed:', err?.message || err);
+  }
+
+  if (LEGACY_PLAN_INTERVALS[planKey]) return LEGACY_PLAN_INTERVALS[planKey];
+
+  console.error('[Payment] Using default 30-day interval for unknown plan:', planKey, amountCents);
+  return '30 days';
 };
 
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
@@ -1397,6 +1464,20 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
 
 /** Only tell the app COMPLETED once premium is actually active on the user row. */
 const respondPaymentCompletion = async (orderId, rawPayload, res) => {
+  const payRowRes = await query(
+    `SELECT status, user_id, plan, amount_cents
+       FROM subscription_payments
+      WHERE provider_ref = $1 OR gateway_ref = $1
+      LIMIT 1`,
+    [orderId],
+  );
+  const payRow = payRowRes.rows[0] || null;
+
+  if (payRow?.status === 'completed' && payRow.user_id) {
+    const planInterval = await resolvePlanIntervalForPayment(payRow.plan, payRow.amount_cents);
+    await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
+  }
+
   const user = await fetchUserPremiumSnapshotForOrder(orderId);
   const premiumActive = user && (user.isPremium === true || user.is_premium === true);
   if (!premiumActive) {
@@ -1408,7 +1489,6 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
       ...(user ? { user } : {}),
     });
   }
-  // Use already-fetched user data instead of querying again
   return res.json({
     status: 'COMPLETED',
     raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
@@ -1429,11 +1509,9 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'completed') {
       const payRow = dbCheck.rows[0];
-      const plan = String(payRow.plan || '').toLowerCase();
-      const planInterval = await resolvePlanIntervalForPayment(plan, payRow.amount_cents);
-      if (planInterval) {
-        await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
-      }
+      const planKey = String(payRow.plan || '').toLowerCase();
+      const planInterval = await resolvePlanIntervalForPayment(planKey, payRow.amount_cents);
+      await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
       return respondPaymentCompletion(orderId, { data: [{ payment_status: 'COMPLETED' }] }, res);
     }
 
@@ -1808,7 +1886,7 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
 
     const pendingSonic = await query(
       `SELECT id FROM subscription_payments
-         WHERE provider_ref = $1 AND status = $2 AND payment_provider = $3
+         WHERE (provider_ref = $1 OR gateway_ref = $1) AND status = $2 AND payment_provider = $3
          LIMIT 1`,
       [orderId, 'pending', PAYMENT_PROVIDERS.SONICPESA],
     );
@@ -1877,5 +1955,65 @@ router.get('/status', async (req, res, next) => {
   return handlePaymentStatusPoll(orderId, res, next);
 });
 
+/** Poll gateways for stale pending rows — catches paid orders when app/webhook missed completion. */
+const tryCompletePendingPaymentFromGateway = async (payRow) => {
+  const orderId = String(payRow.provider_ref || '').trim();
+  if (!orderId) return false;
+
+  const gateway = normalizeStoredPaymentProvider(payRow.payment_provider) || PAYMENT_PROVIDERS.AURAX;
+  const expectedProvider =
+    gateway === PAYMENT_PROVIDERS.SONICPESA ? PAYMENT_PROVIDERS.SONICPESA : PAYMENT_PROVIDERS.AURAX;
+
+  if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
+    if (!SONICPESA_API_KEY) return false;
+    const { statusResp, statusData } = await pollSonicOrderStatus(orderId);
+    if (!statusResp.ok) return false;
+    const rawStatus = extractSonicPaymentStatus(statusData);
+    if (!isSonicPaidRaw(rawStatus)) return false;
+    const result = await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
+      expectedPaymentProvider: expectedProvider,
+    });
+    return Boolean(result);
+  }
+
+  if (!AURAXPAY_API_KEY) return false;
+  const auraxPollId = String(payRow.gateway_ref || orderId).trim();
+  const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
+  if (!statusResp.ok) return false;
+  const { isCompleted } = evaluateAuraxOrderStatusForApply(statusData);
+  if (!isCompleted) return false;
+  const result = await applyCompletedPayment(orderId, statusData.transaction || statusData || {}, {
+    expectedPaymentProvider: expectedProvider,
+  });
+  return Boolean(result);
+};
+
+const reconcilePendingSubscriptionPayments = async () => {
+  const result = await query(
+    `SELECT provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id
+       FROM subscription_payments
+      WHERE status = 'pending'
+        AND created_at < NOW() - INTERVAL '90 seconds'
+      ORDER BY created_at ASC
+      LIMIT 50`,
+  );
+  if (!result.rows.length) return 0;
+
+  let upgraded = 0;
+  for (const row of result.rows) {
+    try {
+      const ok = await tryCompletePendingPaymentFromGateway(row);
+      if (ok) upgraded += 1;
+    } catch (err) {
+      console.warn('[Payment] Reconcile failed for', row.provider_ref, err?.message || err);
+    }
+  }
+  if (upgraded > 0) {
+    console.log(`[Payment] Background reconcile completed ${upgraded} pending payment(s)`);
+  }
+  return upgraded;
+};
+
 module.exports = router;
+module.exports.reconcilePendingSubscriptionPayments = reconcilePendingSubscriptionPayments;
 

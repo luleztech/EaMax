@@ -23,10 +23,17 @@ video{width:100%;height:100%;background:#000;object-fit:contain;display:block}
 video::-webkit-media-controls-enclosure{display:none!important}
 video::-webkit-media-controls{display:none!important}
 video::-webkit-media-controls-panel{display:none!important}
+video::-webkit-media-controls-mute-button{display:none!important}
+video::-webkit-media-controls-fullscreen-button{display:none!important}
+video::-webkit-media-controls-overflow-button{display:none!important}
+video::-webkit-media-controls-timeline{display:none!important}
 video::-webkit-media-controls-current-time-display,
 video::-webkit-media-controls-time-remaining-display,
 video::-webkit-media-controls-duration-display,
 video::-webkit-media-controls-timeline{display:none!important}
+.shaka-controls-container,.shaka-bottom-controls,.shaka-overflow-menu,
+.shaka-overflow-menu-button,.shaka-fullscreen-button,.vjs-control-bar,
+.jw-controlbar,.plyr__controls{display:none!important;pointer-events:none!important}
 #err{display:none;position:fixed;inset:0;align-items:center;justify-content:center;
      color:#fff;font:15px/1.5 system-ui,sans-serif;text-align:center;padding:24px}
 #err.show{display:flex}
