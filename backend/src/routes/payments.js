@@ -184,7 +184,7 @@ const TZ_VALID_PREFIXES = [
  * Rejects non-Tanzania international numbers.
  */
 const normalizePhoneToLocal0 = (rawPhone) => {
-  let normalizedPhone = String(rawPhone || '').replace(/\s+/g, '');
+  let normalizedPhone = String(rawPhone || '').replace(/[\s\-()]/g, '');
   if (normalizedPhone.startsWith('+') && !normalizedPhone.startsWith('+255')) {
     return {
       error:

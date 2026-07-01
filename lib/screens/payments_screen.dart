@@ -91,7 +91,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   /// Tanzania local MSISDN only (`0` + 8–9 digits). Converts pasted +255/255 to 0…
   String _normalizeToLocal(String raw) {
-    var s = raw.replaceAll(RegExp(r'\s+'), '');
+    var s = raw.replaceAll(RegExp(r'[\s\-()]'), '');
     if (s.startsWith('+') && !s.startsWith('+255')) return s;
     if (s.startsWith('+255')) s = '0${s.substring(4)}';
     else if (s.startsWith('00255')) s = '0${s.substring(5)}';
@@ -737,7 +737,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                 child: TextField(
                                   controller: _phoneCtrl,
                                   keyboardType: TextInputType.phone,
-                                  maxLength: 10,
+                                  // Wide cap so a pasted +255/00255 number reaches onChanged intact
+                                  // before normalization — a tight cap here used to truncate it first.
+                                  maxLength: 20,
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 18,
@@ -774,7 +776,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                                       minHeight: 0,
                                     ),
                                   ),
-                                  onChanged: (_) {
+                                  onChanged: (value) {
+                                    final normalized = _normalizeToLocal(value);
+                                    if (normalized != value &&
+                                        RegExp(r'^0\d{8,9}$').hasMatch(normalized)) {
+                                      _phoneCtrl.value = _phoneCtrl.value.copyWith(
+                                        text: normalized,
+                                        selection: TextSelection.collapsed(
+                                          offset: normalized.length,
+                                        ),
+                                      );
+                                    }
                                     setState(() {
                                       if (!_phoneOk) _selectedBundle = null;
                                     });

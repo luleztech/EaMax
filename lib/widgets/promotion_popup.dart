@@ -43,7 +43,10 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
   bool _offerExpired = false;
   bool _submittingOffer = false;
 
-  static const _tzPrefixes = ['071', '074', '075', '076', '077', '078', '079'];
+  static const _tzPrefixes = [
+    '061', '062', '063', '065', '067', '068', '069',
+    '071', '074', '075', '076', '077', '078', '079',
+  ];
 
   @override
   void initState() {

@@ -57,7 +57,7 @@ function mapPaymentGatewayErrorToSwahili(message) {
 
 /** Tanzania local only (0…). Rejects non-TZ international; converts pasted +255/255 to 0… */
 function normalizeTzPhoneToLocal(raw) {
-  let s = String(raw || '').replace(/\s+/g, '');
+  let s = String(raw || '').replace(/[\s\-()]/g, '');
   if (!s) return { error: 'invalid', local: null };
   if (s.startsWith('+') && !s.startsWith('+255')) return { error: 'international', local: null };
   if (s.startsWith('00') && !s.startsWith('00255')) return { error: 'international', local: null };
@@ -495,9 +495,16 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
               placeholder="0712345678"
               placeholderTextColor="#64748b"
               value={phoneNumber}
-              onChangeText={setPhoneNumber}
+              onChangeText={(text) => {
+                // Normalize pasted +255/00255 numbers down to local 0… immediately —
+                // a tight maxLength here previously truncated pastes before conversion.
+                const norm = normalizeTzPhoneToLocal(text);
+                const shouldReplace =
+                  norm.local && norm.local !== text && /^0[0-9]{8,9}$/.test(norm.local);
+                setPhoneNumber(shouldReplace ? norm.local : text);
+              }}
               keyboardType="phone-pad"
-              maxLength={10}
+              maxLength={20}
             />
           </View>
         </View>
