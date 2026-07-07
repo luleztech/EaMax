@@ -508,25 +508,30 @@ const extractAuraxPaymentStatus = (statusData) => {
   const nest = statusData.data && typeof statusData.data === 'object' ? statusData.data : null;
   const nestTx = nest?.transaction && typeof nest.transaction === 'object' ? nest.transaction : null;
   const candidates = [
-    tx?.status,
     tx?.paymentStatus,
     tx?.payment_status,
+    nestTx?.paymentStatus,
+    nestTx?.payment_status,
+    tx?.status,
     tx?.state,
     nestTx?.status,
-    nestTx?.paymentStatus,
     nest?.status,
     statusData.status,
     statusData.paymentStatus,
     statusData.payment_status,
     statusData.state,
   ];
+  const found = [];
   for (const c of candidates) {
     if (c != null && typeof c !== 'object') {
       const s = String(c).toUpperCase().trim();
-      if (s) return s;
+      if (s) found.push(s);
     }
   }
-  return '';
+  for (const s of found) {
+    if (isAuraxPaidRaw(s)) return s;
+  }
+  return found[0] || '';
 };
 
 const isAuraxPaidRaw = (rawUpper) => {
@@ -538,16 +543,33 @@ const isAuraxPaidRaw = (rawUpper) => {
   return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
 };
 
+/** Normalize poll/webhook payloads so transaction lives at a consistent path. */
+const normalizeAuraxStatusPayload = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return statusData;
+  const dataObj =
+    statusData.data && typeof statusData.data === 'object' && !Array.isArray(statusData.data)
+      ? statusData.data
+      : null;
+  const tx =
+    statusData.transaction ||
+    dataObj?.transaction ||
+    (dataObj && (dataObj.id || dataObj.reference || dataObj.status || dataObj.paymentStatus)
+      ? dataObj
+      : null);
+  return tx ? { ...statusData, transaction: tx } : statusData;
+};
+
 const evaluateAuraxOrderStatusForApply = (statusData) => {
-  const tx = statusData?.transaction;
-  const rawStatus = extractAuraxPaymentStatus(statusData);
+  const normalized = normalizeAuraxStatusPayload(statusData);
+  const tx = normalized?.transaction;
+  const rawStatus = extractAuraxPaymentStatus(normalized);
   let isCompleted = isAuraxPaidRaw(rawStatus);
-  if (!isCompleted && statusData?.success === true) {
+  if (!isCompleted && normalized?.success === true) {
     const nested = extractAuraxPaymentStatus({ transaction: tx });
     if (isAuraxPaidRaw(nested)) isCompleted = true;
-    if (!isCompleted && isAuraxPaidRaw(String(statusData.status || ''))) isCompleted = true;
+    if (!isCompleted && isAuraxPaidRaw(String(normalized.status || ''))) isCompleted = true;
   }
-  const ev = String(statusData?.event || statusData?.type || '').toLowerCase().trim();
+  const ev = String(normalized?.event || normalized?.type || '').toLowerCase().trim();
   if (!isCompleted && ev) {
     isCompleted =
       ev === 'payment.completed' ||
@@ -565,14 +587,20 @@ const collectAuraxOrderRefs = (payload) => {
   const meta = nest?.metadata || payload?.metadata || payload?.data?.metadata || {};
   const refs = new Set();
   for (const v of [
+    meta?.orderId,
+    meta?.order_id,
+    nest?.orderId,
+    nest?.order_id,
+    payload?.orderId,
+    payload?.order_id,
     nest?.id,
     nest?.reference,
     payload?.id,
     payload?.reference,
     payload?.transactionId,
     payload?.transaction_id,
-    meta?.orderId,
-    meta?.order_id,
+    payload?.data?.id,
+    payload?.data?.reference,
     meta?.reference,
   ]) {
     const s = String(v || '').trim();
@@ -581,25 +609,66 @@ const collectAuraxOrderRefs = (payload) => {
   return [...refs];
 };
 
+/** Prefer client orderId (provider_ref) over gateway transaction id for completion. */
+const pickPreferredAuraxOrderId = (allRefs, payload) => {
+  const tx = payload?.transaction || payload?.data?.transaction || payload?.data;
+  const meta = tx?.metadata || payload?.metadata || payload?.data?.metadata || {};
+  const fromMeta = String(meta.orderId || meta.order_id || '').trim();
+  if (fromMeta) return fromMeta;
+  const fromPayload = String(payload?.orderId || payload?.order_id || '').trim();
+  if (fromPayload) return fromPayload;
+  const clientUuid = (allRefs || []).find((r) => isLikelyAuraxOrderRef(r) && !/^AXP-/i.test(r));
+  if (clientUuid) return clientUuid;
+  return (allRefs && allRefs[0]) || null;
+};
+
 const extractAuraxWebhookOrderAndPaid = (payload) => {
   const allRefs = collectAuraxOrderRefs(payload);
-  const orderId = allRefs[0] || null;
-  const tx = payload.transaction || payload.data?.transaction || payload.data;
-  const nest = tx && typeof tx === 'object' ? tx : null;
-  const raw = String(
-    nest?.status || payload.status || payload.event || '',
-  ).toUpperCase().trim();
-  const ev = String(payload.event || payload.type || '').toLowerCase().trim();
-  let paid = isAuraxPaidRaw(raw);
-  if (!paid && ev) {
-    paid =
-      ev === 'payment.completed' ||
-      ev === 'payment.success' ||
-      ev === 'payment_completed' ||
-      ev === 'transaction.completed' ||
-      ev === 'collection.completed';
+  const orderId = pickPreferredAuraxOrderId(allRefs, payload);
+  const { isCompleted, rawStatus } = evaluateAuraxOrderStatusForApply(payload);
+  return { orderId, allRefs, paid: isCompleted, raw: rawStatus };
+};
+
+/** Apply Aurax completion; poll gateway when webhook refs do not match DB yet (gateway_ref race). */
+const tryApplyAuraxCompletedPayment = async (orderId, meta, { altRefs = [] } = {}) => {
+  const refs = [...new Set([orderId, ...(altRefs || [])].map((r) => String(r || '').trim()).filter(Boolean))];
+  let result = await applyCompletedPayment(orderId, meta, {
+    expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
+    altRefs: refs,
+  });
+  if (result) return result;
+
+  for (const ref of refs) {
+    try {
+      const { statusResp, statusData } = await pollAuraxOrderStatus(ref);
+      if (!statusResp.ok) continue;
+      const { isCompleted, transaction } = evaluateAuraxOrderStatusForApply(statusData);
+      if (!isCompleted) continue;
+      const pollRefs = collectAuraxOrderRefs(statusData);
+      const pollOrderId = pickPreferredAuraxOrderId(pollRefs, statusData) || orderId || ref;
+      const pollAltRefs = [...new Set([...refs, ...pollRefs, ref])];
+      const gatewayId = String(transaction?.id || transaction?.reference || ref).trim();
+      if (gatewayId) {
+        await query(
+          `UPDATE subscription_payments
+              SET gateway_ref = $1
+            WHERE provider_ref = $2
+              AND status = 'pending'
+              AND payment_provider = $3
+              AND (gateway_ref IS NULL OR gateway_ref = '')`,
+          [gatewayId, pollOrderId, PAYMENT_PROVIDERS.AURAX],
+        ).catch(() => {});
+      }
+      result = await applyCompletedPayment(pollOrderId, transaction || statusData || meta, {
+        expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
+        altRefs: pollAltRefs,
+      });
+      if (result) return result;
+    } catch (pollErr) {
+      console.warn('[AuraxPay] Gateway poll fallback failed for ref:', ref, pollErr?.message || pollErr);
+    }
   }
-  return { orderId, allRefs, paid, raw: raw || ev };
+  return null;
 };
 
 const SONIC_HTTP_TIMEOUT_MS = Math.min(
@@ -628,13 +697,17 @@ const extractSonicPaymentStatus = (statusData) => {
     statusData.paymentStatus,
     statusData.status,
   ];
+  const found = [];
   for (const c of candidates) {
     if (c != null && typeof c !== 'object') {
       const s = String(c).toUpperCase().trim();
-      if (s) return s;
+      if (s) found.push(s);
     }
   }
-  return '';
+  for (const s of found) {
+    if (isSonicPaidRaw(s)) return s;
+  }
+  return found[0] || '';
 };
 
 const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
@@ -1598,11 +1671,14 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     }
 
     const { isCompleted, rawStatus, transaction } = evaluateAuraxOrderStatusForApply(statusData);
+    const gatewayRef = String(dbCheck.rows[0]?.gateway_ref || '').trim();
+    const auraxAltRefs = [...new Set([gatewayRef, auraxPollId].filter((r) => r && r !== orderId))];
 
     if (isCompleted) {
       try {
         await applyCompletedPayment(orderId, transaction || statusData || {}, {
           expectedPaymentProvider: expectedProvider,
+          altRefs: auraxAltRefs,
         });
       } catch (applyErr) {
         console.error('[Payment] Aurax applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
@@ -1716,11 +1792,9 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       '',
   ).trim();
 
-  const st = String(
-    payload.status || nest?.status || nest?.payment_status || nest?.paymentStatus || '',
-  ).toUpperCase().trim();
+  const rawStatus = extractSonicPaymentStatus(payload);
   const ev = String(payload.event || payload.type || '').toLowerCase().trim();
-  let paid = SONIC_WEBHOOK_PAID_STATUSES.has(st);
+  let paid = isSonicPaidRaw(rawStatus);
   if (!paid && ev) {
     paid =
       ev === 'payment.success' ||
@@ -1729,7 +1803,7 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       ev === 'invoice.paid' ||
       ev === 'charge.succeeded';
   }
-  return { orderId: orderId || null, paid, raw: st || ev };
+  return { orderId: orderId || null, paid, raw: rawStatus || ev };
 };
 
 // Webhook endpoint for Aurax Pay (configure in Aurax dashboard: /api/payments/aurax/webhook)
@@ -1808,10 +1882,7 @@ router.post('/aurax/webhook', async (req, res, next) => {
     }
 
     try {
-      const result = await applyCompletedPayment(orderId, payload, {
-        expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
-        altRefs: allRefs,
-      });
+      const result = await tryApplyAuraxCompletedPayment(orderId, payload, { altRefs: allRefs });
       if (!result) {
         console.warn('[AuraxPay] Payment processing returned null for:', orderId);
         return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
@@ -1980,10 +2051,12 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
   const auraxPollId = String(payRow.gateway_ref || orderId).trim();
   const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
   if (!statusResp.ok) return false;
-  const { isCompleted } = evaluateAuraxOrderStatusForApply(statusData);
+  const { isCompleted, transaction } = evaluateAuraxOrderStatusForApply(statusData);
   if (!isCompleted) return false;
-  const result = await applyCompletedPayment(orderId, statusData.transaction || statusData || {}, {
+  const altRefs = [...new Set([auraxPollId, String(payRow.gateway_ref || '').trim()].filter((r) => r && r !== orderId))];
+  const result = await applyCompletedPayment(orderId, transaction || statusData || {}, {
     expectedPaymentProvider: expectedProvider,
+    altRefs,
   });
   return Boolean(result);
 };
@@ -2016,4 +2089,16 @@ const reconcilePendingSubscriptionPayments = async () => {
 
 module.exports = router;
 module.exports.reconcilePendingSubscriptionPayments = reconcilePendingSubscriptionPayments;
+module.exports.__paymentTestHelpers = {
+  normalizeAuraxStatusPayload,
+  evaluateAuraxOrderStatusForApply,
+  extractAuraxWebhookOrderAndPaid,
+  extractAuraxPaymentStatus,
+  extractSonicWebhookOrderAndPaid,
+  extractSonicPaymentStatus,
+  isAuraxPaidRaw,
+  isSonicPaidRaw,
+  pickPreferredAuraxOrderId,
+  collectAuraxOrderRefs,
+};
 
