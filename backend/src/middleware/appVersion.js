@@ -26,15 +26,19 @@ function compareSemver(a, b) {
  * While that var is absent / false, the middleware only logs — safe to deploy
  * before the new APK reaches all users.
  */
-// Routes that should never be version-checked (admin panel, webhooks).
-// req.path here is relative to the /api/ prefix, e.g. "/admin/...", "/dashboard/..."
-function _isAdminRoute(req) {
+// Routes that should never be version-checked (admin panel, webhooks, provider callbacks).
+// req.path here is relative to the /api/ prefix, e.g. "/admin/...", "/payments/aurax/webhook"
+function _isExemptRoute(req) {
   const p = req.path || '';
   if (p.startsWith('/admin') || p.startsWith('/dashboard') || p.startsWith('/partner')) {
     return true;
   }
   // Remote config bootstrap — must work even on outdated builds.
   if (p.startsWith('/v2/config')) {
+    return true;
+  }
+  // Mobile-money webhooks never send X-App-Version — must not be blocked when enforcement is on.
+  if (p.startsWith('/payments/') && p.includes('/webhook')) {
     return true;
   }
 
@@ -57,8 +61,8 @@ const _upgradeBody = () => ({
 });
 
 function requireAppVersion(req, res, next) {
-  // Always skip admin-panel routes.
-  if (_isAdminRoute(req)) return next();
+  // Always skip admin-panel routes and payment provider webhooks.
+  if (_isExemptRoute(req)) return next();
 
   // Maintenance mode overrides everything — even valid versions get blocked.
   if (config.maintenanceMode) {

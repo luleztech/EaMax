@@ -16,6 +16,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { settingsAPI, paymentsAPI } from '../config/api';
+import { getOrCreateUserId } from '../services/userId';
 import {
   isPaymentSuccessResponse,
   isPaymentStillApplying,
@@ -347,16 +348,27 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       return;
     }
 
+    const canonicalUid = (await getOrCreateUserId())?.trim() || userId;
+    if (!canonicalUid) {
+      showStatusModal(
+        'Tatizo la akaunti',
+        'Hatukuweza kutambua akaunti yako. Jaribu tena baada ya muda mfupi.',
+        false,
+      );
+      return;
+    }
+    setUserId(canonicalUid);
+
     const bundle = bundles.find(b => b.id === selectedBundle);
     try {
       setSubmitting(true);
       const result = await paymentsAPI.startPayment({
-        externalId: userId,
+        externalId: canonicalUid,
         bundle: bundle.id,
         amount: bundle.value,
         phone: cleanPhone,
-        email: `${userId}@eamax.app`,
-        name: userId,
+        email: `${canonicalUid}@eamax.app`,
+        name: canonicalUid,
       });
 
       setPollingOrderId(result.orderId);

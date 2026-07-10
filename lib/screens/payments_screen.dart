@@ -540,6 +540,20 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       return;
     }
 
+    // Resolve canonical user id before charging — avoids premium landing on a different account.
+    final canonicalUid =
+        (await getOrCreateUserId())?.trim() ?? (await ensureLocalUserId());
+    if (canonicalUid.isEmpty) {
+      _showStatus(
+        'Tatizo la akaunti',
+        'Hatukuweza kutambua akaunti yako. Jaribu tena baada ya muda mfupi.',
+        _PayDialogTone.error,
+      );
+      return;
+    }
+    await registerUserInDatabase(id: canonicalUid, maxRetries: 3);
+    if (mounted) setState(() => _userId = canonicalUid);
+
     final bundle = _plans.firstWhere((b) => b.slug == _selectedBundle);
     setState(() => _submitting = true);
     // Let release builds paint “Tunatuma ombi…” before the HTTP work schedules; avoids a dead UI until the waiting modal.
@@ -549,12 +563,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       // Always use the unified backend start endpoint.
       // The backend decides whether to route to Aurax Pay or SonicPesa based on current settings.
       final result = await paymentsApi.startPayment(
-        externalId: _userId!,
+        externalId: canonicalUid,
         bundle: bundle.slug,
         amount: bundle.priceTzs,
         phone: clean,
-        email: '$_userId@eamax.app',
-        name: _userId!,
+        email: '$canonicalUid@eamax.app',
+        name: canonicalUid,
       );
 
       final orderId = (result['orderId']?.toString() ?? '').trim();

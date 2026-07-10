@@ -1511,7 +1511,15 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
             [userId]
           );
           if (updatedUser.rows[0]) {
-            global.realtimeServer.notifyPremiumUpdate(externalId, buildPremiumPayload(updatedUser.rows[0]));
+            const premiumPayload = buildPremiumPayload(updatedUser.rows[0]);
+            global.realtimeServer.notifyPremiumUpdate(externalId, premiumPayload);
+            if (typeof global.realtimeServer.notifyPaymentReceived === 'function') {
+              global.realtimeServer.notifyPaymentReceived(externalId, {
+                provider_ref: payment.provider_ref,
+                amount_cents: payment.amount_cents,
+                status: 'completed',
+              });
+            }
           }
         } catch (err) {
           console.error('[Payment] Failed to send real-time update:', err.message);
@@ -2084,6 +2092,14 @@ const reconcilePendingSubscriptionPayments = async () => {
   if (upgraded > 0) {
     console.log(`[Payment] Background reconcile completed ${upgraded} pending payment(s)`);
   }
+
+  try {
+    const { repairCompletedPaymentsMissingPremium } = require('../services/userEntitlements');
+    await repairCompletedPaymentsMissingPremium();
+  } catch (repairErr) {
+    console.warn('[Payment] Post-reconcile entitlement repair failed:', repairErr?.message || repairErr);
+  }
+
   return upgraded;
 };
 

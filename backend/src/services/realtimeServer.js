@@ -91,6 +91,10 @@ const initializeRealtimeServer = (server) => {
   return {
     broadcast,
     broadcastToUser,
+    notifyPremiumUpdate,
+    notifyPointsUpdate,
+    notifyChannelUnlock,
+    notifyPaymentReceived,
     getConnectedClients: () => clients,
     getClientCount: () => Array.from(clients.values()).reduce((sum, set) => sum + set.size, 0),
   };

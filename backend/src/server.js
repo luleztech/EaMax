@@ -467,6 +467,11 @@ try {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
         }, 5 * 60 * 1000);
+        setInterval(() => {
+          repairCompletedPaymentsMissingPremium().catch((err) => {
+            console.warn('[Entitlements] Scheduled repair failed:', err.message || err);
+          });
+        }, 5 * 60 * 1000);
       }
     } catch (e) {
       console.warn('[Payment] Reconcile scheduler not started:', e.message || e);
