@@ -66,8 +66,8 @@ const apiRequest = async (endpoint, options = {}) => {
         return {};
       }
 
-      // Success with optional JSON body (e.g. 200)
-      if (response.ok && response.status === 200) {
+      // Success with optional JSON body (e.g. 200 / 201 Created)
+      if (response.ok && (response.status === 200 || response.status === 201)) {
         const contentType = (response.headers.get('content-type') || '').toLowerCase();
         if (!contentType.includes('application/json')) {
           return {};

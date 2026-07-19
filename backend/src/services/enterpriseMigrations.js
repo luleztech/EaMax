@@ -7,6 +7,8 @@ const MIGRATION_FILES = [
   '010_enterprise_control_plane.sql',
   '011_add_channel_audio_language.sql',
   '012_player_system_v3.sql',
+  '013_schedule_items.sql',
+  '014_schedule_images_reminders.sql',
 ];
 
 let ran = false;

@@ -483,7 +483,14 @@ const DashboardSection = ({ refreshTrigger }) => {
       showStatusModal('success', 'Ratiba saved', 'Schedule item saved and will show in the app Ratiba tab.');
     } catch (error) {
       console.error('Failed to save schedule item:', error);
-      showStatusModal('error', 'Save failed', 'Failed to save schedule item. Please try again.');
+      const detail = String(error?.message || '').trim();
+      showStatusModal(
+        'error',
+        'Save failed',
+        detail && detail !== 'Failed to save schedule item. Please try again.'
+          ? detail
+          : 'Failed to save schedule item. Please try again.',
+      );
     } finally {
       setSavingMatch(false);
     }

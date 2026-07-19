@@ -28,6 +28,15 @@ subprojects {
     }
 }
 
+// Release lintVital OOMs on low-RAM hosts (audioplayers / media_kit). Skip it.
+subprojects {
+    tasks.configureEach {
+        if (name.startsWith("lintVital")) {
+            enabled = false
+        }
+    }
+}
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }

@@ -19,22 +19,29 @@ CREATE TABLE IF NOT EXISTS schedule_items (
 CREATE INDEX IF NOT EXISTS idx_schedule_items_date_time ON schedule_items (date_time);
 CREATE INDEX IF NOT EXISTS idx_schedule_items_active_date ON schedule_items (active, date_time);
 
--- One-time backfill from legacy football matches (skip if already migrated).
-INSERT INTO schedule_items (
-  date_time, title, subtitle, channel, team1, team2, icon, live, active,
-  gradient_start, gradient_end
-)
-SELECT
-  m.match_time,
-  TRIM(BOTH FROM (m.team1 || ' vs ' || m.team2)),
-  COALESCE(m.league, ''),
-  '',
-  COALESCE(m.team1, ''),
-  COALESCE(m.team2, ''),
-  'sports_soccer_rounded',
-  FALSE,
-  COALESCE(m.is_active, TRUE),
-  'E8002D',
-  '7F1D1D'
-FROM upcoming_matches m
-WHERE NOT EXISTS (SELECT 1 FROM schedule_items LIMIT 1);
+-- One-time backfill from legacy football matches (skip if table missing / already migrated).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'upcoming_matches'
+  ) AND NOT EXISTS (SELECT 1 FROM schedule_items LIMIT 1) THEN
+    INSERT INTO schedule_items (
+      date_time, title, subtitle, channel, team1, team2, icon, live, active,
+      gradient_start, gradient_end
+    )
+    SELECT
+      m.match_time,
+      TRIM(BOTH FROM (m.team1 || ' vs ' || m.team2)),
+      COALESCE(m.league, ''),
+      '',
+      COALESCE(m.team1, ''),
+      COALESCE(m.team2, ''),
+      'sports_soccer_rounded',
+      FALSE,
+      COALESCE(m.is_active, TRUE),
+      'E8002D',
+      '7F1D1D'
+    FROM upcoming_matches m;
+  END IF;
+END $$;
