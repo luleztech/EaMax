@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,6 +7,7 @@ import '../services/ratiba_reminders.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/pro_shimmer.dart';
+import '../widgets/safe_network_image.dart';
 
 /// TV schedule tab — day picker, event artwork, timed live opens, bell reminders.
 class RatibaTab extends StatefulWidget {
@@ -545,22 +545,46 @@ class _RatibaTabState extends State<RatibaTab> {
   }
 
   Widget _thumb(ScheduleItem item, AppThemeColors t) {
-    final url = item.imageUrl;
+    final poster = SafeNetworkImage.sanitize(item.imageUrl);
+    final channelLogo = SafeNetworkImage.sanitize(_resolveChannel(item)?.thumbnailUrl ?? '');
+    final url = poster.isNotEmpty ? poster : channelLogo;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: SizedBox(
-        width: 56,
-        height: 56,
-        child: url.isNotEmpty
-            ? CachedNetworkImage(
+        width: 64,
+        height: 64,
+        child: url.isEmpty
+            ? _iconThumb(item)
+            : SafeNetworkImage(
                 imageUrl: url,
+                width: 64,
+                height: 64,
                 fit: BoxFit.cover,
-                placeholder: (_, __) => Container(
+                placeholderColor: item.gradient.first,
+                placeholder: (_, _) => Container(
                   decoration: BoxDecoration(gradient: LinearGradient(colors: item.gradient)),
                 ),
-                errorWidget: (_, __, ___) => _iconThumb(item),
-              )
-            : _iconThumb(item),
+                errorWidget: (_, _, _) {
+                  // Poster failed (huge CDN file / timeout) → try channel logo, then icon.
+                  if (poster.isNotEmpty &&
+                      channelLogo.isNotEmpty &&
+                      channelLogo != poster) {
+                    return SafeNetworkImage(
+                      imageUrl: channelLogo,
+                      width: 64,
+                      height: 64,
+                      fit: BoxFit.cover,
+                      placeholderColor: item.gradient.first,
+                      errorWidget: (_, _, _) => _iconThumb(item),
+                      placeholder: (_, _) => Container(
+                        decoration: BoxDecoration(gradient: LinearGradient(colors: item.gradient)),
+                      ),
+                    );
+                  }
+                  return _iconThumb(item);
+                },
+              ),
       ),
     );
   }

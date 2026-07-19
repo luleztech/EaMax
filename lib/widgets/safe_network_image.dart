@@ -14,7 +14,18 @@ class SafeNetworkImage extends StatelessWidget {
     this.height,
     this.alignment = Alignment.center,
     this.memCacheWidth,
+    this.memCacheHeight,
+    this.errorWidget,
+    this.placeholder,
+    this.httpHeaders = _browserImageHeaders,
   });
+
+  /// Browser-like headers help CDNs that throttle empty/`Dart` user-agents.
+  static const Map<String, String> _browserImageHeaders = {
+    'User-Agent':
+        'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
 
   final String imageUrl;
   final BoxFit? fit;
@@ -23,6 +34,10 @@ class SafeNetworkImage extends StatelessWidget {
   final double? height;
   final Alignment alignment;
   final int? memCacheWidth;
+  final int? memCacheHeight;
+  final Widget Function(BuildContext, String, Object)? errorWidget;
+  final Widget Function(BuildContext, String)? placeholder;
+  final Map<String, String>? httpHeaders;
 
   static String sanitize(String raw) {
     final u = raw.trim().replaceAll(RegExp(r'[\r\n\t]'), '');
@@ -50,16 +65,26 @@ class SafeNetworkImage extends StatelessWidget {
     final bg = placeholderColor ?? const Color(0xFF18181b);
 
     if (url.isEmpty) {
+      if (errorWidget != null) return errorWidget!(context, url, StateError('empty'));
       if (width != null || height != null) {
         return ColoredBox(color: bg, child: SizedBox(width: width, height: height));
       }
       return SizedBox.expand(child: ColoredBox(color: bg));
     }
 
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final resolvedMemW = memCacheWidth ??
+        (width != null ? (width! * dpr).round().clamp(64, 1080).toInt() : null);
+    final resolvedMemH = memCacheHeight ??
+        (height != null ? (height! * dpr).round().clamp(64, 1080).toInt() : null);
+    // Downscale huge posters (multi‑MB CDN uploads) before disk/decode.
+    final diskW = resolvedMemW == null ? null : (resolvedMemW * 2).clamp(128, 1280).toInt();
+    final diskH = resolvedMemH == null ? null : (resolvedMemH * 2).clamp(128, 1280).toInt();
+
     // Animated GIF: avoid mem-cache resize / fade — keeps animation smooth in carousels.
     if (isLikelyAnimatedGifUrl(url)) {
       return Image(
-        image: CachedNetworkImageProvider(url),
+        image: CachedNetworkImageProvider(url, headers: httpHeaders),
         fit: fit,
         width: width,
         height: height,
@@ -68,9 +93,10 @@ class SafeNetworkImage extends StatelessWidget {
         filterQuality: FilterQuality.medium,
         loadingBuilder: (context, child, progress) {
           if (progress == null) return child;
-          return _placeholder(bg);
+          return placeholder?.call(context, url) ?? _placeholder(bg);
         },
-        errorBuilder: (_, __, ___) => _error(bg),
+        errorBuilder: (context, error, _) =>
+            errorWidget?.call(context, url, error) ?? _error(bg),
       );
     }
 
@@ -80,9 +106,13 @@ class SafeNetworkImage extends StatelessWidget {
       width: width,
       height: height,
       alignment: alignment,
-      memCacheWidth: memCacheWidth,
-      placeholder: (_, __) => _placeholder(bg),
-      errorWidget: (_, __, ___) => _error(bg),
+      memCacheWidth: resolvedMemW,
+      memCacheHeight: resolvedMemH,
+      maxWidthDiskCache: diskW,
+      maxHeightDiskCache: diskH,
+      httpHeaders: httpHeaders,
+      placeholder: (context, u) => placeholder?.call(context, u) ?? _placeholder(bg),
+      errorWidget: (context, u, err) => errorWidget?.call(context, u, err) ?? _error(bg),
       fadeInDuration: const Duration(milliseconds: 200),
       fadeOutDuration: Duration.zero,
     );
