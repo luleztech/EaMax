@@ -45,6 +45,8 @@ enum _PaymentUiPhase {
   /// User must read “check your phone” before we start polling + countdown.
   instruction,
   waiting,
+  /// Confirmed paid + premium unlocked — celebrate on the waiting modal.
+  success,
   timedOut,
   failed,
 }
@@ -180,9 +182,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
         if (isPaymentSuccessResponse(res)) {
           await _markPaymentCompleted(
-            title: 'Hongera — malipo yamehakikiwa',
-            message:
-                'Malipo yaliyokuwa yanasubiri yamekamilika. Akaunti yako inasasishwa kwa Premium.',
             userPayload: userPayloadFromPaymentResponse(res),
           );
         } else if (isPaymentTerminalFailure(st)) {
@@ -269,9 +268,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         }
         if (isPaymentSuccessResponse(response)) {
           await _markPaymentCompleted(
-            title: 'Hongera — malipo yamehakikiwa',
-            message:
-                'Malipo yako yamekamilika kwa uhakika. Akaunti yako inasasishwa; channel zote zitafunguliwa.',
             userPayload: userPayloadFromPaymentResponse(response),
           );
           return;
@@ -461,8 +457,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   }
 
   Future<void> _markPaymentCompleted({
-    required String title,
-    required String message,
     Map<String, dynamic>? userPayload,
   }) async {
     _pollTimer?.cancel();
@@ -475,15 +469,13 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     if (!mounted) return;
 
+    // Stay on the waiting modal (spinner) while we unlock — never celebrate early.
     setState(() {
-      _pollingOrderId = null;
       _notFoundStreak = 0;
-      _paymentUiPhase = _PaymentUiPhase.none;
       _sessionEndDetail = null;
-      _pendingBundleLabel = null;
     });
 
-    // Refresh premium + unlock channels before showing success dialog.
+    // Refresh premium + unlock channels before celebrating.
     var unlocked = false;
     try {
       unlocked = await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;
@@ -491,8 +483,15 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       debugPrint('[PaymentsScreen] onPaymentSuccess failed: $e');
     }
 
+    if (!mounted) return;
+
     if (!unlocked) {
-      // Keep pending order so the background watcher can finish unlocking.
+      // Payment may be paid but entitlements not active yet — do NOT show green tick.
+      setState(() {
+        _pollingOrderId = null;
+        _paymentUiPhase = _PaymentUiPhase.none;
+        _pendingBundleLabel = null;
+      });
       if (orderId != null && orderId.isNotEmpty) {
         await prefs.setString('pendingPaymentOrderId', orderId);
       }
@@ -505,7 +504,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     }
 
     await prefs.remove('pendingPaymentOrderId');
-    _showStatus(title, message, _PayDialogTone.success);
+    // Only here: gateway success helpers already verified + local premium is active.
+    setState(() {
+      _pollingOrderId = null;
+      _pendingBundleLabel = null;
+      _paymentUiPhase = _PaymentUiPhase.success;
+    });
+  }
+
+  void _dismissPaymentSuccess() {
+    if (!mounted) return;
+    setState(() => _paymentUiPhase = _PaymentUiPhase.none);
   }
 
   Future<void> _openWhatsApp() async {
@@ -639,11 +648,19 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     setState(() => _simulating = true);
     try {
       await paymentsApi.completePaymentForTesting(id);
-      await _markPaymentCompleted(
-        title: 'Hongera — malipo yamehakikiwa',
-        message:
-            'Malipo yamefaulu (jaribio la maendelezi). Akaunti yako inasasishwa kwa Premium.',
-      );
+      // Same gate as live polling — never celebrate on “prompt completed” alone.
+      final res = await paymentsApi.checkPaymentStatus(id);
+      if (isPaymentSuccessResponse(res)) {
+        await _markPaymentCompleted(
+          userPayload: userPayloadFromPaymentResponse(res),
+        );
+      } else {
+        _showStatus(
+          'Bado inathibitishwa',
+          'Jaribio limetumwa. Subiri sekunde chache hadi Premium ithibitishwe.',
+          _PayDialogTone.info,
+        );
+      }
     } catch (e) {
       _showStatus('Tatizo', _mapPaymentError(e), _PayDialogTone.error);
     } finally {
@@ -1120,6 +1137,16 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
               child: _PaymentWaitingModal(
                 secondsRemaining: _waitingSeconds,
                 totalSeconds: _kPaymentWaitSeconds,
+              ),
+            ),
+          ],
+          if (_paymentUiPhase == _PaymentUiPhase.success) ...[
+            Positioned.fill(
+              child: _PaymentWaitingModal(
+                secondsRemaining: 0,
+                totalSeconds: _kPaymentWaitSeconds,
+                succeeded: true,
+                onDismiss: _dismissPaymentSuccess,
               ),
             ),
           ],
@@ -1637,13 +1664,125 @@ class _PaymentWaitingModal extends StatelessWidget {
   const _PaymentWaitingModal({
     required this.secondsRemaining,
     required this.totalSeconds,
+    this.succeeded = false,
+    this.onDismiss,
   });
 
   final int secondsRemaining;
   final int totalSeconds;
+  final bool succeeded;
+  final VoidCallback? onDismiss;
 
   @override
   Widget build(BuildContext context) {
+    if (succeeded) {
+      return _buildSuccess();
+    }
+    return _buildWaiting();
+  }
+
+  Widget _buildSuccess() {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.76),
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxWidth: 380),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(26),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF141B2D), Color(0xFF0B1120)],
+                ),
+                border: Border.all(color: const Color(0xFF22C55E).withValues(alpha: 0.45)),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF22C55E).withValues(alpha: 0.18),
+                    blurRadius: 36,
+                    offset: const Offset(0, 14),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(26),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 88,
+                    height: 88,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF22C55E).withValues(alpha: 0.14),
+                      border: Border.all(color: const Color(0xFF22C55E), width: 3),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF22C55E).withValues(alpha: 0.28),
+                          blurRadius: 24,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.check_rounded,
+                      size: 52,
+                      color: Color(0xFF22C55E),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  const Text(
+                    'Hongera sasa channeli zote zimefunguliwa',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      height: 1.3,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14.5,
+                      height: 1.5,
+                      color: Colors.white.withValues(alpha: 0.78),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onDismiss,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF22C55E),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        elevation: 0,
+                      ),
+                      child: const Text(
+                        'Sawa',
+                        style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWaiting() {
     final total = totalSeconds <= 0 ? 1 : totalSeconds;
     final countdownText =
         'Tunasubiri uthibitisho: $secondsRemaining / $total sekunde';

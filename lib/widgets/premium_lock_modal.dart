@@ -1000,14 +1000,16 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
               child: Column(
                 children: [
                   Text(
-                    _paymentSuccess ? 'Malipo Yamefanikiwa!' : 'Tunasubiri uthibitisho',
+                    _paymentSuccess
+                        ? 'Hongera sasa channeli zote zimefunguliwa'
+                        : 'Tunasubiri uthibitisho',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPrimary),
                   ),
                   const SizedBox(height: 8),
                   Text(
                     _paymentSuccess
-                        ? 'Chaneli zote zimefunguliwa. Karibu ufurahie Premium.'
+                        ? 'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.'
                         : _pendingPlanLabel == null
                             ? 'Malipo yako yanashughulikiwa…'
                             : 'Kifurushi: $_pendingPlanLabel\nTunangoja uthibitisho wa malipo yako.',
