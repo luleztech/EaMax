@@ -107,3 +107,6 @@ migrate_working_dir/
 
 # Duplicate Flutter tree sometimes created under project root by mistake (older copy).
 /EaMax/
+
+# Voice processing backups
+assets/voices/.bak_*

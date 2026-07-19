@@ -1317,6 +1317,289 @@ router.delete('/matches/:id', async (req, res, next) => {
   }
 });
 
+const scheduleHex = z
+  .string()
+  .regex(/^[0-9A-Fa-f]{6}$/)
+  .optional();
+
+const normalizeScheduleHex = (value, fallback) => {
+  const raw = String(value || fallback || '1D4A82').replace(/^#/, '').toUpperCase();
+  return /^[0-9A-F]{6}$/.test(raw) ? raw : fallback;
+};
+
+const serializeAdminSchedule = (row) => {
+  const start = normalizeScheduleHex(row.gradient_start, '1D4A82');
+  const end = normalizeScheduleHex(row.gradient_end, '2C6DB5');
+  const dt = row.date_time instanceof Date ? row.date_time : new Date(row.date_time);
+  const channelId = row.channel_id != null ? Number(row.channel_id) : null;
+  return {
+    id: row.id,
+    dateTime: dt.toISOString(),
+    title: row.title || '',
+    subtitle: row.subtitle || '',
+    channel: row.channel || '',
+    channelId: Number.isFinite(channelId) ? channelId : null,
+    channel_id: Number.isFinite(channelId) ? channelId : null,
+    imageUrl: row.image_url || '',
+    image_url: row.image_url || '',
+    team1: row.team1 || '',
+    team2: row.team2 || '',
+    icon: row.icon || 'live_tv_rounded',
+    live: row.live === true,
+    active: row.active !== false,
+    gradient: [`#${start}`, `#${end}`],
+    gradientStart: start,
+    gradientEnd: end,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+};
+
+// Admin: list schedule items (Ratiba)
+router.get('/schedule', async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT * FROM schedule_items ORDER BY date_time ASC NULLS LAST, id ASC`,
+    );
+    return res.json(result.rows.map(serializeAdminSchedule));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: create schedule item
+router.post('/schedule', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      dateTime: z.string().min(1),
+      title: z.string().min(1),
+      subtitle: z.string().optional().default(''),
+      channel: z.string().optional().default(''),
+      channelId: z.number().int().positive().nullable().optional(),
+      channel_id: z.number().int().positive().nullable().optional(),
+      imageUrl: z.string().optional().default(''),
+      image_url: z.string().optional().default(''),
+      team1: z.string().optional().default(''),
+      team2: z.string().optional().default(''),
+      icon: z.string().optional().default('live_tv_rounded'),
+      live: z.boolean().optional().default(false),
+      active: z.boolean().optional().default(true),
+      gradientStart: scheduleHex,
+      gradientEnd: scheduleHex,
+      gradient: z.array(z.string()).optional(),
+    });
+
+    const data = bodySchema.parse(req.body);
+    let start = data.gradientStart;
+    let end = data.gradientEnd;
+    if ((!start || !end) && Array.isArray(data.gradient) && data.gradient.length >= 2) {
+      start = String(data.gradient[0] || '').replace(/^#/, '');
+      end = String(data.gradient[1] || '').replace(/^#/, '');
+    }
+    start = normalizeScheduleHex(start, '1D4A82');
+    end = normalizeScheduleHex(end, '2C6DB5');
+
+    const isMatch = Boolean(data.team1?.trim() && data.team2?.trim());
+    const title = data.title.trim() || (isMatch ? `${data.team1.trim()} vs ${data.team2.trim()}` : '');
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+
+    const icon =
+      data.icon ||
+      (isMatch ? 'sports_soccer_rounded' : 'live_tv_rounded');
+    const channelId = data.channelId ?? data.channel_id ?? null;
+    const imageUrl = String(data.imageUrl || data.image_url || '').trim();
+
+    const result = await query(
+      `INSERT INTO schedule_items
+         (date_time, title, subtitle, channel, channel_id, image_url, team1, team2, icon, live, active,
+          gradient_start, gradient_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING *`,
+      [
+        data.dateTime,
+        title,
+        data.subtitle || '',
+        data.channel || '',
+        channelId,
+        imageUrl,
+        data.team1 || '',
+        data.team2 || '',
+        icon,
+        data.live,
+        data.active,
+        start,
+        end,
+      ],
+    );
+
+    return res.status(201).json(serializeAdminSchedule(result.rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: update schedule item
+router.put('/schedule/:id', async (req, res, next) => {
+  try {
+    const paramsSchema = z.object({ id: z.string().regex(/^\d+$/) });
+    const bodySchema = z.object({
+      dateTime: z.string().optional(),
+      title: z.string().optional(),
+      subtitle: z.string().optional(),
+      channel: z.string().optional(),
+      channelId: z.number().int().positive().nullable().optional(),
+      channel_id: z.number().int().positive().nullable().optional(),
+      imageUrl: z.string().optional(),
+      image_url: z.string().optional(),
+      team1: z.string().optional(),
+      team2: z.string().optional(),
+      icon: z.string().optional(),
+      live: z.boolean().optional(),
+      active: z.boolean().optional(),
+      gradientStart: scheduleHex,
+      gradientEnd: scheduleHex,
+      gradient: z.array(z.string()).optional(),
+    });
+
+    const { id } = paramsSchema.parse(req.params);
+    const data = bodySchema.parse(req.body || {});
+
+    const existing = await query('SELECT * FROM schedule_items WHERE id = $1', [Number(id)]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Schedule item not found' });
+    }
+
+    const row = existing.rows[0];
+    let start = data.gradientStart;
+    let end = data.gradientEnd;
+    if ((!start || !end) && Array.isArray(data.gradient) && data.gradient.length >= 2) {
+      start = String(data.gradient[0] || '').replace(/^#/, '');
+      end = String(data.gradient[1] || '').replace(/^#/, '');
+    }
+
+    const channelId =
+      data.channelId !== undefined || data.channel_id !== undefined
+        ? (data.channelId ?? data.channel_id)
+        : row.channel_id;
+    const imageUrl =
+      data.imageUrl !== undefined || data.image_url !== undefined
+        ? String(data.imageUrl ?? data.image_url ?? '').trim()
+        : (row.image_url || '');
+
+    const next = {
+      date_time: data.dateTime ?? row.date_time,
+      title: data.title !== undefined ? data.title : row.title,
+      subtitle: data.subtitle !== undefined ? data.subtitle : row.subtitle,
+      channel: data.channel !== undefined ? data.channel : row.channel,
+      channel_id: channelId,
+      image_url: imageUrl,
+      team1: data.team1 !== undefined ? data.team1 : row.team1,
+      team2: data.team2 !== undefined ? data.team2 : row.team2,
+      icon: data.icon !== undefined ? data.icon : row.icon,
+      live: data.live !== undefined ? data.live : row.live,
+      active: data.active !== undefined ? data.active : row.active,
+      gradient_start: normalizeScheduleHex(start, row.gradient_start || '1D4A82'),
+      gradient_end: normalizeScheduleHex(end, row.gradient_end || '2C6DB5'),
+    };
+
+    const updated = await query(
+      `UPDATE schedule_items
+          SET date_time = $1,
+              title = $2,
+              subtitle = $3,
+              channel = $4,
+              channel_id = $5,
+              image_url = $6,
+              team1 = $7,
+              team2 = $8,
+              icon = $9,
+              live = $10,
+              active = $11,
+              gradient_start = $12,
+              gradient_end = $13,
+              updated_at = now()
+        WHERE id = $14
+        RETURNING *`,
+      [
+        next.date_time,
+        next.title,
+        next.subtitle,
+        next.channel,
+        next.channel_id,
+        next.image_url,
+        next.team1,
+        next.team2,
+        next.icon,
+        next.live,
+        next.active,
+        next.gradient_start,
+        next.gradient_end,
+        Number(id),
+      ],
+    );
+
+    return res.json(serializeAdminSchedule(updated.rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: toggle live
+router.patch('/schedule/:id/live', async (req, res, next) => {
+  try {
+    const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+    const updated = await query(
+      `UPDATE schedule_items
+          SET live = NOT live, updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [Number(id)],
+    );
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'Schedule item not found' });
+    }
+    return res.json(serializeAdminSchedule(updated.rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: toggle active
+router.patch('/schedule/:id/active', async (req, res, next) => {
+  try {
+    const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+    const updated = await query(
+      `UPDATE schedule_items
+          SET active = NOT active, updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [Number(id)],
+    );
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'Schedule item not found' });
+    }
+    return res.json(serializeAdminSchedule(updated.rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Admin: delete schedule item
+router.delete('/schedule/:id', async (req, res, next) => {
+  try {
+    const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+    const result = await query('DELETE FROM schedule_items WHERE id = $1', [Number(id)]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Schedule item not found' });
+    }
+    return res.status(204).send();
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: create notification
 router.post('/notifications', async (req, res, next) => {
   try {

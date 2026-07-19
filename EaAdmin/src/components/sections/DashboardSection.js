@@ -22,10 +22,27 @@ import {
   adminChannelsAPI,
   adminNotificationsAPI,
   adminCarouselAPI,
-  adminMatchesAPI,
+  adminScheduleAPI,
 } from '../../config/api';
 
 const KPI_COUNT = 3;
+
+/** Tanzania wall-clock as Z ISO (numbers travel as entered — Leotena convention). */
+const tzIsoString = (localInput) => {
+  const m = String(localInput || '').match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00.000Z`;
+  const d = new Date(localInput);
+  if (Number.isNaN(d.getTime())) return new Date().toISOString();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:00.000Z`;
+};
+
+const eatWallClockInput = (iso) => {
+  if (!iso) return '';
+  const s = String(iso);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return s.slice(0, 16);
+  return '';
+};
 
 const formatTsh = (n) => {
   const v = Math.round(Number(n) || 0);
@@ -78,16 +95,23 @@ const DashboardSection = ({ refreshTrigger }) => {
   const [moviesCarouselSlides, setMoviesCarouselSlides] = useState([]);
   const [carouselTab, setCarouselTab] = useState('football');
   const [upcomingMatches, setUpcomingMatches] = useState([]);
+  const [channelOptions, setChannelOptions] = useState([]);
   const [slideModalVisible, setSlideModalVisible] = useState(false);
   const [slideCategory, setSlideCategory] = useState('football'); // Track which carousel we're editing
   const [editingSlide, setEditingSlide] = useState(null);
   const [matchModalVisible, setMatchModalVisible] = useState(false);
   const [editingMatch, setEditingMatch] = useState(null);
+  const [scheduleIsMatch, setScheduleIsMatch] = useState(true);
+  const [matchTitle, setMatchTitle] = useState('');
   const [matchLeague, setMatchLeague] = useState('');
   const [matchTeam1, setMatchTeam1] = useState('');
   const [matchTeam2, setMatchTeam2] = useState('');
+  const [matchChannel, setMatchChannel] = useState('');
+  const [matchChannelId, setMatchChannelId] = useState(null);
+  const [matchImageUrl, setMatchImageUrl] = useState('');
   const [matchTime, setMatchTime] = useState('');
-  const [matchPoints, setMatchPoints] = useState('15');
+  const [matchLive, setMatchLive] = useState(false);
+  const [matchActive, setMatchActive] = useState(true);
   const [savingMatch, setSavingMatch] = useState(false);
   const [slideTitle, setSlideTitle] = useState('');
   const [slideSubtitle, setSlideSubtitle] = useState('');
@@ -175,18 +199,25 @@ const DashboardSection = ({ refreshTrigger }) => {
     }
   };
 
-  // Fetch top channels, recent notifications, carousels, and matches
+  // Fetch top channels, recent notifications, carousels, and schedule
   const fetchExtraData = async () => {
     try {
-      const [channels, notifications, footballSlides, moviesSlides, matches, txRes] =
+      const [channels, notifications, footballSlides, moviesSlides, schedule, txRes] =
         await Promise.all([
           adminChannelsAPI.getChannels(),
           adminNotificationsAPI.getNotifications(100),
           adminCarouselAPI.getSlides('football'),
           adminCarouselAPI.getSlides('movies'),
-          adminMatchesAPI.getMatches(),
+          adminScheduleAPI.getSchedule().catch(() => []),
           dashboardAPI.getTransactions(40).catch(() => ({ transactions: [], summary: null })),
         ]);
+
+      setChannelOptions(
+        (channels || [])
+          .filter((ch) => ch.is_active !== false)
+          .map((ch) => ({ id: ch.id, name: ch.name }))
+          .filter((ch) => ch.name),
+      );
 
       const top = channels
         .filter((ch) => ch.is_active)
@@ -268,7 +299,10 @@ const DashboardSection = ({ refreshTrigger }) => {
 
       setFootballCarouselSlides(mapSlides(footballSlides));
       setMoviesCarouselSlides(mapSlides(moviesSlides));
-      setUpcomingMatches((matches || []).filter((m) => m.is_active).slice(0, 10));
+      const sortedSchedule = (schedule || [])
+        .slice()
+        .sort((a, b) => String(a.dateTime || '').localeCompare(String(b.dateTime || '')));
+      setUpcomingMatches(sortedSchedule.slice(0, 20));
     } catch (error) {
       console.error('Failed to fetch extra dashboard data:', error);
     }
@@ -366,54 +400,90 @@ const DashboardSection = ({ refreshTrigger }) => {
 
   const openNewMatchModal = () => {
     setEditingMatch(null);
+    setScheduleIsMatch(true);
+    setMatchTitle('');
     setMatchLeague('');
     setMatchTeam1('');
     setMatchTeam2('');
+    setMatchChannel(channelOptions[0]?.name || '');
+    setMatchChannelId(channelOptions[0]?.id ?? null);
+    setMatchImageUrl('');
     setMatchTime('');
-    setMatchPoints('15');
+    setMatchLive(false);
+    setMatchActive(true);
     setMatchModalVisible(true);
   };
 
-  const openEditMatchModal = (match) => {
-    setEditingMatch(match);
-    setMatchLeague(match.league || '');
-    setMatchTeam1(match.team1 || '');
-    setMatchTeam2(match.team2 || '');
-    const matchTimeDate = match.match_time
-      ? new Date(match.match_time).toISOString().slice(0, 16)
-      : '';
-    setMatchTime(matchTimeDate);
-    setMatchPoints(String(match.points_required || 15));
+  const openEditMatchModal = (item) => {
+    setEditingMatch(item);
+    const isMatch = Boolean(item.team1 && item.team2);
+    setScheduleIsMatch(isMatch);
+    setMatchTitle(item.title || '');
+    setMatchLeague(item.subtitle || '');
+    setMatchTeam1(item.team1 || '');
+    setMatchTeam2(item.team2 || '');
+    const cid = item.channelId ?? item.channel_id ?? null;
+    const byId = channelOptions.find((c) => c.id === cid);
+    const byName = channelOptions.find((c) => c.name === item.channel);
+    setMatchChannelId(byId?.id ?? byName?.id ?? cid);
+    setMatchChannel(byId?.name || byName?.name || item.channel || '');
+    setMatchImageUrl(item.imageUrl || item.image_url || '');
+    setMatchTime(eatWallClockInput(item.dateTime));
+    setMatchLive(!!item.live);
+    setMatchActive(item.active !== false);
     setMatchModalVisible(true);
   };
 
   const handleSaveMatch = async () => {
-    if (!matchLeague.trim() || !matchTeam1.trim() || !matchTeam2.trim() || !matchTime.trim()) {
-      showStatusModal('error', 'Missing fields', 'Please fill all match fields.');
+    if (!matchTime.trim()) {
+      showStatusModal('error', 'Missing fields', 'Please set date & time (EAT).');
+      return;
+    }
+    if (scheduleIsMatch) {
+      if (!matchTeam1.trim() || !matchTeam2.trim()) {
+        showStatusModal('error', 'Missing fields', 'Please enter both teams.');
+        return;
+      }
+    } else if (!matchTitle.trim()) {
+      showStatusModal('error', 'Missing fields', 'Please enter a programme title.');
+      return;
+    }
+    if (!matchChannelId && !matchChannel.trim()) {
+      showStatusModal('error', 'Channel required', 'Select the channel that will go LIVE for this event.');
       return;
     }
 
+    const title = scheduleIsMatch
+      ? `${matchTeam1.trim()} vs ${matchTeam2.trim()}`
+      : matchTitle.trim();
     const payload = {
-      league: matchLeague.trim(),
-      team1: matchTeam1.trim(),
-      team2: matchTeam2.trim(),
-      matchTime: new Date(matchTime).toISOString(),
-      pointsRequired: parseInt(matchPoints || '15', 10),
+      dateTime: tzIsoString(matchTime.trim()),
+      title,
+      subtitle: matchLeague.trim(),
+      channel: matchChannel.trim(),
+      channelId: matchChannelId ? Number(matchChannelId) : null,
+      imageUrl: matchImageUrl.trim(),
+      team1: scheduleIsMatch ? matchTeam1.trim() : '',
+      team2: scheduleIsMatch ? matchTeam2.trim() : '',
+      icon: scheduleIsMatch ? 'sports_soccer_rounded' : 'live_tv_rounded',
+      live: !!matchLive,
+      active: !!matchActive,
+      gradient: scheduleIsMatch ? ['#E8002D', '#7F1D1D'] : ['#1D4A82', '#2C6DB5'],
     };
 
     try {
       setSavingMatch(true);
       if (editingMatch?.id) {
-        await adminMatchesAPI.updateMatch(editingMatch.id, payload);
+        await adminScheduleAPI.updateItem(editingMatch.id, payload);
       } else {
-        await adminMatchesAPI.createMatch(payload);
+        await adminScheduleAPI.createItem(payload);
       }
       await fetchExtraData();
       setMatchModalVisible(false);
-      showStatusModal('success', 'Match saved', 'Upcoming match saved successfully.');
+      showStatusModal('success', 'Ratiba saved', 'Schedule item saved and will show in the app Ratiba tab.');
     } catch (error) {
-      console.error('Failed to save match:', error);
-      showStatusModal('error', 'Save failed', 'Failed to save match. Please try again.');
+      console.error('Failed to save schedule item:', error);
+      showStatusModal('error', 'Save failed', 'Failed to save schedule item. Please try again.');
     } finally {
       setSavingMatch(false);
     }
@@ -422,14 +492,24 @@ const DashboardSection = ({ refreshTrigger }) => {
   const handleDeleteMatch = async (matchId) => {
     try {
       setSavingMatch(true);
-      await adminMatchesAPI.deleteMatch(matchId);
+      await adminScheduleAPI.deleteItem(matchId);
       await fetchExtraData();
-      showStatusModal('success', 'Match deleted', 'Upcoming match deleted successfully.');
+      showStatusModal('success', 'Deleted', 'Schedule item deleted successfully.');
     } catch (error) {
-      console.error('Failed to delete match:', error);
-      showStatusModal('error', 'Delete failed', 'Failed to delete match. Please try again.');
+      console.error('Failed to delete schedule item:', error);
+      showStatusModal('error', 'Delete failed', 'Failed to delete schedule item. Please try again.');
     } finally {
       setSavingMatch(false);
+    }
+  };
+
+  const handleToggleScheduleActive = async (item) => {
+    try {
+      await adminScheduleAPI.toggleActive(item.id);
+      await fetchExtraData();
+    } catch (error) {
+      console.error('Failed to toggle schedule active:', error);
+      showStatusModal('error', 'Update failed', 'Could not update active status.');
     }
   };
 
@@ -722,7 +802,7 @@ const DashboardSection = ({ refreshTrigger }) => {
         </LinearGradient>
       </View>
 
-      {/* Upcoming Matches */}
+      {/* Upcoming schedule (Ratiba) */}
       <View style={styles.chartCard}>
         <View style={styles.carouselHeader}>
           <View style={styles.carouselTitleRow}>
@@ -735,44 +815,72 @@ const DashboardSection = ({ refreshTrigger }) => {
             activeOpacity={0.8}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <AntDesign name="plus" size={16} color="#fff" />
-            <Text style={styles.carouselAddButtonText}>Add Match</Text>
+            <Text style={styles.carouselAddButtonText}>Ongeza</Text>
           </TouchableOpacity>
         </View>
         {upcomingMatches.length === 0 ? (
           <Text style={styles.emptyCarouselText}>
-            No upcoming matches yet. Tap "Add Match" to create your first one.
+            Hakuna vipindi. Tap "Ongeza" to add a programme or match (shows in app Ratiba tab).
           </Text>
         ) : (
           <View style={styles.matchesList}>
-            {upcomingMatches.map((match) => {
-              const matchDate = new Date(match.match_time);
-              const timeStr = matchDate.toLocaleString('sw-TZ', {
-                day: '2-digit',
-                month: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              });
+            {upcomingMatches.map((item) => {
+              const isMatch = Boolean(item.team1 && item.team2);
+              const timeStr = item.dateTime
+                ? String(item.dateTime).replace('T', ' ').slice(0, 16)
+                : '';
+              const img = item.imageUrl || item.image_url || '';
+              const subtitleParts = [
+                isMatch ? 'MECHI' : 'KIPINDI',
+                item.channel,
+                item.subtitle,
+                timeStr,
+              ].filter(Boolean);
               return (
-                <View key={match.id} style={styles.matchItem}>
-                  <View style={styles.matchContent}>
-                    <Text style={styles.matchLeague}>{match.league}</Text>
-                    <Text style={styles.matchTeams}>
-                      {match.team1} vs {match.team2}
-                    </Text>
-                    <Text style={styles.matchTime}>{timeStr}</Text>
-                    <Text style={styles.matchPoints}>{match.points_required} points</Text>
+                <View key={item.id} style={[styles.matchItem, item.active === false && { opacity: 0.55 }]}>
+                  {img ? (
+                    <ImageBackground
+                      source={{ uri: img }}
+                      style={styles.ratibaThumb}
+                      imageStyle={{ borderRadius: 12 }}>
+                      <View style={styles.ratibaThumbOverlay} />
+                    </ImageBackground>
+                  ) : (
+                    <LinearGradient
+                      colors={item.gradient || ['#1D4A82', '#2C6DB5']}
+                      style={styles.ratibaThumb}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}>
+                      <Icon name={isMatch ? 'soccer' : 'television-play'} size={22} color="#fff" />
+                    </LinearGradient>
+                  )}
+                  <View style={[styles.matchContent, { flex: 1 }]}>
+                    <Text style={styles.matchLeague}>{subtitleParts.join(' · ')}</Text>
+                    <Text style={styles.matchTeams}>{item.title}</Text>
+                    {item.live ? <Text style={styles.matchPoints}>LIVE</Text> : null}
                   </View>
                   <View style={styles.matchActions}>
                     <TouchableOpacity
                       style={styles.matchEditButton}
-                      onPress={() => openEditMatchModal(match)}
+                      onPress={() => handleToggleScheduleActive(item)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <Icon
+                        name={item.active === false ? 'eye-off-outline' : 'eye-outline'}
+                        size={16}
+                        color={item.active === false ? '#9ca3af' : '#34d399'}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.matchEditButton}
+                      onPress={() => openEditMatchModal(item)}
                       activeOpacity={0.7}
                       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                       <Icon name="pencil" size={16} color="#3b82f6" />
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.matchDeleteButton}
-                      onPress={() => handleDeleteMatch(match.id)}
+                      onPress={() => handleDeleteMatch(item.id)}
                       activeOpacity={0.7}
                       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                       <Icon name="delete" size={16} color="#ef4444" />
@@ -1170,7 +1278,7 @@ const DashboardSection = ({ refreshTrigger }) => {
           </View>
         </View>
       </Modal>
-      {/* Match Modal */}
+      {/* Schedule / Ratiba Modal */}
       <Modal
         visible={matchModalVisible}
         animationType="slide"
@@ -1181,11 +1289,11 @@ const DashboardSection = ({ refreshTrigger }) => {
             <View style={styles.modalHeader}>
               <View style={styles.modalHeaderLeft}>
                 <View style={styles.modalHeaderIconWrap}>
-                  <Icon name="soccer" size={22} color="#a78bfa" />
+                  <Icon name="calendar-clock" size={22} color="#a78bfa" />
                 </View>
                 <View>
                   <Text style={styles.modalTitle}>
-                    {editingMatch ? 'Edit match' : 'Add upcoming match'}
+                    {editingMatch ? 'Hariri kipindi' : 'Kipindi kipya'}
                   </Text>
                 </View>
               </View>
@@ -1198,48 +1306,145 @@ const DashboardSection = ({ refreshTrigger }) => {
             </View>
             <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
               <View style={styles.formCard}>
-                <Text style={styles.formCardTitle}>Match details</Text>
-                <Text style={styles.inputLabel}>League *</Text>
+                <Text style={styles.formCardTitle}>Aina</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.carouselAddButton,
+                      { flex: 1, justifyContent: 'center', backgroundColor: !scheduleIsMatch ? '#3b82f6' : '#374151' },
+                    ]}
+                    onPress={() => setScheduleIsMatch(false)}>
+                    <Text style={styles.carouselAddButtonText}>Kipindi / Filamu</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.carouselAddButton,
+                      { flex: 1, justifyContent: 'center', backgroundColor: scheduleIsMatch ? '#3b82f6' : '#374151' },
+                    ]}
+                    onPress={() => setScheduleIsMatch(true)}>
+                    <Text style={styles.carouselAddButtonText}>Mechi</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {scheduleIsMatch ? (
+                  <>
+                    <Text style={styles.inputLabel}>Timu ya 1 *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. Simba"
+                      placeholderTextColor="#6b7280"
+                      value={matchTeam1}
+                      onChangeText={setMatchTeam1}
+                    />
+                    <Text style={styles.inputLabel}>Timu ya 2 *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. Yanga"
+                      placeholderTextColor="#6b7280"
+                      value={matchTeam2}
+                      onChangeText={setMatchTeam2}
+                    />
+                    <Text style={styles.inputLabel}>Ligi / Maelezo</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. Ligi Kuu"
+                      placeholderTextColor="#6b7280"
+                      value={matchLeague}
+                      onChangeText={setMatchLeague}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.inputLabel}>Kichwa *</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. Habari za Jioni"
+                      placeholderTextColor="#6b7280"
+                      value={matchTitle}
+                      onChangeText={setMatchTitle}
+                    />
+                    <Text style={styles.inputLabel}>Maelezo</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Maelezo mafupi"
+                      placeholderTextColor="#6b7280"
+                      value={matchLeague}
+                      onChangeText={setMatchLeague}
+                    />
+                  </>
+                )}
+
+                <Text style={styles.inputLabel}>Kituo litakalo LIVE *</Text>
+                {channelOptions.length === 0 ? (
+                  <Text style={[styles.emptyCarouselText, { marginBottom: 10 }]}>
+                    Hakuna vituo — ongeza channel kwanza.
+                  </Text>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {channelOptions.map((ch) => {
+                      const selected = matchChannelId === ch.id || matchChannel === ch.name;
+                      return (
+                        <TouchableOpacity
+                          key={ch.id}
+                          onPress={() => {
+                            setMatchChannelId(ch.id);
+                            setMatchChannel(ch.name);
+                          }}
+                          style={{
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                            borderRadius: 10,
+                            backgroundColor: selected ? '#3b82f6' : '#374151',
+                          }}>
+                          <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>{ch.name}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
+                <Text style={styles.inputLabel}>Picha ya event (URL)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. Premier League"
+                  placeholder="https://…/event-poster.jpg"
                   placeholderTextColor="#6b7280"
-                  value={matchLeague}
-                  onChangeText={setMatchLeague}
+                  value={matchImageUrl}
+                  onChangeText={setMatchImageUrl}
+                  autoCapitalize="none"
                 />
-                <Text style={styles.inputLabel}>Team 1 *</Text>
+                {!!matchImageUrl.trim() && (
+                  <ImageBackground
+                    source={{ uri: matchImageUrl.trim() }}
+                    style={{ height: 120, borderRadius: 14, marginBottom: 12, overflow: 'hidden' }}
+                    imageStyle={{ borderRadius: 14 }}>
+                    <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' }} />
+                  </ImageBackground>
+                )}
+
+                <Text style={styles.inputLabel}>Tarehe & saa (EAT) *</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. Arsenal"
-                  placeholderTextColor="#6b7280"
-                  value={matchTeam1}
-                  onChangeText={setMatchTeam1}
-                />
-                <Text style={styles.inputLabel}>Team 2 *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g. Chelsea"
-                  placeholderTextColor="#6b7280"
-                  value={matchTeam2}
-                  onChangeText={setMatchTeam2}
-                />
-                <Text style={styles.inputLabel}>Date & time *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="2024-02-20T19:00"
+                  placeholder="2026-07-20T19:00"
                   placeholderTextColor="#6b7280"
                   value={matchTime}
                   onChangeText={setMatchTime}
                 />
-                <Text style={styles.inputLabel}>Points required</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="15"
-                  placeholderTextColor="#6b7280"
-                  value={matchPoints}
-                  onChangeText={setMatchPoints}
-                  keyboardType="numeric"
-                />
+                <Text style={[styles.emptyCarouselText, { marginTop: -6, marginBottom: 10 }]}>
+                  Use Tanzania wall-clock time (EAT). Example: 2026-07-20T19:00
+                </Text>
+
+                <TouchableOpacity
+                  onPress={() => setMatchLive((v) => !v)}
+                  style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 10 }}>
+                  <Icon name={matchLive ? 'checkbox-marked' : 'checkbox-blank-outline'} size={22} color={matchLive ? '#34d399' : '#9ca3af'} />
+                  <Text style={{ color: '#e5e7eb', fontWeight: '600' }}>LIVE</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setMatchActive((v) => !v)}
+                  style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 10 }}>
+                  <Icon name={matchActive ? 'checkbox-marked' : 'checkbox-blank-outline'} size={22} color={matchActive ? '#34d399' : '#9ca3af'} />
+                  <Text style={{ color: '#e5e7eb', fontWeight: '600' }}>Hai (visible in app)</Text>
+                </TouchableOpacity>
               </View>
 
               <View style={styles.modalActions}>
@@ -1253,7 +1458,7 @@ const DashboardSection = ({ refreshTrigger }) => {
                   {savingMatch ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Text style={styles.saveButtonText}>{editingMatch ? 'Save' : 'Add match'}</Text>
+                    <Text style={styles.saveButtonText}>{editingMatch ? 'Hifadhi' : 'Ongeza'}</Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -2365,6 +2570,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#020617',
     borderWidth: 1,
     borderColor: '#1f2937',
+    gap: 12,
+  },
+  ratibaThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  ratibaThumbOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.15)',
   },
   matchContent: {
     flex: 1,

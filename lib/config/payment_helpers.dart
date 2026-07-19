@@ -60,14 +60,31 @@ Map<String, dynamic>? userPayloadFromPaymentResponse(Map<String, dynamic> respon
   return null;
 }
 
-/// True when polling response means payment succeeded and premium should unlock.
+bool _userPayloadIsPremium(Map<String, dynamic>? user) {
+  if (user == null) return false;
+  final snap = PremiumSnapshot.fromDynamic(user);
+  return snap?.isPremium == true;
+}
+
+/// True when polling response means payment succeeded AND premium is active on the user.
+///
+/// If the backend is still applying entitlements (`applying: true`), keep polling.
 bool isPaymentSuccessResponse(Map<String, dynamic> response) {
-  final st = response['status'] ?? response['raw']?['data']?[0]?['payment_status'];
-  if (isPaymentCompleted(st)) return true;
+  if (isPaymentStillApplying(response)) return false;
+
   final user = userPayloadFromPaymentResponse(response);
-  if (user != null) {
-    final snap = PremiumSnapshot.fromDynamic(user);
-    if (snap?.isPremium == true) return true;
+  if (_userPayloadIsPremium(user)) return true;
+
+  // Explicit grant flag from backend (when present).
+  if (response['premiumGranted'] == true || response['premium_granted'] == true) {
+    return true;
+  }
+
+  final st = response['status'] ?? response['raw']?['data']?[0]?['payment_status'];
+  // COMPLETED alone is not enough — require a premium user snapshot when status says done.
+  if (isPaymentCompleted(st) && user != null) {
+    // User object present but not premium yet → still applying.
+    return false;
   }
   return false;
 }
@@ -77,4 +94,5 @@ bool isPaymentStillApplying(Map<String, dynamic> response) =>
     response['applying'] == true;
 
 /// Called after payment success or admin grant to unlock channels.
-typedef PremiumUnlockCallback = Future<void> Function({Map<String, dynamic>? userPayload});
+/// Returns `true` only when local premium state is confirmed active.
+typedef PremiumUnlockCallback = Future<bool> Function({Map<String, dynamic>? userPayload});

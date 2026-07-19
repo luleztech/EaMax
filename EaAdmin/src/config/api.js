@@ -413,7 +413,7 @@ export const adminSettingsAPI = {
 };
 
 /**
- * Admin Matches API
+ * Admin Matches API (legacy)
  */
 export const adminMatchesAPI = {
   // Get all matches
@@ -443,6 +443,34 @@ export const adminMatchesAPI = {
       method: 'DELETE',
     });
   },
+};
+
+/**
+ * Admin Schedule API (Leotena-style Ratiba — programmes + matches)
+ */
+export const adminScheduleAPI = {
+  getSchedule: async () => apiRequest('/api/admin/schedule'),
+
+  createItem: async (payload) =>
+    apiRequest('/api/admin/schedule', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateItem: async (id, payload) =>
+    apiRequest(`/api/admin/schedule/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  toggleLive: async (id) =>
+    apiRequest(`/api/admin/schedule/${id}/live`, { method: 'PATCH' }),
+
+  toggleActive: async (id) =>
+    apiRequest(`/api/admin/schedule/${id}/active`, { method: 'PATCH' }),
+
+  deleteItem: async (id) =>
+    apiRequest(`/api/admin/schedule/${id}`, { method: 'DELETE' }),
 };
 
 /**
@@ -676,6 +704,7 @@ export default {
   adminNotificationsAPI,
   adminSettingsAPI,
   adminMatchesAPI,
+  adminScheduleAPI,
   adminAdsAPI,
   adminPromotionsAPI,
   adminSubscriptionPlansAPI,

@@ -1560,11 +1560,19 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
   }
 
   const user = await fetchUserPremiumSnapshotForOrder(orderId);
-  const premiumActive = user && (user.isPremium === true || user.is_premium === true);
+  const premiumActive = user && (
+    user.isPremium === true ||
+    user.is_premium === true ||
+    user.isPremium === 1 ||
+    user.is_premium === 1 ||
+    String(user.isPremium).toLowerCase() === 'true' ||
+    String(user.is_premium).toLowerCase() === 'true'
+  );
   if (!premiumActive) {
     return res.json({
       status: 'PENDING',
       applying: true,
+      premiumGranted: false,
       message: 'Malipo yamethibitishwa — tunasasisha akaunti yako…',
       raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
       ...(user ? { user } : {}),
@@ -1572,6 +1580,7 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
   }
   return res.json({
     status: 'COMPLETED',
+    premiumGranted: true,
     raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
     ...(user ? { user } : {}),
   });

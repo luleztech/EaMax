@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
@@ -14,10 +17,19 @@ import 'services/fcm_notifications.dart';
 import 'register_webview_for_web_stub.dart'
     if (dart.library.html) 'register_webview_for_web.dart';
 import 'theme/app_theme.dart';
+import 'utils/payment_voices.dart';
 import 'utils/player_orientation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Avoid CanvasKit font fetch failures when Google Fonts CDN is unreachable.
+  GoogleFonts.config.allowRuntimeFetching = !kIsWeb;
+  // Warm payment voices after first frame so config APIs are not starved on web.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    Future<void>.delayed(const Duration(milliseconds: 800), () {
+      unawaited(PaymentVoices.prepare());
+    });
+  });
   if (!kIsWeb) {
     await PlayerOrientation.lockHomePortrait();
   }

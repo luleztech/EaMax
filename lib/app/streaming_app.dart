@@ -154,6 +154,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   Future<void> _applyUserPremiumData(
     Map<String, dynamic> userData, {
     required String uid,
+    bool protectExistingPremium = false,
   }) async {
     if (!mounted) return;
     final blocked = userData['blocked'] == true;
@@ -162,15 +163,24 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         userData['premium_expires_at'];
     DateTime? expires;
     if (endRaw != null && endRaw.toString().isNotEmpty) {
-      expires = DateTime.tryParse(endRaw.toString());
+      expires = DateTime.tryParse(endRaw.toString())?.toLocal();
     }
-    final apiPremium =
-        userData['isPremium'] == true || userData['is_premium'] == true;
-    final premium = PremiumSnapshot.resolveActive(
+    final apiPremium = userData['isPremium'] == true ||
+        userData['is_premium'] == true ||
+        userData['isPremium'] == 1 ||
+        userData['is_premium'] == 1 ||
+        userData['isPremium']?.toString().toLowerCase() == 'true' ||
+        userData['is_premium']?.toString().toLowerCase() == 'true';
+    var premium = PremiumSnapshot.resolveActive(
       blocked: blocked,
       apiPremium: apiPremium,
       expiresAt: expires,
     );
+    // Never downgrade a freshly unlocked session from a flaky refresh.
+    if (protectExistingPremium && _premium && !premium && !blocked) {
+      premium = true;
+      expires = _premiumExpiresAt ?? expires;
+    }
     final pts = (userData['points'] as num?)?.toInt() ?? _points;
     setState(() {
       _points = pts;
@@ -211,14 +221,18 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _refreshUser({int maxAttempts = 2}) async {
+  Future<void> _refreshUser({int maxAttempts = 2, bool protectExistingPremium = false}) async {
     try {
       final uid = await ensureLocalUserId();
 
       for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           final userData = await userApi.getUser(uid);
-          await _applyUserPremiumData(userData, uid: uid);
+          await _applyUserPremiumData(
+            userData,
+            uid: uid,
+            protectExistingPremium: protectExistingPremium,
+          );
           return;
         } on ApiRateLimitedException catch (e) {
           debugPrint('[Premium] getUser rate limited ($attempt/$maxAttempts)');
@@ -260,6 +274,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         apiPremium: cached.premium,
         expiresAt: cached.expiresAt,
       );
+      // Don't wipe an active in-memory unlock with a stale non-premium cache.
+      if (!premium && _premium) return;
       if (!mounted) return;
       setState(() {
         _premium = premium;
@@ -582,25 +598,35 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     );
   }
 
-  Future<void> _onPaymentSuccess({Map<String, dynamic>? userPayload}) async {
+  Future<bool> _onPaymentSuccess({Map<String, dynamic>? userPayload}) async {
     final uid = await ensureLocalUserId();
     if (userPayload != null) {
       await _applyUserPremiumData(userPayload, uid: uid);
     }
     await retryPendingRegistrations();
 
+    // Confirm premium from server; never clear a successful local unlock.
     if (!_premium) {
-      for (var i = 0; i < 5; i++) {
-        await Future<void>.delayed(const Duration(seconds: 2));
-        await _refreshUser(maxAttempts: 3);
+      for (var i = 0; i < 8; i++) {
+        await Future<void>.delayed(Duration(seconds: i < 3 ? 1 : 2));
+        await _refreshUser(maxAttempts: 3, protectExistingPremium: true);
         if (_premium) break;
       }
     } else {
-      await _refreshUser(maxAttempts: 2);
+      await _refreshUser(maxAttempts: 2, protectExistingPremium: true);
+    }
+
+    // Force-unlock from payload if server snapshot said premium but refresh flaked.
+    if (!_premium && userPayload != null) {
+      final snap = PremiumSnapshot.fromDynamic(userPayload);
+      if (snap?.isPremium == true) {
+        await _applyUserPremiumData(userPayload, uid: uid);
+      }
     }
 
     await _homeKey.currentState?.reloadRemoteData();
     if (mounted) setState(() {});
+    return _premium;
   }
 
   Future<void> _checkPendingPayment() async {
@@ -614,10 +640,15 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
     try {
       final res = await paymentsApi.checkPaymentStatus(pending);
+      if (isPaymentStillApplying(res)) {
+        return;
+      }
       if (isPaymentSuccessResponse(res)) {
-        await prefs.remove('pendingPaymentOrderId');
         final userPayload = userPayloadFromPaymentResponse(res);
-        await _onPaymentSuccess(userPayload: userPayload);
+        final unlocked = await _onPaymentSuccess(userPayload: userPayload);
+        if (unlocked) {
+          await prefs.remove('pendingPaymentOrderId');
+        }
       } else if (isPaymentTerminalFailure(
         res['status'] ?? res['raw']?['data']?[0]?['payment_status'],
       )) {

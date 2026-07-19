@@ -25,6 +25,7 @@ const settingsRouter = require('./routes/settings');
 const carouselRouter = require('./routes/carousel');
 const paymentsRouter = require('./routes/payments');
 const matchesRouter = require('./routes/matches');
+const scheduleRouter = require('./routes/schedule');
 const promotionsRouter = require('./routes/promotions');
 const dashboardRouter = require('./routes/dashboard');
 const partnerRouter = require('./routes/partner');
@@ -67,6 +68,7 @@ app.use('/api/channels', catalogLimiter);
 app.use('/api/carousel', catalogLimiter);
 app.use('/api/settings', catalogLimiter);
 app.use('/api/matches', catalogLimiter);
+app.use('/api/schedule', catalogLimiter);
 app.use('/api/promotions', catalogLimiter);
 app.use('/api/users', userLimiter);
 app.use('/api/', generalLimiter);
@@ -391,6 +393,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/carousel', carouselRouter);
 app.use('/api/payments', paymentsRouter);
 app.use('/api/matches', matchesRouter);
+app.use('/api/schedule', scheduleRouter);
 app.use('/api/promotions', promotionsRouter);
 
 // Admin API (for EaAdmin)
@@ -479,5 +482,25 @@ try {
   }, 120000);
 } catch (e) {
   console.warn('[ExpiredReminder] scheduler not started:', e.message || e);
+}
+
+// Ratiba live notifier — flip LIVE + FCM users who enabled the bell
+try {
+  const { processDueScheduleLiveNotifications } = require('./services/scheduleLiveNotifier');
+  const runScheduleLive = () => {
+    processDueScheduleLiveNotifications()
+      .then((r) => {
+        if (r && r.processed > 0) {
+          console.log(`[ScheduleLive] notified ${r.processed} event(s)`);
+        }
+      })
+      .catch((err) => {
+        console.warn('[ScheduleLive] run failed:', err.message || err);
+      });
+  };
+  setTimeout(runScheduleLive, 90_000);
+  setInterval(runScheduleLive, 60_000);
+} catch (e) {
+  console.warn('[ScheduleLive] scheduler not started:', e.message || e);
 }
 

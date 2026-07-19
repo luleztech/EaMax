@@ -135,3 +135,36 @@ CREATE TABLE IF NOT EXISTS upcoming_matches (
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Leotena-style TV schedule (programmes + matches) for the Ratiba tab
+CREATE TABLE IF NOT EXISTS schedule_items (
+  id SERIAL PRIMARY KEY,
+  date_time TIMESTAMPTZ NOT NULL,
+  title TEXT NOT NULL,
+  subtitle TEXT NOT NULL DEFAULT '',
+  channel TEXT NOT NULL DEFAULT '',
+  team1 TEXT NOT NULL DEFAULT '',
+  team2 TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT 'live_tv_rounded',
+  live BOOLEAN NOT NULL DEFAULT FALSE,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  gradient_start VARCHAR(8) NOT NULL DEFAULT '1D4A82',
+  gradient_end VARCHAR(8) NOT NULL DEFAULT '2C6DB5',
+  image_url TEXT NOT NULL DEFAULT '',
+  channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+  live_notified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedule_items_date_time ON schedule_items (date_time);
+CREATE INDEX IF NOT EXISTS idx_schedule_items_active_date ON schedule_items (active, date_time);
+CREATE INDEX IF NOT EXISTS idx_schedule_items_channel_id ON schedule_items (channel_id);
+
+CREATE TABLE IF NOT EXISTS schedule_reminders (
+  id SERIAL PRIMARY KEY,
+  schedule_id INTEGER NOT NULL REFERENCES schedule_items(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (schedule_id, external_id)
+);

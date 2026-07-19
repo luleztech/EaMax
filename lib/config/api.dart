@@ -291,6 +291,46 @@ class MatchesApi {
   }
 }
 
+class ScheduleApi {
+  /// Leotena-style schedule for the Ratiba tab (programmes + matches).
+  Future<List<dynamic>> getSchedule() async {
+    try {
+      final data = await apiRequest('/api/schedule');
+      if (data is List) return data;
+      return [];
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('404') || msg.contains('not found')) {
+        // Older backends: fall back to legacy matches endpoint.
+        return MatchesApi().getUpcomingMatches();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> setReminder(String scheduleId, String externalId) async {
+    final id = int.tryParse(scheduleId);
+    if (id == null) return;
+    await apiRequest(
+      '/api/schedule/$id/remind',
+      method: 'POST',
+      body: {'externalId': externalId},
+      enableRetries: false,
+    );
+  }
+
+  Future<void> clearReminder(String scheduleId, String externalId) async {
+    final id = int.tryParse(scheduleId);
+    if (id == null) return;
+    await apiRequest(
+      '/api/schedule/$id/remind?externalId=${Uri.encodeComponent(externalId)}',
+      method: 'DELETE',
+      body: {'externalId': externalId},
+      enableRetries: false,
+    );
+  }
+}
+
 class PaymentsApi {
   /// Start a payment using the currently active payment provider
   Future<Map<String, dynamic>> startOfferPayment({
@@ -435,5 +475,6 @@ final userApi = UserApi();
 final channelsApi = ChannelsApi();
 final settingsApi = SettingsApi();
 final matchesApi = MatchesApi();
+final scheduleApi = ScheduleApi();
 final paymentsApi = PaymentsApi();
 final notificationsApi = NotificationsApi();

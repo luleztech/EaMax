@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api.dart';
+import '../config/payment_helpers.dart';
 import '../models/api_exceptions.dart';
 import '../models/promotion.dart';
 import '../utils/api_error_message.dart';
@@ -25,7 +26,8 @@ class PromotionPopupOverlay extends StatefulWidget {
 
   final Promotion promotion;
   final VoidCallback onDismiss;
-  final VoidCallback? onPaymentSuccess;
+  /// Called only after payment is confirmed and premium is unlocked.
+  final PremiumUnlockCallback? onPaymentSuccess;
 
   @override
   State<PromotionPopupOverlay> createState() => _PromotionPopupOverlayState();
@@ -240,7 +242,8 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
           ),
           content: Text(
-            'Angalia simu yako na uingize PIN ya malipo ya Tsh.${_formatAmount(p.offerAmountTsh!)}.',
+            'Angalia simu yako na uingize PIN ya malipo ya Tsh.${_formatAmount(p.offerAmountTsh!)}. '
+            'Channel zote zitafunguliwa moja kwa moja baada ya malipo.',
             style: const TextStyle(color: Colors.white70, height: 1.4),
           ),
           actions: [
@@ -251,7 +254,7 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
           ],
         ),
       );
-      widget.onPaymentSuccess?.call();
+      // Do NOT unlock here — pendingPaymentOrderId watcher / status poll unlocks after PIN.
       await _close();
     } on ApiRateLimitedException catch (e) {
       _showSnack(userFacingApiError(e));

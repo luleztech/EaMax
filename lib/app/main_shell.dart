@@ -9,7 +9,7 @@ import '../config/payment_helpers.dart';
 import '../services/remote_config_service.dart';
 import 'combined_home.dart';
 
-/// Supasoka-style 5-tab shell with frosted bottom navigation.
+/// 3-tab shell: Home / Ratiba / Mtumiaji (channels + payments via home + modal).
 class MainShell extends StatelessWidget {
   const MainShell({
     super.key,
@@ -51,7 +51,6 @@ class MainShell extends StatelessWidget {
     final t = context.watch<ThemeController>().colors;
     final bottom = MediaQuery.paddingOf(context).bottom;
     final showRatiba = RemoteConfigService.ratibaTabEnabled;
-    final showPayments = RemoteConfigService.paymentsEnabled;
 
     return Scaffold(
       backgroundColor: t.bg1,
@@ -113,10 +112,7 @@ class MainShell extends StatelessWidget {
                   _TabButton(i: 0, label: 'Home', outline: Ionicons.home_outline, solid: Ionicons.home, selected: nav.currentTab == 0),
                   if (showRatiba)
                     _TabButton(i: 1, label: 'Ratiba', outline: Ionicons.calendar_outline, solid: Ionicons.calendar, selected: nav.currentTab == 1),
-                  _TabButton(i: 2, label: 'Channels', outline: Ionicons.tv_outline, solid: Ionicons.tv, selected: nav.currentTab == 2),
-                  if (showPayments)
-                    _TabButton(i: 3, label: 'Fungua zote', outline: Ionicons.key_outline, solid: Ionicons.key, selected: nav.currentTab == 3),
-                  _TabButton(i: 4, label: 'Mtumiaji', outline: Ionicons.person_outline, solid: Ionicons.person, selected: nav.currentTab == 4),
+                  _TabButton(i: 2, label: 'Mtumiaji', outline: Ionicons.person_outline, solid: Ionicons.person, selected: nav.currentTab == 2),
                 ],
               ),
             ),

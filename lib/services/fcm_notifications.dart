@@ -56,6 +56,17 @@ void _maybeRequestPremiumUnlock(RemoteMessage message) {
   unawaited(onPremiumUnlockRequested?.call(userPayload: payload));
 }
 
+void _maybeHandleScheduleLive(RemoteMessage message, {bool open = false}) {
+  final type = message.data['type']?.toString();
+  if (type != 'schedule_live') return;
+  final scheduleId = message.data['scheduleId']?.toString() ?? '';
+  final channelId = message.data['channelId']?.toString() ?? '';
+  final payload = 'schedule:$scheduleId:$channelId';
+  if (open) {
+    _dispatchSchedulePayload(payload);
+  }
+}
+
 final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
 
 void _logFcm(String message) {
@@ -144,6 +155,7 @@ Future<void> _enqueueRemoteTrayNotification({
   int? notificationId,
   String? messageId,
   RemoteMessage? message,
+  String? payload,
 }) async {
   if (body.isEmpty) return;
   if (message?.notification != null) {
@@ -172,6 +184,7 @@ Future<void> _enqueueRemoteTrayNotification({
       notificationId: item.notificationId,
       messageId: item.messageId,
       androidId: kEamaxTrayNotificationId,
+      payload: payload,
     ),
     reportDelivered: _reportQueuedDelivered,
     cancelTray: _cancelTrayNotification,
@@ -238,8 +251,14 @@ Future<void> _ensureLocalNotificationsPlugin() async {
 
 void _onLocalNotificationTapped(NotificationResponse response) {
   final payload = response.payload;
+  _logFcm('Local notification tapped payload=$payload');
+
+  if (payload != null && payload.startsWith('schedule:')) {
+    _dispatchSchedulePayload(payload);
+    return;
+  }
+
   final nid = int.tryParse(payload ?? '');
-  _logFcm('Local notification tapped payload=$payload nid=$nid');
   if (nid == null) return;
   Future<void> run() async {
     final uid = await user_id.getStoredUserId();
@@ -264,6 +283,17 @@ void _onLocalNotificationTapped(NotificationResponse response) {
   }
 
   unawaited(run());
+}
+
+void Function(String payload)? _onSchedulePayload;
+
+/// Wired from [ratiba_reminders.dart] so we avoid circular imports in the tap path.
+void setScheduleNotificationPayloadHandler(void Function(String payload)? handler) {
+  _onSchedulePayload = handler;
+}
+
+void _dispatchSchedulePayload(String payload) {
+  _onSchedulePayload?.call(payload);
 }
 
 String _directUserTopic(String publicId) {
@@ -385,6 +415,7 @@ Future<void> showEamaxLocalNotification({
   int? notificationId,
   String? messageId,
   int? androidId,
+  String? payload,
 }) async {
   await ensureAndroidNotificationChannel();
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
@@ -396,7 +427,7 @@ Future<void> showEamaxLocalNotification({
     id: id,
     title: title,
     body: body,
-    payload: notificationId != null ? '$notificationId' : null,
+    payload: payload ?? (notificationId != null ? '$notificationId' : null),
     notificationDetails: NotificationDetails(
       android: AndroidNotificationDetails(
         kFcmAndroidChannelId,
@@ -413,6 +444,44 @@ Future<void> showEamaxLocalNotification({
   );
 }
 
+Future<void> scheduleLocalNotificationAt({
+  required int id,
+  required String title,
+  required String body,
+  required dynamic when,
+  String? payload,
+}) async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  await _ensureLocalNotificationsPlugin();
+  await ensureAndroidNotificationChannel();
+  await _local.zonedSchedule(
+    id: id,
+    title: title,
+    body: body,
+    scheduledDate: when,
+    payload: payload,
+    androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+    notificationDetails: NotificationDetails(
+      android: AndroidNotificationDetails(
+        kFcmAndroidChannelId,
+        kFcmAndroidChannelName,
+        channelDescription: kFcmAndroidChannelDesc,
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        icon: '@mipmap/ic_launcher',
+      ),
+    ),
+  );
+}
+
+Future<void> cancelScheduledLocalNotification(int id) async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+  await _ensureLocalNotificationsPlugin();
+  await _local.cancel(id: id);
+}
+
 /// EaMax Firebase foreground listener (EaAdmin + bridge pushes on eamax project).
 Future<void> bindEamaxFcmForegroundListener() async {
   if (kIsWeb || _eamaxListenersBound) return;
@@ -427,18 +496,25 @@ Future<void> bindEamaxFcmForegroundListener() async {
   FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
     _logFcm('Foreground message received id=${message.messageId} data=${message.data}');
     _maybeRequestPremiumUnlock(message);
+    _maybeHandleScheduleLive(message);
 
     final n = message.notification;
     final title = n?.title ?? message.data['title'] ?? 'EaMax';
     final body = n?.body ?? message.data['body'] ?? message.data['message'] ?? '';
     if (body.isEmpty) return;
     final nid = int.tryParse(message.data['notificationId'] ?? '');
+    final scheduleId = message.data['scheduleId']?.toString();
+    final channelId = message.data['channelId']?.toString() ?? '';
+    final payload = (message.data['type']?.toString() == 'schedule_live' && scheduleId != null)
+        ? 'schedule:$scheduleId:$channelId'
+        : null;
     await _enqueueRemoteTrayNotification(
       title: title,
       body: body,
       notificationId: nid,
       messageId: message.messageId,
       message: message,
+      payload: payload,
     );
   });
 
@@ -446,12 +522,14 @@ Future<void> bindEamaxFcmForegroundListener() async {
     _logFcm('Foreground message opened from tray id=${message.messageId} data=${message.data}');
     unawaited(_trackRemoteMessage(message, openedFromTray: true));
     _maybeRequestPremiumUnlock(message);
+    _maybeHandleScheduleLive(message, open: true);
   });
 
   final initial = await FirebaseMessaging.instance.getInitialMessage();
   if (initial != null) {
     await _trackRemoteMessage(initial, openedFromTray: true);
     _maybeRequestPremiumUnlock(initial);
+    _maybeHandleScheduleLive(initial, open: true);
   }
 }
 

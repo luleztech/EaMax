@@ -13,7 +13,7 @@ import 'native_android_player.dart';
 /// Drives pricing, player settings, feature flags, and emergency controls.
 /// Falls back to last-known cache or built-in defaults on network failure.
 class RemoteConfigService {
-  static const Duration _fetchTimeout = Duration(seconds: 12);
+  static const Duration _fetchTimeout = Duration(seconds: 20);
   static const Duration _cacheTtl = Duration(minutes: 5);
 
   static RemoteConfigBundle? _cached;
@@ -102,11 +102,16 @@ class RemoteConfigService {
     }
 
     try {
-      final response = await apiClient
-          .get('/api/v2/config/bundle', queryParameters: {'platform': 'android'})
-          .timeout(_fetchTimeout);
+      final response = await apiClient.get(
+        '/api/v2/config/bundle',
+        queryParameters: {'platform': kIsWeb ? 'web' : 'android'},
+        options: Options(
+          receiveTimeout: _fetchTimeout,
+          sendTimeout: _fetchTimeout,
+        ),
+      );
 
-      if (response.statusCode == 200 && response.data is Map<String, dynamic>) {
+      if (response.statusCode == 200 && response.data is Map) {
         final bundle = RemoteConfigBundle.fromJson(
           Map<String, dynamic>.from(response.data as Map),
         );
@@ -119,12 +124,22 @@ class RemoteConfigService {
         await _syncNativePlayerConfig();
         return bundle;
       }
-    } on DioError catch (e) {
-      debugPrint('[RemoteConfigService] fetch error: ${e.message}');
-    } catch (e, st) {
-      debugPrint('[RemoteConfigService] fetch error: $e\n$st');
+    } on DioException catch (e) {
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        debugPrint('[RemoteConfigService] fetch timed out — using cache/defaults');
+      } else {
+        debugPrint('[RemoteConfigService] fetch error: ${e.message}');
+      }
+    } on TimeoutException {
+      debugPrint('[RemoteConfigService] fetch timed out — using cache/defaults');
+    } catch (e) {
+      debugPrint('[RemoteConfigService] fetch error: $e');
     }
 
+    // Ensure callers always have usable defaults after a failed fetch.
+    _cached ??= RemoteConfigBundle.fromJson(const {});
     await _syncNativePlayerConfig();
     return _cached;
   }

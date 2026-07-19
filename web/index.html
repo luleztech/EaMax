@@ -17,7 +17,9 @@
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="EaMax — stream live TV and movies">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
     /* Prevent browser link styling from underlining Flutter semantics nodes on web. */
@@ -30,6 +32,11 @@
       text-decoration: none !important;
       border-bottom: none !important;
       box-shadow: none !important;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #000;
     }
   </style>
 
@@ -47,13 +54,20 @@
 </head>
 <body>
   <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
-
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
+    Use bundled CanvasKit (no gstatic CDN) so web boots offline / behind firewalls.
+    See: https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    {{flutter_js}}
+    {{flutter_build_config}}
+
+    _flutter.loader.load({
+      config: {
+        // Prefer the CanvasKit wasm/js shipped with the build instead of
+        // https://www.gstatic.com/flutter-canvaskit/... which often fails to fetch.
+        canvasKitBaseUrl: "canvaskit/"
+      }
+    });
+  </script>
 </body>
 </html>

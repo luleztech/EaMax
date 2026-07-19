@@ -13,6 +13,7 @@ echo "For debug/hot reload, try: flutter run -d linux"
 echo ""
 
 exec flutter run -d chrome --release \
+  --no-web-resources-cdn \
   --web-browser-flag=--disable-extensions \
   --web-browser-flag=--no-first-run \
   "$@"

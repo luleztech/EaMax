@@ -18,11 +18,12 @@ import '../models/app_config.dart';
 ///   - A failed fetch returns the last known-good cache (if any), otherwise
 ///     `null` — meaning the app proceeds normally (never blocks on network error).
 class AppConfigService {
-  static const Duration _fetchTimeout = Duration(seconds: 10);
+  static const Duration _fetchTimeout = Duration(seconds: 20);
   static const Duration _cacheTtl = Duration(minutes: 30);
 
   static AppConfig? _cached;
   static DateTime? _cachedAt;
+  static bool _fetchInFlight = false;
 
   static bool get _cacheValid =>
       _cached != null &&
@@ -33,22 +34,39 @@ class AppConfigService {
   /// Never throws — returns null on any network or parse error.
   static Future<AppConfig?> fetch({bool forceRefresh = false}) async {
     if (!forceRefresh && _cacheValid) return _cached;
+    if (_fetchInFlight && !forceRefresh) return _cached;
+    _fetchInFlight = true;
 
     try {
-      final response = await apiClient
-          .get('/app-config')
-          .timeout(_fetchTimeout);
+      final response = await apiClient.get(
+        '/app-config',
+        options: Options(
+          receiveTimeout: _fetchTimeout,
+          sendTimeout: _fetchTimeout,
+        ),
+      );
 
-      if (response.statusCode == 200 && response.data is Map<String, dynamic>) {
-        final config = AppConfig.fromJson(Map<String, dynamic>.from(response.data));
+      if (response.statusCode == 200 && response.data is Map) {
+        final config = AppConfig.fromJson(Map<String, dynamic>.from(response.data as Map));
         _cached = config;
         _cachedAt = DateTime.now();
         return config;
       }
-    } on DioError catch (e) {
-      debugPrint('[AppConfigService] fetch error: ${e.message}');
-    } catch (e, st) {
-      debugPrint('[AppConfigService] fetch error: $e\n$st');
+    } on DioException catch (e) {
+      // Soft-fail: app continues with cache / defaults. Avoid noisy TimeoutException stacks.
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        debugPrint('[AppConfigService] fetch timed out — using cache/defaults');
+      } else {
+        debugPrint('[AppConfigService] fetch error: ${e.message}');
+      }
+    } on TimeoutException {
+      debugPrint('[AppConfigService] fetch timed out — using cache/defaults');
+    } catch (e) {
+      debugPrint('[AppConfigService] fetch error: $e');
+    } finally {
+      _fetchInFlight = false;
     }
 
     return _cached;

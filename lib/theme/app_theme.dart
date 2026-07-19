@@ -149,9 +149,19 @@ class AppNav extends ChangeNotifier {
   int _tab = 0;
   int get currentTab => _tab;
 
+  /// Remaps legacy 5-tab indices onto the current 3-tab shell
+  /// (0 Home, 1 Ratiba, 2 Mtumiaji). Indices 0–2 pass through.
+  static int normalizeTab(int index) {
+    if (index < 0) return 0;
+    if (index <= 2) return index;
+    // Legacy: 3 Fungua zote, 4 Profile → Mtumiaji (payments via modal).
+    return 2;
+  }
+
   bool setTab(int index) {
-    if (_tab == index) return false;
-    _tab = index;
+    final next = normalizeTab(index);
+    if (_tab == next) return false;
+    _tab = next;
     notifyListeners();
     return true;
   }

@@ -470,8 +470,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     _waitingTimer?.cancel();
     _waitingTimer = null;
 
+    final orderId = _pollingOrderId;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('pendingPaymentOrderId');
 
     if (!mounted) return;
 
@@ -484,10 +484,27 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     });
 
     // Refresh premium + unlock channels before showing success dialog.
+    var unlocked = false;
     try {
-      await widget.onPaymentSuccess?.call(userPayload: userPayload);
-    } catch (_) {}
+      unlocked = await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;
+    } catch (e) {
+      debugPrint('[PaymentsScreen] onPaymentSuccess failed: $e');
+    }
 
+    if (!unlocked) {
+      // Keep pending order so the background watcher can finish unlocking.
+      if (orderId != null && orderId.isNotEmpty) {
+        await prefs.setString('pendingPaymentOrderId', orderId);
+      }
+      _showStatus(
+        'Malipo yamepokelewa',
+        'Tunafungua channel zote… fungua tena app ikiwa bado zimefungwa.',
+        _PayDialogTone.info,
+      );
+      return;
+    }
+
+    await prefs.remove('pendingPaymentOrderId');
     _showStatus(title, message, _PayDialogTone.success);
   }
 

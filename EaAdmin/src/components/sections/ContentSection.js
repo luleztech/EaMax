@@ -20,12 +20,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
-import {
-  PLAYER_ENGINES,
-  playerEngineLabel,
-  normalizePlayerEngine,
-} from '../../constants/playerEngines';
-import { STREAM_LANGUAGES, normalizeStreamLanguage } from '../../constants/streamLanguages';
 import ChannelStreamsModal from './ChannelStreamsModal';
 
 const { width } = Dimensions.get('window');
@@ -223,10 +217,6 @@ const ContentSection = () => {
   const [useEmoji, setUseEmoji] = useState(false);
   const [pointsRequired, setPointsRequired] = useState('0');
   const [unlockToFree, setUnlockToFree] = useState(false);
-  const [playbackEngine, setPlaybackEngine] = useState('default');
-  const [audioLanguage, setAudioLanguage] = useState('sw');
-  const [streamType, setStreamType] = useState('auto');
-  const [preferredQuality, setPreferredQuality] = useState('');
   const [savingChannel, setSavingChannel] = useState(false);
   const [deleteConfirmChannel, setDeleteConfirmChannel] = useState(null);
   const [streamsChannel, setStreamsChannel] = useState(null);
@@ -301,8 +291,6 @@ const ContentSection = () => {
     setEditingChannel(null);
     setPointsRequired('0');
     setUnlockToFree(false);
-    setPlaybackEngine('default');
-    setAudioLanguage('sw');
   };
 
   const handleSaveChannel = async () => {
@@ -344,10 +332,6 @@ const ContentSection = () => {
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
       drmClearKey: clearKeyTrimmed,
       unlockToFree: !!unlockToFree,
-      playbackEngine: playbackEngine === 'default' ? null : playbackEngine,
-      audioLanguage: normalizeStreamLanguage(audioLanguage),
-      streamType: streamType || 'auto',
-      preferredQuality: preferredQuality.trim() || null,
     };
 
     if (editingChannel) {
@@ -570,11 +554,6 @@ const ContentSection = () => {
     setUserId(channel.owner_user_id ? String(channel.owner_user_id) : '');
     setPointsRequired(String(channel.points_required ?? channel.pointsRequired ?? 0));
     setUnlockToFree(!!(channel.unlock_to_free ?? channel.unlockToFree));
-    const savedEngine = channel.playback_engine ?? channel.playbackEngine;
-    setPlaybackEngine(normalizePlayerEngine(savedEngine ? String(savedEngine) : 'default'));
-    setAudioLanguage(normalizeStreamLanguage(channel.audio_language ?? channel.audioLanguage));
-    setStreamType(channel.stream_type ?? channel.streamType ?? 'auto');
-    setPreferredQuality(channel.preferred_quality ?? channel.preferredQuality ?? '');
     setAddChannelModalVisible(true);
   }, []);
 
@@ -865,8 +844,6 @@ const ContentSection = () => {
                   setUserId('');
                   setUseEmoji(false);
                   setUnlockToFree(false);
-                  setPlaybackEngine('default');
-                  setAudioLanguage('sw');
                 }}
                 style={styles.closeButton}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -1032,110 +1009,6 @@ const ContentSection = () => {
                   <Text style={styles.colorPreviewText}>
                     {colorOptions.find(c => c.color === selectedColor)?.name || 'Custom'}
                   </Text>
-                </View>
-              </View>
-
-              {/* Settings card */}
-              <View style={styles.formCard}>
-                <Text style={styles.formCardTitle}>Playback</Text>
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Player engine</Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.playerEngineRow}>
-                    {PLAYER_ENGINES.map((engine) => {
-                      const active = playbackEngine === engine.id;
-                      return (
-                        <TouchableOpacity
-                          key={engine.id}
-                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
-                          onPress={() => setPlaybackEngine(engine.id)}>
-                          <Icon
-                            name={engine.icon}
-                            size={16}
-                            color={active ? '#fff' : '#9ca3af'}
-                          />
-                          <Text
-                            style={[
-                              styles.playerEngineChipText,
-                              active && styles.playerEngineChipTextActive,
-                            ]}
-                            numberOfLines={1}>
-                            {engine.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                </View>
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Stream language</Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.playerEngineRow}>
-                    {STREAM_LANGUAGES.map((lang) => {
-                      const active = audioLanguage === lang.id;
-                      return (
-                        <TouchableOpacity
-                          key={lang.id}
-                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
-                          onPress={() => setAudioLanguage(lang.id)}>
-                          <Icon
-                            name={lang.icon}
-                            size={16}
-                            color={active ? '#fff' : '#9ca3af'}
-                          />
-                          <Text
-                            style={[
-                              styles.playerEngineChipText,
-                              active && styles.playerEngineChipTextActive,
-                            ]}
-                            numberOfLines={1}>
-                            {lang.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                </View>
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Stream type</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.playerEngineRow}>
-                    {['auto', 'hls', 'm3u8', 'dash', 'mp4', 'rtmp', 'rtsp', 'mpegts'].map((t) => {
-                      const active = streamType === t;
-                      return (
-                        <TouchableOpacity
-                          key={t}
-                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
-                          onPress={() => setStreamType(t)}>
-                          <Text style={[styles.playerEngineChipText, active && styles.playerEngineChipTextActive]}>
-                            {t.toUpperCase()}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                </View>
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Preferred quality (optional)</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.playerEngineRow}>
-                    {['', 'auto', '240p', '360p', '480p', '720p', '1080p'].map((q) => {
-                      const active = (preferredQuality || '') === q;
-                      const label = q === '' ? 'Global' : q;
-                      return (
-                        <TouchableOpacity
-                          key={q || 'global'}
-                          style={[styles.playerEngineChip, active && styles.playerEngineChipActive]}
-                          onPress={() => setPreferredQuality(q)}>
-                          <Text style={[styles.playerEngineChipText, active && styles.playerEngineChipTextActive]}>
-                            {label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
                 </View>
               </View>
 
@@ -2141,14 +2014,6 @@ const ChannelRow = memo(function ChannelRow({
                   <Text style={styles.channelRowPremiumTag}>Premium</Text>
                 </>
               )}
-              {(channel.playback_engine || channel.playbackEngine) ? (
-                <>
-                  <Text style={styles.channelRowDot}>·</Text>
-                  <Text style={styles.channelRowPlayerTag} numberOfLines={1}>
-                    {playerEngineLabel(channel.playback_engine || channel.playbackEngine)}
-                  </Text>
-                </>
-              ) : null}
               <Text style={styles.channelRowDot}>·</Text>
               <Text style={styles.channelRowViews}>
                 {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
