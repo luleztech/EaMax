@@ -95,11 +95,19 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   /// Tanzania local MSISDN only (`0` + 8–9 digits). Converts pasted +255/255 to 0…
   String _normalizeToLocal(String raw) {
     var s = raw.replaceAll(RegExp(r'[\s\-()]'), '');
-    if (s.startsWith('+') && !s.startsWith('+255')) return s;
-    if (s.startsWith('+255')) s = '0${s.substring(4)}';
-    else if (s.startsWith('00255')) s = '0${s.substring(5)}';
-    else if (s.startsWith('255') && s.length >= 12) s = '0${s.substring(3)}';
-    if (RegExp(r'^[1-9]\d{8}$').hasMatch(s)) s = '0$s';
+    if (s.startsWith('+') && !s.startsWith('+255')) {
+      return s;
+    }
+    if (s.startsWith('+255')) {
+      s = '0${s.substring(4)}';
+    } else if (s.startsWith('00255')) {
+      s = '0${s.substring(5)}';
+    } else if (s.startsWith('255') && s.length >= 12) {
+      s = '0${s.substring(3)}';
+    }
+    if (RegExp(r'^[1-9]\d{8}$').hasMatch(s)) {
+      s = '0$s';
+    }
     return s;
   }
 
@@ -301,7 +309,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           }
         }
       }
-      if (polls === 120 && applyingStreak < 3) {
+      if (polls == 120 && applyingStreak < 3) {
         // Soft timeout UI only — leave poll running a bit longer via pending watcher.
         _waitingTimer?.cancel();
         _waitingTimer = null;
@@ -602,7 +610,19 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     await registerUserInDatabase(id: canonicalUid, maxRetries: 3);
     if (mounted) setState(() => _userId = canonicalUid);
 
-    final bundle = _plans.firstWhere((b) => b.slug == _selectedBundle);
+    // Remote plans can refresh while this screen is open. Do not let a stale
+    // selected slug throw `Bad state: No element` when the user taps Pay.
+    final bundleIndex = _plans.indexWhere((b) => b.slug == _selectedBundle);
+    if (bundleIndex == -1) {
+      setState(() => _selectedBundle = null);
+      _showStatus(
+        'Chagua bundle tena',
+        'Chaguo la malipo limebadilika. Tafadhali chagua muda unaotaka kulipia tena.',
+        _PayDialogTone.info,
+      );
+      return;
+    }
+    final bundle = _plans[bundleIndex];
     setState(() => _submitting = true);
     // Let release builds paint “Tunatuma ombi…” before the HTTP work schedules; avoids a dead UI until the waiting modal.
     await WidgetsBinding.instance.endOfFrame;
@@ -637,10 +657,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           _pollingOrderId = orderId;
           _notFoundStreak = 0;
           _pendingBundleLabel = bundle.displayName;
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          _startPolling();
+          _paymentUiPhase = _PaymentUiPhase.instruction;
         });
       } else {
         final msg = serverMsg.isNotEmpty
