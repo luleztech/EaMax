@@ -8,6 +8,7 @@ const {
 } = require('../services/premiumStatus');
 const {
   grantUserEntitlementsInTransaction,
+  repairUserEntitlements,
   repairUserEntitlementsIfNeeded,
   fetchUserPremiumSnapshotByUserId,
 } = require('../services/userEntitlements');
@@ -33,9 +34,18 @@ const getAuraxPayRequestHeaders = () => ({
   Accept: 'application/json',
 });
 
+// NOTE: Do NOT include bare `SUCCESS` / `OK` — Aurax often returns those for
+// “STK/query accepted” while paymentStatus is still PENDING. Real money uses
+// COMPLETED / SUCCESSFUL / COLLECTED / payment.completed events.
 const AURAX_WEBHOOK_PAID_STATUSES = new Set([
-  'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED',
-  'APPROVED', 'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS',
+  'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED',
+  'APPROVED', 'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED',
+  'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS', 'CAPTURED', 'DONE', 'PAYMENT_SUCCESSFUL',
+]);
+
+const AURAX_EXPLICIT_UNPAID_STATUSES = new Set([
+  'PENDING', 'PROCESSING', 'INITIATED', 'WAITING', 'QUEUED',
+  'CREATED', 'OPEN', 'SENT', 'STK_SENT', 'PROMPT_SENT', 'IN_PROGRESS', 'UNKNOWN',
 ]);
 
 const ensureAuraxPayConfigured = () => {
@@ -507,40 +517,66 @@ const extractAuraxPaymentStatus = (statusData) => {
   const tx = statusData.transaction;
   const nest = statusData.data && typeof statusData.data === 'object' ? statusData.data : null;
   const nestTx = nest?.transaction && typeof nest.transaction === 'object' ? nest.transaction : null;
-  const candidates = [
+  // Prefer wallet/payment fields over generic status (SUCCESS often means query OK).
+  const paymentCandidates = [
     tx?.paymentStatus,
     tx?.payment_status,
     nestTx?.paymentStatus,
     nestTx?.payment_status,
+    statusData.paymentStatus,
+    statusData.payment_status,
+    tx?.collectionStatus,
+    tx?.collection_status,
+    nestTx?.collectionStatus,
+    nestTx?.collection_status,
+  ];
+  const genericCandidates = [
     tx?.status,
     tx?.state,
     nestTx?.status,
     nest?.status,
     statusData.status,
-    statusData.paymentStatus,
-    statusData.payment_status,
     statusData.state,
+    tx?.result,
+    nestTx?.result,
   ];
-  const found = [];
-  for (const c of candidates) {
-    if (c != null && typeof c !== 'object') {
-      const s = String(c).toUpperCase().trim();
-      if (s) found.push(s);
+  const toUpperList = (list) => {
+    const out = [];
+    for (const c of list) {
+      if (c != null && typeof c !== 'object') {
+        const s = String(c).toUpperCase().trim();
+        if (s) out.push(s);
+      }
     }
-  }
-  for (const s of found) {
+    return out;
+  };
+  const paymentFound = toUpperList(paymentCandidates);
+  for (const s of paymentFound) {
     if (isAuraxPaidRaw(s)) return s;
   }
-  return found[0] || '';
+  // Explicit unpaid paymentStatus wins over a generic SUCCESS on the envelope.
+  if (paymentFound.some((s) => AURAX_EXPLICIT_UNPAID_STATUSES.has(s))) {
+    return paymentFound.find((s) => AURAX_EXPLICIT_UNPAID_STATUSES.has(s)) || paymentFound[0] || '';
+  }
+  const genericFound = toUpperList(genericCandidates);
+  for (const s of genericFound) {
+    if (isAuraxPaidRaw(s)) return s;
+  }
+  return paymentFound[0] || genericFound[0] || '';
 };
 
 const isAuraxPaidRaw = (rawUpper) => {
   if (!rawUpper) return false;
   const u = String(rawUpper).toUpperCase().trim();
+  if (AURAX_EXPLICIT_UNPAID_STATUSES.has(u)) return false;
+  // Bare SUCCESS/OK = STK or HTTP ack, not wallet debit.
+  if (u === 'SUCCESS' || u === 'OK') return false;
   if (AURAX_WEBHOOK_PAID_STATUSES.has(u)) return true;
-  if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS)/.test(u)) return true;
+  if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS|PAYMENT_SUCCESS)/.test(u)) {
+    return true;
+  }
   const lower = u.toLowerCase();
-  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
+  return lower === 'successful' || lower === 'true' || lower === '1';
 };
 
 /** Normalize poll/webhook payloads so transaction lives at a consistent path. */
@@ -564,10 +600,11 @@ const evaluateAuraxOrderStatusForApply = (statusData) => {
   const tx = normalized?.transaction;
   const rawStatus = extractAuraxPaymentStatus(normalized);
   let isCompleted = isAuraxPaidRaw(rawStatus);
+  // Do not treat envelope success:true + status SUCCESS as paid — that is often
+  // "request accepted". Only trust explicit payment fields / completion events.
   if (!isCompleted && normalized?.success === true) {
     const nested = extractAuraxPaymentStatus({ transaction: tx });
     if (isAuraxPaidRaw(nested)) isCompleted = true;
-    if (!isCompleted && isAuraxPaidRaw(String(normalized.status || ''))) isCompleted = true;
   }
   const ev = String(normalized?.event || normalized?.type || '').toLowerCase().trim();
   if (!isCompleted && ev) {
@@ -1556,11 +1593,11 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
 
   if (payRow?.status === 'completed' && payRow.user_id) {
     const planInterval = await resolvePlanIntervalForPayment(payRow.plan, payRow.amount_cents);
-    await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
+    await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval || '30 days');
   }
 
-  const user = await fetchUserPremiumSnapshotForOrder(orderId);
-  const premiumActive = user && (
+  let user = await fetchUserPremiumSnapshotForOrder(orderId);
+  let premiumActive = user && (
     user.isPremium === true ||
     user.is_premium === true ||
     user.isPremium === 1 ||
@@ -1568,6 +1605,28 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
     String(user.isPremium).toLowerCase() === 'true' ||
     String(user.is_premium).toLowerCase() === 'true'
   );
+
+  // Last-resort grant: payment row is completed but premium still inactive.
+  if (!premiumActive && payRow?.status === 'completed' && payRow.user_id) {
+    const planInterval = await resolvePlanIntervalForPayment(payRow.plan, payRow.amount_cents);
+    console.warn('[Payment] Force-granting premium after completed payment without active entitlements', {
+      orderId,
+      userId: payRow.user_id,
+      plan: payRow.plan,
+      planInterval,
+    });
+    await repairUserEntitlements(Number(payRow.user_id), planInterval || '30 days');
+    user = await fetchUserPremiumSnapshotForOrder(orderId);
+    premiumActive = user && (
+      user.isPremium === true ||
+      user.is_premium === true ||
+      user.isPremium === 1 ||
+      user.is_premium === 1 ||
+      String(user.isPremium).toLowerCase() === 'true' ||
+      String(user.is_premium).toLowerCase() === 'true'
+    );
+  }
+
   if (!premiumActive) {
     return res.json({
       status: 'PENDING',
@@ -1999,6 +2058,15 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     try {
       const result = await applyCompletedPayment(orderId, payload, {
         expectedPaymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+        altRefs: [
+          payload.reference,
+          payload.reference_id,
+          payload.invoice_id,
+          payload.transid,
+          payload.data?.order_id,
+          payload.data?.orderId,
+          payload.data?.reference,
+        ].filter(Boolean),
       });
       if (!result) {
         console.warn('[SonicPesa] Payment processing returned null for:', orderId);

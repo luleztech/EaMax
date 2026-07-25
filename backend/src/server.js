@@ -181,6 +181,15 @@ query(
   }
 });
 
+// Custom / offer plan slugs need more than VARCHAR(16)
+query(
+  `ALTER TABLE subscription_payments ALTER COLUMN plan TYPE VARCHAR(64)`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration subscription_payments.plan widen (non-fatal):', err.message);
+  }
+});
+
 // FCM + channel unlock table (required for premium grants and admin special access)
 query(
   `DO $$
@@ -469,12 +478,12 @@ try {
           reconcilePendingSubscriptionPayments().catch((err) => {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
-        }, 5 * 60 * 1000);
+        }, 2 * 60 * 1000);
         setInterval(() => {
           repairCompletedPaymentsMissingPremium().catch((err) => {
             console.warn('[Entitlements] Scheduled repair failed:', err.message || err);
           });
-        }, 5 * 60 * 1000);
+        }, 2 * 60 * 1000);
       }
     } catch (e) {
       console.warn('[Payment] Reconcile scheduler not started:', e.message || e);

@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_watch_events_watched_at ON channel_watch_
 CREATE TABLE IF NOT EXISTS subscription_payments (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  plan VARCHAR(16) NOT NULL, -- week | month | year
+  plan VARCHAR(64) NOT NULL, -- week | month | year | offer:N | custom slug
   amount_cents INTEGER NOT NULL,
   currency VARCHAR(8) NOT NULL DEFAULT 'TZS',
   status VARCHAR(16) NOT NULL DEFAULT 'pending', -- pending | completed | failed

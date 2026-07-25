@@ -38,7 +38,8 @@ const _payLine = Color(0x14FFFFFF);
 const _payMuted = Color(0xFF8B9CAF);
 
 /// Tight window: prompt should arrive in seconds; long waits feel broken. Halotel/Airtel can retry.
-const int _kPaymentWaitSeconds = 60;
+/// Halotel / Airtel USSD can take longer than Vodacom; keep waiting UI + polls long enough.
+const int _kPaymentWaitSeconds = 180;
 
 enum _PaymentUiPhase {
   none,
@@ -300,15 +301,18 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           }
         }
       }
-      if (polls >= 90 && applyingStreak < 3) {
-        _pollTimer?.cancel();
-        _pollTimer = null;
+      if (polls === 120 && applyingStreak < 3) {
+        // Soft timeout UI only — leave poll running a bit longer via pending watcher.
         _waitingTimer?.cancel();
         _waitingTimer = null;
         unawaited(_finalizeSessionTimedOut(
           detail:
-              'Muda wa kusubiri umeisha. Hakikisha umeona ombi kwenye simu na umeingiza PIN. Jaribu tena ikiwa haijafika.',
+              'Muda wa kusubiri umeisha. Hakikisha umeona ombi kwenye simu na umeingiza PIN. Tunendelea kuthibitisha nyuma ya pazia.',
         ));
+      }
+      if (polls >= 150) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
       }
     });
   }
@@ -320,21 +324,25 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   void _handleWaitWindowExpired() {
     if (!mounted || _pollingOrderId == null) return;
-    unawaited(_finalizeSessionTimedOut(
-      detail:
-          'Muda wa dakika 1 umeisha bila uthibitisho. Hakikisha mtandao mzuri na namba sahihi ya Vodacom/M-Pesa, kisha jaribu tena.',
-    ));
+    // Keep status polling alive — only end the countdown UI. Mobile-money confirms
+    // often arrive after the first minutes (Halopesa / Airtel especially).
+    _waitingTimer?.cancel();
+    _waitingTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _waitingSeconds = 0;
+      _sessionEndDetail =
+          'Bado tunasubiri uthibitisho wa malipo… ukikamilisha PIN, Premium itafunguliwa kiotomatiki.';
+    });
   }
 
   Future<void> _finalizeSessionTimedOut({String? detail}) async {
-    _pollTimer?.cancel();
-    _pollTimer = null;
     _waitingTimer?.cancel();
     _waitingTimer = null;
-    // Keep pendingPaymentOrderId — background watcher continues verifying payment.
+    // Do NOT cancel _pollTimer here — keep verifying until max polls / success / failure.
+    // Keep pendingPaymentOrderId — background watcher also continues verifying payment.
     if (!mounted) return;
     setState(() {
-      _pollingOrderId = null;
       _notFoundStreak = 0;
       _paymentUiPhase = _PaymentUiPhase.timedOut;
       _sessionEndDetail = detail ??
@@ -459,8 +467,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   Future<void> _markPaymentCompleted({
     Map<String, dynamic>? userPayload,
   }) async {
-    _pollTimer?.cancel();
-    _pollTimer = null;
     _waitingTimer?.cancel();
     _waitingTimer = null;
 
@@ -487,22 +493,38 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     if (!unlocked) {
       // Payment may be paid but entitlements not active yet — do NOT show green tick.
-      setState(() {
-        _pollingOrderId = null;
-        _paymentUiPhase = _PaymentUiPhase.none;
-        _pendingBundleLabel = null;
-      });
+      // Keep polling this order; background watcher also retries.
       if (orderId != null && orderId.isNotEmpty) {
         await prefs.setString('pendingPaymentOrderId', orderId);
+        if (mounted) {
+          setState(() {
+            _pollingOrderId = orderId;
+            _paymentUiPhase = _PaymentUiPhase.waiting;
+            _sessionEndDetail = null;
+          });
+          if (_pollTimer == null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _startPolling();
+            });
+          }
+        }
+      } else if (mounted) {
+        setState(() {
+          _pollingOrderId = null;
+          _paymentUiPhase = _PaymentUiPhase.none;
+          _pendingBundleLabel = null;
+        });
       }
       _showStatus(
         'Malipo yamepokelewa',
-        'Tunafungua channel zote… fungua tena app ikiwa bado zimefungwa.',
+        'Tunafungua channel zote… subiri kidogo au fungua tena app ikiwa bado zimefungwa.',
         _PayDialogTone.info,
       );
       return;
     }
 
+    _pollTimer?.cancel();
+    _pollTimer = null;
     await prefs.remove('pendingPaymentOrderId');
     // Only here: gateway success helpers already verified + local premium is active.
     setState(() {

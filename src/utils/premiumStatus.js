@@ -1,6 +1,7 @@
 /**
  * Premium is active until subscriptionEndDate passes.
  * When an expiry date is present it is authoritative over the isPremium flag.
+ * Allow a small clock-skew window so just-granted expiry is not treated as expired.
  */
 export const resolvePremiumFromUserData = (userData = {}) => {
   const blocked = userData.blocked === true;
@@ -16,8 +17,18 @@ export const resolvePremiumFromUserData = (userData = {}) => {
     if (!Number.isNaN(d.getTime())) subEnd = d;
   }
 
+  const now = Date.now();
+  const skewMs = 15 * 60 * 1000;
+
   if (subEnd) {
-    return { premium: subEnd > new Date(), subEnd };
+    if (subEnd.getTime() > now - skewMs) {
+      return { premium: true, subEnd };
+    }
+    const apiPremium = !!(userData.isPremium || userData.is_premium);
+    return {
+      premium: apiPremium && subEnd.getTime() > now - 60 * 60 * 1000,
+      subEnd,
+    };
   }
 
   const apiPremium = !!(userData.isPremium || userData.is_premium);
@@ -25,20 +36,5 @@ export const resolvePremiumFromUserData = (userData = {}) => {
 };
 
 export const resolvePremiumFromRealtimePayload = (data = {}) => {
-  const blocked = data.blocked === true;
-  if (blocked) return { premium: false, subEnd: null };
-
-  let subEnd = null;
-  const endRaw = data.premiumExpiresAt || data.premium_expires_at || data.subscriptionEndDate;
-  if (endRaw) {
-    const d = new Date(endRaw);
-    if (!Number.isNaN(d.getTime())) subEnd = d;
-  }
-
-  if (subEnd) {
-    return { premium: subEnd > new Date(), subEnd };
-  }
-
-  const apiPremium = !!(data.isPremium || data.is_premium);
-  return { premium: apiPremium, subEnd: null };
+  return resolvePremiumFromUserData(data);
 };

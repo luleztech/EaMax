@@ -80,12 +80,7 @@ bool isPaymentSuccessResponse(Map<String, dynamic> response) {
     return true;
   }
 
-  final st = response['status'] ?? response['raw']?['data']?[0]?['payment_status'];
-  // COMPLETED alone is not enough — require a premium user snapshot when status says done.
-  if (isPaymentCompleted(st) && user != null) {
-    // User object present but not premium yet → still applying.
-    return false;
-  }
+  // COMPLETED alone is not enough — require a premium user snapshot or grant flag.
   return false;
 }
 

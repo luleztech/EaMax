@@ -621,6 +621,18 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       final snap = PremiumSnapshot.fromDynamic(userPayload);
       if (snap?.isPremium == true) {
         await _applyUserPremiumData(userPayload, uid: uid);
+      } else {
+        // Trust explicit grant flags even when expiry parse is flaky on device clock.
+        final granted = userPayload['isPremium'] == true ||
+            userPayload['is_premium'] == true ||
+            userPayload['premiumGranted'] == true ||
+            userPayload['premium_granted'] == true;
+        if (granted) {
+          final forced = Map<String, dynamic>.from(userPayload);
+          forced['isPremium'] = true;
+          forced['is_premium'] = true;
+          await _applyUserPremiumData(forced, uid: uid);
+        }
       }
     }
 

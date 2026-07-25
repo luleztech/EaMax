@@ -42,17 +42,25 @@ export const userPayloadFromPaymentResponse = (response = {}) => {
   return user && typeof user === 'object' ? user : null;
 };
 
-/** True when status or embedded user payload means premium should unlock. */
+/** Keep polling while the server is still applying premium after gateway confirmation. */
+export const isPaymentStillApplying = (response = {}) => response.applying === true;
+
+/**
+ * True when payment succeeded AND premium is active (or explicitly granted).
+ * Never treat gateway COMPLETED alone as unlock — entitlements must be live.
+ */
 export const isPaymentSuccessResponse = (response = {}) => {
-  const status =
-    response.status || response.raw?.data?.[0]?.payment_status || response.raw?.data?.[0]?.status;
-  if (isPaymentCompleted(status)) return true;
+  if (isPaymentStillApplying(response)) return false;
+
   const user = userPayloadFromPaymentResponse(response);
   if (user) {
     const { premium } = resolvePremiumFromUserData(user);
     if (premium) return true;
   }
+
+  if (response.premiumGranted === true || response.premium_granted === true) {
+    return true;
+  }
+
   return false;
 };
-
-export const isPaymentStillApplying = (response = {}) => response.applying === true;

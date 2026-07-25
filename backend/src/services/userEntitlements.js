@@ -160,8 +160,10 @@ const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    if (needsPremium && planInterval) {
-      await grantUserEntitlementsInTransaction(client, userId, { planInterval });
+    if (needsPremium) {
+      await grantUserEntitlementsInTransaction(client, userId, {
+        planInterval: planInterval || '30 days',
+      });
     } else if (needsChannels) {
       await unlockAllChannelsInTransaction(client, userId);
     }
@@ -223,22 +225,51 @@ const clearAllExpiredPremiumFlags = async () => {
 };
 
 const repairCompletedPaymentsMissingPremium = async () => {
-  const { resolvePremiumInterval } = require('./subscriptionPlansService');
+  const { resolvePremiumInterval, getActivePlans, intervalForPlan } = require('./subscriptionPlansService');
 
   const rows = await query(
-    `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan
+    `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents
        FROM subscription_payments sp
        JOIN users u ON u.id = sp.user_id
       WHERE sp.status = 'completed'
         AND u.blocked IS NOT TRUE
-        AND (u.premium_expires_at IS NULL OR u.premium_expires_at <= NOW())
+        AND (
+          u.premium_expires_at IS NULL
+          OR u.premium_expires_at <= NOW()
+          OR u.is_premium IS NOT TRUE
+        )
       ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
       LIMIT 200`,
   );
 
+  const resolveInterval = async (plan, amountCents) => {
+    const fromPlan = await resolvePremiumInterval(plan);
+    if (fromPlan) return fromPlan;
+    const planKey = String(plan || '').toLowerCase();
+    if (planKey.startsWith('offer:')) {
+      const days = parseInt(planKey.split(':')[1], 10);
+      if (Number.isFinite(days) && days > 0 && days <= 366) return `${days} days`;
+    }
+    try {
+      const plans = await getActivePlans();
+      const amount = Number(amountCents);
+      if (Number.isFinite(amount) && amount > 0) {
+        const exact = plans.find((p) => Number(p.priceTzs) === amount);
+        const exactInterval = intervalForPlan(exact);
+        if (exactInterval) return exactInterval;
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    if (planKey === 'week') return '7 days';
+    if (planKey === 'month') return '30 days';
+    if (planKey === 'year') return '90 days';
+    return '30 days';
+  };
+
   let repaired = 0;
   for (const row of rows.rows) {
-    const interval = await resolvePremiumInterval(row.plan);
+    const interval = await resolveInterval(row.plan, row.amount_cents);
     if (!interval) continue;
     const ok = await repairUserEntitlementsIfNeeded(Number(row.user_id), interval);
     if (ok) repaired += 1;

@@ -101,6 +101,40 @@ const cases = [
       assert(refs[0] === clientOrderId, `expected metadata orderId first, got ${refs[0]}`);
     },
   },
+  {
+    name: 'Aurax SUCCESS alone (STK ack) is not paid',
+    fn: () => {
+      const payload = {
+        success: true,
+        status: 'SUCCESS',
+        transaction: {
+          id: gatewayId,
+          status: 'SUCCESS',
+          paymentStatus: 'PENDING',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { isCompleted } = h.evaluateAuraxOrderStatusForApply(payload);
+      assert(isCompleted === false, 'expected SUCCESS+PENDING paymentStatus to stay unpaid');
+    },
+  },
+  {
+    name: 'Aurax paymentStatus COMPLETED still paid even if status SUCCESS',
+    fn: () => {
+      const payload = {
+        success: true,
+        status: 'SUCCESS',
+        transaction: {
+          id: gatewayId,
+          status: 'SUCCESS',
+          paymentStatus: 'COMPLETED',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { isCompleted } = h.evaluateAuraxOrderStatusForApply(payload);
+      assert(isCompleted === true, 'expected paymentStatus COMPLETED to be paid');
+    },
+  },
 ];
 
 let passed = 0;

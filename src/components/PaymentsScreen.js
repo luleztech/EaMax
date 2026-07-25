@@ -205,19 +205,29 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         }
 
         if (isPaymentSuccessResponse(response)) {
-          stopPolling();
-          await AsyncStorage.removeItem('pendingPaymentOrderId');
-
           console.log('[Payment] Payment confirmed! Triggering immediate upgrade...');
 
+          let unlocked = false;
           if (onPaymentSuccess) {
             try {
               await Promise.resolve(onPaymentSuccess(response?.user));
+              unlocked = true;
               setLastPaymentSuccess(true);
             } catch (e) {
               console.warn('[Payment] Success callback error:', e);
             }
+          } else {
+            unlocked = true;
           }
+
+          if (!unlocked) {
+            // Keep pending + keep polling until local premium is confirmed.
+            console.warn('[Payment] Gateway paid but local premium unlock not confirmed yet — keep polling');
+            return;
+          }
+
+          stopPolling();
+          await AsyncStorage.removeItem('pendingPaymentOrderId');
 
           showStatusModal(
             'Habari Njema! 🎉',
