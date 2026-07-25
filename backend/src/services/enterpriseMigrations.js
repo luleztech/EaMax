@@ -10,6 +10,7 @@ const MIGRATION_FILES = [
   '013_schedule_items.sql',
   '014_schedule_images_reminders.sql',
   '015_widen_subscription_payment_plan.sql',
+  '016_ensure_user_channel_unlocks.sql',
 ];
 
 let ran = false;

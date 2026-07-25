@@ -76,6 +76,11 @@ const SONIC_WEBHOOK_PAID_STATUSES = new Set([
   'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS',
 ]);
 
+const SONIC_EXPLICIT_UNPAID_STATUSES = new Set([
+  'PENDING', 'PROCESSING', 'INITIATED', 'WAITING', 'QUEUED',
+  'CREATED', 'OPEN', 'SENT', 'STK_SENT', 'PROMPT_SENT', 'IN_PROGRESS', 'UNKNOWN',
+]);
+
 const ensureSonicPesaConfigured = () => {
   if (!SONICPESA_API_KEY) {
     throw new Error('SONICPESA API key (SONICPESA_API_KEY) is not configured on the server');
@@ -716,10 +721,14 @@ const SONIC_HTTP_TIMEOUT_MS = Math.min(
 const isSonicPaidRaw = (rawUpper) => {
   if (!rawUpper) return false;
   const u = String(rawUpper).toUpperCase().trim();
+  if (SONIC_EXPLICIT_UNPAID_STATUSES.has(u)) return false;
+  // `OK` is commonly the gateway's request acknowledgement, not proof that a
+  // wallet debit completed. Only explicit completed/paid statuses may grant.
+  if (u === 'OK') return false;
   if (SONIC_WEBHOOK_PAID_STATUSES.has(u)) return true;
   if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS)/.test(u)) return true;
   const lower = u.toLowerCase();
-  return lower === 'successful' || lower === 'ok' || lower === 'true' || lower === '1';
+  return lower === 'successful';
 };
 
 const extractSonicPaymentStatus = (statusData) => {
@@ -767,7 +776,7 @@ const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
 };
 
 const allowPaymentTestComplete = () =>
-  process.env.NODE_ENV !== 'production' || String(process.env.PAYMENT_ALLOW_TEST_COMPLETE || '').trim() === '1';
+  String(process.env.PAYMENT_ALLOW_TEST_COMPLETE || '').trim() === '1';
 
 const fetchUserPremiumSnapshotForOrder = async (orderId) => {
   const r = await query(
@@ -1932,25 +1941,16 @@ router.post('/aurax/webhook', async (req, res, next) => {
       return res.status(400).json({ error: 'Missing transaction reference' });
     }
 
-    const pendingAurax = await query(
-      `SELECT id FROM subscription_payments
-         WHERE (provider_ref = ANY($1::text[]) OR gateway_ref = ANY($1::text[]))
-           AND status = $2 AND payment_provider = $3
-         LIMIT 1`,
-      [allRefs.length ? allRefs : [orderId], 'pending', PAYMENT_PROVIDERS.AURAX],
-    );
-    const hasPendingAurax = pendingAurax.rows.length > 0;
-
     if (AURAXPAY_WEBHOOK_SECRET) {
       if (!signatureValid) {
         console.warn('[AuraxPay] Webhook rejected: invalid HMAC (AURAXPAY_WEBHOOK_SECRET is set).');
         return res.status(401).json({ error: 'Invalid webhook signature' });
       }
-    } else if (!hasPendingAurax) {
-      console.warn('[AuraxPay] Webhook rejected: set AURAXPAY_WEBHOOK_SECRET in production, or no pending Aurax order for this reference.');
-      return res.status(401).json({ error: 'Webhook not verified' });
     } else {
-      console.warn('[AuraxPay] Webhook accepted without HMAC (pending Aurax order only). Set AURAXPAY_WEBHOOK_SECRET for production.');
+      // A reference alone is public/client-visible and cannot prove a debit.
+      // Do not let an unsigned caller turn a pending order into Premium.
+      console.warn('[AuraxPay] Webhook rejected: AURAXPAY_WEBHOOK_SECRET is required to verify payment completion.');
+      return res.status(503).json({ error: 'Webhook verification is not configured' });
     }
 
     if (!paid) {
@@ -2031,24 +2031,16 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
       return res.status(400).json({ error: 'Missing order reference' });
     }
 
-    const pendingSonic = await query(
-      `SELECT id FROM subscription_payments
-         WHERE (provider_ref = $1 OR gateway_ref = $1) AND status = $2 AND payment_provider = $3
-         LIMIT 1`,
-      [orderId, 'pending', PAYMENT_PROVIDERS.SONICPESA],
-    );
-    const hasPendingSonic = pendingSonic.rows.length > 0;
-
     if (SONICPESA_WEBHOOK_SECRET) {
       if (!signatureValid) {
         console.warn('[SonicPesa] Webhook rejected: invalid HMAC (SONICPESA_WEBHOOK_SECRET is set).');
         return res.status(401).json({ error: 'Invalid webhook signature' });
       }
-    } else if (!hasPendingSonic) {
-      console.warn('[SonicPesa] Webhook rejected: set SONICPESA_WEBHOOK_SECRET in production, or no pending SonicPesa order for this reference.');
-      return res.status(401).json({ error: 'Webhook not verified' });
     } else {
-      console.warn('[SonicPesa] Webhook accepted without HMAC (pending SonicPesa order only). Set SONICPESA_WEBHOOK_SECRET for production.');
+      // A reference alone is public/client-visible and cannot prove a debit.
+      // Do not let an unsigned caller turn a pending order into Premium.
+      console.warn('[SonicPesa] Webhook rejected: SONICPESA_WEBHOOK_SECRET is required to verify payment completion.');
+      return res.status(503).json({ error: 'Webhook verification is not configured' });
     }
 
     if (!paid) {
@@ -2084,7 +2076,8 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
   }
 });
 
-// Manual test-complete — only allowed when PAYMENT_ALLOW_TEST_COMPLETE=1 (never in production without explicit opt-in).
+// Manual completion is intentionally disabled unless explicitly enabled. It is
+// only for a local/test gateway and must never become a production backdoor.
 const manualCompleteHandler = async (req, res, next) => {
   try {
     if (!allowPaymentTestComplete()) {
@@ -2194,4 +2187,3 @@ module.exports.__paymentTestHelpers = {
   pickPreferredAuraxOrderId,
   collectAuraxOrderRefs,
 };
-

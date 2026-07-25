@@ -93,6 +93,14 @@ const cases = [
     },
   },
   {
+    name: 'Sonic OK acknowledgement is not a paid transaction',
+    fn: () => {
+      const payload = { order_id: 'SONIC-ACK-1', data: [{ payment_status: 'OK' }] };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'expected OK acknowledgement to stay unpaid');
+    },
+  },
+  {
     name: 'collectAuraxOrderRefs prioritizes metadata orderId',
     fn: () => {
       const refs = h.collectAuraxOrderRefs({

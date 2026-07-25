@@ -8,13 +8,31 @@ const {
 
 /** Insert unlock rows for every channel (active or not — matches payment completion behavior). */
 const unlockAllChannelsInTransaction = async (client, userId) => {
-  const result = await client.query(
+  await client.query(
     `INSERT INTO user_unlocked_channels (user_id, channel_id)
      SELECT $1, id FROM channels
      ON CONFLICT (user_id, channel_id) DO NOTHING`,
     [userId],
   );
-  return result.rowCount;
+
+  // A completed payment must give access to every channel.  Do not silently
+  // acknowledge a payment if the unlock insert was incomplete (for example,
+  // because a deployment is missing the unlock table or a constraint failed).
+  const result = await client.query(
+    `SELECT COUNT(c.id)::int AS total_channels,
+            COUNT(uuc.channel_id)::int AS unlocked_channels
+       FROM channels c
+       LEFT JOIN user_unlocked_channels uuc
+         ON uuc.channel_id = c.id AND uuc.user_id = $1`,
+    [userId],
+  );
+  const { total_channels, unlocked_channels } = result.rows[0] || {};
+  if (Number(total_channels) !== Number(unlocked_channels)) {
+    throw new Error(
+      `Premium entitlement incomplete for user id=${userId}: ${unlocked_channels || 0}/${total_channels || 0} channels unlocked`,
+    );
+  }
+  return Number(unlocked_channels) || 0;
 };
 
 const grantPremiumWithIntervalInTransaction = async (client, userId, planInterval) => {
@@ -52,7 +70,7 @@ const grantPremiumUntilInTransaction = async (client, userId, expiresAt) => {
 
 /**
  * Grant premium + unlock all channels inside an open transaction.
- * Channel unlock is best-effort so a missing/broken unlock table cannot block premium.
+ * Both operations are required: callers roll the payment back if either fails.
  */
 const grantUserEntitlementsInTransaction = async (client, userId, { planInterval = null, expiresAt = null } = {}) => {
   if (!planInterval && !expiresAt) {
@@ -63,16 +81,12 @@ const grantUserEntitlementsInTransaction = async (client, userId, { planInterval
     ? await grantPremiumWithIntervalInTransaction(client, userId, planInterval)
     : await grantPremiumUntilInTransaction(client, userId, expiresAt);
 
-  try {
-    const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId);
-    console.log('[Entitlements] Premium granted:', {
-      userId,
-      premium_expires_at: row.premium_expires_at,
-      channelsUnlocked,
-    });
-  } catch (unlockErr) {
-    console.error('[Entitlements] Channel unlock failed (premium still granted):', unlockErr?.message || unlockErr);
-  }
+  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId);
+  console.log('[Entitlements] Premium granted:', {
+    userId,
+    premium_expires_at: row.premium_expires_at,
+    channelsUnlocked,
+  });
 
   return row;
 };
