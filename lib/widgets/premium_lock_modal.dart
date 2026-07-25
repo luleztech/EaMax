@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -35,8 +34,8 @@ class PremiumLockModal extends StatefulWidget {
       barrierLabel: 'premium-carousel',
       barrierColor: Colors.transparent,
       transitionDuration: const Duration(milliseconds: 220),
-      pageBuilder: (_, __, ___) => PremiumLockModal(onPaymentSuccess: onPaymentSuccess),
-      transitionBuilder: (_, anim, __, child) {
+      pageBuilder: (_, _, _) => PremiumLockModal(onPaymentSuccess: onPaymentSuccess),
+      transitionBuilder: (_, anim, _, child) {
         final curved = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
         return AnimatedBuilder(
           animation: curved,
@@ -808,7 +807,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
                 : ListView.separated(
                     padding: EdgeInsets.zero,
                     itemCount: _plans.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (_, i) {
                       final pk = _plans[i];
                       final on = pk.slug == _selectedSlug;
@@ -1074,7 +1073,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             child: _speaking
                 ? AnimatedBuilder(
                     animation: _wave!,
-                    builder: (_, __) => Row(
+                    builder: (_, _) => Row(
                       children: List.generate(5, (i) {
                         final phase = (_wave!.value + i * 0.14) % 1.0;
                         final h = 4.0 + (10.0 * (0.35 + 0.65 * (1 - (phase - 0.5).abs() * 2).clamp(0.0, 1.0)));
@@ -1214,7 +1213,7 @@ class _HeroPanel extends StatelessWidget {
     return Center(
       child: AnimatedBuilder(
         animation: pulse,
-        builder: (_, __) {
+        builder: (_, _) {
           final t = spinning ? pulse.value * 2 * math.pi : 0.0;
           final scale = spinning ? 1.0 : (0.94 + pulse.value * 0.06);
           return Transform.rotate(
@@ -1343,7 +1342,7 @@ class _SuccessTick extends StatelessWidget {
     return Center(
       child: AnimatedBuilder(
         animation: controller,
-        builder: (_, __) {
+        builder: (_, _) {
           final t = Curves.easeOutBack.transform(controller.value.clamp(0.0, 1.0));
           return Transform.scale(
             scale: 0.4 + (0.6 * t),

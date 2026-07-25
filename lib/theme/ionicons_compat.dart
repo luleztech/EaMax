@@ -1,3 +1,6 @@
+// Compatibility aliases deliberately preserve the old Ionicons snake_case API.
+// ignore_for_file: non_constant_identifier_names
+
 import 'package:flutter/material.dart';
 
 /// Lightweight compatibility shim for projects that used `package:ionicons`.

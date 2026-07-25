@@ -89,10 +89,9 @@ Future<bool> _registerWithRetry(String id, {int maxRetries = _maxRegistrationRet
   for (var attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       final result = await userApi.register(id);
-      if (result != null &&
-          (result['id'] != null ||
-              result['external_id'] != null ||
-              result['externalId'] != null)) {
+      if (result['id'] != null ||
+          result['external_id'] != null ||
+          result['externalId'] != null) {
         debugPrint('[UserRegistration] Success for $id on attempt $attempt');
         // Clear any pending registration
         final prefs = await SharedPreferences.getInstance();

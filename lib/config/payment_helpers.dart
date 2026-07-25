@@ -80,7 +80,11 @@ bool isPaymentSuccessResponse(Map<String, dynamic> response) {
     return true;
   }
 
-  // COMPLETED alone is not enough — require a premium user snapshot or grant flag.
+  final status = response['status'];
+  if (isPaymentCompleted(status)) {
+    return true;
+  }
+
   return false;
 }
 

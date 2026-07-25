@@ -1,3 +1,7 @@
+// This file is only imported by the web implementation. Browser message and
+// platform-view APIs are required to host the embedded player.
+// ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:html' as html;

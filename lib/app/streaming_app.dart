@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -605,7 +604,21 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
     await retryPendingRegistrations();
 
-    // Confirm premium from server; never clear a successful local unlock.
+    // If userPayload or explicit flags indicate success, force premium immediately.
+    final isExplicitSuccess = userPayload != null &&
+        (userPayload['isPremium'] == true ||
+            userPayload['is_premium'] == true ||
+            userPayload['premiumGranted'] == true ||
+            userPayload['premium_granted'] == true ||
+            userPayload['status'] == 'COMPLETED');
+    if (isExplicitSuccess) {
+      final forced = Map<String, dynamic>.from(userPayload);
+      forced['isPremium'] = true;
+      forced['is_premium'] = true;
+      await _applyUserPremiumData(forced, uid: uid);
+    }
+
+    // Confirm premium from server in background; never clear a successful local unlock.
     if (!_premium) {
       for (var i = 0; i < 8; i++) {
         await Future<void>.delayed(Duration(seconds: i < 3 ? 1 : 2));
@@ -613,32 +626,12 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         if (_premium) break;
       }
     } else {
-      await _refreshUser(maxAttempts: 2, protectExistingPremium: true);
-    }
-
-    // Force-unlock from payload if server snapshot said premium but refresh flaked.
-    if (!_premium && userPayload != null) {
-      final snap = PremiumSnapshot.fromDynamic(userPayload);
-      if (snap?.isPremium == true) {
-        await _applyUserPremiumData(userPayload, uid: uid);
-      } else {
-        // Trust explicit grant flags even when expiry parse is flaky on device clock.
-        final granted = userPayload['isPremium'] == true ||
-            userPayload['is_premium'] == true ||
-            userPayload['premiumGranted'] == true ||
-            userPayload['premium_granted'] == true;
-        if (granted) {
-          final forced = Map<String, dynamic>.from(userPayload);
-          forced['isPremium'] = true;
-          forced['is_premium'] = true;
-          await _applyUserPremiumData(forced, uid: uid);
-        }
-      }
+      unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
     }
 
     await _homeKey.currentState?.reloadRemoteData();
     if (mounted) setState(() {});
-    return _premium;
+    return _premium || isExplicitSuccess;
   }
 
   Future<void> _checkPendingPayment() async {

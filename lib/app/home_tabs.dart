@@ -376,7 +376,7 @@ class HomeMainTab extends StatelessWidget {
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   itemCount: _homeFilterPills.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 10),
+                  separatorBuilder: (_, _) => const SizedBox(width: 10),
                   itemBuilder: (context, i) {
                     final cat = _homeFilterPills[i];
                     return CatPill(
@@ -686,7 +686,7 @@ class ChannelsTab extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   scrollDirection: Axis.horizontal,
                   itemCount: keys.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
                   itemBuilder: (context, i) {
                     final opt = keys[i];
                     final active = fk == opt;
@@ -710,7 +710,7 @@ class ChannelsTab extends StatelessWidget {
                     crossAxisSpacing: gap,
                     childAspectRatio: cellW / tileH,
                   ),
-                  delegate: SliverChildBuilderDelegate((_, __) => const ShimmerBox(radius: 16), childCount: 6),
+                  delegate: SliverChildBuilderDelegate((_, _) => const ShimmerBox(radius: 16), childCount: 6),
                 ),
               )
             else if (list.isEmpty)
@@ -828,6 +828,8 @@ class HomeLoadingShimmer extends StatelessWidget {
   }
 }
 
+// Retained as an alternate compact filter layout for small screens.
+// ignore: unused_element
 class _FilterRow extends StatelessWidget {
   const _FilterRow({required this.active, required this.onSelect});
   final String active;
@@ -886,6 +888,8 @@ class _FilterRow extends StatelessWidget {
   }
 }
 
+// Retained as an alternate grouped-channel layout.
+// ignore: unused_element
 class _SectionBlock extends StatelessWidget {
   const _SectionBlock({
     required this.section,
@@ -1069,8 +1073,8 @@ class _ChannelCard extends StatelessWidget {
                         CachedNetworkImage(
                           imageUrl: channel.thumbnailUrl!,
                           fit: BoxFit.cover,
-                          placeholder: (_, __) => Container(color: const Color(0xFF090D18)),
-                          errorWidget: (_, __, ___) => Container(
+                          placeholder: (_, _) => Container(color: const Color(0xFF090D18)),
+                          errorWidget: (_, _, _) => Container(
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
                                 begin: const Alignment(-0.8, -0.8),

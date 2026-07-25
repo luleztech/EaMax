@@ -52,6 +52,7 @@ dependencies:
   chewie: ^1.14.1
   webview_flutter: ^4.14.0
   webview_flutter_web: ^0.2.3+4
+  webview_flutter_platform_interface: ^2.14.0
   wakelock_plus: ^1.6.1
   firebase_core: ^4.10.0
   firebase_messaging: ^16.3.0

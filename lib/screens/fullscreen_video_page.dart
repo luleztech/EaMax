@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -75,7 +74,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   /// First multi-track manifest: apply admin default quality cap once at startup.
   bool _appliedDefaultOkoa360 = false;
 
-  /** After landscape once this session, do not show hint again (until new page). */
+  /// After landscape once this session, do not show hint again (until new page).
   bool _hasSeenLandscapeSession = false;
 
   void _applyImmersive() {
@@ -162,7 +161,9 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     }
     try {
       _webController!.setBackgroundColor(Colors.black);
-    } on UnimplementedError {}
+    } on UnimplementedError {
+      // WebView background color is not implemented by every platform.
+    }
     await _guardWebViewNavigation(_webController!);
 
     final config = WebPlaybackConfig(

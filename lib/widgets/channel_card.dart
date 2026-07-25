@@ -270,7 +270,7 @@ class _ChannelCardState extends State<ChannelCard> {
               )
             else if (rail)
               SizedBox(
-                width: w ?? kHomeRailTileWidth,
+                width: w,
                 height: kHomeRailCardHeight,
                 child: _ChannelPoster(
                   t: t,

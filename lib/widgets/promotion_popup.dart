@@ -139,9 +139,14 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
 
   String _normalizePhone(String raw) {
     var s = raw.replaceAll(RegExp(r'\s+'), '');
-    if (s.startsWith('+255')) s = '0${s.substring(4)}';
-    else if (s.startsWith('255') && s.length >= 12) s = '0${s.substring(3)}';
-    if (RegExp(r'^[1-9]\d{8}$').hasMatch(s)) s = '0$s';
+    if (s.startsWith('+255')) {
+      s = '0${s.substring(4)}';
+    } else if (s.startsWith('255') && s.length >= 12) {
+      s = '0${s.substring(3)}';
+    }
+    if (RegExp(r'^[1-9]\d{8}$').hasMatch(s)) {
+      s = '0$s';
+    }
     return s;
   }
 
@@ -548,14 +553,14 @@ class _PromotionFullImage extends StatelessWidget {
         width: maxWidth,
         fit: BoxFit.contain,
         fadeInDuration: const Duration(milliseconds: 280),
-        placeholder: (_, __) => SizedBox(
+        placeholder: (_, _) => SizedBox(
           width: maxWidth,
           height: math.min(maxHeight * 0.35, 160),
           child: const Center(
             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
           ),
         ),
-        errorWidget: (_, __, ___) => SizedBox(
+        errorWidget: (_, _, _) => SizedBox(
           width: maxWidth,
           height: 120,
           child: const Icon(

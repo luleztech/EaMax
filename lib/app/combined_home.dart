@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
@@ -50,7 +49,11 @@ const _homeLoadTimeout = Duration(seconds: 30);
 const _homeRequestTimeout = Duration(seconds: 30);
 const _homeReloadDebounce = Duration(seconds: 25);
 
-String _hexColor(Color c) => '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
+int _colorByte(double component) =>
+    (component * 255).round().clamp(0, 255).toInt();
+
+String _hexColor(Color c) =>
+    '#${_colorByte(c.r).toRadixString(16).padLeft(2, '0')}${_colorByte(c.g).toRadixString(16).padLeft(2, '0')}${_colorByte(c.b).toRadixString(16).padLeft(2, '0')}';
 
 Color _parseHex(String? s, Color fallback) {
   if (s == null || s.isEmpty) return fallback;
@@ -102,7 +105,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   String _homeChannelFilter = 'zote';
   List<CarouselSlide> _carousel = [];
   List<ChannelUi> _football = [];
-  List<ChannelUi> _freeOrdered = [];
   Map<String, List<ChannelUi>> _byCat = {
     for (final g in _movieGenres) g.key: [],
     'habari': [],
@@ -355,9 +357,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                   'image_url': s.imageUrl,
                   'video_url': s.videoUrl,
                   'id': s.id,
-                  'gradient_start': '#${(s.gradient[0].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
-                  'gradient_mid': '#${(s.gradient[1].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
-                  'gradient_end': '#${(s.gradient[2].value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
+                  'gradient_start': _hexColor(s.gradient[0]),
+                  'gradient_mid': _hexColor(s.gradient[1]),
+                  'gradient_end': _hexColor(s.gradient[2]),
                   'info_text': s.info.isNotEmpty ? s.info.first.text : null,
                 })
             .toList(),
@@ -378,7 +380,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   void _applyChannelRows(List<Map<String, dynamic>> rows) {
     final football = <ChannelUi>[];
-    final free = <ChannelUi>[];
     final cat = {
       for (final g in _movieGenres) g.key: <ChannelUi>[],
     };
@@ -407,7 +408,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         icon: category == 'football' ? 'soccer' : (category == 'movies' ? 'movie' : 'television'),
         apiRow: Map<String, dynamic>.from(ch),
       );
-      if (unlock) free.add(mapped);
       if (category == 'football') {
         football.add(mapped);
       } else if (cat.containsKey(category)) {
@@ -418,7 +418,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
 
     _football = football;
-    _freeOrdered = free;
     _byCat = cat;
   }
 
@@ -508,102 +507,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     } catch (_) {}
   }
 
-  ChannelBadgeUi _channelBadge(ChannelUi ch) => channelBadgeFor(
-        ch,
-        isPremium: widget.isPremium,
-        channelsPremiumOnly: widget.channelsPremiumOnly,
-      );
-
-  List<ChannelSection> _sections() {
-    switch (_homeChannelFilter) {
-      case 'mpira':
-        return _football.isEmpty
-            ? []
-            : [
-                ChannelSection(
-                  key: 'football',
-                  name: 'Mpira',
-                  icon: 'soccer',
-                  color: '#4ade80',
-                  channels: _football,
-                ),
-              ];
-      case 'movies':
-        return _movieGenres
-            .map((g) => ChannelSection(
-                  key: g.key,
-                  name: g.name,
-                  icon: g.iconStr,
-                  color: _hexColor(g.color),
-                  channels: _byCat[g.key] ?? [],
-                ))
-            .where((s) => s.channels.isNotEmpty)
-            .toList();
-      case 'habari':
-        final h = _byCat['habari'] ?? [];
-        return h.isEmpty
-            ? []
-            : [
-                ChannelSection(key: 'habari', name: 'Habari', icon: 'newspaper', color: '#ef4444', channels: h),
-              ];
-      default:
-        final freeChannels = _freeOrdered
-            .where((ch) => ch.isFreeForCatalog(widget.channelsPremiumOnly))
-            .toList();
-        final freeIds = freeChannels.map((ch) => ch.id).toSet();
-
-        final sections = <ChannelSection>[];
-        if (freeChannels.isNotEmpty) {
-          sections.add(ChannelSection(
-            key: 'free',
-            name: 'Chaneli za bure',
-            icon: 'gift',
-            color: '#22c55e',
-            channels: freeChannels,
-          ));
-        }
-
-        final footballNonFree = _football.where((ch) => !freeIds.contains(ch.id)).toList();
-        if (footballNonFree.isNotEmpty) {
-          sections.add(ChannelSection(key: 'football', name: 'Mpira', icon: 'soccer', color: '#4ade80', channels: footballNonFree));
-        }
-
-        for (final g in _movieGenres) {
-          final list = (_byCat[g.key] ?? []).where((ch) => !freeIds.contains(ch.id)).toList();
-          if (list.isNotEmpty) {
-            sections.add(ChannelSection(
-              key: g.key,
-              name: g.name,
-              icon: g.iconStr,
-              color: _hexColor(g.color),
-              channels: list,
-            ));
-          }
-        }
-
-        final hab = (_byCat['habari'] ?? []).where((ch) => !freeIds.contains(ch.id)).toList();
-        if (hab.isNotEmpty) {
-          sections.add(ChannelSection(key: 'habari', name: 'Habari', icon: 'newspaper', color: '#ef4444', channels: hab));
-        }
-        return sections;
-    }
-  }
-
-  IconData _icon(String name) {
-    switch (name) {
-      case 'soccer':
-        return Icons.sports_soccer;
-      case 'movie':
-        return Icons.movie;
-      case 'newspaper':
-        return Icons.article;
-      case 'gift':
-        return Icons.card_giftcard;
-      default:
-        return Icons.tv;
-    }
-  }
-
   /// Opens playback using admin global + per-channel player engine.
   Future<void> _openVideoPlayback({
     required String url,
@@ -653,18 +556,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     final e = raw.toString().trim();
     if (e.isEmpty || e == 'default' || e == 'global') return null;
     return e;
-  }
-
-  bool _canOpenFromCachedData(Map<String, dynamic>? data) {
-    if (data == null) return false;
-    final url = (data['streamUrl'] ?? data['stream_url'])?.toString().trim();
-    if (url == null || url.isEmpty) return false;
-    final drmType = (data['drmType'] ?? data['drm_type'])?.toString().toUpperCase();
-    if (drmType == null || drmType == 'NONE' || drmType.isEmpty) return true;
-    final token = _extractPlaybackToken(data);
-    final headers = _extractPlaybackHeaders(data);
-    final clearKey = _extractClearKeyPayload(data);
-    return token.isNotEmpty || headers.isNotEmpty || clearKey.isNotEmpty;
   }
 
   String _channelExternalUrl(ChannelUi ch, Map<String, dynamic>? channelData) {
@@ -787,26 +678,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     } catch (_) {
       return null;
     }
-  }
-
-  Future<Map<String, dynamic>> _mergeFreshAudioLanguage(
-    int channelId,
-    Map<String, dynamic>? channelData,
-  ) async {
-    final merged = Map<String, dynamic>.from(channelData ?? const {});
-    try {
-      final fresh = await channelsApi.getChannel(channelId);
-      final lang = _extractAudioLanguage(fresh);
-      merged['audioLanguage'] = lang;
-      merged['audio_language'] = lang;
-      _channelDataCache[channelId] = Map<String, dynamic>.from(merged);
-      _channelDataCacheTime[channelId] = DateTime.now();
-    } catch (_) {
-      final lang = _extractAudioLanguage(merged);
-      merged['audioLanguage'] = lang;
-      merged['audio_language'] = lang;
-    }
-    return merged;
   }
 
   Future<Map<String, dynamic>?> _legacyChannelData(ChannelUi ch) async {

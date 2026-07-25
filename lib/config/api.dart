@@ -95,13 +95,13 @@ Future<dynamic> _apiRequestOnce(
     }
 
     return data ?? <String, dynamic>{};
-  } on DioError catch (e) {
+  } on DioException catch (e) {
     if (e.error is AppUpgradeRequiredException || e.error is ApiRateLimitedException) {
       rethrow;
     }
-    if (e.type == DioErrorType.connectionTimeout ||
-        e.type == DioErrorType.receiveTimeout ||
-        e.type == DioErrorType.sendTimeout) {
+    if (e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout) {
       throw Exception('Network timeout');
     }
     if (e.error is Exception) {

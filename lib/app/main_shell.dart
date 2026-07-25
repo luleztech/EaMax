@@ -42,7 +42,7 @@ class MainShell extends StatelessWidget {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<int>(
       valueListenable: RemoteConfigService.configVersion,
-      builder: (context, _, __) => _buildShell(context),
+      builder: (context, _, _) => _buildShell(context),
     );
   }
 

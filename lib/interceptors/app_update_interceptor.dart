@@ -15,9 +15,9 @@ class AppUpdateInterceptor extends Interceptor {
     final config = appUpdateState.config;
     if (config != null && config.shouldBlockAccess && !_isAppConfigRequest(options)) {
       return handler.reject(
-        DioError(
+        DioException(
           requestOptions: options,
-          type: DioErrorType.cancel,
+          type: DioExceptionType.cancel,
           error: AppUpgradeRequiredException(
             message: config.updateMessage,
             minimumVersion: config.minimumSupportedVersion,
@@ -65,10 +65,10 @@ class AppUpdateInterceptor extends Interceptor {
       appUpdateState.activate(config);
 
       return handler.reject(
-        DioError(
+        DioException(
           requestOptions: response.requestOptions,
           response: response,
-          type: DioErrorType.badResponse,
+          type: DioExceptionType.badResponse,
           error: AppUpgradeRequiredException(
             message: updateMessage,
             minimumVersion: config.minimumSupportedVersion,
