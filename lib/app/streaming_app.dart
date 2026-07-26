@@ -609,8 +609,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         (userPayload['isPremium'] == true ||
             userPayload['is_premium'] == true ||
             userPayload['premiumGranted'] == true ||
-            userPayload['premium_granted'] == true ||
-            userPayload['status'] == 'COMPLETED');
+            userPayload['premium_granted'] == true);
     if (isExplicitSuccess) {
       final forced = Map<String, dynamic>.from(userPayload);
       forced['isPremium'] = true;

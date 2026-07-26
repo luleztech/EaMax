@@ -396,10 +396,76 @@ const resolveAuraxChannelFromPhone = (local0) => {
   return 'MPESA';
 };
 
+/** Resolve Aurax transaction object from any common envelope (null-safe, all networks). */
+const coerceAuraxTransactionObject = (payload) => {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const asTx = (value) => {
+    if (!value) return null;
+    if (typeof value === 'string' || typeof value === 'number') {
+      const id = String(value).trim();
+      return id ? { id } : null;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) return null;
+    return value;
+  };
+
+  const direct = asTx(payload.transaction);
+  if (direct && (direct.id || direct.reference || direct.paymentStatus || direct.payment_status || direct.status)) {
+    return direct;
+  }
+
+  const data = payload.data;
+  if (Array.isArray(data) && data.length) {
+    const first = asTx(data[0]?.transaction) || asTx(data[0]);
+    if (first) return first;
+  } else if (data && typeof data === 'object') {
+    const nested = asTx(data.transaction) || asTx(data);
+    if (
+      nested &&
+      (nested.id ||
+        nested.reference ||
+        nested.paymentStatus ||
+        nested.payment_status ||
+        nested.status ||
+        nested.state ||
+        nested.collectionStatus ||
+        nested.collection_status)
+    ) {
+      return nested;
+    }
+  }
+
+  // Root-level paid payload with explicit null/omitted transaction (seen on some carriers).
+  if (
+    payload.id ||
+    payload.reference ||
+    payload.paymentStatus ||
+    payload.payment_status ||
+    payload.collectionStatus ||
+    payload.collection_status
+  ) {
+    return {
+      id: payload.id || payload.reference || undefined,
+      reference: payload.reference || payload.id || undefined,
+      paymentStatus: payload.paymentStatus || payload.payment_status,
+      payment_status: payload.payment_status || payload.paymentStatus,
+      status: payload.status,
+      state: payload.state,
+      collectionStatus: payload.collectionStatus || payload.collection_status,
+      metadata: payload.metadata || undefined,
+      buyerPhone: payload.buyerPhone || payload.buyer_phone || payload.msisdn,
+      amount: payload.amount,
+    };
+  }
+
+  return direct;
+};
+
 const isAuraxInitiateSuccess = (auraxData, httpResponse) => {
   if (!auraxData || typeof auraxData !== 'object') return false;
-  if (auraxData.success === true && auraxData.transaction) return true;
-  const tx = auraxData.transaction;
+  const tx = coerceAuraxTransactionObject(auraxData);
+  if (auraxData.success === true && tx && (tx.id || tx.reference)) return true;
   if (tx && (tx.id || tx.reference)) return httpResponse?.ok !== false;
   return false;
 };
@@ -519,31 +585,54 @@ const pollAuraxOrderStatus = async (orderId) => {
 
 const extractAuraxPaymentStatus = (statusData) => {
   if (!statusData || typeof statusData !== 'object') return '';
-  const tx = statusData.transaction;
-  const nest = statusData.data && typeof statusData.data === 'object' ? statusData.data : null;
-  const nestTx = nest?.transaction && typeof nest.transaction === 'object' ? nest.transaction : null;
+  const tx =
+    statusData.transaction && typeof statusData.transaction === 'object' && !Array.isArray(statusData.transaction)
+      ? statusData.transaction
+      : coerceAuraxTransactionObject(statusData);
+  const nestRaw = statusData.data;
+  const nest = Array.isArray(nestRaw)
+    ? nestRaw[0] && typeof nestRaw[0] === 'object'
+      ? nestRaw[0]
+      : null
+    : nestRaw && typeof nestRaw === 'object'
+      ? nestRaw
+      : null;
+  const nestTx =
+    nest?.transaction && typeof nest.transaction === 'object' && !Array.isArray(nest.transaction)
+      ? nest.transaction
+      : null;
   // Prefer wallet/payment fields over generic status (SUCCESS often means query OK).
+  // Include nest.* — Aurax sometimes sends payment_status only under data with transaction:null.
   const paymentCandidates = [
     tx?.paymentStatus,
     tx?.payment_status,
     nestTx?.paymentStatus,
     nestTx?.payment_status,
+    nest?.paymentStatus,
+    nest?.payment_status,
     statusData.paymentStatus,
     statusData.payment_status,
     tx?.collectionStatus,
     tx?.collection_status,
     nestTx?.collectionStatus,
     nestTx?.collection_status,
+    nest?.collectionStatus,
+    nest?.collection_status,
+    statusData.collectionStatus,
+    statusData.collection_status,
   ];
   const genericCandidates = [
     tx?.status,
     tx?.state,
     nestTx?.status,
+    nestTx?.state,
     nest?.status,
+    nest?.state,
     statusData.status,
     statusData.state,
     tx?.result,
     nestTx?.result,
+    nest?.result,
   ];
   const toUpperList = (list) => {
     const out = [];
@@ -584,31 +673,37 @@ const isAuraxPaidRaw = (rawUpper) => {
   return lower === 'successful' || lower === 'true' || lower === '1';
 };
 
-/** Normalize poll/webhook payloads so transaction lives at a consistent path. */
+/** Normalize poll/webhook payloads so transaction lives at a consistent path (null-safe). */
 const normalizeAuraxStatusPayload = (statusData) => {
   if (!statusData || typeof statusData !== 'object') return statusData;
-  const dataObj =
-    statusData.data && typeof statusData.data === 'object' && !Array.isArray(statusData.data)
-      ? statusData.data
-      : null;
-  const tx =
-    statusData.transaction ||
-    dataObj?.transaction ||
-    (dataObj && (dataObj.id || dataObj.reference || dataObj.status || dataObj.paymentStatus)
-      ? dataObj
-      : null);
-  return tx ? { ...statusData, transaction: tx } : statusData;
+  const tx = coerceAuraxTransactionObject(statusData);
+  if (!tx) return statusData;
+  // Preserve existing object transaction when present; otherwise synthesize from null/alt shapes.
+  if (statusData.transaction && typeof statusData.transaction === 'object' && !Array.isArray(statusData.transaction)) {
+    return {
+      ...statusData,
+      transaction: {
+        ...tx,
+        ...statusData.transaction,
+        metadata: statusData.transaction.metadata || tx.metadata || statusData.metadata,
+      },
+    };
+  }
+  return { ...statusData, transaction: tx };
 };
 
 const evaluateAuraxOrderStatusForApply = (statusData) => {
   const normalized = normalizeAuraxStatusPayload(statusData);
-  const tx = normalized?.transaction;
+  const tx =
+    normalized?.transaction && typeof normalized.transaction === 'object'
+      ? normalized.transaction
+      : null;
   const rawStatus = extractAuraxPaymentStatus(normalized);
   let isCompleted = isAuraxPaidRaw(rawStatus);
   // Do not treat envelope success:true + status SUCCESS as paid — that is often
   // "request accepted". Only trust explicit payment fields / completion events.
   if (!isCompleted && normalized?.success === true) {
-    const nested = extractAuraxPaymentStatus({ transaction: tx });
+    const nested = extractAuraxPaymentStatus({ transaction: tx, data: normalized.data });
     if (isAuraxPaidRaw(nested)) isCompleted = true;
   }
   const ev = String(normalized?.event || normalized?.type || '').toLowerCase().trim();
@@ -618,47 +713,170 @@ const evaluateAuraxOrderStatusForApply = (statusData) => {
       ev === 'payment.success' ||
       ev === 'payment_completed' ||
       ev === 'transaction.completed' ||
-      ev === 'collection.completed';
+      ev === 'collection.completed' ||
+      ev === 'payment.successful' ||
+      ev === 'charge.succeeded';
   }
   return { isCompleted, rawStatus, transaction: tx || null };
 };
 
 const collectAuraxOrderRefs = (payload) => {
-  const tx = payload?.transaction || payload?.data?.transaction || payload?.data;
-  const nest = tx && typeof tx === 'object' ? tx : null;
-  const meta = nest?.metadata || payload?.metadata || payload?.data?.metadata || {};
+  const normalized = normalizeAuraxStatusPayload(payload || {});
+  const tx =
+    normalized?.transaction && typeof normalized.transaction === 'object'
+      ? normalized.transaction
+      : null;
+  const dataRaw = payload?.data;
+  const dataObj = Array.isArray(dataRaw)
+    ? dataRaw[0] && typeof dataRaw[0] === 'object'
+      ? dataRaw[0]
+      : null
+    : dataRaw && typeof dataRaw === 'object'
+      ? dataRaw
+      : null;
+  const meta = tx?.metadata || payload?.metadata || dataObj?.metadata || {};
   const refs = new Set();
   for (const v of [
     meta?.orderId,
     meta?.order_id,
-    nest?.orderId,
-    nest?.order_id,
+    meta?.clientOrderId,
+    meta?.client_order_id,
+    tx?.orderId,
+    tx?.order_id,
+    dataObj?.orderId,
+    dataObj?.order_id,
     payload?.orderId,
     payload?.order_id,
-    nest?.id,
-    nest?.reference,
+    tx?.id,
+    tx?.reference,
     payload?.id,
     payload?.reference,
     payload?.transactionId,
     payload?.transaction_id,
-    payload?.data?.id,
-    payload?.data?.reference,
+    dataObj?.id,
+    dataObj?.reference,
+    dataObj?.transactionId,
+    dataObj?.transaction_id,
     meta?.reference,
+    typeof payload?.transaction === 'string' ? payload.transaction : null,
   ]) {
     const s = String(v || '').trim();
-    if (s) refs.add(s);
+    if (s && s !== 'null' && s !== 'undefined') refs.add(s);
   }
   return [...refs];
 };
 
+/** Collect local-0 / E.164 phone hints from gateway payloads for stuck-payment recovery. */
+const collectPaymentPhoneHints = (payload) => {
+  const normalized = normalizeAuraxStatusPayload(payload || {});
+  const tx =
+    normalized?.transaction && typeof normalized.transaction === 'object'
+      ? normalized.transaction
+      : null;
+  const dataRaw = payload?.data;
+  const dataObj = Array.isArray(dataRaw)
+    ? dataRaw[0] && typeof dataRaw[0] === 'object'
+      ? dataRaw[0]
+      : null
+    : dataRaw && typeof dataRaw === 'object'
+      ? dataRaw
+      : null;
+  const rawPhones = [
+    tx?.buyerPhone,
+    tx?.buyer_phone,
+    tx?.msisdn,
+    tx?.phone,
+    payload?.buyerPhone,
+    payload?.buyer_phone,
+    payload?.msisdn,
+    payload?.phone,
+    dataObj?.buyerPhone,
+    dataObj?.buyer_phone,
+    dataObj?.msisdn,
+    dataObj?.phone,
+    payload?.metadata?.buyerPhone,
+    payload?.metadata?.phone,
+  ];
+  const locals = new Set();
+  for (const raw of rawPhones) {
+    const s = String(raw || '').trim();
+    if (!s) continue;
+    const norm = normalizePhoneToLocal0(s);
+    if (!norm.error && norm.local) locals.add(norm.local);
+    const digits = s.replace(/\D/g, '');
+    if (digits.length >= 9) {
+      const last9 = digits.slice(-9);
+      if (last9.length === 9) locals.add(`0${last9}`);
+    }
+  }
+  return [...locals];
+};
+
+const collectPaymentAmountHint = (payload) => {
+  const normalized = normalizeAuraxStatusPayload(payload || {});
+  const tx =
+    normalized?.transaction && typeof normalized.transaction === 'object'
+      ? normalized.transaction
+      : null;
+  const dataRaw = payload?.data;
+  const dataObj = Array.isArray(dataRaw)
+    ? dataRaw[0] && typeof dataRaw[0] === 'object'
+      ? dataRaw[0]
+      : null
+    : dataRaw && typeof dataRaw === 'object'
+      ? dataRaw
+      : null;
+  const candidates = [tx?.amount, payload?.amount, dataObj?.amount, tx?.amount_cents, payload?.amount_cents];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  return null;
+};
+
+/**
+ * Last-resort match when webhook/poll refs miss DB (null gateway_ref race / missing metadata).
+ * Only pending rows from the last 48h — never touches completed/failed history.
+ */
+const findPendingPaymentByBuyerHints = async ({ phones = [], amount = null, paymentProvider = null } = {}) => {
+  const uniquePhones = [...new Set((phones || []).map((p) => String(p || '').trim()).filter(Boolean))];
+  if (!uniquePhones.length) return null;
+  const amountNum = Number(amount);
+  const hasAmount = Number.isFinite(amountNum) && amountNum > 0;
+  const params = [uniquePhones];
+  let sql = `
+    SELECT id, user_id, plan, amount_cents, currency, status, payment_provider, provider_ref, gateway_ref, buyer_phone
+      FROM subscription_payments
+     WHERE status = 'pending'
+       AND created_at > NOW() - INTERVAL '48 hours'
+       AND buyer_phone = ANY($1::text[])`;
+  if (paymentProvider) {
+    params.push(paymentProvider);
+    sql += ` AND payment_provider = $${params.length}`;
+  }
+  if (hasAmount) {
+    params.push(amountNum);
+    sql += ` AND amount_cents = $${params.length}`;
+  }
+  sql += ` ORDER BY created_at DESC LIMIT 1`;
+  const result = await query(sql, params);
+  return result.rows[0] || null;
+};
+
 /** Prefer client orderId (provider_ref) over gateway transaction id for completion. */
 const pickPreferredAuraxOrderId = (allRefs, payload) => {
-  const tx = payload?.transaction || payload?.data?.transaction || payload?.data;
+  const normalized = normalizeAuraxStatusPayload(payload || {});
+  const tx =
+    normalized?.transaction && typeof normalized.transaction === 'object'
+      ? normalized.transaction
+      : null;
   const meta = tx?.metadata || payload?.metadata || payload?.data?.metadata || {};
-  const fromMeta = String(meta.orderId || meta.order_id || '').trim();
+  const fromMeta = String(meta.orderId || meta.order_id || meta.clientOrderId || meta.client_order_id || '').trim();
   if (fromMeta) return fromMeta;
   const fromPayload = String(payload?.orderId || payload?.order_id || '').trim();
   if (fromPayload) return fromPayload;
+  const fromData = String(payload?.data?.orderId || payload?.data?.order_id || '').trim();
+  if (fromData) return fromData;
   const clientUuid = (allRefs || []).find((r) => isLikelyAuraxOrderRef(r) && !/^AXP-/i.test(r));
   if (clientUuid) return clientUuid;
   return (allRefs && allRefs[0]) || null;
@@ -671,7 +889,7 @@ const extractAuraxWebhookOrderAndPaid = (payload) => {
   return { orderId, allRefs, paid: isCompleted, raw: rawStatus };
 };
 
-/** Apply Aurax completion; poll gateway when webhook refs do not match DB yet (gateway_ref race). */
+/** Apply Aurax completion; poll gateway + phone hints when webhook refs do not match DB yet. */
 const tryApplyAuraxCompletedPayment = async (orderId, meta, { altRefs = [] } = {}) => {
   const refs = [...new Set([orderId, ...(altRefs || [])].map((r) => String(r || '').trim()).filter(Boolean))];
   let result = await applyCompletedPayment(orderId, meta, {
@@ -691,15 +909,17 @@ const tryApplyAuraxCompletedPayment = async (orderId, meta, { altRefs = [] } = {
       const pollAltRefs = [...new Set([...refs, ...pollRefs, ref])];
       const gatewayId = String(transaction?.id || transaction?.reference || ref).trim();
       if (gatewayId) {
-        await query(
-          `UPDATE subscription_payments
-              SET gateway_ref = $1
-            WHERE provider_ref = $2
-              AND status = 'pending'
-              AND payment_provider = $3
-              AND (gateway_ref IS NULL OR gateway_ref = '')`,
-          [gatewayId, pollOrderId, PAYMENT_PROVIDERS.AURAX],
-        ).catch(() => {});
+        const linkTargets = [...new Set([pollOrderId, orderId, ...pollRefs].filter(Boolean))];
+        for (const target of linkTargets) {
+          await query(
+            `UPDATE subscription_payments
+                SET gateway_ref = $1
+              WHERE (provider_ref = $2 OR gateway_ref = $2)
+                AND status = 'pending'
+                AND (gateway_ref IS NULL OR gateway_ref = '' OR gateway_ref = $1)`,
+            [gatewayId, target],
+          ).catch(() => {});
+        }
       }
       result = await applyCompletedPayment(pollOrderId, transaction || statusData || meta, {
         expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
@@ -710,6 +930,49 @@ const tryApplyAuraxCompletedPayment = async (orderId, meta, { altRefs = [] } = {
       console.warn('[AuraxPay] Gateway poll fallback failed for ref:', ref, pollErr?.message || pollErr);
     }
   }
+
+  // Null-transaction / missing metadata: match recent pending by buyer phone + amount.
+  try {
+    const phones = collectPaymentPhoneHints(meta);
+    const amount = collectPaymentAmountHint(meta);
+    if (phones.length) {
+      const hinted = await findPendingPaymentByBuyerHints({
+        phones,
+        amount,
+        paymentProvider: PAYMENT_PROVIDERS.AURAX,
+      });
+      if (hinted?.provider_ref) {
+        console.warn('[AuraxPay] Recovering paid order via buyer phone hint', {
+          provider_ref: hinted.provider_ref,
+          phones,
+          amount,
+        });
+        const gatewayId = String(
+          coerceAuraxTransactionObject(meta)?.id ||
+            coerceAuraxTransactionObject(meta)?.reference ||
+            refs[0] ||
+            '',
+        ).trim();
+        if (gatewayId) {
+          await query(
+            `UPDATE subscription_payments
+                SET gateway_ref = $1
+              WHERE id = $2 AND status = 'pending'
+                AND (gateway_ref IS NULL OR gateway_ref = '')`,
+            [gatewayId, hinted.id],
+          ).catch(() => {});
+        }
+        result = await applyCompletedPayment(hinted.provider_ref, meta, {
+          expectedPaymentProvider: PAYMENT_PROVIDERS.AURAX,
+          altRefs: [...refs, hinted.provider_ref, hinted.gateway_ref].filter(Boolean),
+        });
+        if (result) return result;
+      }
+    }
+  } catch (hintErr) {
+    console.warn('[AuraxPay] Phone-hint recovery failed:', hintErr?.message || hintErr);
+  }
+
   return null;
 };
 
@@ -742,6 +1005,11 @@ const extractSonicPaymentStatus = (statusData) => {
     statusData.payment_status,
     statusData.paymentStatus,
     statusData.status,
+    // Null/empty data envelopes still sometimes carry result fields at root.
+    statusData.result,
+    nest?.result,
+    statusData.transaction_status,
+    nest?.transaction_status,
   ];
   const found = [];
   for (const c of candidates) {
@@ -1303,8 +1571,8 @@ async function handlePaymentStart(req, res, next) {
       status: response.status,
       success: auraxData.success,
       message: auraxData.message,
-      transactionId: auraxData.transaction?.id || null,
-      transactionRef: auraxData.transaction?.reference || null,
+      transactionId: coerceAuraxTransactionObject(auraxData)?.id || auraxData.transaction?.id || null,
+      transactionRef: coerceAuraxTransactionObject(auraxData)?.reference || auraxData.transaction?.reference || null,
       phoneUsed,
     });
 
@@ -1335,7 +1603,7 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
-    const auraxTx = auraxData.transaction || {};
+    const auraxTx = coerceAuraxTransactionObject(auraxData) || {};
     const gatewayRef = String(auraxTx.id || auraxTx.reference || '').trim();
     if (!gatewayRef) {
       await rollbackPendingPaymentByRef(orderId, paymentProviderForRow);
@@ -1441,7 +1709,25 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   const { expectedPaymentProvider = null, altRefs = [] } = options;
   const lookupRefs = [...new Set([orderId, ...(altRefs || [])].map((r) => String(r || '').trim()).filter(Boolean))];
   console.log('[Payment] Applying completed payment for refs:', lookupRefs, 'meta:', meta, 'expectedProvider:', expectedPaymentProvider || '(any)');
-  const payment = await findPaymentRowByRefs(lookupRefs);
+  let payment = await findPaymentRowByRefs(lookupRefs);
+  if (!payment) {
+    const phones = collectPaymentPhoneHints(meta);
+    const amount = collectPaymentAmountHint(meta);
+    if (phones.length) {
+      payment = await findPendingPaymentByBuyerHints({
+        phones,
+        amount,
+        paymentProvider: expectedPaymentProvider || null,
+      });
+      if (payment) {
+        console.warn('[Payment] Matched pending payment via buyer phone hint', {
+          provider_ref: payment.provider_ref,
+          phones,
+          amount,
+        });
+      }
+    }
+  }
   if (!payment) {
     console.log('[Payment] No payment found for refs:', lookupRefs);
     return null;
@@ -1470,6 +1756,28 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   if (!planInterval) {
     console.error('[Payment] Invalid or missing plan:', plan);
     return null;
+  }
+
+  // Backfill gateway_ref when we finally learn it (null-transaction recovery).
+  try {
+    const gatewayHint = String(
+      coerceAuraxTransactionObject(meta)?.id ||
+        coerceAuraxTransactionObject(meta)?.reference ||
+        (typeof meta?.transaction === 'string' ? meta.transaction : '') ||
+        '',
+    ).trim();
+    if (gatewayHint && (!payment.gateway_ref || payment.gateway_ref === '')) {
+      await query(
+        `UPDATE subscription_payments
+            SET gateway_ref = $1
+          WHERE id = $2
+            AND (gateway_ref IS NULL OR gateway_ref = '')`,
+        [gatewayHint, paymentId],
+      );
+      payment.gateway_ref = gatewayHint;
+    }
+  } catch (_) {
+    /* non-fatal */
   }
 
   if (payment.status === 'completed') {
@@ -1604,15 +1912,19 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
     await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval || '30 days');
   }
 
+  const userIsPremiumActive = (user) =>
+    !!(
+      user &&
+      (user.isPremium === true ||
+        user.is_premium === true ||
+        user.isPremium === 1 ||
+        user.is_premium === 1 ||
+        String(user.isPremium).toLowerCase() === 'true' ||
+        String(user.is_premium).toLowerCase() === 'true')
+    );
+
   let user = await fetchUserPremiumSnapshotForOrder(orderId);
-  let premiumActive = user && (
-    user.isPremium === true ||
-    user.is_premium === true ||
-    user.isPremium === 1 ||
-    user.is_premium === 1 ||
-    String(user.isPremium).toLowerCase() === 'true' ||
-    String(user.is_premium).toLowerCase() === 'true'
-  );
+  let premiumActive = userIsPremiumActive(user);
 
   // Last-resort grant: payment row is completed but premium still inactive.
   if (!premiumActive && payRow?.status === 'completed' && payRow.user_id) {
@@ -1623,18 +1935,19 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
       plan: payRow.plan,
       planInterval,
     });
-    await repairUserEntitlements(Number(payRow.user_id), planInterval || '30 days');
+    const repaired = await repairUserEntitlements(Number(payRow.user_id), planInterval || '30 days');
     user = await fetchUserPremiumSnapshotForOrder(orderId);
-    premiumActive = true;
+    premiumActive = userIsPremiumActive(user);
+    if (!premiumActive) {
+      console.error('[Payment] Force-grant failed to activate premium', {
+        orderId,
+        userId: payRow.user_id,
+        repaired,
+      });
+    }
   }
 
-  if (payRow?.status === 'completed' && user) {
-    user.isPremium = true;
-    user.is_premium = true;
-    premiumActive = true;
-  }
-
-  if (!premiumActive && payRow?.status !== 'completed') {
+  if (!premiumActive) {
     return res.json({
       status: 'PENDING',
       applying: true,
@@ -1644,11 +1957,16 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
       ...(user ? { user } : {}),
     });
   }
+
   return res.json({
     status: 'COMPLETED',
     premiumGranted: true,
     raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
-    ...(user ? { user } : {}),
+    user: {
+      ...user,
+      isPremium: true,
+      is_premium: true,
+    },
   });
 };
 
@@ -1755,7 +2073,13 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     const { isCompleted, rawStatus, transaction } = evaluateAuraxOrderStatusForApply(statusData);
     const gatewayRef = String(dbCheck.rows[0]?.gateway_ref || '').trim();
-    const auraxAltRefs = [...new Set([gatewayRef, auraxPollId].filter((r) => r && r !== orderId))];
+    const auraxAltRefs = [
+      ...new Set(
+        [gatewayRef, auraxPollId, ...collectAuraxOrderRefs(statusData)].filter(
+          (r) => r && r !== orderId,
+        ),
+      ),
+    ];
 
     if (isCompleted) {
       try {
@@ -1872,6 +2196,8 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       payload.reference_id ??
       payload.invoice_id ??
       nest?.reference ??
+      payload.transid ??
+      nest?.transid ??
       '',
   ).trim();
 
@@ -1884,7 +2210,8 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       ev === 'payment.completed' ||
       ev === 'payment_completed' ||
       ev === 'invoice.paid' ||
-      ev === 'charge.succeeded';
+      ev === 'charge.succeeded' ||
+      ev === 'transaction.completed';
   }
   return { orderId: orderId || null, paid, raw: rawStatus || ev };
 };
@@ -1936,6 +2263,21 @@ router.post('/aurax/webhook', async (req, res, next) => {
     });
 
     if (!orderId && (!allRefs || !allRefs.length)) {
+      if (paid) {
+        try {
+          const result = await tryApplyAuraxCompletedPayment(null, payload, { altRefs: [] });
+          if (result) {
+            return res.status(200).json({
+              received: true,
+              processed: true,
+              recoveredBy: 'buyer_phone',
+              userId: result.user?.external_id,
+            });
+          }
+        } catch (e) {
+          console.error('[AuraxPay] Null-ref phone recovery failed:', e?.message || e);
+        }
+      }
       return res.status(400).json({ error: 'Missing transaction reference' });
     }
 
@@ -2026,6 +2368,41 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     });
 
     if (!orderId) {
+      // Some Sonic payloads omit order_id but still carry msisdn + amount after a successful debit.
+      if (paid) {
+        const phones = [];
+        for (const raw of [payload.msisdn, payload.phone, payload.data?.msisdn, payload.data?.phone]) {
+          const s = String(raw || '').trim();
+          if (!s) continue;
+          const digits = s.replace(/\D/g, '');
+          if (digits.length >= 9) phones.push(`0${digits.slice(-9)}`);
+        }
+        const amount = Number(payload.amount ?? payload.data?.amount);
+        if (phones.length) {
+          const hinted = await findPendingPaymentByBuyerHints({
+            phones,
+            amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+            paymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+          });
+          if (hinted?.provider_ref) {
+            try {
+              const result = await applyCompletedPayment(hinted.provider_ref, payload, {
+                expectedPaymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+              });
+              if (result) {
+                return res.status(200).json({
+                  received: true,
+                  processed: true,
+                  recoveredBy: 'buyer_phone',
+                  userId: result.user?.external_id,
+                });
+              }
+            } catch (e) {
+              console.error('[SonicPesa] Phone-hint apply failed:', e?.message || e);
+            }
+          }
+        }
+      }
       return res.status(400).json({ error: 'Missing order reference' });
     }
 
@@ -2124,27 +2501,48 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
   }
 
   if (!AURAXPAY_API_KEY) return false;
-  const auraxPollId = String(payRow.gateway_ref || orderId).trim();
-  const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
-  if (!statusResp.ok) return false;
-  const { isCompleted, transaction } = evaluateAuraxOrderStatusForApply(statusData);
-  if (!isCompleted) return false;
-  const altRefs = [...new Set([auraxPollId, String(payRow.gateway_ref || '').trim()].filter((r) => r && r !== orderId))];
-  const result = await applyCompletedPayment(orderId, transaction || statusData || {}, {
-    expectedPaymentProvider: expectedProvider,
-    altRefs,
-  });
-  return Boolean(result);
+  const pollIds = [
+    ...new Set(
+      [payRow.gateway_ref, orderId]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+  for (const auraxPollId of pollIds) {
+    const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
+    if (!statusResp.ok) continue;
+    const { isCompleted, transaction } = evaluateAuraxOrderStatusForApply(statusData);
+    if (!isCompleted) continue;
+    const altRefs = [...new Set([auraxPollId, String(payRow.gateway_ref || '').trim(), orderId].filter(Boolean))];
+    const gatewayId = String(transaction?.id || transaction?.reference || auraxPollId).trim();
+    if (gatewayId && (!payRow.gateway_ref || payRow.gateway_ref === '')) {
+      await query(
+        `UPDATE subscription_payments
+            SET gateway_ref = $1
+          WHERE id = $2 AND status = 'pending'
+            AND (gateway_ref IS NULL OR gateway_ref = '')`,
+        [gatewayId, payRow.id],
+      ).catch(() => {});
+    }
+    const result = await applyCompletedPayment(orderId, transaction || statusData || {}, {
+      expectedPaymentProvider: expectedProvider,
+      altRefs,
+    });
+    if (result) return true;
+  }
+  return false;
 };
 
 const reconcilePendingSubscriptionPayments = async () => {
   const result = await query(
-    `SELECT provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id
+    `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND created_at < NOW() - INTERVAL '90 seconds'
-      ORDER BY created_at ASC
-      LIMIT 50`,
+        AND created_at < NOW() - INTERVAL '60 seconds'
+      ORDER BY
+        CASE WHEN gateway_ref IS NULL OR gateway_ref = '' THEN 1 ELSE 0 END,
+        created_at ASC
+      LIMIT 100`,
   );
   if (!result.rows.length) return 0;
 
@@ -2184,4 +2582,7 @@ module.exports.__paymentTestHelpers = {
   isSonicPaidRaw,
   pickPreferredAuraxOrderId,
   collectAuraxOrderRefs,
+  coerceAuraxTransactionObject,
+  collectPaymentPhoneHints,
+  collectPaymentAmountHint,
 };

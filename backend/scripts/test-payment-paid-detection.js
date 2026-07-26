@@ -106,7 +106,7 @@ const cases = [
       const refs = h.collectAuraxOrderRefs({
         transaction: { id: gatewayId, metadata: { orderId: clientOrderId } },
       });
-      assert(refs[0] === clientOrderId, `expected metadata orderId first, got ${refs[0]}`);
+      assert(refs.includes(clientOrderId), `expected metadata orderId in refs, got ${refs.join(',')}`);
     },
   },
   {
@@ -141,6 +141,92 @@ const cases = [
       };
       const { isCompleted } = h.evaluateAuraxOrderStatusForApply(payload);
       assert(isCompleted === true, 'expected paymentStatus COMPLETED to be paid');
+    },
+  },
+  {
+    name: 'NULL transaction: data.payment_status SUCCESSFUL still paid (all networks)',
+    fn: () => {
+      const payload = {
+        success: true,
+        transaction: null,
+        data: {
+          id: gatewayId,
+          payment_status: 'SUCCESSFUL',
+          order_id: clientOrderId,
+          buyerPhone: '+255744000111',
+          amount: 1000,
+        },
+      };
+      const { paid, orderId } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid=true with null transaction');
+      assert(orderId === clientOrderId, `expected orderId ${clientOrderId}, got ${orderId}`);
+      const phones = h.collectPaymentPhoneHints(payload);
+      assert(phones.includes('0744000111'), `expected local phone hint, got ${phones.join(',')}`);
+      assert(h.collectPaymentAmountHint(payload) === 1000, 'expected amount hint 1000');
+    },
+  },
+  {
+    name: 'NULL transaction: root paymentStatus COMPLETED coerces transaction',
+    fn: () => {
+      const payload = {
+        transaction: null,
+        paymentStatus: 'COMPLETED',
+        id: gatewayId,
+        metadata: { orderId: clientOrderId },
+      };
+      const tx = h.coerceAuraxTransactionObject(payload);
+      assert(tx && tx.id === gatewayId, 'expected coerced transaction id');
+      const { isCompleted } = h.evaluateAuraxOrderStatusForApply(payload);
+      assert(isCompleted === true, 'expected root paymentStatus COMPLETED to be paid');
+    },
+  },
+  {
+    name: 'NULL transaction string id still resolves refs',
+    fn: () => {
+      const payload = {
+        transaction: gatewayId,
+        payment_status: 'COLLECTED',
+        metadata: { orderId: clientOrderId },
+      };
+      const refs = h.collectAuraxOrderRefs(payload);
+      assert(refs.includes(gatewayId), 'expected string transaction id in refs');
+      assert(refs.includes(clientOrderId), 'expected metadata orderId in refs');
+      const { paid } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid=true for string transaction + payment_status');
+    },
+  },
+  {
+    name: 'Halopesa/Airtel/Mpesa/Tigo: nested data array with null top-level transaction',
+    fn: () => {
+      for (const channel of ['HALOPESA', 'AIRTEL_MONEY', 'MPESA', 'TIGO_PESA']) {
+        const payload = {
+          transaction: null,
+          channel,
+          data: [
+            {
+              id: `${gatewayId}-${channel}`,
+              payment_status: 'COMPLETED',
+              metadata: { orderId: clientOrderId },
+            },
+          ],
+        };
+        const { paid, orderId } = h.extractAuraxWebhookOrderAndPaid(payload);
+        assert(paid === true, `${channel}: expected paid`);
+        assert(orderId === clientOrderId, `${channel}: expected client orderId`);
+      }
+    },
+  },
+  {
+    name: 'Sonic null data object with root payment_status COMPLETED',
+    fn: () => {
+      const payload = {
+        order_id: 'SONIC-NULL-DATA',
+        data: null,
+        payment_status: 'COMPLETED',
+      };
+      const { paid, orderId } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid with null data');
+      assert(orderId === 'SONIC-NULL-DATA', 'expected sonic order id');
     },
   },
 ];

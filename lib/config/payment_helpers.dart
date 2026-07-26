@@ -69,6 +69,8 @@ bool _userPayloadIsPremium(Map<String, dynamic>? user) {
 /// True when polling response means payment succeeded AND premium is active on the user.
 ///
 /// If the backend is still applying entitlements (`applying: true`), keep polling.
+/// Never treat gateway `COMPLETED` alone as unlock — entitlements must be live
+/// (`premiumGranted` or an active user premium payload).
 bool isPaymentSuccessResponse(Map<String, dynamic> response) {
   if (isPaymentStillApplying(response)) return false;
 
@@ -77,11 +79,6 @@ bool isPaymentSuccessResponse(Map<String, dynamic> response) {
 
   // Explicit grant flag from backend (when present).
   if (response['premiumGranted'] == true || response['premium_granted'] == true) {
-    return true;
-  }
-
-  final status = response['status'];
-  if (isPaymentCompleted(status)) {
     return true;
   }
 

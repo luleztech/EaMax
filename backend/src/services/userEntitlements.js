@@ -8,7 +8,19 @@ const {
 
 /** Insert unlock rows for every channel (active or not — matches payment completion behavior). */
 const unlockAllChannelsInTransaction = async (client, userId) => {
-  try {
+  const ensureUnlockTable = async () => {
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS user_unlocked_channels (
+         id SERIAL PRIMARY KEY,
+         user_id INTEGER NOT NULL REFERENCES users(id),
+         channel_id INTEGER NOT NULL REFERENCES channels(id),
+         unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+         UNIQUE(user_id, channel_id)
+       )`,
+    );
+  };
+
+  const runUnlock = async () => {
     await client.query(
       `INSERT INTO user_unlocked_channels (user_id, channel_id)
        SELECT $1, id FROM channels
@@ -27,8 +39,34 @@ const unlockAllChannelsInTransaction = async (client, userId) => {
     const { total_channels, unlocked_channels } = result.rows[0] || {};
     console.log(`[Entitlements] Unlocked channels for user id=${userId}: ${unlocked_channels || 0}/${total_channels || 0}`);
     return Number(unlocked_channels) || 0;
+  };
+
+  await client.query('SAVEPOINT unlock_channels');
+  try {
+    const count = await runUnlock();
+    await client.query('RELEASE SAVEPOINT unlock_channels');
+    return count;
   } catch (err) {
-    console.error(`[Entitlements] Warning: unlockAllChannelsInTransaction non-fatal error for user id=${userId}:`, err?.message || err);
+    await client.query('ROLLBACK TO SAVEPOINT unlock_channels').catch(() => {});
+    const msg = String(err?.message || err || '');
+    if (/user_unlocked_channels|does not exist/i.test(msg)) {
+      try {
+        console.warn('[Entitlements] Unlock table missing — creating and retrying for user', userId);
+        await client.query('SAVEPOINT unlock_channels_retry');
+        await ensureUnlockTable();
+        const count = await runUnlock();
+        await client.query('RELEASE SAVEPOINT unlock_channels_retry');
+        return count;
+      } catch (retryErr) {
+        await client.query('ROLLBACK TO SAVEPOINT unlock_channels_retry').catch(() => {});
+        console.error(
+          `[Entitlements] Warning: unlockAllChannelsInTransaction retry failed for user id=${userId}:`,
+          retryErr?.message || retryErr,
+        );
+        return 0;
+      }
+    }
+    console.error(`[Entitlements] Warning: unlockAllChannelsInTransaction non-fatal error for user id=${userId}:`, msg);
     return 0;
   }
 };
@@ -239,6 +277,7 @@ const clearAllExpiredPremiumFlags = async () => {
 const repairCompletedPaymentsMissingPremium = async () => {
   const { resolvePremiumInterval, getActivePlans, intervalForPlan } = require('./subscriptionPlansService');
 
+  // 1) Completed payments whose users are not actively premium.
   const rows = await query(
     `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents
        FROM subscription_payments sp
@@ -253,6 +292,36 @@ const repairCompletedPaymentsMissingPremium = async () => {
       ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
       LIMIT 200`,
   );
+
+  // 2) Premium users still missing channel unlock rows (table lag / prior non-fatal unlock).
+  const missingUnlocks = await query(
+    `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents
+       FROM subscription_payments sp
+       JOIN users u ON u.id = sp.user_id
+      WHERE sp.status = 'completed'
+        AND u.blocked IS NOT TRUE
+        AND u.premium_expires_at IS NOT NULL
+        AND u.premium_expires_at > NOW()
+        AND EXISTS (SELECT 1 FROM channels)
+        AND EXISTS (
+          SELECT 1
+            FROM channels c
+           WHERE NOT EXISTS (
+             SELECT 1 FROM user_unlocked_channels uuc
+              WHERE uuc.user_id = u.id AND uuc.channel_id = c.id
+           )
+        )
+      ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
+      LIMIT 200`,
+  ).catch((err) => {
+    console.warn('[Entitlements] Missing-unlock scan skipped:', err?.message || err);
+    return { rows: [] };
+  });
+
+  const byUser = new Map();
+  for (const row of [...rows.rows, ...missingUnlocks.rows]) {
+    if (!byUser.has(Number(row.user_id))) byUser.set(Number(row.user_id), row);
+  }
 
   const resolveInterval = async (plan, amountCents) => {
     const fromPlan = await resolvePremiumInterval(plan);
@@ -280,14 +349,14 @@ const repairCompletedPaymentsMissingPremium = async () => {
   };
 
   let repaired = 0;
-  for (const row of rows.rows) {
+  for (const row of byUser.values()) {
     const interval = await resolveInterval(row.plan, row.amount_cents);
     if (!interval) continue;
     const ok = await repairUserEntitlementsIfNeeded(Number(row.user_id), interval);
     if (ok) repaired += 1;
   }
   if (repaired > 0) {
-    console.log(`[Entitlements] Boot repair: restored premium for ${repaired} user(s)`);
+    console.log(`[Entitlements] Boot repair: restored premium/unlocks for ${repaired} user(s)`);
   }
 };
 
