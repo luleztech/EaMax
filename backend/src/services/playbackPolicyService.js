@@ -1,6 +1,6 @@
 const { getGlobalPlayerConfig } = require('./playerConfigService');
 const { resolvePlaybackEngine } = require('../constants/playerEngines');
-const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
+const { sanitizeChannelAudioLanguage, sanitizeDefaultLanguage } = require('../constants/streamLanguages');
 
 const VALID_STREAM_TYPES = new Set([
   'auto', 'hls', 'm3u8', 'dash', 'mp4', 'rtmp', 'rtsp', 'mpegts',
@@ -60,8 +60,8 @@ async function resolvePlaybackPolicy(channelRow) {
     : global.retryDelayMs;
 
   const audioLanguage = channelRow?.audio_language
-    ? sanitizeChannelAudioLanguage(channelRow.audio_language)
-    : 'sw';
+    ? sanitizeChannelAudioLanguage(channelRow.audio_language, global.defaultLanguage || 'sw')
+    : sanitizeDefaultLanguage(global.defaultLanguage || 'sw');
 
   return {
     preferredEngine: effectiveEngine,
@@ -78,6 +78,7 @@ async function resolvePlaybackPolicy(channelRow) {
       channelRow?.preferred_quality || global.defaultQuality,
       global.defaultQuality || '360p',
     ),
+    defaultLanguage: sanitizeDefaultLanguage(global.defaultLanguage || 'sw'),
     failoverToWebview: global.failoverToWebview !== false,
     hardwareAcceleration: global.hardwareAcceleration !== false,
     softwareDecodeFallback: global.softwareDecodeFallback !== false,
@@ -89,9 +90,10 @@ async function resolvePlaybackPolicy(channelRow) {
       global.qualitiesAllowed,
       ['auto', '240p', '360p', '480p', '720p', '1080p'],
     ),
-    languagesAllowed: parseJsonArray(global.languagesAllowed, ['sw', 'en']),
+    languagesAllowed: ['sw', 'en'],
     streamType: sanitizeStreamType(channelRow?.stream_type),
     audioLanguage,
+    defaultLanguage: sanitizeDefaultLanguage(global.defaultLanguage || 'sw'),
     audio_language: audioLanguage,
     regionRules: channelRow?.region_rules_json && typeof channelRow.region_rules_json === 'object'
       ? channelRow.region_rules_json

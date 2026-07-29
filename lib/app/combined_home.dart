@@ -594,16 +594,15 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   }
 
   String _extractAudioLanguage(Map<String, dynamic>? channelData) {
-    if (channelData == null) return 'sw';
+    final policy = RemoteConfigService.playerConfig;
+    final fallback = policy.defaultLanguage == 'en' ? 'en' : 'sw';
+    if (channelData == null) return fallback;
     final raw = channelData['audioLanguage'] ?? channelData['audio_language'];
     final lang = raw?.toString().trim().toLowerCase() ?? '';
-    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
-    const allowed = {'sw', 'en', 'ar', 'fr', 'multi'};
-    if (allowed.contains(lang)) return lang;
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return fallback;
+    if (lang == 'sw' || lang == 'en') return lang;
     if (lang.startsWith('en')) return 'en';
-    if (lang.startsWith('ar')) return 'ar';
-    if (lang.startsWith('fr')) return 'fr';
-    return 'sw';
+    return fallback;
   }
 
   /// ClearKey payload: hex string or JSON `{"keys":[...]}` from API (never shown to users).

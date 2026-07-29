@@ -80,7 +80,7 @@ class PlaybackOrchestrator {
     final license = channelData['licenseUrl'] ?? channelData['license_url'];
     final token = extractToken(channelData);
     final playbackHeaders = extractHeaders(channelData);
-    final audioLanguage = extractAudioLanguage(channelData);
+    final audioLanguage = _resolveAudioLanguage(channelData, policy);
     final merged = Map<String, String>.from(playbackHeaders);
     if (token.isNotEmpty &&
         !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
@@ -133,6 +133,20 @@ class PlaybackOrchestrator {
         ),
       ),
     );
+  }
+
+  static String _resolveAudioLanguage(
+    Map<String, dynamic>? channelData,
+    RemotePlayerConfig policy,
+  ) {
+    final fallback = policy.defaultLanguage == 'en' ? 'en' : 'sw';
+    if (channelData == null) return fallback;
+    final raw = channelData['audioLanguage'] ?? channelData['audio_language'];
+    final lang = raw?.toString().trim().toLowerCase() ?? '';
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return fallback;
+    if (lang == 'sw' || lang == 'en') return lang;
+    if (lang.startsWith('en')) return 'en';
+    return fallback;
   }
 
   /// Legacy-compatible open from raw URL + channel data.

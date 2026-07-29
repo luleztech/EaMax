@@ -227,6 +227,7 @@ class RemotePlayerConfig {
     required this.reconnectEnabled,
     required this.autoPlay,
     required this.defaultQuality,
+    required this.defaultLanguage,
     required this.failoverToWebview,
     required this.hardwareAcceleration,
     required this.softwareDecodeFallback,
@@ -247,6 +248,7 @@ class RemotePlayerConfig {
   final bool reconnectEnabled;
   final bool autoPlay;
   final String defaultQuality;
+  final String defaultLanguage;
   final bool failoverToWebview;
   final bool hardwareAcceleration;
   final bool softwareDecodeFallback;
@@ -270,6 +272,7 @@ class RemotePlayerConfig {
       reconnectEnabled: json['reconnectEnabled'] != false,
       autoPlay: json['autoPlay'] != false,
       defaultQuality: json['defaultQuality']?.toString() ?? '360p',
+      defaultLanguage: _readDefaultLanguage(json['defaultLanguage']),
       failoverToWebview: json['failoverToWebview'] != false,
       hardwareAcceleration: json['hardwareAcceleration'] != false,
       softwareDecodeFallback: json['softwareDecodeFallback'] != false,
@@ -281,9 +284,15 @@ class RemotePlayerConfig {
           ? qualities.map((e) => e.toString()).toList()
           : const ['auto', '240p', '360p', '480p', '720p', '1080p'],
       languagesAllowed: languages is List
-          ? languages.map((e) => e.toString()).toList()
+          ? languages.map((e) => e.toString()).where((e) => e == 'sw' || e == 'en').toList()
           : const ['sw', 'en'],
     );
+  }
+
+  static String _readDefaultLanguage(Object? raw) {
+    final lang = raw?.toString().trim().toLowerCase() ?? '';
+    if (lang == 'en' || lang.startsWith('en')) return 'en';
+    return 'sw';
   }
 }
 

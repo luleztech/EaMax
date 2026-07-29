@@ -43,11 +43,14 @@ class ChannelPlaybackBundle {
             ? (json['playerConfig'] as Map)['preferredEngine']
             : null) ??
         playbackEngine;
-    final audioLanguage = _readAudioLanguage(json['audioLanguage'] ?? json['audio_language']);
     final playerConfigRaw = json['playerConfig'] ?? json['playbackPolicy'];
     final playerConfig = playerConfigRaw is Map
         ? RemotePlayerConfig.fromJson(Map<String, dynamic>.from(playerConfigRaw))
         : null;
+    final audioLanguage = _readAudioLanguage(
+      json['audioLanguage'] ?? json['audio_language'],
+      fallback: playerConfig?.defaultLanguage ?? 'sw',
+    );
     return ChannelPlaybackBundle(
       channelId: int.tryParse('${json['channelId']}') ?? 0,
       name: json['name']?.toString() ?? '',
@@ -67,16 +70,14 @@ class ChannelPlaybackBundle {
     return e;
   }
 
-  static String? _readAudioLanguage(Object? raw) {
-    if (raw == null) return 'sw';
+  static String? _readAudioLanguage(Object? raw, {String fallback = 'sw'}) {
+    final base = fallback == 'en' ? 'en' : 'sw';
+    if (raw == null) return base;
     final lang = raw.toString().trim().toLowerCase();
-    if (lang.isEmpty || lang == 'auto' || lang == 'default') return 'sw';
-    const allowed = {'sw', 'en', 'ar', 'fr', 'multi'};
-    if (allowed.contains(lang)) return lang;
+    if (lang.isEmpty || lang == 'auto' || lang == 'default') return base;
+    if (lang == 'sw' || lang == 'en') return lang;
     if (lang.startsWith('en')) return 'en';
-    if (lang.startsWith('ar')) return 'ar';
-    if (lang.startsWith('fr')) return 'fr';
-    return 'sw';
+    return base;
   }
 
   /// Maps v2 stream fields to the legacy channelData shape used by playback helpers.

@@ -1,5 +1,6 @@
 const { query } = require('../db');
 const { VALID_ENGINES, sanitizeGlobalPlaybackEngine } = require('../constants/playerEngines');
+const { sanitizeDefaultLanguage } = require('../constants/streamLanguages');
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
@@ -11,6 +12,7 @@ const DEFAULT_PLAYER_CONFIG = {
   reconnectEnabled: true,
   autoPlay: true,
   defaultQuality: '360p',
+  defaultLanguage: 'sw',
   failoverToWebview: true,
   hardwareAcceleration: true,
   softwareDecodeFallback: true,
@@ -45,6 +47,7 @@ function mapRow(row) {
     reconnectEnabled: row.reconnect_enabled !== false,
     autoPlay: row.auto_play !== false,
     defaultQuality: row.default_quality || '360p',
+    defaultLanguage: sanitizeDefaultLanguage(row.default_language),
     failoverToWebview: row.failover_to_webview !== false,
     hardwareAcceleration: row.hardware_acceleration !== false,
     softwareDecodeFallback: row.software_decode_fallback !== false,
@@ -72,7 +75,8 @@ async function getGlobalPlayerConfig() {
               retry_max, retry_delay_ms, reconnect_enabled, auto_play, default_quality,
               failover_to_webview, hardware_acceleration, software_decode_fallback,
               background_playback, resume_playback, network_timeout_ms,
-              reconnection_policy, qualities_allowed, languages_allowed
+              reconnection_policy, qualities_allowed, languages_allowed,
+              default_language
          FROM player_config_global
         WHERE id = 1
         LIMIT 1`,
@@ -86,7 +90,14 @@ async function getGlobalPlayerConfig() {
 async function updateGlobalPlayerConfig(patch) {
   const current = await getGlobalPlayerConfig();
   const sanitized = sanitizePlayerConfigPatch(patch);
-  const next = { ...current, ...sanitized };
+  const next = {
+    ...current,
+    ...sanitized,
+    languagesAllowed: ['sw', 'en'],
+    defaultLanguage: sanitizeDefaultLanguage(
+      sanitized.defaultLanguage ?? current.defaultLanguage ?? DEFAULT_PLAYER_CONFIG.defaultLanguage,
+    ),
+  };
   if (next.bufferMaxMs < next.bufferMinMs + 500) {
     next.bufferMaxMs = Math.max(next.bufferMinMs + 500, 2000);
   }
@@ -96,8 +107,9 @@ async function updateGlobalPlayerConfig(patch) {
         retry_max, retry_delay_ms, reconnect_enabled, auto_play, default_quality,
         failover_to_webview, hardware_acceleration, software_decode_fallback,
         background_playback, resume_playback, network_timeout_ms,
-        reconnection_policy, qualities_allowed, languages_allowed, updated_at)
-     VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,NOW())
+        reconnection_policy, qualities_allowed, languages_allowed,
+        default_language, updated_at)
+     VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19,NOW())
      ON CONFLICT (id) DO UPDATE SET
        preferred_engine = EXCLUDED.preferred_engine,
        buffer_min_ms = EXCLUDED.buffer_min_ms,
@@ -117,6 +129,7 @@ async function updateGlobalPlayerConfig(patch) {
        reconnection_policy = EXCLUDED.reconnection_policy,
        qualities_allowed = EXCLUDED.qualities_allowed,
        languages_allowed = EXCLUDED.languages_allowed,
+       default_language = EXCLUDED.default_language,
        updated_at = NOW()`,
     [
       next.preferredEngine,
@@ -136,7 +149,8 @@ async function updateGlobalPlayerConfig(patch) {
       next.networkTimeoutMs,
       next.reconnectionPolicy,
       JSON.stringify(next.qualitiesAllowed),
-      JSON.stringify(next.languagesAllowed),
+      JSON.stringify(['sw', 'en']),
+      next.defaultLanguage,
     ],
   );
   return next;
@@ -177,6 +191,9 @@ function sanitizePlayerConfigPatch(patch) {
     const q = String(patch.defaultQuality).trim().toLowerCase();
     if (VALID_QUALITIES.has(q)) out.defaultQuality = q;
   }
+  if (patch.defaultLanguage != null) {
+    out.defaultLanguage = sanitizeDefaultLanguage(patch.defaultLanguage);
+  }
   if (patch.failoverToWebview != null) out.failoverToWebview = !!patch.failoverToWebview;
   if (patch.hardwareAcceleration != null) out.hardwareAcceleration = !!patch.hardwareAcceleration;
   if (patch.softwareDecodeFallback != null) out.softwareDecodeFallback = !!patch.softwareDecodeFallback;
@@ -195,7 +212,10 @@ function sanitizePlayerConfigPatch(patch) {
     out.qualitiesAllowed = arr.filter((q) => VALID_QUALITIES.has(q.toLowerCase()));
   }
   if (patch.languagesAllowed != null) {
-    out.languagesAllowed = parseJsonArray(patch.languagesAllowed, DEFAULT_PLAYER_CONFIG.languagesAllowed);
+    const arr = parseJsonArray(patch.languagesAllowed, DEFAULT_PLAYER_CONFIG.languagesAllowed)
+      .map((l) => String(l).trim().toLowerCase())
+      .filter((l) => l === 'sw' || l === 'en');
+    out.languagesAllowed = arr.length ? arr : ['sw', 'en'];
   }
   return out;
 }

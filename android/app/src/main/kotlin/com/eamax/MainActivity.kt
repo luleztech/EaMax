@@ -85,6 +85,14 @@ class MainActivity : FlutterActivity() {
                             "audioLanguage",
                             args["audioLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
+                        intent.putExtra(
+                            "defaultQuality",
+                            args["defaultQuality"]?.toString().orEmpty().ifEmpty { "360p" },
+                        )
+                        intent.putExtra(
+                            "defaultLanguage",
+                            args["defaultLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
+                        )
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {

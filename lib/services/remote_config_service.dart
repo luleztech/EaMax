@@ -158,6 +158,7 @@ class RemoteConfigService {
         reconnectEnabled: pc.reconnectEnabled,
         autoPlay: pc.autoPlay,
         defaultQuality: pc.defaultQuality,
+        defaultLanguage: pc.defaultLanguage,
         failoverToWebview: pc.failoverToWebview,
         hardwareAcceleration: pc.hardwareAcceleration,
         softwareDecodeFallback: pc.softwareDecodeFallback,

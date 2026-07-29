@@ -8,7 +8,6 @@ import {
   TextInput,
   ActivityIndicator,
   Switch,
-  Alert,
   RefreshControl,
   Modal,
 } from 'react-native';
@@ -112,21 +111,15 @@ const ControlCenterSection = () => {
 
   const [playerConfig, setPlayerConfig] = useState({
     preferredEngine: 'auto',
-    retryMax: '4',
-    retryDelayMs: '1200',
-    bufferMinMs: '800',
-    bufferMaxMs: '12000',
-    initialBufferMs: '1500',
     reconnectEnabled: true,
     autoPlay: true,
     defaultQuality: '360p',
+    defaultLanguage: 'sw',
     failoverToWebview: true,
     hardwareAcceleration: true,
     softwareDecodeFallback: true,
     backgroundPlayback: false,
     resumePlayback: true,
-    networkTimeoutMs: '15000',
-    reconnectionPolicy: 'balanced',
   });
 
   const [emergency, setEmergency] = useState({
@@ -155,21 +148,15 @@ const ControlCenterSection = () => {
         preferredEngine: normalizePlayerEngine(pc.preferredEngine) === 'default'
           ? 'auto'
           : normalizePlayerEngine(pc.preferredEngine),
-        retryMax: String(pc.retryMax ?? 4),
-        retryDelayMs: String(pc.retryDelayMs ?? 1200),
-        bufferMinMs: String(pc.bufferMinMs ?? 800),
-        bufferMaxMs: String(pc.bufferMaxMs ?? 12000),
-        initialBufferMs: String(pc.initialBufferMs ?? 1500),
         reconnectEnabled: pc.reconnectEnabled !== false,
         autoPlay: pc.autoPlay !== false,
         defaultQuality: pc.defaultQuality || '360p',
+        defaultLanguage: pc.defaultLanguage === 'en' ? 'en' : 'sw',
         failoverToWebview: pc.failoverToWebview !== false,
         hardwareAcceleration: pc.hardwareAcceleration !== false,
         softwareDecodeFallback: pc.softwareDecodeFallback !== false,
         backgroundPlayback: pc.backgroundPlayback === true,
         resumePlayback: pc.resumePlayback !== false,
-        networkTimeoutMs: String(pc.networkTimeoutMs ?? 15000),
-        reconnectionPolicy: pc.reconnectionPolicy || 'balanced',
       });
       const ec = emergencyRes?.controls || {};
       setEmergency({
@@ -194,31 +181,20 @@ const ControlCenterSection = () => {
   }, [load]);
 
   const savePlayer = async () => {
-    const minBuf = Number(playerConfig.bufferMinMs) || 800;
-    const maxBuf = Number(playerConfig.bufferMaxMs) || 12000;
-    if (maxBuf < minBuf + 500) {
-      Alert.alert('Thibitisha', 'Buffer max lazima iwe kubwa kuliko buffer min angalau 500ms');
-      return;
-    }
     setSavingPlayer(true);
     try {
       await adminControlAPI.updatePlayerConfig({
         preferredEngine: playerConfig.preferredEngine || 'auto',
-        retryMax: Number(playerConfig.retryMax) || 4,
-        retryDelayMs: Number(playerConfig.retryDelayMs) || 1200,
-        bufferMinMs: minBuf,
-        bufferMaxMs: maxBuf,
-        initialBufferMs: Number(playerConfig.initialBufferMs) || 1500,
         reconnectEnabled: playerConfig.reconnectEnabled,
         autoPlay: playerConfig.autoPlay,
         defaultQuality: playerConfig.defaultQuality || '360p',
+        defaultLanguage: playerConfig.defaultLanguage === 'en' ? 'en' : 'sw',
+        languagesAllowed: ['sw', 'en'],
         failoverToWebview: playerConfig.failoverToWebview,
         hardwareAcceleration: playerConfig.hardwareAcceleration,
         softwareDecodeFallback: playerConfig.softwareDecodeFallback,
         backgroundPlayback: playerConfig.backgroundPlayback,
         resumePlayback: playerConfig.resumePlayback,
-        networkTimeoutMs: Number(playerConfig.networkTimeoutMs) || 15000,
-        reconnectionPolicy: playerConfig.reconnectionPolicy || 'balanced',
       });
       showStatus('Imefanikiwa', 'Player imehifadhiwa. Watumiaji wataitumia mara moja.');
     } catch (e) {
@@ -333,85 +309,25 @@ const ControlCenterSection = () => {
             ))}
           </View>
 
-          <View style={cardStyles.inputRow}>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Retry max</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.retryMax}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryMax: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Retry delay (ms)</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.retryDelayMs}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, retryDelayMs: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-          </View>
-
-          <View style={cardStyles.inputRow}>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Buffer min (ms)</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.bufferMinMs}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMinMs: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Buffer max (ms)</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.bufferMaxMs}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, bufferMaxMs: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-          </View>
-
-          <View style={cardStyles.inputRow}>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Initial buffer (ms)</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.initialBufferMs}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, initialBufferMs: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-            <View style={cardStyles.inputHalf}>
-              <Text style={cardStyles.fieldLabel}>Network timeout (ms)</Text>
-              <TextInput
-                style={cardStyles.input}
-                value={playerConfig.networkTimeoutMs}
-                onChangeText={(v) => setPlayerConfig((p) => ({ ...p, networkTimeoutMs: v }))}
-                keyboardType="number-pad"
-              />
-            </View>
-          </View>
-
-          <Text style={cardStyles.fieldLabel}>Reconnection policy</Text>
+          <Text style={cardStyles.fieldLabel}>Default language</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-            {['aggressive', 'balanced', 'conservative'].map((p) => (
+            {[
+              { id: 'sw', label: 'Swahili' },
+              { id: 'en', label: 'English' },
+            ].map((lang) => (
               <TouchableOpacity
-                key={p}
+                key={lang.id}
                 style={[
                   styles.chip,
-                  playerConfig.reconnectionPolicy === p && styles.chipActive,
+                  playerConfig.defaultLanguage === lang.id && styles.chipActive,
                 ]}
-                onPress={() => setPlayerConfig((prev) => ({ ...prev, reconnectionPolicy: p }))}>
+                onPress={() => setPlayerConfig((p) => ({ ...p, defaultLanguage: lang.id }))}>
                 <Text
                   style={[
                     styles.chipText,
-                    playerConfig.reconnectionPolicy === p && styles.chipTextActive,
+                    playerConfig.defaultLanguage === lang.id && styles.chipTextActive,
                   ]}>
-                  {p}
+                  {lang.label}
                 </Text>
               </TouchableOpacity>
             ))}

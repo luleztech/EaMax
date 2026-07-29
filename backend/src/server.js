@@ -255,6 +255,20 @@ query(
     WHERE audio_language IS NULL OR TRIM(audio_language) = '' OR audio_language = 'auto'`
 ).catch(() => {});
 query(
+  `ALTER TABLE player_config_global ADD COLUMN IF NOT EXISTS default_language VARCHAR(8) NOT NULL DEFAULT 'sw'`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration player_config_global.default_language (non-fatal):', err.message);
+  }
+});
+query(
+  `UPDATE player_config_global SET default_language = 'sw'
+    WHERE default_language IS NULL OR TRIM(default_language) = '' OR default_language NOT IN ('sw','en')`
+).catch(() => {});
+query(
+  `UPDATE player_config_global SET languages_allowed = '["sw","en"]'::jsonb`
+).catch(() => {});
+query(
   `UPDATE player_config_global
       SET preferred_engine = 'auto'
     WHERE preferred_engine IN ('flutter','chewie','native_video','webrtc','vlc','mx')`

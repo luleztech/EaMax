@@ -43,6 +43,23 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "EaMaxNativePlayer"
+
+        private fun qualityFromAdmin(raw: String?): StreamQuality {
+            return when (raw?.trim()?.lowercase()) {
+                "auto" -> StreamQuality.AUTO
+                "240p" -> StreamQuality.QUALITY_240P
+                "360p" -> StreamQuality.QUALITY_360P
+                "480p" -> StreamQuality.QUALITY_480P
+                "720p" -> StreamQuality.QUALITY_720P
+                "1080p", "2k", "4k" -> StreamQuality.QUALITY_1080P
+                else -> StreamQuality.QUALITY_360P
+            }
+        }
+
+        private fun normalizeAudioLanguage(raw: String?): String {
+            val v = raw?.trim()?.lowercase().orEmpty()
+            return if (v == "en" || v.startsWith("en-") || v == "eng") "en" else "sw"
+        }
     }
 
     private lateinit var playerManager: PlayerManager
@@ -107,6 +124,11 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             return
         }
 
+        selectedOkoaQuality = qualityFromAdmin(extras.getString("defaultQuality"))
+        preferredAudioLanguage = normalizeAudioLanguage(
+            extras.getString("audioLanguage") ?: extras.getString("defaultLanguage"),
+        )
+
         if (session.mpdUrl.isEmpty()) {
             showChannelUnavailableAndFinish()
             return
@@ -160,7 +182,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
 
         preferredAudioLanguage =
-            PlayerLanguagePreferences.get(this) ?: session.preferredAudioLanguage.ifBlank { "sw" }
+            normalizeAudioLanguage(session.preferredAudioLanguage.ifBlank { preferredAudioLanguage })
 
         val playbackSession = session.copy(preferredAudioLanguage = preferredAudioLanguage)
 
@@ -266,7 +288,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             StreamQuality.QUALITY_720P,
             StreamQuality.QUALITY_1080P,
         )
-        val initial = qualities.indexOf(selectedOkoaQuality).let { if (it >= 0) it else 2 }
+        val initial = qualities.indexOf(selectedOkoaQuality).let { if (it >= 0) it else 0 }
         AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
             .setTitle(R.string.pick_quality)
             .setSingleChoiceItems(

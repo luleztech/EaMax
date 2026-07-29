@@ -47,8 +47,12 @@ class NativeAndroidPlayer {
       if (fallbackJson.isNotEmpty) 'fallbackStreamsJson': fallbackJson,
       if (playbackEngine != null && playbackEngine.isNotEmpty)
         'playbackEngine': playbackEngine,
-      'audioLanguage': (audioLanguage == null || audioLanguage.isEmpty) ? 'sw' : audioLanguage,
+      'audioLanguage': (audioLanguage == null || audioLanguage.isEmpty)
+          ? (playerPolicy?.defaultLanguage ?? 'sw')
+          : audioLanguage,
       if (playerPolicy != null) 'playerPolicyJson': jsonEncode(_policyToMap(playerPolicy)),
+      'defaultQuality': playerPolicy?.defaultQuality ?? '360p',
+      'defaultLanguage': playerPolicy?.defaultLanguage ?? audioLanguage ?? 'sw',
     });
   }
 
@@ -102,6 +106,7 @@ class NativeAndroidPlayer {
     'reconnectEnabled': policy.reconnectEnabled,
     'autoPlay': policy.autoPlay,
     'defaultQuality': policy.defaultQuality,
+    'defaultLanguage': policy.defaultLanguage,
     'failoverToWebview': policy.failoverToWebview,
     'hardwareAcceleration': policy.hardwareAcceleration,
     'softwareDecodeFallback': policy.softwareDecodeFallback,
