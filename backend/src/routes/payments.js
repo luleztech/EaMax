@@ -646,7 +646,10 @@ const extractAuraxPaymentStatus = (statusData) => {
   };
   const paymentFound = toUpperList(paymentCandidates);
   for (const s of paymentFound) {
-    if (isAuraxPaidRaw(s)) return s;
+    // Vodacom/M-Pesa (and some Aurax MPESA settlements) put the wallet debit in
+    // paymentStatus as SUCCESS. Map that to SUCCESSFUL so it is treated as paid,
+    // while bare envelope status SUCCESS (STK/query ack) stays unpaid below.
+    if (s === 'SUCCESS' || isAuraxPaidRaw(s)) return s === 'SUCCESS' ? 'SUCCESSFUL' : s;
   }
   // Explicit unpaid paymentStatus wins over a generic SUCCESS on the envelope.
   if (paymentFound.some((s) => AURAX_EXPLICIT_UNPAID_STATUSES.has(s))) {
@@ -786,16 +789,29 @@ const collectPaymentPhoneHints = (payload) => {
     tx?.buyer_phone,
     tx?.msisdn,
     tx?.phone,
+    tx?.customerPhone,
+    tx?.customer_phone,
+    tx?.customer?.phone,
+    tx?.customer?.msisdn,
+    tx?.customer?.buyerPhone,
     payload?.buyerPhone,
     payload?.buyer_phone,
     payload?.msisdn,
     payload?.phone,
+    payload?.customerPhone,
+    payload?.customer?.phone,
+    payload?.customer?.msisdn,
     dataObj?.buyerPhone,
     dataObj?.buyer_phone,
     dataObj?.msisdn,
     dataObj?.phone,
+    dataObj?.customerPhone,
+    dataObj?.customer?.phone,
+    dataObj?.customer?.msisdn,
     payload?.metadata?.buyerPhone,
+    payload?.metadata?.buyer_phone,
     payload?.metadata?.phone,
+    payload?.metadata?.msisdn,
   ];
   const locals = new Set();
   for (const raw of rawPhones) {
@@ -826,8 +842,24 @@ const collectPaymentAmountHint = (payload) => {
     : dataRaw && typeof dataRaw === 'object'
       ? dataRaw
       : null;
-  const candidates = [tx?.amount, payload?.amount, dataObj?.amount, tx?.amount_cents, payload?.amount_cents];
+  const candidates = [
+    tx?.amount,
+    payload?.amount,
+    dataObj?.amount,
+    tx?.amount_cents,
+    payload?.amount_cents,
+    dataObj?.amount_cents,
+    tx?.value,
+    payload?.value,
+  ];
   for (const c of candidates) {
+    if (c == null || c === '') continue;
+    if (typeof c === 'string') {
+      const cleaned = c.replace(/,/g, '').replace(/[^\d.]/g, '');
+      const n = Number(cleaned);
+      if (Number.isFinite(n) && n > 0) return Math.round(n);
+      continue;
+    }
     const n = Number(c);
     if (Number.isFinite(n) && n > 0) return Math.round(n);
   }
@@ -837,30 +869,40 @@ const collectPaymentAmountHint = (payload) => {
 /**
  * Last-resort match when webhook/poll refs miss DB (null gateway_ref race / missing metadata).
  * Only pending rows from the last 48h — never touches completed/failed history.
+ * Prefer exact amount match, then fall back to phone-only (amount mismatches must not block upgrade).
  */
 const findPendingPaymentByBuyerHints = async ({ phones = [], amount = null, paymentProvider = null } = {}) => {
   const uniquePhones = [...new Set((phones || []).map((p) => String(p || '').trim()).filter(Boolean))];
   if (!uniquePhones.length) return null;
   const amountNum = Number(amount);
   const hasAmount = Number.isFinite(amountNum) && amountNum > 0;
-  const params = [uniquePhones];
-  let sql = `
-    SELECT id, user_id, plan, amount_cents, currency, status, payment_provider, provider_ref, gateway_ref, buyer_phone
-      FROM subscription_payments
-     WHERE status = 'pending'
-       AND created_at > NOW() - INTERVAL '48 hours'
-       AND buyer_phone = ANY($1::text[])`;
-  if (paymentProvider) {
-    params.push(paymentProvider);
-    sql += ` AND payment_provider = $${params.length}`;
-  }
+
+  const runHintQuery = async (withAmount) => {
+    const params = [uniquePhones];
+    let sql = `
+      SELECT id, user_id, plan, amount_cents, currency, status, payment_provider, provider_ref, gateway_ref, buyer_phone
+        FROM subscription_payments
+       WHERE status = 'pending'
+         AND created_at > NOW() - INTERVAL '48 hours'
+         AND buyer_phone = ANY($1::text[])`;
+    if (paymentProvider) {
+      params.push(paymentProvider);
+      sql += ` AND payment_provider = $${params.length}`;
+    }
+    if (withAmount && hasAmount) {
+      params.push(amountNum);
+      sql += ` AND amount_cents = $${params.length}`;
+    }
+    sql += ` ORDER BY created_at DESC LIMIT 1`;
+    const result = await query(sql, params);
+    return result.rows[0] || null;
+  };
+
   if (hasAmount) {
-    params.push(amountNum);
-    sql += ` AND amount_cents = $${params.length}`;
+    const exact = await runHintQuery(true);
+    if (exact) return exact;
   }
-  sql += ` ORDER BY created_at DESC LIMIT 1`;
-  const result = await query(sql, params);
-  return result.rows[0] || null;
+  return runHintQuery(false);
 };
 
 /** Prefer client orderId (provider_ref) over gateway transaction id for completion. */
@@ -1613,12 +1655,32 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
-    await query(
+    const linkWithProvider = await query(
       `UPDATE subscription_payments
           SET gateway_ref = $1
         WHERE provider_ref = $2 AND status = 'pending' AND payment_provider = $3`,
       [gatewayRef, orderId, paymentProviderForRow],
     );
+    // Never leave Vodacom/MPESA (or any) orders without gateway_ref — webhooks often
+    // arrive with only the gateway id. Retry without provider filter if needed.
+    if (linkWithProvider.rowCount !== 1) {
+      const linkAny = await query(
+        `UPDATE subscription_payments
+            SET gateway_ref = $1
+          WHERE provider_ref = $2 AND status = 'pending'
+            AND (gateway_ref IS NULL OR gateway_ref = '')`,
+        [gatewayRef, orderId],
+      );
+      if (linkAny.rowCount !== 1) {
+        console.error('[AuraxPay] Failed to link gateway_ref to pending order', {
+          orderId,
+          gatewayRef,
+          paymentProviderForRow,
+          withProvider: linkWithProvider.rowCount,
+          withoutProvider: linkAny.rowCount,
+        });
+      }
+    }
     if (gatewayRef !== orderId) {
       console.log('[AuraxPay] gateway_ref linked', { clientOrderId: orderId, gatewayRef });
     }
@@ -2083,9 +2145,10 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     if (isCompleted) {
       try {
-        await applyCompletedPayment(orderId, transaction || statusData || {}, {
-          expectedPaymentProvider: expectedProvider,
-          altRefs: auraxAltRefs,
+        // Prefer full Aurax apply path (gateway poll + phone/amount recovery) so
+        // Vodacom/MPESA thin payloads still upgrade the paying user.
+        await tryApplyAuraxCompletedPayment(orderId, statusData || transaction || {}, {
+          altRefs: [orderId, ...auraxAltRefs],
         });
       } catch (applyErr) {
         console.error('[Payment] Aurax applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
@@ -2511,23 +2574,10 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
   for (const auraxPollId of pollIds) {
     const { statusResp, statusData } = await pollAuraxOrderStatus(auraxPollId);
     if (!statusResp.ok) continue;
-    const { isCompleted, transaction } = evaluateAuraxOrderStatusForApply(statusData);
+    const { isCompleted } = evaluateAuraxOrderStatusForApply(statusData);
     if (!isCompleted) continue;
     const altRefs = [...new Set([auraxPollId, String(payRow.gateway_ref || '').trim(), orderId].filter(Boolean))];
-    const gatewayId = String(transaction?.id || transaction?.reference || auraxPollId).trim();
-    if (gatewayId && (!payRow.gateway_ref || payRow.gateway_ref === '')) {
-      await query(
-        `UPDATE subscription_payments
-            SET gateway_ref = $1
-          WHERE id = $2 AND status = 'pending'
-            AND (gateway_ref IS NULL OR gateway_ref = '')`,
-        [gatewayId, payRow.id],
-      ).catch(() => {});
-    }
-    const result = await applyCompletedPayment(orderId, transaction || statusData || {}, {
-      expectedPaymentProvider: expectedProvider,
-      altRefs,
-    });
+    const result = await tryApplyAuraxCompletedPayment(orderId, statusData, { altRefs });
     if (result) return true;
   }
   return false;

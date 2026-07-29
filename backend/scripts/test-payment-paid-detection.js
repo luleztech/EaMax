@@ -144,6 +144,48 @@ const cases = [
     },
   },
   {
+    name: 'Vodacom/MPESA: paymentStatus SUCCESS means wallet paid (not STK ack)',
+    fn: () => {
+      const payload = {
+        channel: 'MPESA',
+        transaction: {
+          id: gatewayId,
+          status: 'SUCCESS',
+          paymentStatus: 'SUCCESS',
+          buyerPhone: '+255744000111',
+          amount: 2000,
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { paid, orderId } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected Vodacom paymentStatus SUCCESS to be paid');
+      assert(orderId === clientOrderId, `expected client orderId, got ${orderId}`);
+      const phones = h.collectPaymentPhoneHints(payload);
+      assert(phones.includes('0744000111'), `expected Vodacom phone hint, got ${phones.join(',')}`);
+    },
+  },
+  {
+    name: 'Vodacom/MPESA null transaction: data.payment_status SUCCESS still paid',
+    fn: () => {
+      const payload = {
+        transaction: null,
+        channel: 'MPESA',
+        data: {
+          id: gatewayId,
+          payment_status: 'SUCCESS',
+          order_id: clientOrderId,
+          buyerPhone: '0744123456',
+          amount: '2,000',
+        },
+      };
+      const { paid, orderId } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected null-tx MPESA payment_status SUCCESS to be paid');
+      assert(orderId === clientOrderId, `expected orderId ${clientOrderId}, got ${orderId}`);
+      assert(h.collectPaymentAmountHint(payload) === 2000, 'expected amount hint 2000 from formatted string');
+      assert(h.collectPaymentPhoneHints(payload).includes('0744123456'), 'expected local Vodacom phone');
+    },
+  },
+  {
     name: 'NULL transaction: data.payment_status SUCCESSFUL still paid (all networks)',
     fn: () => {
       const payload = {
