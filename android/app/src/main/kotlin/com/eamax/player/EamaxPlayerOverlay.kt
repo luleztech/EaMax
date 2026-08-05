@@ -62,6 +62,13 @@ class EamaxPlayerOverlay(
         }
     }
 
+    /** Force-clear loading/buffering so reCAPTCHA stays tappable. */
+    fun clearForHumanCheck() {
+        firstFrameShown = false
+        loadingOverlay.visibility = View.GONE
+        bufferingBar.visibility = View.GONE
+    }
+
     fun detach() {
         attachedPlayer?.removeListener(playerListener)
         attachedPlayer = null

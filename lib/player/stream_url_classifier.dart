@@ -47,6 +47,6 @@ class StreamUrlClassifier {
   }
 }
 
-/// Same UA string as `PhpWebViewSupport.BROWSER_PLAYBACK_USER_AGENT` in reference project.
+/// Same UA as [playbackHttpHeaders] / native ExoPlayer (real Chrome mobile — avoids bot checks).
 const String kBrowserPlaybackUserAgent =
-    'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
+    'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';

@@ -271,6 +271,49 @@ const cases = [
       assert(orderId === 'SONIC-NULL-DATA', 'expected sonic order id');
     },
   },
+  {
+    name: 'Aurax: paid:true flag unlocks even if status is PROCESSING',
+    fn: () => {
+      const payload = {
+        paid: true,
+        transaction: {
+          id: gatewayId,
+          status: 'PROCESSING',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { paid, orderId } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid=true from paid flag');
+      assert(orderId === clientOrderId, 'expected client orderId');
+    },
+  },
+  {
+    name: 'Aurax: resultCode 0 with paymentStatus SUCCESS maps to paid',
+    fn: () => {
+      const payload = {
+        transaction: {
+          id: gatewayId,
+          paymentStatus: 'SUCCESS',
+          resultCode: '0',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { paid } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid from paymentStatus SUCCESS + resultCode 0');
+    },
+  },
+  {
+    name: 'Aurax: bare envelope SUCCESS without payment fields stays unpaid',
+    fn: () => {
+      const payload = {
+        success: true,
+        status: 'SUCCESS',
+        transaction: { id: gatewayId, status: 'PENDING', metadata: { orderId: clientOrderId } },
+      };
+      const { paid } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === false, 'expected unpaid for STK ack SUCCESS');
+    },
+  },
 ];
 
 let passed = 0;

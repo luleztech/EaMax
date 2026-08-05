@@ -49,8 +49,27 @@ bool isPaymentTerminalFailure(Object? status) {
     'VOID',
     'CANCEL',
     'ERROR',
+    'TIMEOUT',
+    'REVERSED',
+    'INSUFFICIENT_FUNDS',
+    'INSUFFICIENT_BALANCE',
+    'INSUFFICIENT',
+    'NO_BALANCE',
+    'NO_FUNDS',
+    'LOW_BALANCE',
+    'BALANCE_TOO_LOW',
+    'NOT_ENOUGH_BALANCE',
+    'FUNDS_INSUFFICIENT',
   };
-  return failures.contains(s);
+  if (failures.contains(s)) return true;
+  if (s.contains('INSUFFICIENT') ||
+      s.contains('NO_BALANCE') ||
+      s.contains('NO_FUNDS') ||
+      s.contains('LOW_BALANCE') ||
+      s.contains('NOT_ENOUGH')) {
+    return true;
+  }
+  return false;
 }
 
 /// Premium payload returned with `/api/payments/status` when payment completes.
@@ -74,11 +93,17 @@ bool _userPayloadIsPremium(Map<String, dynamic>? user) {
 bool isPaymentSuccessResponse(Map<String, dynamic> response) {
   if (isPaymentStillApplying(response)) return false;
 
+  if (response['premiumGranted'] == true || response['premium_granted'] == true) {
+    return true;
+  }
+
   final user = userPayloadFromPaymentResponse(response);
   if (_userPayloadIsPremium(user)) return true;
 
-  // Explicit grant flag from backend (when present).
-  if (response['premiumGranted'] == true || response['premium_granted'] == true) {
+  // Backend sometimes returns COMPLETED with user premium but without the flag.
+  final status = normalizedPaymentStatus(response['status']);
+  if ((status == 'COMPLETED' || status == 'PAID' || status == 'SUCCESSFUL') &&
+      _userPayloadIsPremium(user)) {
     return true;
   }
 

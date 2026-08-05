@@ -75,18 +75,7 @@ object StreamSessionBuilder {
         return if (v == "en" || v.startsWith("en-") || v == "eng") "en" else "sw"
     }
 
-    private fun isGatewayPage(url: String): Boolean {
-        val u = url.trim().lowercase()
-        if (u.isEmpty()) return false
-        return Regex("""\.php(\?|$|#)""").containsMatchIn(u) ||
-            u.contains(".html") ||
-            (u.startsWith("http") &&
-                !u.contains(".mpd") &&
-                !u.contains(".m3u8") &&
-                !u.contains(".m3u") &&
-                !u.contains(".mp4") &&
-                !u.contains(".ts"))
-    }
+    private fun isGatewayPage(url: String): Boolean = StreamUrlClassifier.needsWebPlayer(url)
 
     private fun parseHeaders(json: String): Map<String, String> {
         if (json.isEmpty()) return emptyMap()

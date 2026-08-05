@@ -304,7 +304,12 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             continue;
           }
           if (isPaymentSuccessResponse(response)) {
-            final userPayload = userPayloadFromPaymentResponse(response);
+            final userPayload = userPayloadFromPaymentResponse(response) ?? <String, dynamic>{};
+            if (response['premiumGranted'] == true || response['premium_granted'] == true) {
+              userPayload['premiumGranted'] = true;
+              userPayload['isPremium'] = true;
+              userPayload['is_premium'] = true;
+            }
             var unlocked = false;
             try {
               unlocked = await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;

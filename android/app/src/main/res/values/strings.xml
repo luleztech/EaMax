@@ -21,4 +21,12 @@
     <string name="ok_understood">Sawa</string>
     <string name="player_live">LIVE</string>
     <string name="player_play_pause">Play / pause</string>
+    <string name="player_chip_language">Lugha · Kiswahili</string>
+    <string name="player_chip_language_en">Lugha · English</string>
+    <string name="player_chip_quality">Ubora · %1$s</string>
+    <string name="player_error_title">Video haikuweza kuchezwa</string>
+    <string name="player_chip_quality_default">Ubora · 360p</string>
+    <string name="player_chip_switch">Badili Kituo</string>
+    <string name="player_live_subtitle">Moja kwa moja</string>
+    <string name="player_moja_kwa_moja">MOJA KWA MOJA</string>
 </resources>

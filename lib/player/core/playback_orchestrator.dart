@@ -13,6 +13,7 @@ import '../analytics/playback_analytics.dart';
 import 'playback_session.dart';
 import '../../screens/fullscreen_video_page.dart';
 import '../../player/flutter_playback_mode.dart';
+import '../../player/playback_http_headers.dart';
 import '../../player/stream_url_utils.dart';
 
 typedef ClearKeyExtractor = String Function(Map<String, dynamic>?);
@@ -81,7 +82,7 @@ class PlaybackOrchestrator {
     final token = extractToken(channelData);
     final playbackHeaders = extractHeaders(channelData);
     final audioLanguage = _resolveAudioLanguage(channelData, policy);
-    final merged = Map<String, String>.from(playbackHeaders);
+    final merged = mergePlaybackHeaders(url, playbackHeaders);
     if (token.isNotEmpty &&
         !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
       merged['Authorization'] = 'Bearer $token';

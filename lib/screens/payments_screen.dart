@@ -228,27 +228,29 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     super.dispose();
   }
 
-  void _startPolling() {
+  void _startPolling({bool preserveInstructionUi = false}) {
     _pollTimer?.cancel();
-    _waitingTimer?.cancel();
-    setState(() {
-      _waitingSeconds = _kPaymentWaitSeconds;
-      _paymentUiPhase = _PaymentUiPhase.waiting;
-    });
+    if (!preserveInstructionUi) {
+      _waitingTimer?.cancel();
+      setState(() {
+        _waitingSeconds = _kPaymentWaitSeconds;
+        _paymentUiPhase = _PaymentUiPhase.waiting;
+      });
 
-    _waitingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      if (_waitingSeconds <= 1) {
-        timer.cancel();
-        setState(() => _waitingSeconds = 0);
-        _handleWaitWindowExpired();
-        return;
-      }
-      setState(() => _waitingSeconds -= 1);
-    });
+      _waitingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        if (_waitingSeconds <= 1) {
+          timer.cancel();
+          setState(() => _waitingSeconds = 0);
+          _handleWaitWindowExpired();
+          return;
+        }
+        setState(() => _waitingSeconds -= 1);
+      });
+    }
 
     final orderId = _pollingOrderId;
     if (orderId == null || orderId.isEmpty) return;
@@ -278,6 +280,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         if (isPaymentSuccessResponse(response)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(response),
+            premiumGranted: response['premiumGranted'] == true ||
+                response['premium_granted'] == true,
           );
           return;
         }
@@ -310,7 +314,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         }
       }
       if (polls == 120 && applyingStreak < 3) {
-        // Soft timeout UI only — leave poll running a bit longer via pending watcher.
+        // Soft timeout UI only — leave poll running; background watcher also continues.
         _waitingTimer?.cancel();
         _waitingTimer = null;
         unawaited(_finalizeSessionTimedOut(
@@ -318,7 +322,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
               'Muda wa kusubiri umeisha. Hakikisha umeona ombi kwenye simu na umeingiza PIN. Tunendelea kuthibitisha nyuma ya pazia.',
         ));
       }
-      if (polls >= 150) {
+      // Never stop while entitlements are still applying; otherwise keep polling longer.
+      if (polls >= 200 && applyingStreak == 0) {
         _pollTimer?.cancel();
         _pollTimer = null;
       }
@@ -469,11 +474,31 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   void _onInstructionContinue() {
     if (!mounted || _pollingOrderId == null) return;
     setState(() => _paymentUiPhase = _PaymentUiPhase.waiting);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
+    // Polling may already be running from payment start — ensure countdown UI is active.
+    if (_pollTimer == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
+    } else if (_waitingTimer == null) {
+      _waitingTimer?.cancel();
+      setState(() => _waitingSeconds = _kPaymentWaitSeconds);
+      _waitingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        if (_waitingSeconds <= 1) {
+          timer.cancel();
+          setState(() => _waitingSeconds = 0);
+          _handleWaitWindowExpired();
+          return;
+        }
+        setState(() => _waitingSeconds -= 1);
+      });
+    }
   }
 
   Future<void> _markPaymentCompleted({
     Map<String, dynamic>? userPayload,
+    bool premiumGranted = false,
   }) async {
     _waitingTimer?.cancel();
     _waitingTimer = null;
@@ -487,12 +512,23 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     setState(() {
       _notFoundStreak = 0;
       _sessionEndDetail = null;
+      if (_paymentUiPhase == _PaymentUiPhase.instruction) {
+        _paymentUiPhase = _PaymentUiPhase.waiting;
+      }
     });
 
     // Refresh premium + unlock channels before celebrating.
     var unlocked = false;
     try {
-      unlocked = await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;
+      unlocked = await widget.onPaymentSuccess?.call(
+            userPayload: {
+              ...?userPayload,
+              if (premiumGranted) 'premiumGranted': true,
+              if (premiumGranted) 'isPremium': true,
+              if (premiumGranted) 'is_premium': true,
+            },
+          ) ??
+          false;
     } catch (e) {
       debugPrint('[PaymentsScreen] onPaymentSuccess failed: $e');
     }
@@ -658,6 +694,14 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           _notFoundStreak = 0;
           _pendingBundleLabel = bundle.displayName;
           _paymentUiPhase = _PaymentUiPhase.instruction;
+        });
+        // Start status polling immediately — do not wait for “Nimeelewa”.
+        // Instruction modal stays visible while unlock happens in the background.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _pollingOrderId != orderId) return;
+          if (_pollTimer == null) {
+            _startPolling(preserveInstructionUi: true);
+          }
         });
       } else {
         final msg = serverMsg.isNotEmpty

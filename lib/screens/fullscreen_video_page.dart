@@ -9,6 +9,9 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../player/flutter_playback_mode.dart';
+import '../player/php_gateway_js.dart';
+import '../player/playback_http_headers.dart';
+import '../player/stream_url_classifier.dart';
 import '../player/stream_url_utils.dart';
 import '../player/web_playback_config.dart';
 import '../player/web_player_html.dart';
@@ -225,8 +228,20 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     } on UnimplementedError {
       // Some webview_flutter_web versions don't support background color.
     }
+    try {
+      await _webController!.setUserAgent(kBrowserPlaybackUserAgent);
+    } on UnimplementedError {
+      // Optional on some platforms.
+    }
     await _guardWebViewNavigation(_webController!);
-    _webController!.loadRequest(Uri.parse(widget.videoUrl));
+    final headers = mergePlaybackHeaders(
+      widget.videoUrl,
+      widget.httpHeaders,
+    );
+    _webController!.loadRequest(
+      Uri.parse(widget.videoUrl),
+      headers: headers,
+    );
   }
 
   /// Keep stream/gateway URLs inside the app — never hand off to VLC/MX/system chooser.
@@ -235,6 +250,13 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
     try {
       await controller.setNavigationDelegate(
         NavigationDelegate(
+          onPageStarted: (_) {
+            // Stub reCAPTCHA as early as possible — never show "verify you are not a robot".
+            controller.runJavaScript(kPhpGatewayRecoveryJs);
+          },
+          onPageFinished: (_) {
+            controller.runJavaScript(kPhpGatewayRecoveryJs);
+          },
           onNavigationRequest: (request) {
             final lower = request.url.toLowerCase();
             if (lower.startsWith('intent:') ||

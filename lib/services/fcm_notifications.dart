@@ -40,18 +40,20 @@ void _maybeRequestPremiumUnlock(RemoteMessage message) {
 
   Map<String, dynamic>? payload;
   final isPrem = message.data['isPremium'] ?? message.data['is_premium'];
-  if (isPrem != null && isPrem.isNotEmpty) {
-    final active = isPrem == 'true' || isPrem == '1';
-    final expires = (message.data['premiumExpiresAt'] ?? message.data['subscriptionEndDate'])
-        ?.toString()
-        .trim();
-    payload = <String, dynamic>{
-      'isPremium': active,
-      'is_premium': active,
-      if (expires != null && expires.isNotEmpty) 'premiumExpiresAt': expires,
-      if (expires != null && expires.isNotEmpty) 'subscriptionEndDate': expires,
-    };
-  }
+  final expires = (message.data['premiumExpiresAt'] ?? message.data['subscriptionEndDate'])
+      ?.toString()
+      .trim();
+  // payment_success / admin_access_granted always means unlock — never wait for a flag.
+  final active = isPrem == null || isPrem.isEmpty
+      ? true
+      : (isPrem == 'true' || isPrem == '1');
+  payload = <String, dynamic>{
+    'isPremium': active,
+    'is_premium': active,
+    'premiumGranted': true,
+    if (expires != null && expires.isNotEmpty) 'premiumExpiresAt': expires,
+    if (expires != null && expires.isNotEmpty) 'subscriptionEndDate': expires,
+  };
 
   unawaited(onPremiumUnlockRequested?.call(userPayload: payload));
 }

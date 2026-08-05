@@ -277,17 +277,23 @@ const clearAllExpiredPremiumFlags = async () => {
 const repairCompletedPaymentsMissingPremium = async () => {
   const { resolvePremiumInterval, getActivePlans, intervalForPlan } = require('./subscriptionPlansService');
 
-  // 1) Completed payments whose users are not actively premium.
+  // Only repair FRESH completed payments that never activated premium.
+  // Do NOT re-grant users whose subscription simply expired — that would give free premium.
   const rows = await query(
-    `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents
+    `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents, sp.completed_at
        FROM subscription_payments sp
        JOIN users u ON u.id = sp.user_id
       WHERE sp.status = 'completed'
+        AND sp.completed_at IS NOT NULL
+        AND sp.completed_at > NOW() - INTERVAL '14 days'
         AND u.blocked IS NOT TRUE
         AND (
           u.premium_expires_at IS NULL
-          OR u.premium_expires_at <= NOW()
-          OR u.is_premium IS NOT TRUE
+          OR u.premium_expires_at < sp.completed_at
+          OR (
+            u.is_premium IS NOT TRUE
+            AND (u.premium_expires_at IS NULL OR u.premium_expires_at <= NOW())
+          )
         )
       ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
       LIMIT 200`,

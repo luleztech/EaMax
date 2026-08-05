@@ -476,7 +476,7 @@ try {
     });
   };
   expiryReminderTimer = setInterval(runPremiumMaintenance, DAY_MS);
-  // First run 2 minutes after boot (avoid cold-start contention)
+  // First run 30 seconds after boot so paid-but-locked users unlock quickly.
   setTimeout(() => {
     runPremiumMaintenance();
     repairCompletedPaymentsMissingPremium().catch((err) => {
@@ -488,21 +488,22 @@ try {
         reconcilePendingSubscriptionPayments().catch((err) => {
           console.warn('[Payment] Boot reconcile failed:', err.message || err);
         });
+        // Every 45s — catch paid gateway orders when webhook/app poll missed completion.
         setInterval(() => {
           reconcilePendingSubscriptionPayments().catch((err) => {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
-        }, 2 * 60 * 1000);
+        }, 45 * 1000);
         setInterval(() => {
           repairCompletedPaymentsMissingPremium().catch((err) => {
             console.warn('[Entitlements] Scheduled repair failed:', err.message || err);
           });
-        }, 2 * 60 * 1000);
+        }, 60 * 1000);
       }
     } catch (e) {
       console.warn('[Payment] Reconcile scheduler not started:', e.message || e);
     }
-  }, 120000);
+  }, 30000);
 } catch (e) {
   console.warn('[ExpiredReminder] scheduler not started:', e.message || e);
 }

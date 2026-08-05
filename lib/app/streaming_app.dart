@@ -597,7 +597,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     );
   }
 
-  Future<bool> _onPaymentSuccess({Map<String, dynamic>? userPayload}) async {
+  Future<bool> _onPaymentSuccess({
+    Map<String, dynamic>? userPayload,
+    bool premiumGranted = false,
+  }) async {
     final uid = await ensureLocalUserId();
     if (userPayload != null) {
       await _applyUserPremiumData(userPayload, uid: uid);
@@ -605,22 +608,31 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     await retryPendingRegistrations();
 
     // If userPayload or explicit flags indicate success, force premium immediately.
-    final isExplicitSuccess = userPayload != null &&
-        (userPayload['isPremium'] == true ||
-            userPayload['is_premium'] == true ||
-            userPayload['premiumGranted'] == true ||
-            userPayload['premium_granted'] == true);
+    final isExplicitSuccess = premiumGranted ||
+        (userPayload != null &&
+            (userPayload['isPremium'] == true ||
+                userPayload['is_premium'] == true ||
+                userPayload['premiumGranted'] == true ||
+                userPayload['premium_granted'] == true ||
+                userPayload['isPremium']?.toString().toLowerCase() == 'true' ||
+                userPayload['is_premium']?.toString().toLowerCase() == 'true'));
     if (isExplicitSuccess) {
-      final forced = Map<String, dynamic>.from(userPayload);
+      final forced = Map<String, dynamic>.from(userPayload ?? const <String, dynamic>{});
       forced['isPremium'] = true;
       forced['is_premium'] = true;
+      // Keep a short future expiry if the payload omitted one — enough for UI unlock
+      // until the next server refresh fills the real date.
+      if ((forced['premiumExpiresAt'] ?? forced['premium_expires_at'] ?? forced['subscriptionEndDate']) == null) {
+        forced['premiumExpiresAt'] =
+            DateTime.now().toUtc().add(const Duration(days: 1)).toIso8601String();
+      }
       await _applyUserPremiumData(forced, uid: uid);
     }
 
     // Confirm premium from server in background; never clear a successful local unlock.
     if (!_premium) {
-      for (var i = 0; i < 8; i++) {
-        await Future<void>.delayed(Duration(seconds: i < 3 ? 1 : 2));
+      for (var i = 0; i < 10; i++) {
+        await Future<void>.delayed(Duration(seconds: i < 4 ? 1 : 2));
         await _refreshUser(maxAttempts: 3, protectExistingPremium: true);
         if (_premium) break;
       }
@@ -645,11 +657,17 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     try {
       final res = await paymentsApi.checkPaymentStatus(pending);
       if (isPaymentStillApplying(res)) {
+        // Keep trying — also nudge local refresh in case entitlements just landed.
+        unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
         return;
       }
       if (isPaymentSuccessResponse(res)) {
         final userPayload = userPayloadFromPaymentResponse(res);
-        final unlocked = await _onPaymentSuccess(userPayload: userPayload);
+        final unlocked = await _onPaymentSuccess(
+          userPayload: userPayload,
+          premiumGranted:
+              res['premiumGranted'] == true || res['premium_granted'] == true,
+        );
         if (unlocked) {
           await prefs.remove('pendingPaymentOrderId');
         }

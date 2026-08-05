@@ -5,6 +5,7 @@ const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
 const {
   buildPremiumPayload,
+  isPremiumActive,
 } = require('../services/premiumStatus');
 const {
   grantUserEntitlementsInTransaction,
@@ -41,6 +42,8 @@ const AURAX_WEBHOOK_PAID_STATUSES = new Set([
   'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED',
   'APPROVED', 'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED',
   'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS', 'CAPTURED', 'DONE', 'PAYMENT_SUCCESSFUL',
+  'TXN_SUCCESS', 'DEBITED', 'MONEY_RECEIVED', 'RECEIVED', 'FUNDED', 'CLEARED',
+  'PAYMENT_RECEIVED', 'TRANSACTION_COMPLETED', 'TRX_SUCCESS', 'SUCCESSFULLY',
 ]);
 
 const AURAX_EXPLICIT_UNPAID_STATUSES = new Set([
@@ -74,6 +77,8 @@ const getSonicPesaRequestHeaders = () => {
 const SONIC_WEBHOOK_PAID_STATUSES = new Set([
   'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED', 'APPROVED',
   'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS',
+  'TXN_SUCCESS', 'DEBITED', 'MONEY_RECEIVED', 'RECEIVED', 'FUNDED', 'CLEARED',
+  'PAYMENT_RECEIVED', 'TRANSACTION_COMPLETED', 'TRX_SUCCESS', 'PAYMENT_SUCCESSFUL',
 ]);
 
 const SONIC_EXPLICIT_UNPAID_STATUSES = new Set([
@@ -269,11 +274,26 @@ const isAirtelLocalPhone = (local0) => {
   return p.startsWith('068') || p.startsWith('069') || p.startsWith('078');
 };
 
+const isTigoLocalPhone = (local0) => {
+  const p = String(local0 || '');
+  return p.startsWith('065') || p.startsWith('067') || p.startsWith('071') || p.startsWith('077');
+};
+
+const isVodacomLocalPhone = (local0) => {
+  const p = String(local0 || '');
+  return p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
+};
+
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  // Halopesa (061–063) and Airtel (068–069, 078) often reject 255… on Sonic; try local 0… first.
-  if (isHalotelLocalPhone(normalizedPhone) || isAirtelLocalPhone(normalizedPhone)) {
+  // Halopesa (061–063), Airtel (068–069, 078), and Mixx/Tigo often reject 255… on Sonic;
+  // try local 0… first for those carriers.
+  if (
+    isHalotelLocalPhone(normalizedPhone) ||
+    isAirtelLocalPhone(normalizedPhone) ||
+    isTigoLocalPhone(normalizedPhone)
+  ) {
     return [...new Set([local, api255].filter(Boolean))];
   }
   return [...new Set([api255, local].filter((p) => p && p.length > 0))];
@@ -342,6 +362,11 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}
     if (isAirtelLocalPhone(localPhone)) {
       return (
         'Airtel Money haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
+      );
+    }
+    if (isTigoLocalPhone(localPhone)) {
+      return (
+        'Mixx by Yas (Tigo) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
       );
     }
     return (
@@ -695,11 +720,36 @@ const normalizeAuraxStatusPayload = (statusData) => {
   return { ...statusData, transaction: tx };
 };
 
+/** True for boolean / numeric / string "paid" flags used by some carrier payloads. */
+const isTruthyPaidFlag = (value) => {
+  if (value === true || value === 1) return true;
+  if (typeof value === 'string') {
+    const s = value.trim().toLowerCase();
+    return s === 'true' || s === '1' || s === 'yes' || s === 'paid' || s === 'completed';
+  }
+  return false;
+};
+
+/** M-Pesa / Tigo / Airtel often return resultCode 0 (or "00") when the wallet debit succeeded. */
+const isGatewaySuccessResultCode = (value) => {
+  if (value == null || value === '') return false;
+  const s = String(value).trim();
+  return s === '0' || s === '00' || s === '000' || s === '200';
+};
+
 const evaluateAuraxOrderStatusForApply = (statusData) => {
   const normalized = normalizeAuraxStatusPayload(statusData);
   const tx =
     normalized?.transaction && typeof normalized.transaction === 'object'
       ? normalized.transaction
+      : null;
+  const nestRaw = normalized?.data;
+  const nest = Array.isArray(nestRaw)
+    ? nestRaw[0] && typeof nestRaw[0] === 'object'
+      ? nestRaw[0]
+      : null
+    : nestRaw && typeof nestRaw === 'object'
+      ? nestRaw
       : null;
   const rawStatus = extractAuraxPaymentStatus(normalized);
   let isCompleted = isAuraxPaidRaw(rawStatus);
@@ -718,7 +768,59 @@ const evaluateAuraxOrderStatusForApply = (statusData) => {
       ev === 'transaction.completed' ||
       ev === 'collection.completed' ||
       ev === 'payment.successful' ||
-      ev === 'charge.succeeded';
+      ev === 'charge.succeeded' ||
+      ev === 'payment.paid' ||
+      ev === 'stk.success' ||
+      ev.endsWith('.completed') ||
+      ev.endsWith('.successful');
+  }
+  // Explicit paid flags (Halotel / Airtel / Tigo variants via Aurax).
+  if (!isCompleted) {
+    const flagSources = [normalized, tx, nest, tx?.metadata, nest?.metadata, normalized?.metadata];
+    for (const obj of flagSources) {
+      if (!obj || typeof obj !== 'object') continue;
+      if (
+        isTruthyPaidFlag(obj.paid) ||
+        isTruthyPaidFlag(obj.isPaid) ||
+        isTruthyPaidFlag(obj.is_paid) ||
+        isTruthyPaidFlag(obj.paymentCompleted) ||
+        isTruthyPaidFlag(obj.payment_completed)
+      ) {
+        isCompleted = true;
+        break;
+      }
+      if (
+        isGatewaySuccessResultCode(obj.resultCode) ||
+        isGatewaySuccessResultCode(obj.result_code) ||
+        isGatewaySuccessResultCode(obj.ResultCode) ||
+        isGatewaySuccessResultCode(obj.responseCode) ||
+        isGatewaySuccessResultCode(obj.response_code)
+      ) {
+        // Only treat success codes as paid when there is also a payment-ish field
+        // (avoids STK "accepted" envelopes that still say PENDING).
+        const paymentish = extractAuraxPaymentStatus(normalized);
+        if (
+          !paymentish ||
+          isAuraxPaidRaw(paymentish) ||
+          paymentish === 'SUCCESS' ||
+          paymentish === 'SUCCESSFUL'
+        ) {
+          isCompleted = true;
+          break;
+        }
+      }
+      if (obj.paidAt || obj.paid_at || obj.completedAt || obj.completed_at || obj.settledAt || obj.settled_at) {
+        const paymentish = extractAuraxPaymentStatus(normalized);
+        if (!paymentish || !AURAX_EXPLICIT_UNPAID_STATUSES.has(paymentish)) {
+          isCompleted = true;
+          break;
+        }
+      }
+    }
+  }
+  // Hard guard: terminal failure / no-money must never unlock.
+  if (isCompleted && isPaymentTerminalStatus(rawStatus)) {
+    isCompleted = false;
   }
   return { isCompleted, rawStatus, transaction: tx || null };
 };
@@ -1207,11 +1309,17 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
 const PAYMENT_TERMINAL_STATUSES = new Set([
   'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID',
   'REVERSED', 'CANCEL',
+  // No-money / wallet reject — never unlock premium.
+  'INSUFFICIENT_FUNDS', 'INSUFFICIENT_BALANCE', 'INSUFFICIENT', 'NO_BALANCE', 'NO_FUNDS',
+  'LOW_BALANCE', 'BALANCE_TOO_LOW', 'NOT_ENOUGH_BALANCE', 'FUNDS_INSUFFICIENT',
 ]);
 
 const isPaymentTerminalStatus = (raw) => {
   const u = String(raw || '').toUpperCase().trim();
-  return Boolean(u && PAYMENT_TERMINAL_STATUSES.has(u));
+  if (!u) return false;
+  if (PAYMENT_TERMINAL_STATUSES.has(u)) return true;
+  if (/INSUFFICIENT|NO[_ ]?BALANCE|NO[_ ]?FUNDS|LOW[_ ]?BALANCE/.test(u)) return true;
+  return false;
 };
 
 const isPaymentCancelledStatus = (raw) => {
@@ -1219,9 +1327,23 @@ const isPaymentCancelledStatus = (raw) => {
   return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID';
 };
 
+const isInsufficientFundsStatus = (raw) => {
+  const u = String(raw || '').toUpperCase().trim();
+  return (
+    u.includes('INSUFFICIENT') ||
+    u.includes('NO_BALANCE') ||
+    u.includes('NO_FUNDS') ||
+    u.includes('LOW_BALANCE') ||
+    u.includes('NOT_ENOUGH')
+  );
+};
+
 const mapTerminalStatusUserMessage = (raw) => {
   if (isPaymentCancelledStatus(raw)) {
     return 'Ulighairi malipo kwenye simu. Unaweza kujaribu tena ukiwa tayari.';
+  }
+  if (isInsufficientFundsStatus(raw)) {
+    return 'Salio la wallet yako si la kutosha. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Mixx by Yas, Airtel Money) kisha ujaribu tena.';
   }
   const u = String(raw || '').toUpperCase().trim();
   if (u === 'EXPIRED' || u === 'TIMEOUT') {
@@ -1485,8 +1607,17 @@ async function handlePaymentStart(req, res, next) {
       isAirtelLocalPhone(normalizedPhone) &&
       auraxReady;
 
-    if (skipSonicForHalotel || skipSonicForAirtel) {
-      const carrier = skipSonicForHalotel ? 'Halopesa (061–063)' : 'Airtel Money (068–069, 078)';
+    const skipSonicForTigo =
+      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
+      isTigoLocalPhone(normalizedPhone) &&
+      auraxReady;
+
+    if (skipSonicForHalotel || skipSonicForAirtel || skipSonicForTigo) {
+      const carrier = skipSonicForHalotel
+        ? 'Halopesa (061–063)'
+        : skipSonicForAirtel
+          ? 'Airtel Money (068–069, 078)'
+          : 'Mixx by Yas / Tigo (065/067/071/077)';
       console.log(`[Payment] ${carrier} — routing to Aurax Pay (+255 E.164)`);
       paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
       usedAuraxFallbackFromSonic = true;
@@ -1695,7 +1826,11 @@ async function handlePaymentStart(req, res, next) {
             ? 'Ombi limetumwa kupitia Aurax Pay (Halopesa). Angalia simu yako na uingize PIN.'
             : isAirtelLocalPhone(normalizedPhone)
               ? 'Ombi limetumwa kupitia Aurax Pay (Airtel Money). Angalia simu yako na uingize PIN.'
-              : 'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo.'
+              : isTigoLocalPhone(normalizedPhone)
+                ? 'Ombi limetumwa kupitia Aurax Pay (Mixx by Yas). Angalia simu yako na uingize PIN.'
+                : isVodacomLocalPhone(normalizedPhone)
+                  ? 'Ombi limetumwa kupitia Aurax Pay (M-Pesa). Angalia simu yako na uingize PIN.'
+                  : 'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo.'
           : providerResponseMessage),
       provider: PAYMENT_PROVIDERS.AURAX,
       activeProvider: provider,
@@ -1945,7 +2080,21 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     }
 
     // Return success result immediately after commit - MUST be inside try block
-    const user = await fetchUserPremiumSnapshotByUserId(userId);
+    let user = await fetchUserPremiumSnapshotByUserId(userId);
+    // Hard guarantee: completed payment must leave an active premium account.
+    if (!user || !isPremiumActive({
+      is_premium: user.is_premium ?? user.isPremium,
+      premium_expires_at: user.premium_expires_at || user.premiumExpiresAt,
+      blocked: user.blocked,
+    })) {
+      console.warn('[Payment] Post-commit premium inactive — force repairing entitlements', {
+        orderId: payment.provider_ref,
+        userId,
+        planInterval,
+      });
+      await repairUserEntitlements(userId, planInterval);
+      user = await fetchUserPremiumSnapshotByUserId(userId);
+    }
     return { ...payment, user };
   } catch (err) {
     console.error('[Payment] Transaction failed, rolling back:', err);
@@ -1974,16 +2123,14 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
     await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval || '30 days');
   }
 
-  const userIsPremiumActive = (user) =>
-    !!(
-      user &&
-      (user.isPremium === true ||
-        user.is_premium === true ||
-        user.isPremium === 1 ||
-        user.is_premium === 1 ||
-        String(user.isPremium).toLowerCase() === 'true' ||
-        String(user.is_premium).toLowerCase() === 'true')
-    );
+  const userIsPremiumActive = (user) => {
+    if (!user) return false;
+    return isPremiumActive({
+      blocked: user.blocked === true,
+      is_premium: user.is_premium ?? user.isPremium,
+      premium_expires_at: user.premium_expires_at || user.premiumExpiresAt || user.subscriptionEndDate,
+    });
+  };
 
   let user = await fetchUserPremiumSnapshotForOrder(orderId);
   let premiumActive = userIsPremiumActive(user);
@@ -2274,7 +2421,40 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       ev === 'payment_completed' ||
       ev === 'invoice.paid' ||
       ev === 'charge.succeeded' ||
-      ev === 'transaction.completed';
+      ev === 'transaction.completed' ||
+      ev === 'payment.successful' ||
+      ev.endsWith('.completed') ||
+      ev.endsWith('.successful');
+  }
+  if (!paid) {
+    const flagSources = [payload, nest, payload.metadata, nest?.metadata];
+    for (const obj of flagSources) {
+      if (!obj || typeof obj !== 'object') continue;
+      if (
+        isTruthyPaidFlag(obj.paid) ||
+        isTruthyPaidFlag(obj.isPaid) ||
+        isTruthyPaidFlag(obj.is_paid) ||
+        isTruthyPaidFlag(obj.paymentCompleted) ||
+        isTruthyPaidFlag(obj.payment_completed)
+      ) {
+        paid = true;
+        break;
+      }
+      if (
+        isGatewaySuccessResultCode(obj.resultCode) ||
+        isGatewaySuccessResultCode(obj.result_code) ||
+        isGatewaySuccessResultCode(obj.ResultCode)
+      ) {
+        if (!rawStatus || isSonicPaidRaw(rawStatus) || rawStatus === 'SUCCESS') {
+          paid = true;
+          break;
+        }
+      }
+    }
+  }
+  // Never treat terminal failure / no-money as paid.
+  if (paid && isPaymentTerminalStatus(rawStatus)) {
+    paid = false;
   }
   return { orderId: orderId || null, paid, raw: rawStatus || ev };
 };
@@ -2363,8 +2543,27 @@ router.post('/aurax/webhook', async (req, res, next) => {
     try {
       const result = await tryApplyAuraxCompletedPayment(orderId, payload, { altRefs: allRefs });
       if (!result) {
-        console.warn('[AuraxPay] Payment processing returned null for:', orderId);
-        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
+        // Paid at gateway but local row not matched yet (gateway_ref race). Use 503 so
+        // Aurax retries — returning 200/processed:false permanently drops the webhook.
+        console.warn('[AuraxPay] Payment processing returned null for paid webhook:', orderId);
+        return res.status(503).json({
+          received: true,
+          processed: false,
+          reason: 'payment_not_found_or_still_linking',
+          retry: true,
+        });
+      }
+      const premiumOk = isPremiumActive({
+        blocked: result.user?.blocked === true,
+        is_premium: result.user?.is_premium ?? result.user?.isPremium,
+        premium_expires_at:
+          result.user?.premium_expires_at ||
+          result.user?.premiumExpiresAt ||
+          result.user?.subscriptionEndDate,
+      });
+      if (!premiumOk && result.user_id) {
+        const planInterval = await resolvePlanIntervalForPayment(result.plan, result.amount_cents);
+        await repairUserEntitlements(Number(result.user_id), planInterval || '30 days');
       }
       console.log('[AuraxPay] Payment processing completed for:', orderId, 'user:', result.user?.external_id);
       return res.status(200).json({ received: true, processed: true, userId: result.user?.external_id });
@@ -2499,8 +2698,25 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
         ].filter(Boolean),
       });
       if (!result) {
-        console.warn('[SonicPesa] Payment processing returned null for:', orderId);
-        return res.status(200).json({ received: true, processed: false, reason: 'payment_not_found_or_already_processed' });
+        console.warn('[SonicPesa] Payment processing returned null for paid webhook:', orderId);
+        return res.status(503).json({
+          received: true,
+          processed: false,
+          reason: 'payment_not_found_or_still_linking',
+          retry: true,
+        });
+      }
+      const premiumOk = isPremiumActive({
+        blocked: result.user?.blocked === true,
+        is_premium: result.user?.is_premium ?? result.user?.isPremium,
+        premium_expires_at:
+          result.user?.premium_expires_at ||
+          result.user?.premiumExpiresAt ||
+          result.user?.subscriptionEndDate,
+      });
+      if (!premiumOk && result.user_id) {
+        const planInterval = await resolvePlanIntervalForPayment(result.plan, result.amount_cents);
+        await repairUserEntitlements(Number(result.user_id), planInterval || '30 days');
       }
       console.log('[SonicPesa] Payment processing completed for:', orderId, 'user:', result.user?.external_id);
       return res.status(200).json({ received: true, processed: true, userId: result.user?.external_id });
@@ -2588,11 +2804,11 @@ const reconcilePendingSubscriptionPayments = async () => {
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND created_at < NOW() - INTERVAL '60 seconds'
+        AND created_at < NOW() - INTERVAL '20 seconds'
       ORDER BY
         CASE WHEN gateway_ref IS NULL OR gateway_ref = '' THEN 1 ELSE 0 END,
         created_at ASC
-      LIMIT 100`,
+      LIMIT 150`,
   );
   if (!result.rows.length) return 0;
 
@@ -2630,6 +2846,14 @@ module.exports.__paymentTestHelpers = {
   extractSonicPaymentStatus,
   isAuraxPaidRaw,
   isSonicPaidRaw,
+  isPaymentTerminalStatus,
+  isInsufficientFundsStatus,
+  mapTerminalStatusUserMessage,
+  resolveAuraxChannelFromPhone,
+  isHalotelLocalPhone,
+  isAirtelLocalPhone,
+  isTigoLocalPhone,
+  isVodacomLocalPhone,
   pickPreferredAuraxOrderId,
   collectAuraxOrderRefs,
   coerceAuraxTransactionObject,

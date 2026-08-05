@@ -2,6 +2,7 @@ import 'package:http/http.dart' as http;
 
 import 'gateway_stream_extractor.dart';
 import 'manifest_url_extractor.dart';
+import 'stream_url_classifier.dart';
 import 'stream_url_utils.dart';
 import 'web_playback_config.dart';
 
@@ -34,8 +35,7 @@ class WebStreamProbeResult {
 
 /// Resolves any server URL to the best web playback strategy.
 class WebStreamProbe {
-  static const _browserUa =
-      'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36';
+  static const _browserUa = kBrowserPlaybackUserAgent;
   static const _rangeBytes = 2047;
   static const _maxReadBytes = 4096;
 
@@ -161,6 +161,10 @@ class WebStreamProbe {
           authToken: config.token,
           drmType: config.normalizedDrmType,
         );
+      }
+
+      if (GatewayStreamExtractor.looksLikeHardBotChallenge(html)) {
+        return _gatewayFallback(url, config, headers);
       }
     } catch (_) {}
 

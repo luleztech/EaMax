@@ -56,7 +56,7 @@ class NativeAndroidPlayer {
     });
   }
 
-  /// Push server-driven player settings to native Kotlin (no-op with Supasoka player stack).
+  /// Push server-driven player settings to native Kotlin.
   static Future<void> syncPlayerConfig({
     required String preferredEngine,
     required int bufferMinMs,
@@ -67,6 +67,7 @@ class NativeAndroidPlayer {
     required bool reconnectEnabled,
     required bool autoPlay,
     required String defaultQuality,
+    String defaultLanguage = 'sw',
     required bool failoverToWebview,
     required bool hardwareAcceleration,
     required bool softwareDecodeFallback,
@@ -86,6 +87,7 @@ class NativeAndroidPlayer {
       'reconnectEnabled': reconnectEnabled,
       'autoPlay': autoPlay,
       'defaultQuality': defaultQuality,
+      'defaultLanguage': defaultLanguage,
       'failoverToWebview': failoverToWebview,
       'hardwareAcceleration': hardwareAcceleration,
       'softwareDecodeFallback': softwareDecodeFallback,

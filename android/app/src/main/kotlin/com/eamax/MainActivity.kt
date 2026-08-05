@@ -85,6 +85,16 @@ class MainActivity : FlutterActivity() {
                             "audioLanguage",
                             args["audioLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
+                        intent.putExtra("channelId", (args["channelId"] as? Number)?.toInt() ?: -1)
+                        intent.putExtra("channelName", args["channelName"]?.toString().orEmpty())
+                        intent.putExtra(
+                            "fallbackStreamsJson",
+                            args["fallbackStreamsJson"]?.toString().orEmpty(),
+                        )
+                        intent.putExtra(
+                            "playbackEngine",
+                            args["playbackEngine"]?.toString().orEmpty(),
+                        )
                         intent.putExtra(
                             "defaultQuality",
                             args["defaultQuality"]?.toString().orEmpty().ifEmpty { "360p" },

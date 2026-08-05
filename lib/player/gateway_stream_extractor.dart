@@ -51,6 +51,7 @@ class GatewayStreamExtractor {
     final blocked = html.trim().toLowerCase() == 'blocked' ||
         (html.length < 200 && html.toLowerCase().contains('blocked'));
     if (blocked) return null;
+    // Extract encrypted stream even if the page also loads reCAPTCHA scripts.
 
     final fields = _parseFields(html, requireStream: true);
     if (fields != null) return _toExtracted(fields);
@@ -219,6 +220,48 @@ class GatewayStreamExtractor {
       return '';
     }
   }
+
+  /// Hard bot walls only (Cloudflare / human-check) with no encrypted stream payload.
+  /// Soft `recaptcha` script tags on PHP gateways must not match.
+  static bool looksLikeHardBotChallenge(String html) {
+    final t = html.toLowerCase();
+    final hasStreamPayload = t.contains('encryptedmpd') ||
+        t.contains('encryptedstream') ||
+        t.contains('encryptedurl') ||
+        t.contains('encryptedhls') ||
+        t.contains('encrypteddash') ||
+        t.contains('encryptedmanifest') ||
+        t.contains('keypart') ||
+        t.contains('xorkey') ||
+        t.contains('decryptkey');
+    if (hasStreamPayload) return false;
+    return t.contains('cf-challenge') ||
+        t.contains('challenge-platform') ||
+        t.contains('just a moment') ||
+        t.contains('verify you are human') ||
+        t.contains('verify you are not a robot') ||
+        t.contains('not a robot') ||
+        t.contains('attention required') ||
+        t.contains('checking your browser') ||
+        _looksLikeForbiddenPage(t, html.length) ||
+        (t.contains('g-recaptcha') && t.contains('data-sitekey') && html.length < 12000);
+  }
+
+  static bool _looksLikeForbiddenPage(String t, int len) {
+    if (t.isEmpty) return false;
+    final compact = len < 8000;
+    if (!compact) {
+      return t.contains('<title>') && t.contains('403') && t.contains('forbidden');
+    }
+    return (t.contains('403') && t.contains('forbidden')) ||
+        t.contains('access to this resource on the server is denied') ||
+        (t.contains('access denied') && t.contains('403')) ||
+        (t.contains('<h1') && t.contains('>403<')) ||
+        t.contains('error 403');
+  }
+
+  @Deprecated('Use looksLikeHardBotChallenge')
+  static bool looksLikeBotChallenge(String html) => looksLikeHardBotChallenge(html);
 }
 
 class _ParsedFields {
