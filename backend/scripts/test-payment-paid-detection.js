@@ -303,6 +303,36 @@ const cases = [
     },
   },
   {
+    name: 'Aurax: resultCode 0 alone without paymentStatus stays unpaid (STK ack)',
+    fn: () => {
+      const payload = {
+        transaction: {
+          id: gatewayId,
+          status: 'PROCESSING',
+          resultCode: '0',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { paid } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === false, 'expected unpaid for resultCode-only STK ack');
+    },
+  },
+  {
+    name: 'Aurax: resultCode 0 with paid_at settles as paid',
+    fn: () => {
+      const payload = {
+        transaction: {
+          id: gatewayId,
+          resultCode: '0',
+          paid_at: '2026-08-09T12:00:00Z',
+          metadata: { orderId: clientOrderId },
+        },
+      };
+      const { paid } = h.extractAuraxWebhookOrderAndPaid(payload);
+      assert(paid === true, 'expected paid from resultCode + paid_at');
+    },
+  },
+  {
     name: 'Aurax: bare envelope SUCCESS without payment fields stays unpaid',
     fn: () => {
       const payload = {

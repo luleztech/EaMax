@@ -93,7 +93,10 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     final rt = RealtimeService.instance;
 
     _premiumRealtimeHandler ??= (data) {
-      unawaited(_applyUserPremiumData(data, uid: uid));
+      unawaited(() async {
+        final currentUid = await getLocalUserId() ?? uid;
+        await _applyUserPremiumData(data, uid: currentUid);
+      }());
     };
     _pointsRealtimeHandler ??= (data) {
       if (!mounted) return;
@@ -601,7 +604,26 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     Map<String, dynamic>? userPayload,
     bool premiumGranted = false,
   }) async {
-    final uid = await ensureLocalUserId();
+    var uid = await ensureLocalUserId();
+
+    // If the server upgraded a different external_id (identity split after reinstall /
+    // storage loss), adopt the paid account so channels unlock on this device.
+    final paidExternal = (userPayload?['externalId'] ??
+            userPayload?['external_id'] ??
+            userPayload?['userId'] ??
+            userPayload?['user_id'])
+        ?.toString()
+        .trim();
+    if (paidExternal != null &&
+        paidExternal.isNotEmpty &&
+        paidExternal != uid &&
+        paidExternal.startsWith('User-')) {
+      debugPrint('[Premium] Adopting paid account $paidExternal (was $uid)');
+      await adoptUserId(paidExternal);
+      uid = paidExternal;
+      unawaited(RealtimeService.instance.connect(uid));
+    }
+
     if (userPayload != null) {
       await _applyUserPremiumData(userPayload, uid: uid);
     }

@@ -45,6 +45,16 @@ Future<void> _persistUserIdEverywhere(String id) async {
   await _mirrorStableUserIdToAndroid(id);
 }
 
+/// Switch this device onto an existing server account (e.g. the user who just paid).
+Future<void> adoptUserId(String id) async {
+  final trimmed = id.trim();
+  if (trimmed.isEmpty) return;
+  await _persistUserIdEverywhere(trimmed);
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(_registrationRetryKey);
+  unawaited(registerUserInDatabase(id: trimmed, maxRetries: 3));
+}
+
 Future<String?> _readStableUserIdNative() async {
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return null;
   try {
@@ -213,7 +223,9 @@ Future<String?> getLocalUserId() async {
   }
 }
 
-/// Returns stored id instantly; generates, persists, and registers a unique one if missing.
+/// Returns stored id instantly; recovers via FCM / backups before generating a new one.
+/// Generating without recovery splits identity — payment upgrades one user while the app
+/// stays on another, so channels stay locked until admin special-access.
 Future<String> ensureLocalUserId({bool registerInDatabase = true}) async {
   final existing = await getLocalUserId();
   if (existing != null && existing.isNotEmpty) {
@@ -225,6 +237,16 @@ Future<String> ensureLocalUserId({bool registerInDatabase = true}) async {
       }
     }
     return existing;
+  }
+
+  // No local id yet — try the full recovery chain (native / backup / FCM) before minting.
+  try {
+    final recovered = await getOrCreateUserId();
+    if (recovered != null && recovered.trim().isNotEmpty) {
+      return recovered.trim();
+    }
+  } catch (e) {
+    debugPrint('[UserRegistration] ensureLocalUserId recovery failed: $e');
   }
 
   final id = generateUserId();

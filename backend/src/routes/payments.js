@@ -796,17 +796,25 @@ const evaluateAuraxOrderStatusForApply = (statusData) => {
         isGatewaySuccessResultCode(obj.responseCode) ||
         isGatewaySuccessResultCode(obj.response_code)
       ) {
-        // Only treat success codes as paid when there is also a payment-ish field
-        // (avoids STK "accepted" envelopes that still say PENDING).
+        // Only treat success codes as paid when payment status is missing or paid.
+        // Never unlock on STK-accepted envelopes that still say PENDING/PROCESSING.
         const paymentish = extractAuraxPaymentStatus(normalized);
         if (
-          !paymentish ||
           isAuraxPaidRaw(paymentish) ||
           paymentish === 'SUCCESS' ||
           paymentish === 'SUCCESSFUL'
         ) {
           isCompleted = true;
           break;
+        }
+        if (!paymentish) {
+          // Some carriers only return resultCode after debit with no paymentStatus.
+          // Require another paid signal (paidAt / event already handled above) or
+          // a settlement timestamp so bare STK acks stay unpaid.
+          if (obj.paidAt || obj.paid_at || obj.completedAt || obj.completed_at || obj.settledAt || obj.settled_at) {
+            isCompleted = true;
+            break;
+          }
         }
       }
       if (obj.paidAt || obj.paid_at || obj.completedAt || obj.completed_at || obj.settledAt || obj.settled_at) {
@@ -2019,6 +2027,20 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
 
     await grantUserEntitlementsInTransaction(client, userId, { planInterval });
 
+    // Re-read inside the same transaction so we never commit a "completed" payment
+    // without a live premium row for this user.
+    const verify = await client.query(
+      `SELECT is_premium, premium_expires_at, blocked, external_id
+         FROM users WHERE id = $1 FOR UPDATE`,
+      [userId],
+    );
+    const verified = verify.rows[0];
+    if (!verified || !isPremiumActive(verified)) {
+      throw new Error(
+        `Post-grant premium inactive for user id=${userId} order=${payment.provider_ref}`,
+      );
+    }
+
     await client.query('COMMIT');
     console.log('[Payment] Transaction committed for order:', payment.provider_ref, '- revenue and premium users will reflect in admin.');
 
@@ -2175,6 +2197,8 @@ const respondPaymentCompletion = async (orderId, rawPayload, res) => {
       ...user,
       isPremium: true,
       is_premium: true,
+      externalId: user.externalId || user.external_id || null,
+      external_id: user.external_id || user.externalId || null,
     },
   });
 };
@@ -2232,7 +2256,37 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         try {
           await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
             expectedPaymentProvider: expectedProvider,
+            altRefs: [
+              statusData.data?.order_id,
+              statusData.data?.orderId,
+              statusData.data?.reference,
+              statusData.reference,
+              statusData.transid,
+            ].filter(Boolean),
           });
+          // If apply missed the row (ref race), recover via buyer phone like Aurax.
+          const stillPending = await query(
+            `SELECT status FROM subscription_payments
+              WHERE (provider_ref = $1 OR gateway_ref = $1) AND status = 'pending' LIMIT 1`,
+            [orderId],
+          );
+          if (stillPending.rows.length) {
+            const phones = collectPaymentPhoneHints(statusData.data || statusData || {});
+            const amount = collectPaymentAmountHint(statusData.data || statusData || {});
+            if (phones.length) {
+              const hinted = await findPendingPaymentByBuyerHints({
+                phones,
+                amount,
+                paymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+              });
+              if (hinted?.provider_ref) {
+                await applyCompletedPayment(hinted.provider_ref, statusData.data || statusData || {}, {
+                  expectedPaymentProvider: expectedProvider,
+                  altRefs: [orderId, hinted.gateway_ref].filter(Boolean),
+                });
+              }
+            }
+          }
         } catch (applyErr) {
           console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
           return res.json({ status: 'PENDING', applying: true, raw: statusData });

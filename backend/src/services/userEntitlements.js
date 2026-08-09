@@ -7,7 +7,7 @@ const {
 } = require('./premiumStatus');
 
 /** Insert unlock rows for every channel (active or not — matches payment completion behavior). */
-const unlockAllChannelsInTransaction = async (client, userId) => {
+const unlockAllChannelsInTransaction = async (client, userId, { required = true } = {}) => {
   const ensureUnlockTable = async () => {
     await client.query(
       `CREATE TABLE IF NOT EXISTS user_unlocked_channels (
@@ -60,13 +60,15 @@ const unlockAllChannelsInTransaction = async (client, userId) => {
       } catch (retryErr) {
         await client.query('ROLLBACK TO SAVEPOINT unlock_channels_retry').catch(() => {});
         console.error(
-          `[Entitlements] Warning: unlockAllChannelsInTransaction retry failed for user id=${userId}:`,
+          `[Entitlements] unlockAllChannelsInTransaction retry failed for user id=${userId}:`,
           retryErr?.message || retryErr,
         );
+        if (required) throw retryErr;
         return 0;
       }
     }
-    console.error(`[Entitlements] Warning: unlockAllChannelsInTransaction non-fatal error for user id=${userId}:`, msg);
+    console.error(`[Entitlements] unlockAllChannelsInTransaction failed for user id=${userId}:`, msg);
+    if (required) throw err;
     return 0;
   }
 };
@@ -117,7 +119,15 @@ const grantUserEntitlementsInTransaction = async (client, userId, { planInterval
     ? await grantPremiumWithIntervalInTransaction(client, userId, planInterval)
     : await grantPremiumUntilInTransaction(client, userId, expiresAt);
 
-  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId);
+  if (!isPremiumActive(row)) {
+    throw new Error(
+      `Premium grant did not activate user id=${userId} (expires=${row.premium_expires_at}, is_premium=${row.is_premium})`,
+    );
+  }
+
+  // Channel unlock rows are best-effort: playback is gated by premium_expires_at.
+  // Never roll back a successful premium grant solely because unlock inserts failed.
+  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId, { required: false });
   console.log('[Entitlements] Premium granted:', {
     userId,
     premium_expires_at: row.premium_expires_at,
@@ -215,7 +225,7 @@ const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
         planInterval: planInterval || '30 days',
       });
     } else if (needsChannels) {
-      await unlockAllChannelsInTransaction(client, userId);
+      await unlockAllChannelsInTransaction(client, userId, { required: false });
     }
     await client.query('COMMIT');
     return true;
@@ -278,6 +288,7 @@ const repairCompletedPaymentsMissingPremium = async () => {
   const { resolvePremiumInterval, getActivePlans, intervalForPlan } = require('./subscriptionPlansService');
 
   // Only repair FRESH completed payments that never activated premium.
+  // Proof of missed grant: expiry missing OR still before the payment completed_at.
   // Do NOT re-grant users whose subscription simply expired — that would give free premium.
   const rows = await query(
     `SELECT DISTINCT ON (sp.user_id) sp.user_id, sp.plan, sp.amount_cents, sp.completed_at
@@ -290,10 +301,6 @@ const repairCompletedPaymentsMissingPremium = async () => {
         AND (
           u.premium_expires_at IS NULL
           OR u.premium_expires_at < sp.completed_at
-          OR (
-            u.is_premium IS NOT TRUE
-            AND (u.premium_expires_at IS NULL OR u.premium_expires_at <= NOW())
-          )
         )
       ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
       LIMIT 200`,

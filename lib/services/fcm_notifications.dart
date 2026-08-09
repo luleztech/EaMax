@@ -43,6 +43,7 @@ void _maybeRequestPremiumUnlock(RemoteMessage message) {
   final expires = (message.data['premiumExpiresAt'] ?? message.data['subscriptionEndDate'])
       ?.toString()
       .trim();
+  final externalId = (message.data['externalId'] ?? message.data['external_id'])?.toString().trim();
   // payment_success / admin_access_granted always means unlock — never wait for a flag.
   final active = isPrem == null || isPrem.isEmpty
       ? true
@@ -53,6 +54,8 @@ void _maybeRequestPremiumUnlock(RemoteMessage message) {
     'premiumGranted': true,
     if (expires != null && expires.isNotEmpty) 'premiumExpiresAt': expires,
     if (expires != null && expires.isNotEmpty) 'subscriptionEndDate': expires,
+    if (externalId != null && externalId.isNotEmpty) 'externalId': externalId,
+    if (externalId != null && externalId.isNotEmpty) 'external_id': externalId,
   };
 
   unawaited(onPremiumUnlockRequested?.call(userPayload: payload));
