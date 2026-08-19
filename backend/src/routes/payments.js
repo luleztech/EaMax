@@ -74,6 +74,7 @@ const getSonicPesaRequestHeaders = () => {
   return headers;
 };
 
+// Wallet/debit statuses on `payment_status` (NOT the API envelope `status: success`).
 const SONIC_WEBHOOK_PAID_STATUSES = new Set([
   'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID', 'PAID_OUT', 'COMPLETE', 'SUCCEEDED', 'APPROVED',
   'CONFIRMED', 'SETTLED', 'COLLECTED', 'PAYMENT_COMPLETED', 'TRANSACTION_SUCCESS', 'PAYMENT_SUCCESS',
@@ -85,6 +86,9 @@ const SONIC_EXPLICIT_UNPAID_STATUSES = new Set([
   'PENDING', 'PROCESSING', 'INITIATED', 'WAITING', 'QUEUED',
   'CREATED', 'OPEN', 'SENT', 'STK_SENT', 'PROMPT_SENT', 'IN_PROGRESS', 'UNKNOWN',
 ]);
+
+/** HTTP/API envelope only — create_order and order_status both return status:"success" before PIN. */
+const SONIC_API_ENVELOPE_STATUSES = new Set(['SUCCESS', 'OK', 'ERROR', 'FAIL']);
 
 const ensureSonicPesaConfigured = () => {
   if (!SONICPESA_API_KEY) {
@@ -287,27 +291,22 @@ const isVodacomLocalPhone = (local0) => {
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  // Halopesa (061–063), Airtel (068–069, 078), and Mixx/Tigo often reject 255… on Sonic;
-  // try local 0… first for those carriers.
-  if (
-    isHalotelLocalPhone(normalizedPhone) ||
-    isAirtelLocalPhone(normalizedPhone) ||
-    isTigoLocalPhone(normalizedPhone)
-  ) {
-    return [...new Set([local, api255].filter(Boolean))];
-  }
+  // Docs require 255… ; retry local 0… if the first format is rejected.
   return [...new Set([api255, local].filter((p) => p && p.length > 0))];
 };
 
 const isSonicInitiateSuccess = (sonicData, httpResponse) => {
   if (!sonicData || typeof sonicData !== 'object') return false;
+  const orderId = String(
+    sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId ?? '',
+  ).trim();
+  if (!orderId) return false;
   const st = String(sonicData.status || '').toLowerCase().trim();
-  if (st === 'success') return true;
-  if (sonicData.success === true) return true;
-  const orderId =
-    sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId;
-  if (orderId && (httpResponse?.ok || st !== 'error')) return true;
-  return false;
+  if (st === 'error' || st === 'fail' || st === 'failed') return false;
+  if (httpResponse && httpResponse.ok === false && Number(httpResponse.status) >= 400) return false;
+  if (st === 'success' || sonicData.success === true) return true;
+  if (httpResponse?.ok) return true;
+  return st !== 'error';
 };
 
 /** Sonic result codes / messages where STK/USSD was not delivered — safe to try Aurax Pay next. */
@@ -1146,34 +1145,108 @@ const isSonicPaidRaw = (rawUpper) => {
   return lower === 'successful';
 };
 
+const pickSonicNestedData = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return null;
+  const d = statusData.data;
+  if (Array.isArray(d) && d.length) {
+    return d[0] && typeof d[0] === 'object' ? d[0] : null;
+  }
+  if (d && typeof d === 'object') return d;
+  return null;
+};
+
+const pickSonicTransactionObject = (statusData) => {
+  if (!statusData || typeof statusData !== 'object') return null;
+  const nest = pickSonicNestedData(statusData);
+  const tx = statusData.transaction;
+  if (tx && typeof tx === 'object' && !Array.isArray(tx)) return tx;
+  if (nest?.transaction && typeof nest.transaction === 'object' && !Array.isArray(nest.transaction)) {
+    return nest.transaction;
+  }
+  return null;
+};
+
+const sonicNonEmptyStatus = (value) => {
+  if (value == null || typeof value === 'object') return '';
+  return String(value).toUpperCase().trim();
+};
+
+const extractSonicTransid = (statusData) => {
+  const nest = pickSonicNestedData(statusData);
+  const tx = pickSonicTransactionObject(statusData);
+  const raw = nest?.transid ?? tx?.transid ?? statusData?.transid ?? nest?.transaction_id ?? tx?.transaction_id;
+  const s = String(raw || '').trim();
+  if (!s || s.toLowerCase() === 'null' || s === 'undefined') return '';
+  return s;
+};
+
+/**
+ * Wallet status only. SonicPesa wraps every HTTP call in `{ status: "success" }`
+ * (create_order / order_status) while `data.payment_status` stays PENDING until PIN.
+ * Never prefer the envelope `status` over `payment_status`.
+ */
 const extractSonicPaymentStatus = (statusData) => {
   if (!statusData || typeof statusData !== 'object') return '';
-  const d = statusData.data;
-  const nest = Array.isArray(d) ? d[0] : d && typeof d === 'object' ? d : null;
-  const candidates = [
+  const nest = pickSonicNestedData(statusData);
+  const tx = pickSonicTransactionObject(statusData);
+
+  const walletCandidates = [
     nest?.payment_status,
     nest?.paymentStatus,
-    nest?.status,
+    tx?.payment_status,
+    tx?.paymentStatus,
     statusData.payment_status,
     statusData.paymentStatus,
-    statusData.status,
-    // Null/empty data envelopes still sometimes carry result fields at root.
-    statusData.result,
-    nest?.result,
-    statusData.transaction_status,
+    tx?.status,
     nest?.transaction_status,
-  ];
-  const found = [];
-  for (const c of candidates) {
-    if (c != null && typeof c !== 'object') {
-      const s = String(c).toUpperCase().trim();
-      if (s) found.push(s);
-    }
+    statusData.transaction_status,
+    nest?.result,
+    tx?.result,
+  ]
+    .map(sonicNonEmptyStatus)
+    .filter(Boolean);
+
+  for (const s of walletCandidates) {
+    if (SONIC_EXPLICIT_UNPAID_STATUSES.has(s)) return s;
   }
-  for (const s of found) {
+  for (const s of walletCandidates) {
+    if (isPaymentTerminalStatus(s)) return s;
+  }
+  for (const s of walletCandidates) {
     if (isSonicPaidRaw(s)) return s;
   }
-  return found[0] || '';
+  if (walletCandidates[0]) return walletCandidates[0];
+
+  // Envelope `status` is not a wallet debit. Only surface it for hard failures.
+  const envelope = sonicNonEmptyStatus(statusData.status);
+  if (envelope && SONIC_API_ENVELOPE_STATUSES.has(envelope)) return '';
+  if (envelope && isPaymentTerminalStatus(envelope)) return envelope;
+  return envelope || '';
+};
+
+const evaluateSonicOrderStatusForApply = (payload) => {
+  const rawStatus = extractSonicPaymentStatus(payload);
+  if (SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)) {
+    return { isCompleted: false, rawStatus: rawStatus || 'PENDING' };
+  }
+  if (isPaymentTerminalStatus(rawStatus)) {
+    return { isCompleted: false, rawStatus };
+  }
+  let isCompleted = isSonicPaidRaw(rawStatus);
+  // Thin debit webhooks: transid + envelope SUCCESS, without nested payment_status.
+  // Never treat envelope SUCCESS alone (create_order / order_status ack) as paid.
+  if (!isCompleted) {
+    const transid = extractSonicTransid(payload);
+    const envelope = sonicNonEmptyStatus(payload?.status);
+    if (
+      transid &&
+      (envelope === 'SUCCESS' || envelope === 'COMPLETED' || envelope === 'PAID' || envelope === 'SUCCESSFUL')
+    ) {
+      isCompleted = true;
+      return { isCompleted: true, rawStatus: envelope };
+    }
+  }
+  return { isCompleted, rawStatus: rawStatus || 'PENDING' };
 };
 
 const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
@@ -1394,41 +1467,52 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
     phoneForSonicApi: candidates[0] || phoneLocal,
   };
 
+  const sonicCallbackUrl =
+    process.env.SONICPESA_WEBHOOK_URL ||
+    `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/sonicpesa/webhook`;
+
   for (const phoneForSonicApi of candidates) {
-    const sonicPayload = {
+    const basePayload = {
       buyer_email: data.email || 'user@eamax.app',
       buyer_name: data.name || externalId,
       buyer_phone: phoneForSonicApi,
-      amount: amountToSend,
+      amount: Number(amountToSend),
       currency: 'TZS',
     };
-    try {
-      const { response, data: sonicData } = await gatewayFetchJson(
-        `${SONICPESA_API_BASE}/payment/create_order`,
-        {
-          method: 'POST',
-          headers: getSonicPesaRequestHeaders(),
-          body: JSON.stringify(sonicPayload),
-        },
-        SONIC_HTTP_TIMEOUT_MS,
-      );
-      last = { response, sonicData, phoneLocal, phoneForSonicApi };
-      if (isSonicInitiateSuccess(sonicData, response)) {
-        return last;
+    const payloadVariants = [
+      { ...basePayload, callback_url: sonicCallbackUrl },
+      basePayload,
+    ];
+    for (const sonicPayload of payloadVariants) {
+      try {
+        const { response, data: sonicData } = await gatewayFetchJson(
+          `${SONICPESA_API_BASE}/payment/create_order`,
+          {
+            method: 'POST',
+            headers: getSonicPesaRequestHeaders(),
+            body: JSON.stringify(sonicPayload),
+          },
+          SONIC_HTTP_TIMEOUT_MS,
+        );
+        last = { response, sonicData, phoneLocal, phoneForSonicApi };
+        if (isSonicInitiateSuccess(sonicData, response)) {
+          return last;
+        }
+        console.warn('[SonicPesa] create_order attempt failed:', {
+          phoneForSonicApi,
+          httpStatus: response.status,
+          sonicStatus: sonicData?.status,
+          hasCallback: Boolean(sonicPayload.callback_url),
+          message: sonicData?.message || sonicData?.error,
+        });
+      } catch (fetchErr) {
+        last = {
+          response: { ok: false, status: 502 },
+          sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+          phoneLocal,
+          phoneForSonicApi,
+        };
       }
-      console.warn('[SonicPesa] create_order attempt failed:', {
-        phoneForSonicApi,
-        httpStatus: response.status,
-        sonicStatus: sonicData?.status,
-        message: sonicData?.message || sonicData?.error,
-      });
-    } catch (fetchErr) {
-      last = {
-        response: { ok: false, status: 502 },
-        sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-        phoneLocal,
-        phoneForSonicApi,
-      };
     }
   }
   return last;
@@ -1605,31 +1689,7 @@ async function handlePaymentStart(req, res, next) {
       }
     }
 
-    const skipSonicForHalotel =
-      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
-      isHalotelLocalPhone(normalizedPhone) &&
-      auraxReady;
-
-    const skipSonicForAirtel =
-      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
-      isAirtelLocalPhone(normalizedPhone) &&
-      auraxReady;
-
-    const skipSonicForTigo =
-      paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA &&
-      isTigoLocalPhone(normalizedPhone) &&
-      auraxReady;
-
-    if (skipSonicForHalotel || skipSonicForAirtel || skipSonicForTigo) {
-      const carrier = skipSonicForHalotel
-        ? 'Halopesa (061–063)'
-        : skipSonicForAirtel
-          ? 'Airtel Money (068–069, 078)'
-          : 'Mixx by Yas / Tigo (065/067/071/077)';
-      console.log(`[Payment] ${carrier} — routing to Aurax Pay (+255 E.164)`);
-      paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
-      usedAuraxFallbackFromSonic = true;
-    } else if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
+    if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
       if (!SONICPESA_SECRET_KEY) {
         console.warn(
@@ -1665,14 +1725,30 @@ async function handlePaymentStart(req, res, next) {
         const sonicOrderId = String(
           sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId ?? '',
         ).trim();
-        if (!sonicOrderId) {
+        const initiateMsg = sonicData.message || sonicData.error || '';
+        const initiateCode = sonicData.resultcode || sonicData.code;
+        if (isSonicPaymentSendFailure(initiateMsg, initiateCode)) {
+          sonicFailureForClient = { message: initiateMsg, code: initiateCode, sonicData };
+          if (shouldFallbackSonicToAurax(initiateMsg, initiateCode)) {
+            console.warn('[Payment] SonicPesa returned order but STK was not sent — falling back to Aurax Pay', {
+              phonePrefix: normalizedPhone.slice(0, 3),
+              resultcode: initiateCode,
+            });
+            paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
+            usedAuraxFallbackFromSonic = true;
+          } else {
+            return res.status(400).json({
+              error: mapSonicInitiateUserError(normalizedPhone, initiateMsg, initiateCode),
+              sonicResponse: sonicData,
+            });
+          }
+        } else if (!sonicOrderId) {
           return res.status(400).json({
             error: 'SonicPesa did not return an order_id',
             sonicResponse: sonicData,
           });
-        }
+        } else {
 
-        providerResponseMessage = sonicData.message || providerResponseMessage;
         await query(
           `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -1682,10 +1758,12 @@ async function handlePaymentStart(req, res, next) {
         return res.json({
           status: 'pending',
           orderId: sonicOrderId,
-          message: providerResponseMessage,
+          message:
+            'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
           provider: PAYMENT_PROVIDERS.SONICPESA,
           activeProvider: provider,
         });
+        }
       }
 
       const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
@@ -2241,16 +2319,15 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       }
 
       if (!statusResp.ok) {
-        return res.status(400).json({
-          error: mapPaymentGatewayUserError(
-            statusData.message || statusData.error || 'Failed to fetch order status',
-            statusData.resultcode || statusData.code,
-          ),
+        console.warn('[SonicPesa] order_status HTTP error — keeping payment pending', {
+          orderId,
+          httpStatus: statusResp.status,
+          message: statusData.message || statusData.error,
         });
+        return res.json({ status: 'PENDING', raw: statusData });
       }
 
-      const rawStatus = extractSonicPaymentStatus(statusData);
-      const isCompleted = isSonicPaidRaw(rawStatus);
+      const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
 
       if (isCompleted) {
         try {
@@ -2305,8 +2382,13 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         });
       }
 
+      let clientStatus = rawStatus || 'PENDING';
+      if (!isCompleted && (clientStatus === 'SUCCESS' || clientStatus === 'OK')) {
+        clientStatus = 'PENDING';
+      }
+
       return res.json({
-        status: rawStatus || 'PENDING',
+        status: clientStatus,
         raw: statusData,
       });
     }
@@ -2444,13 +2526,7 @@ const verifyAuraxPayWebhookHmac = (rawBodyString, headerValue) => {
 };
 
 const extractSonicWebhookOrderAndPaid = (payload) => {
-  const d = payload.data;
-  const nest =
-    d && typeof d === 'object' && !Array.isArray(d)
-      ? d
-      : Array.isArray(d) && d.length
-        ? d[0]
-        : null;
+  const nest = pickSonicNestedData(payload);
   const orderId = String(
     payload.order_id ??
       payload.orderId ??
@@ -2465,10 +2541,10 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       '',
   ).trim();
 
-  const rawStatus = extractSonicPaymentStatus(payload);
+  const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(payload);
   const ev = String(payload.event || payload.type || '').toLowerCase().trim();
-  let paid = isSonicPaidRaw(rawStatus);
-  if (!paid && ev) {
+  let paid = isCompleted;
+  if (!paid && ev && !SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)) {
     paid =
       ev === 'payment.success' ||
       ev === 'payment.completed' ||
@@ -2494,20 +2570,10 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
         paid = true;
         break;
       }
-      if (
-        isGatewaySuccessResultCode(obj.resultCode) ||
-        isGatewaySuccessResultCode(obj.result_code) ||
-        isGatewaySuccessResultCode(obj.ResultCode)
-      ) {
-        if (!rawStatus || isSonicPaidRaw(rawStatus) || rawStatus === 'SUCCESS') {
-          paid = true;
-          break;
-        }
-      }
     }
   }
-  // Never treat terminal failure / no-money as paid.
-  if (paid && isPaymentTerminalStatus(rawStatus)) {
+  // Never treat terminal failure / no-money / still-waiting as paid.
+  if (paid && (isPaymentTerminalStatus(rawStatus) || SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus))) {
     paid = false;
   }
   return { orderId: orderId || null, paid, raw: rawStatus || ev };
@@ -2683,12 +2749,22 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
       secretConfigured: Boolean(SONICPESA_WEBHOOK_SECRET),
     });
 
+    if (SONICPESA_WEBHOOK_SECRET) {
+      if (!signatureValid) {
+        console.warn('[SonicPesa] Webhook rejected: invalid HMAC (SONICPESA_WEBHOOK_SECRET is set).');
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+    } else {
+      console.warn('[SonicPesa] Webhook rejected: SONICPESA_WEBHOOK_SECRET is required to verify payment completion.');
+      return res.status(503).json({ error: 'Webhook verification is not configured' });
+    }
+
     if (!orderId) {
       // Some Sonic payloads omit order_id but still carry msisdn + amount after a successful debit.
       if (paid) {
         const phones = [];
-        for (const raw of [payload.msisdn, payload.phone, payload.data?.msisdn, payload.data?.phone]) {
-          const s = String(raw || '').trim();
+        for (const phoneRaw of [payload.msisdn, payload.phone, payload.data?.msisdn, payload.data?.phone]) {
+          const s = String(phoneRaw || '').trim();
           if (!s) continue;
           const digits = s.replace(/\D/g, '');
           if (digits.length >= 9) phones.push(`0${digits.slice(-9)}`);
@@ -2720,18 +2796,6 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
         }
       }
       return res.status(400).json({ error: 'Missing order reference' });
-    }
-
-    if (SONICPESA_WEBHOOK_SECRET) {
-      if (!signatureValid) {
-        console.warn('[SonicPesa] Webhook rejected: invalid HMAC (SONICPESA_WEBHOOK_SECRET is set).');
-        return res.status(401).json({ error: 'Invalid webhook signature' });
-      }
-    } else {
-      // A reference alone is public/client-visible and cannot prove a debit.
-      // Do not let an unsigned caller turn a pending order into Premium.
-      console.warn('[SonicPesa] Webhook rejected: SONICPESA_WEBHOOK_SECRET is required to verify payment completion.');
-      return res.status(503).json({ error: 'Webhook verification is not configured' });
     }
 
     if (!paid) {
@@ -2825,8 +2889,8 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
     if (!SONICPESA_API_KEY) return false;
     const { statusResp, statusData } = await pollSonicOrderStatus(orderId);
     if (!statusResp.ok) return false;
-    const rawStatus = extractSonicPaymentStatus(statusData);
-    if (!isSonicPaidRaw(rawStatus)) return false;
+    const { isCompleted } = evaluateSonicOrderStatusForApply(statusData);
+    if (!isCompleted) return false;
     const result = await applyCompletedPayment(orderId, statusData.data || statusData || {}, {
       expectedPaymentProvider: expectedProvider,
     });
@@ -2898,6 +2962,7 @@ module.exports.__paymentTestHelpers = {
   extractAuraxPaymentStatus,
   extractSonicWebhookOrderAndPaid,
   extractSonicPaymentStatus,
+  evaluateSonicOrderStatusForApply,
   isAuraxPaidRaw,
   isSonicPaidRaw,
   isPaymentTerminalStatus,

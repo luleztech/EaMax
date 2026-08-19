@@ -93,6 +93,83 @@ const cases = [
     },
   },
   {
+    name: 'Sonic poll: envelope success + payment_status PENDING is not paid',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'Order status retrieved successfully',
+        data: {
+          order_id: 'SONIC-PENDING-1',
+          payment_status: 'PENDING',
+          transid: null,
+          channel: null,
+        },
+        transaction: { order_id: 'SONIC-PENDING-1', status: 'PENDING' },
+      };
+      const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === false, 'expected unpaid while waiting for PIN');
+      assert(rawStatus === 'PENDING', `expected PENDING, got ${rawStatus}`);
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'webhook must not grant premium before PIN');
+    },
+  },
+  {
+    name: 'Sonic poll: envelope success without payment_status is not paid',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'Payment order created. Push USSD sent',
+        data: { order_id: 'SONIC-CREATE-1' },
+      };
+      const { isCompleted } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === false, 'create_order success envelope must stay unpaid');
+    },
+  },
+  {
+    name: 'Sonic poll: payment_status SUCCESS is paid after PIN',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'Order status retrieved successfully',
+        data: {
+          order_id: 'SONIC-PAID-1',
+          payment_status: 'SUCCESS',
+          transid: '26292628111262',
+          channel: 'MPESATZ',
+        },
+        transaction: { order_id: 'SONIC-PAID-1', status: 'SUCCESS' },
+      };
+      const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === true, 'expected paid after PIN');
+      assert(rawStatus === 'SUCCESS', `expected SUCCESS payment_status, got ${rawStatus}`);
+    },
+  },
+  {
+    name: 'Sonic webhook: resultCode 0 STK ack is not paid',
+    fn: () => {
+      const payload = {
+        order_id: 'SONIC-STK-ACK',
+        status: 'success',
+        resultCode: '0',
+        data: { payment_status: 'PENDING' },
+      };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'resultCode 0 must not activate premium');
+    },
+  },
+  {
+    name: 'Sonic webhook: payment.completed event still unpaid if payment_status PENDING',
+    fn: () => {
+      const payload = {
+        event: 'payment.completed',
+        order_id: 'SONIC-EVENT-PENDING',
+        data: { payment_status: 'PENDING' },
+      };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'event must not override PENDING payment_status');
+    },
+  },
+  {
     name: 'Sonic OK acknowledgement is not a paid transaction',
     fn: () => {
       const payload = { order_id: 'SONIC-ACK-1', data: [{ payment_status: 'OK' }] };

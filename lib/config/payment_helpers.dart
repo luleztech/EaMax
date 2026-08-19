@@ -13,7 +13,10 @@ bool isPaymentPending(Object? status) {
       s == 'PROCESSING' ||
       s == 'UNKNOWN' ||
       s == 'INITIATED' ||
-      s == 'WAITING';
+      s == 'WAITING' ||
+      // SonicPesa / some gateways use SUCCESS for “STK sent”, not wallet paid.
+      s == 'SUCCESS' ||
+      s == 'OK';
 }
 
 /// True only when money is confirmed (polling `/api/payments/status` or user record).
