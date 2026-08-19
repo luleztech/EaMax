@@ -463,7 +463,7 @@ const cases = [
       const payload = {
         status: 'success',
         message: 'OK',
-        data: { order_id: 'sp_ghost' },
+        data: { order_id: 'sp_ghost', payment_status: 'PENDING', reference: 'S20467752501' },
       };
       assert(h.isSonicUssdPushSent(payload) === false, 'ghost order must not count as push');
     },

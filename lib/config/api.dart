@@ -356,7 +356,7 @@ class PaymentsApi {
             'name': name,
           },
           enableRetries: false,
-          timeout: const Duration(seconds: 50),
+          timeout: const Duration(seconds: 28),
         );
         return Map<String, dynamic>.from(r as Map);
       } on ApiRateLimitedException catch (e) {
@@ -393,7 +393,7 @@ class PaymentsApi {
       },
       // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
       enableRetries: false,
-      timeout: const Duration(seconds: 50),
+      timeout: const Duration(seconds: 28),
     );
     return Map<String, dynamic>.from(r as Map);
   }

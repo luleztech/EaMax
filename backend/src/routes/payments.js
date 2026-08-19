@@ -334,14 +334,7 @@ const isSonicUssdPushSent = (sonicData) => {
   }
   const nest = pickSonicNestedData(sonicData);
   const msisdn = String(nest?.msisdn || nest?.phone || nest?.buyer_phone || '').replace(/\D/g, '');
-  if (msisdn.length >= 9) return true;
-  const pay = String(nest?.payment_status || nest?.status || '').toUpperCase();
-  const reference = String(nest?.reference || '').trim();
-  // Sonic documents PENDING + reference when the USSD push was accepted.
-  if (nest?.order_id && pay === 'PENDING' && reference && reference.toLowerCase() !== 'null') {
-    return true;
-  }
-  return false;
+  return msisdn.length >= 9;
 };
 
 const isSonicInitiateSuccess = (sonicData, httpResponse) => {
@@ -557,12 +550,12 @@ const initiateAuraxPayment = async ({
   externalId,
   callbackUrl,
   orderId,
+  timeoutMs = AURAX_HTTP_TIMEOUT_MS,
+  maxAttempts = 2,
 }) => {
   const channel = resolveAuraxChannelFromPhone(normalizedPhone);
   const phoneCandidates = auraxPhoneCandidatesForApi(normalizedPhone);
   const candidates = phoneCandidates.length > 0 ? phoneCandidates : [formatPhoneForAuraxPayApi(normalizedPhone)];
-
-  const maxAttempts = 2;
   let last = {
     response: { ok: false, status: 500 },
     auraxData: { success: false, message: 'Failed to start payment request' },
@@ -595,7 +588,7 @@ const initiateAuraxPayment = async ({
             headers: getAuraxPayRequestHeaders(),
             body: JSON.stringify(payload),
           },
-          AURAX_HTTP_TIMEOUT_MS,
+          timeoutMs,
         );
         last = { response, auraxData, phoneUsed: phoneForAurax };
         if (isAuraxInitiateSuccess(auraxData, response)) return last;
@@ -1177,8 +1170,13 @@ const tryApplyAuraxCompletedPayment = async (orderId, meta, { altRefs = [] } = {
 };
 
 const SONIC_HTTP_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.SONIC_HTTP_TIMEOUT_MS) || 22000, 8000),
-  55000,
+  Math.max(Number(process.env.SONIC_HTTP_TIMEOUT_MS) || 12000, 6000),
+  25000,
+);
+/** create_order must return quickly so the USSD lands while the user still has the phone in hand. */
+const SONIC_CREATE_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 6500, 4000),
+  10000,
 );
 
 const isSonicPaidRaw = (rawUpper) => {
@@ -1518,12 +1516,6 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
   };
   let lastCreated = null;
 
-  const sendCallback =
-    String(process.env.SONICPESA_SEND_CALLBACK_URL || '').trim() === '1';
-  const sonicCallbackUrl =
-    process.env.SONICPESA_WEBHOOK_URL ||
-    `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/sonicpesa/webhook`;
-
   const amount = Math.round(Number(amountToSend));
   const buyer_name = sonicBuyerNameForApi(data.name, externalId);
   const buyer_email = sonicBuyerEmailForApi(data.email, externalId);
@@ -1536,7 +1528,6 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
       amount,
       currency: 'TZS',
     };
-    if (sendCallback) sonicPayload.callback_url = sonicCallbackUrl;
 
     try {
       const { response, data: sonicData } = await gatewayFetchJson(
@@ -1546,32 +1537,34 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
           headers: getSonicPesaRequestHeaders(),
           body: JSON.stringify(sonicPayload),
         },
-        SONIC_HTTP_TIMEOUT_MS,
+        SONIC_CREATE_TIMEOUT_MS,
       );
-      const ussdSent = isSonicInitiateSuccess(sonicData, response) && isSonicUssdPushSent(sonicData);
+      const created = isSonicInitiateSuccess(sonicData, response);
+      const ussdSent = created && isSonicUssdPushSent(sonicData);
       last = { response, sonicData, phoneLocal, phoneForSonicApi, ussdSent };
       if (ussdSent) {
         console.log('[SonicPesa] Push USSD dispatched:', {
           phoneForSonicApi,
           orderId: sonicData.data?.order_id || sonicData.order_id,
-          message: sonicData.message,
+          elapsedHint: 'fast-path',
         });
         return last;
       }
-      if (isSonicInitiateSuccess(sonicData, response)) {
+      if (Number(response.status) === 401 || Number(response.status) === 403) {
+        console.warn('[SonicPesa] Auth rejected — not retrying other phone formats');
+        return last;
+      }
+      if (created) {
         lastCreated = last;
-        console.warn('[SonicPesa] Order created but USSD push not confirmed — trying next phone format:', {
+        console.warn('[SonicPesa] Order created without USSD proof — retrying other MSISDN format immediately', {
           phoneForSonicApi,
           httpStatus: response.status,
-          message: sonicData?.message || sonicData?.error,
-          msisdn: sonicData?.data?.msisdn || null,
         });
         continue;
       }
       console.warn('[SonicPesa] create_order attempt failed:', {
         phoneForSonicApi,
         httpStatus: response.status,
-        sonicStatus: sonicData?.status,
         message: sonicData?.message || sonicData?.error,
       });
     } catch (fetchErr) {
@@ -1797,56 +1790,51 @@ async function handlePaymentStart(req, res, next) {
         ).trim();
         const initiateMsg = sonicData.message || sonicData.error || '';
         const initiateCode = sonicData.resultcode || sonicData.code;
-        const pushMissing = !ussdSent;
-        if (pushMissing || isSonicPaymentSendFailure(initiateMsg, initiateCode)) {
-          sonicFailureForClient = {
-            message: initiateMsg || 'SonicPesa haikutuma ombi la malipo kwenye simu',
-            code: initiateCode,
-            sonicData,
-          };
-          if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
-            console.warn('[Payment] SonicPesa did not push USSD — falling back to Aurax Pay', {
-              phonePrefix: normalizedPhone.slice(0, 3),
-              phoneForSonicApi,
-              resultcode: initiateCode,
-              ussdSent: Boolean(ussdSent),
-            });
-            paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
-            usedAuraxFallbackFromSonic = true;
-          } else {
-            return res.status(400).json({
-              error: mapSonicInitiateUserError(
-                normalizedPhone,
-                initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
-                initiateCode,
-              ),
-              sonicResponse: sonicData,
-            });
-          }
-        } else if (!sonicOrderId) {
+        const sendFailed = isSonicPaymentSendFailure(initiateMsg, initiateCode);
+
+        if (sonicOrderId && !sendFailed) {
+          await query(
+            `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [userId, planKey, amountToSend, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
+          );
+          return res.json({
+            status: 'pending',
+            orderId: sonicOrderId,
+            message:
+              'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
+            provider: PAYMENT_PROVIDERS.SONICPESA,
+            activeProvider: provider,
+          });
+        }
+
+        sonicFailureForClient = {
+          message: initiateMsg || 'SonicPesa haikutuma ombi la malipo kwenye simu',
+          code: initiateCode,
+          sonicData,
+        };
+        if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
+          console.warn('[Payment] SonicPesa did not create a push — falling back to Aurax Pay', {
+            phonePrefix: normalizedPhone.slice(0, 3),
+            phoneForSonicApi,
+            resultcode: initiateCode,
+            ussdSent: Boolean(ussdSent),
+          });
+          paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
+          usedAuraxFallbackFromSonic = true;
+        } else {
           return res.status(400).json({
-            error: 'SonicPesa did not return an order_id',
+            error: mapSonicInitiateUserError(
+              normalizedPhone,
+              initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
+              initiateCode,
+            ),
             sonicResponse: sonicData,
           });
-        } else {
-
-        await query(
-          `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [userId, planKey, amountToSend, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
-        );
-
-        return res.json({
-          status: 'pending',
-          orderId: sonicOrderId,
-          message:
-            'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
-          provider: PAYMENT_PROVIDERS.SONICPESA,
-          activeProvider: provider,
-        });
         }
       }
 
+      if (!usedAuraxFallbackFromSonic) {
       const rawErr = sonicData.message || sonicData.error || 'Failed to start SonicPesa payment';
       const rawCode = sonicData.resultcode || sonicData.code;
       console.warn('[SonicPesa] Initiate failed:', {
@@ -1871,6 +1859,7 @@ async function handlePaymentStart(req, res, next) {
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
           sonicResponse: sonicData,
         });
+      }
       }
     }
 
@@ -1905,6 +1894,7 @@ async function handlePaymentStart(req, res, next) {
       data: { ...data, bundle: planKey },
       externalId: data.externalId,
       callbackUrl,
+      ...(usedAuraxFallbackFromSonic ? { timeoutMs: 10000, maxAttempts: 1 } : {}),
     });
 
     console.log('[AuraxPay] Response:', {
