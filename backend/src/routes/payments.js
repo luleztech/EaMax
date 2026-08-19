@@ -70,6 +70,8 @@ const getSonicPesaRequestHeaders = () => {
   };
   if (SONICPESA_SECRET_KEY) {
     headers['X-SECRET-KEY'] = SONICPESA_SECRET_KEY;
+    // Official PHP SDK / dashboard sometimes label this “secrete key”.
+    headers['X-SECRETE-KEY'] = SONICPESA_SECRET_KEY;
   }
   return headers;
 };
@@ -291,8 +293,55 @@ const isVodacomLocalPhone = (local0) => {
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  // Docs require 255… ; retry local 0… if the first format is rejected.
-  return [...new Set([api255, local].filter((p) => p && p.length > 0))];
+  // HaloPesa / Airtel / Mixx often accept local 0… for USSD push; Vodacom follows docs 255….
+  // Always try both so a silent “order created” on the wrong MSISDN can be retried.
+  const preferLocal =
+    isHalotelLocalPhone(normalizedPhone) ||
+    isAirtelLocalPhone(normalizedPhone) ||
+    isTigoLocalPhone(normalizedPhone);
+  const ordered = preferLocal ? [local, api255] : [api255, local];
+  return [...new Set(ordered.filter((p) => p && p.length > 0))];
+};
+
+const sonicBuyerNameForApi = (rawName, externalId) => {
+  const name = String(rawName || '').trim();
+  if (name.length >= 2 && /[a-zA-Z]/.test(name) && !/^[0-9a-f-]{20,}$/i.test(name)) {
+    return name.slice(0, 80);
+  }
+  const ext = String(externalId || '').trim();
+  if (ext && /[a-zA-Z]/.test(ext) && !/^[0-9a-f-]{20,}$/i.test(ext)) return ext.slice(0, 80);
+  return 'EaMax Customer';
+};
+
+const sonicBuyerEmailForApi = (rawEmail, externalId) => {
+  const email = String(rawEmail || '').trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.toLowerCase().endsWith('@eamax.app')) {
+    return email.slice(0, 120);
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email.slice(0, 120);
+  const id = String(externalId || 'customer').replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 32) || 'customer';
+  return `${id}@eamax.app`;
+};
+
+/** True when SonicPesa actually dispatched Push USSD (not merely created an unpaid order). */
+const isSonicUssdPushSent = (sonicData) => {
+  if (!sonicData || typeof sonicData !== 'object') return false;
+  const msg = String(sonicData.message || sonicData.error || '');
+  const code = sonicData.resultcode || sonicData.code;
+  if (isSonicPaymentSendFailure(msg, code)) return false;
+  if (/push ussd|ussd sent|sent to your phone|sent to the customer|prompt sent|check your phone/i.test(msg)) {
+    return true;
+  }
+  const nest = pickSonicNestedData(sonicData);
+  const msisdn = String(nest?.msisdn || nest?.phone || nest?.buyer_phone || '').replace(/\D/g, '');
+  if (msisdn.length >= 9) return true;
+  const pay = String(nest?.payment_status || nest?.status || '').toUpperCase();
+  const reference = String(nest?.reference || '').trim();
+  // Sonic documents PENDING + reference when the USSD push was accepted.
+  if (nest?.order_id && pay === 'PENDING' && reference && reference.toLowerCase() !== 'null') {
+    return true;
+  }
+  return false;
 };
 
 const isSonicInitiateSuccess = (sonicData, httpResponse) => {
@@ -1465,57 +1514,77 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
     sonicData: { status: 'error', message: 'Failed to start SonicPesa payment' },
     phoneLocal,
     phoneForSonicApi: candidates[0] || phoneLocal,
+    ussdSent: false,
   };
+  let lastCreated = null;
 
+  const sendCallback =
+    String(process.env.SONICPESA_SEND_CALLBACK_URL || '').trim() === '1';
   const sonicCallbackUrl =
     process.env.SONICPESA_WEBHOOK_URL ||
     `${process.env.PUBLIC_BASE_URL || 'https://eamax-production.up.railway.app'}/api/payments/sonicpesa/webhook`;
 
+  const amount = Math.round(Number(amountToSend));
+  const buyer_name = sonicBuyerNameForApi(data.name, externalId);
+  const buyer_email = sonicBuyerEmailForApi(data.email, externalId);
+
   for (const phoneForSonicApi of candidates) {
-    const basePayload = {
-      buyer_email: data.email || 'user@eamax.app',
-      buyer_name: data.name || externalId,
-      buyer_phone: phoneForSonicApi,
-      amount: Number(amountToSend),
+    const sonicPayload = {
+      buyer_email,
+      buyer_name,
+      buyer_phone: String(phoneForSonicApi),
+      amount,
       currency: 'TZS',
     };
-    const payloadVariants = [
-      { ...basePayload, callback_url: sonicCallbackUrl },
-      basePayload,
-    ];
-    for (const sonicPayload of payloadVariants) {
-      try {
-        const { response, data: sonicData } = await gatewayFetchJson(
-          `${SONICPESA_API_BASE}/payment/create_order`,
-          {
-            method: 'POST',
-            headers: getSonicPesaRequestHeaders(),
-            body: JSON.stringify(sonicPayload),
-          },
-          SONIC_HTTP_TIMEOUT_MS,
-        );
-        last = { response, sonicData, phoneLocal, phoneForSonicApi };
-        if (isSonicInitiateSuccess(sonicData, response)) {
-          return last;
-        }
-        console.warn('[SonicPesa] create_order attempt failed:', {
+    if (sendCallback) sonicPayload.callback_url = sonicCallbackUrl;
+
+    try {
+      const { response, data: sonicData } = await gatewayFetchJson(
+        `${SONICPESA_API_BASE}/payment/create_order`,
+        {
+          method: 'POST',
+          headers: getSonicPesaRequestHeaders(),
+          body: JSON.stringify(sonicPayload),
+        },
+        SONIC_HTTP_TIMEOUT_MS,
+      );
+      const ussdSent = isSonicInitiateSuccess(sonicData, response) && isSonicUssdPushSent(sonicData);
+      last = { response, sonicData, phoneLocal, phoneForSonicApi, ussdSent };
+      if (ussdSent) {
+        console.log('[SonicPesa] Push USSD dispatched:', {
+          phoneForSonicApi,
+          orderId: sonicData.data?.order_id || sonicData.order_id,
+          message: sonicData.message,
+        });
+        return last;
+      }
+      if (isSonicInitiateSuccess(sonicData, response)) {
+        lastCreated = last;
+        console.warn('[SonicPesa] Order created but USSD push not confirmed — trying next phone format:', {
           phoneForSonicApi,
           httpStatus: response.status,
-          sonicStatus: sonicData?.status,
-          hasCallback: Boolean(sonicPayload.callback_url),
           message: sonicData?.message || sonicData?.error,
+          msisdn: sonicData?.data?.msisdn || null,
         });
-      } catch (fetchErr) {
-        last = {
-          response: { ok: false, status: 502 },
-          sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-          phoneLocal,
-          phoneForSonicApi,
-        };
+        continue;
       }
+      console.warn('[SonicPesa] create_order attempt failed:', {
+        phoneForSonicApi,
+        httpStatus: response.status,
+        sonicStatus: sonicData?.status,
+        message: sonicData?.message || sonicData?.error,
+      });
+    } catch (fetchErr) {
+      last = {
+        response: { ok: false, status: 502 },
+        sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+        phoneLocal,
+        phoneForSonicApi,
+        ussdSent: false,
+      };
     }
   }
-  return last;
+  return lastCreated || last;
 };
 
 const pollSonicOrderStatus = async (orderId) => {
@@ -1707,7 +1776,7 @@ async function handlePaymentStart(req, res, next) {
         hasSecretKey: Boolean(SONICPESA_SECRET_KEY),
       });
 
-      const { response, sonicData, phoneForSonicApi } = await initiateSonicPayment({
+      const { response, sonicData, phoneForSonicApi, ussdSent } = await initiateSonicPayment({
         normalizedPhone,
         amountToSend,
         data,
@@ -1718,6 +1787,7 @@ async function handlePaymentStart(req, res, next) {
         status: response.status,
         sonicStatus: sonicData?.status,
         phoneForSonicApi,
+        ussdSent: Boolean(ussdSent),
         sonicData,
       });
 
@@ -1727,18 +1797,29 @@ async function handlePaymentStart(req, res, next) {
         ).trim();
         const initiateMsg = sonicData.message || sonicData.error || '';
         const initiateCode = sonicData.resultcode || sonicData.code;
-        if (isSonicPaymentSendFailure(initiateMsg, initiateCode)) {
-          sonicFailureForClient = { message: initiateMsg, code: initiateCode, sonicData };
-          if (shouldFallbackSonicToAurax(initiateMsg, initiateCode)) {
-            console.warn('[Payment] SonicPesa returned order but STK was not sent — falling back to Aurax Pay', {
+        const pushMissing = !ussdSent;
+        if (pushMissing || isSonicPaymentSendFailure(initiateMsg, initiateCode)) {
+          sonicFailureForClient = {
+            message: initiateMsg || 'SonicPesa haikutuma ombi la malipo kwenye simu',
+            code: initiateCode,
+            sonicData,
+          };
+          if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
+            console.warn('[Payment] SonicPesa did not push USSD — falling back to Aurax Pay', {
               phonePrefix: normalizedPhone.slice(0, 3),
+              phoneForSonicApi,
               resultcode: initiateCode,
+              ussdSent: Boolean(ussdSent),
             });
             paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
             usedAuraxFallbackFromSonic = true;
           } else {
             return res.status(400).json({
-              error: mapSonicInitiateUserError(normalizedPhone, initiateMsg, initiateCode),
+              error: mapSonicInitiateUserError(
+                normalizedPhone,
+                initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
+                initiateCode,
+              ),
               sonicResponse: sonicData,
             });
           }
@@ -2963,6 +3044,9 @@ module.exports.__paymentTestHelpers = {
   extractSonicWebhookOrderAndPaid,
   extractSonicPaymentStatus,
   evaluateSonicOrderStatusForApply,
+  isSonicUssdPushSent,
+  sonicPhoneCandidatesForApi,
+  sonicBuyerNameForApi,
   isAuraxPaidRaw,
   isSonicPaidRaw,
   isPaymentTerminalStatus,

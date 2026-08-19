@@ -421,6 +421,60 @@ const cases = [
       assert(paid === false, 'expected unpaid for STK ack SUCCESS');
     },
   },
+  {
+    name: 'Sonic phone candidates: Halo/Airtel/Tigo try local 0… first',
+    fn: () => {
+      const halo = h.sonicPhoneCandidatesForApi('0611234567');
+      assert(halo[0] === '0611234567', `halo first ${halo[0]}`);
+      assert(halo.includes('255611234567'), `halo missing 255, got ${halo.join(',')}`);
+      const airtel = h.sonicPhoneCandidatesForApi('0788123456');
+      assert(airtel[0] === '0788123456', `airtel first ${airtel[0]}`);
+      const tigo = h.sonicPhoneCandidatesForApi('0711234567');
+      assert(tigo[0] === '0711234567', `tigo first ${tigo[0]}`);
+    },
+  },
+  {
+    name: 'Sonic phone candidates: Vodacom tries 255… first',
+    fn: () => {
+      const vod = h.sonicPhoneCandidatesForApi('0744123456');
+      assert(vod[0] === '255744123456', `vod first ${vod[0]}`);
+      assert(vod.includes('0744123456'), 'vod missing local');
+    },
+  },
+  {
+    name: 'Sonic USSD push: documented create_order success is sent',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'Payment order created successfully! Push USSD sent to your phone.',
+        data: {
+          order_id: 'sp_69be15e08c830',
+          reference: 'S20467752501',
+          payment_status: 'PENDING',
+          msisdn: '255657779003',
+        },
+      };
+      assert(h.isSonicUssdPushSent(payload) === true, 'expected USSD sent');
+    },
+  },
+  {
+    name: 'Sonic USSD push: envelope success without msisdn/message is not sent',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'OK',
+        data: { order_id: 'sp_ghost' },
+      };
+      assert(h.isSonicUssdPushSent(payload) === false, 'ghost order must not count as push');
+    },
+  },
+  {
+    name: 'Sonic buyer_name does not send a UUID to the gateway',
+    fn: () => {
+      const name = h.sonicBuyerNameForApi('a1b2c3d4-e5f6-4789-a012-3456789abcde', 'a1b2c3d4-e5f6-4789-a012-3456789abcde');
+      assert(name === 'EaMax Customer', `got ${name}`);
+    },
+  },
 ];
 
 let passed = 0;
