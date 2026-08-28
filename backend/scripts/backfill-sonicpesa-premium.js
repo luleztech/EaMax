@@ -12,9 +12,10 @@
  *   npx railway run node backend/scripts/backfill-sonicpesa-premium.js --apply
  *
  * Options:
- *   --apply       Write premium + channel unlocks (default: dry-run only)
- *   --days=N      Look back N days (default 14, max 90)
- *   --limit=N     Max rows per phase (default 500, max 2000)
+ *   --apply           Write premium + channel unlocks (default: dry-run only)
+ *   --days=N          Look back N days (default 14, max 90)
+ *   --limit=N         Max rows per phase (default 100, max 2000)
+ *   --skip-pending    Only repair completed rows / unlocks (faster, no pending poll)
  */
 const { backfillSonicPesaMissingEntitlements } = require('../src/routes/payments');
 const { pool } = require('../src/db');
@@ -37,8 +38,9 @@ async function main() {
   }
 
   const apply = process.argv.includes('--apply');
+  const skipPending = process.argv.includes('--skip-pending');
   const days = parseArgInt('days', 14);
-  const limit = parseArgInt('limit', 500);
+  const limit = parseArgInt('limit', 100);
 
   console.log(
     apply
@@ -50,6 +52,7 @@ async function main() {
     days,
     limit,
     dryRun: !apply,
+    skipPending,
   });
 
   console.log('\n[Backfill] Summary:', JSON.stringify(stats, null, 2));

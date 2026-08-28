@@ -2720,8 +2720,23 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
       }
     }
   }
-  // Never treat terminal failure / no-money / still-waiting as paid.
-  if (paid && (isPaymentTerminalStatus(rawStatus) || SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus))) {
+  const hasExplicitPaidFlag = [payload, nest].some(
+    (obj) =>
+      obj &&
+      (isTruthyPaidFlag(obj.paid) ||
+        isTruthyPaidFlag(obj.isPaid) ||
+        isTruthyPaidFlag(obj.is_paid) ||
+        isTruthyPaidFlag(obj.paymentCompleted) ||
+        isTruthyPaidFlag(obj.payment_completed)),
+  );
+  // Never treat terminal failure / no-money as paid. Explicit paid flags win over PROCESSING noise.
+  if (paid && isPaymentTerminalStatus(rawStatus)) {
+    paid = false;
+  } else if (
+    paid &&
+    !hasExplicitPaidFlag &&
+    SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)
+  ) {
     paid = false;
   }
   return { orderId: orderId || null, paid, raw: rawStatus || ev };
@@ -3114,12 +3129,21 @@ const reconcilePendingSubscriptionPayments = async () => {
  * - Completed rows missing entitlements: gateway must confirm paid, OR order is gone (404) with a local completed_at.
  * - Never touches failed/cancelled rows or users whose premium already covers the payment date.
  */
-const backfillSonicPesaMissingEntitlements = async ({ days = 14, dryRun = true, limit = 500 } = {}) => {
+const backfillSonicPesaMissingEntitlements = async ({
+  days = 14,
+  dryRun = true,
+  limit = 100,
+  pollDelayMs = 500,
+  skipPending = false,
+} = {}) => {
   const dayCount = Math.min(Math.max(Number(days) || 14, 1), 90);
-  const rowLimit = Math.min(Math.max(Number(limit) || 500, 1), 2000);
+  const rowLimit = Math.min(Math.max(Number(limit) || 100, 1), 2000);
+  const delayMs = Math.min(Math.max(Number(pollDelayMs) || 500, 200), 5000);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const stats = {
     dryRun,
     days: dayCount,
+    skipPending,
     pendingChecked: 0,
     pendingGatewayPaid: 0,
     pendingUpgraded: 0,
@@ -3134,7 +3158,15 @@ const backfillSonicPesaMissingEntitlements = async ({ days = 14, dryRun = true, 
     if (!SONICPESA_API_KEY) {
       return { allow: false, reason: 'SONICPESA_API_KEY not configured' };
     }
-    const { statusResp, statusData } = await pollSonicOrderStatus(providerRef);
+    let last = { statusResp: { ok: false, status: 0 }, statusData: {} };
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      last = await pollSonicOrderStatus(providerRef);
+      if (last.statusResp.status !== 429) break;
+      const wait = Math.min(delayMs * attempt * 2, 8000);
+      console.warn('[Backfill] Sonic rate-limited — retrying', providerRef, `in ${wait}ms`);
+      await sleep(wait);
+    }
+    const { statusResp, statusData } = last;
     const msg = String(statusData.message || statusData.error || '').toLowerCase();
     const notFound =
       !statusResp.ok &&
@@ -3156,24 +3188,29 @@ const backfillSonicPesaMissingEntitlements = async ({ days = 14, dryRun = true, 
       : { allow: false, reason: `gateway_not_paid_${rawStatus || 'unknown'}` };
   };
 
-  const pending = await query(
-    `SELECT id, provider_ref, gateway_ref, user_id, plan, amount_cents, buyer_phone, created_at
-       FROM subscription_payments
-      WHERE status = 'pending'
-        AND payment_provider = 'sonicpesa'
-        AND created_at > NOW() - ($1::int * INTERVAL '1 day')
-      ORDER BY created_at ASC
-      LIMIT $2`,
-    [dayCount, rowLimit],
-  );
+  const pending = skipPending
+    ? { rows: [] }
+    : await query(
+        `SELECT id, provider_ref, gateway_ref, user_id, plan, amount_cents, buyer_phone, created_at
+           FROM subscription_payments
+          WHERE status = 'pending'
+            AND payment_provider = 'sonicpesa'
+            AND created_at > NOW() - ($1::int * INTERVAL '1 day')
+          ORDER BY created_at DESC
+          LIMIT $2`,
+        [dayCount, rowLimit],
+      );
 
   for (const row of pending.rows) {
     stats.pendingChecked += 1;
     try {
       const gate = await gatewayPaidOrTrustCompleted(row.provider_ref, false);
+      await sleep(delayMs);
       if (!gate.allow) {
         stats.skipped += 1;
-        console.log('[Backfill] skip pending', row.provider_ref, gate.reason);
+        if (gate.reason !== 'gateway_unpaid_PENDING') {
+          console.log('[Backfill] skip pending', row.provider_ref, gate.reason);
+        }
         continue;
       }
       stats.pendingGatewayPaid += 1;
@@ -3227,6 +3264,7 @@ const backfillSonicPesaMissingEntitlements = async ({ days = 14, dryRun = true, 
     stats.completedChecked += 1;
     try {
       const gate = await gatewayPaidOrTrustCompleted(row.provider_ref, true);
+      await sleep(delayMs);
       if (!gate.allow) {
         stats.skipped += 1;
         console.log('[Backfill] skip completed-missing-premium', row.provider_ref, gate.reason);
