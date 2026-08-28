@@ -3107,8 +3107,199 @@ const reconcilePendingSubscriptionPayments = async () => {
   return upgraded;
 };
 
+/**
+ * One-time / manual backfill for SonicPesa payments that debited but never unlocked premium.
+ * Safe by design:
+ * - Pending rows: gateway MUST return a paid wallet status before applyCompletedPayment runs.
+ * - Completed rows missing entitlements: gateway must confirm paid, OR order is gone (404) with a local completed_at.
+ * - Never touches failed/cancelled rows or users whose premium already covers the payment date.
+ */
+const backfillSonicPesaMissingEntitlements = async ({ days = 14, dryRun = true, limit = 500 } = {}) => {
+  const dayCount = Math.min(Math.max(Number(days) || 14, 1), 90);
+  const rowLimit = Math.min(Math.max(Number(limit) || 500, 1), 2000);
+  const stats = {
+    dryRun,
+    days: dayCount,
+    pendingChecked: 0,
+    pendingGatewayPaid: 0,
+    pendingUpgraded: 0,
+    completedChecked: 0,
+    completedRepaired: 0,
+    unlocksRepaired: 0,
+    skipped: 0,
+    errors: 0,
+  };
+
+  const gatewayPaidOrTrustCompleted = async (providerRef, localCompleted) => {
+    if (!SONICPESA_API_KEY) {
+      return { allow: false, reason: 'SONICPESA_API_KEY not configured' };
+    }
+    const { statusResp, statusData } = await pollSonicOrderStatus(providerRef);
+    const msg = String(statusData.message || statusData.error || '').toLowerCase();
+    const notFound =
+      !statusResp.ok &&
+      (msg.includes('no order found') || msg.includes('order not found') || statusResp.status === 404);
+    if (notFound) {
+      return localCompleted
+        ? { allow: true, reason: 'gateway_order_not_found_trust_local_completed' }
+        : { allow: false, reason: 'gateway_order_not_found' };
+    }
+    if (!statusResp.ok) {
+      return { allow: false, reason: `gateway_http_${statusResp.status}` };
+    }
+    const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
+    if (isPaymentTerminalStatus(rawStatus) || SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)) {
+      return { allow: false, reason: `gateway_unpaid_${rawStatus}` };
+    }
+    return isCompleted
+      ? { allow: true, reason: 'gateway_confirmed_paid', statusData }
+      : { allow: false, reason: `gateway_not_paid_${rawStatus || 'unknown'}` };
+  };
+
+  const pending = await query(
+    `SELECT id, provider_ref, gateway_ref, user_id, plan, amount_cents, buyer_phone, created_at
+       FROM subscription_payments
+      WHERE status = 'pending'
+        AND payment_provider = 'sonicpesa'
+        AND created_at > NOW() - ($1::int * INTERVAL '1 day')
+      ORDER BY created_at ASC
+      LIMIT $2`,
+    [dayCount, rowLimit],
+  );
+
+  for (const row of pending.rows) {
+    stats.pendingChecked += 1;
+    try {
+      const gate = await gatewayPaidOrTrustCompleted(row.provider_ref, false);
+      if (!gate.allow) {
+        stats.skipped += 1;
+        console.log('[Backfill] skip pending', row.provider_ref, gate.reason);
+        continue;
+      }
+      stats.pendingGatewayPaid += 1;
+      if (dryRun) {
+        console.log('[Backfill] would upgrade pending', row.provider_ref, 'user_id=', row.user_id);
+        continue;
+      }
+      const meta = gate.statusData?.data || gate.statusData || {};
+      const result = await tryApplySonicCompletedPayment(row.provider_ref, meta, {
+        altRefs: [
+          gate.statusData?.data?.order_id,
+          gate.statusData?.data?.reference,
+          gate.statusData?.reference,
+          gate.statusData?.transid,
+          row.gateway_ref,
+        ].filter(Boolean),
+      });
+      if (result) {
+        stats.pendingUpgraded += 1;
+        console.log('[Backfill] upgraded pending', row.provider_ref, 'user=', result.user?.externalId || row.user_id);
+      } else {
+        stats.skipped += 1;
+        console.warn('[Backfill] pending paid at gateway but apply returned null', row.provider_ref);
+      }
+    } catch (err) {
+      stats.errors += 1;
+      console.error('[Backfill] pending error', row.provider_ref, err?.message || err);
+    }
+  }
+
+  const completedMissing = await query(
+    `SELECT sp.id, sp.provider_ref, sp.user_id, sp.plan, sp.amount_cents, sp.completed_at,
+            u.external_id, u.premium_expires_at
+       FROM subscription_payments sp
+       JOIN users u ON u.id = sp.user_id
+      WHERE sp.status = 'completed'
+        AND sp.payment_provider = 'sonicpesa'
+        AND sp.completed_at IS NOT NULL
+        AND sp.completed_at > NOW() - ($1::int * INTERVAL '1 day')
+        AND u.blocked IS NOT TRUE
+        AND (
+          u.premium_expires_at IS NULL
+          OR u.premium_expires_at < sp.completed_at
+        )
+      ORDER BY sp.completed_at DESC
+      LIMIT $2`,
+    [dayCount, rowLimit],
+  );
+
+  for (const row of completedMissing.rows) {
+    stats.completedChecked += 1;
+    try {
+      const gate = await gatewayPaidOrTrustCompleted(row.provider_ref, true);
+      if (!gate.allow) {
+        stats.skipped += 1;
+        console.log('[Backfill] skip completed-missing-premium', row.provider_ref, gate.reason);
+        continue;
+      }
+      if (dryRun) {
+        stats.completedRepaired += 1;
+        console.log('[Backfill] would repair completed', row.provider_ref, 'user=', row.external_id);
+        continue;
+      }
+      const interval = await resolvePlanIntervalForPayment(row.plan, row.amount_cents);
+      const ok = await repairUserEntitlementsIfNeeded(Number(row.user_id), interval || '30 days');
+      if (ok) {
+        stats.completedRepaired += 1;
+        console.log('[Backfill] repaired completed', row.provider_ref, 'user=', row.external_id);
+      } else {
+        stats.skipped += 1;
+      }
+    } catch (err) {
+      stats.errors += 1;
+      console.error('[Backfill] completed error', row.provider_ref, err?.message || err);
+    }
+  }
+
+  const missingUnlocks = await query(
+    `SELECT DISTINCT ON (sp.user_id)
+            sp.user_id, sp.plan, sp.amount_cents, sp.provider_ref, u.external_id
+       FROM subscription_payments sp
+       JOIN users u ON u.id = sp.user_id
+      WHERE sp.status = 'completed'
+        AND sp.payment_provider = 'sonicpesa'
+        AND sp.completed_at > NOW() - ($1::int * INTERVAL '1 day')
+        AND u.blocked IS NOT TRUE
+        AND u.premium_expires_at IS NOT NULL
+        AND u.premium_expires_at > NOW()
+        AND EXISTS (SELECT 1 FROM channels)
+        AND EXISTS (
+          SELECT 1 FROM channels c
+           WHERE NOT EXISTS (
+             SELECT 1 FROM user_unlocked_channels uuc
+              WHERE uuc.user_id = u.id AND uuc.channel_id = c.id
+           )
+        )
+      ORDER BY sp.user_id, sp.completed_at DESC NULLS LAST
+      LIMIT $2`,
+    [dayCount, rowLimit],
+  ).catch(() => ({ rows: [] }));
+
+  for (const row of missingUnlocks.rows) {
+    try {
+      if (dryRun) {
+        stats.unlocksRepaired += 1;
+        console.log('[Backfill] would repair channel unlocks', row.provider_ref, 'user=', row.external_id);
+        continue;
+      }
+      const interval = await resolvePlanIntervalForPayment(row.plan, row.amount_cents);
+      const ok = await repairUserEntitlementsIfNeeded(Number(row.user_id), interval || '30 days');
+      if (ok) {
+        stats.unlocksRepaired += 1;
+        console.log('[Backfill] repaired channel unlocks', row.provider_ref, 'user=', row.external_id);
+      }
+    } catch (err) {
+      stats.errors += 1;
+      console.error('[Backfill] unlock error', row.provider_ref, err?.message || err);
+    }
+  }
+
+  return stats;
+};
+
 module.exports = router;
 module.exports.reconcilePendingSubscriptionPayments = reconcilePendingSubscriptionPayments;
+module.exports.backfillSonicPesaMissingEntitlements = backfillSonicPesaMissingEntitlements;
 module.exports.__paymentTestHelpers = {
   normalizeAuraxStatusPayload,
   evaluateAuraxOrderStatusForApply,
