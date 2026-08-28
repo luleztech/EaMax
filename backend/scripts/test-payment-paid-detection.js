@@ -469,6 +469,44 @@ const cases = [
     },
   },
   {
+    name: 'Sonic webhook: official payment.completed without transid (all networks)',
+    fn: () => {
+      for (const channel of ['MPESATZ', 'TIGOPESATZ', 'AIRTELMONEY', 'HALOPESATZ']) {
+        const payload = {
+          event: 'payment.completed',
+          order_id: `SONIC-${channel}`,
+          status: 'SUCCESS',
+          channel,
+          msisdn: '255744123456',
+          amount: 2000,
+        };
+        const { paid, orderId } = h.extractSonicWebhookOrderAndPaid(payload);
+        assert(paid === true, `${channel}: expected paid=true`);
+        assert(orderId === `SONIC-${channel}`, `${channel}: bad orderId ${orderId}`);
+      }
+    },
+  },
+  {
+    name: 'Sonic poll: transaction.status SUCCESS without payment_status (all networks)',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        data: { order_id: 'SONIC-TX-ONLY', transid: '26292628111262', msisdn: '255744123456' },
+        transaction: { order_id: 'SONIC-TX-ONLY', status: 'SUCCESS', amount: '2000' },
+      };
+      const { isCompleted } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === true, 'expected paid from transaction.status');
+    },
+  },
+  {
+    name: 'Sonic webhook: payment.failed stays unpaid',
+    fn: () => {
+      const payload = { event: 'payment.failed', order_id: 'SONIC-FAIL', status: 'FAILED' };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'expected unpaid for payment.failed');
+    },
+  },
+  {
     name: 'Sonic buyer_name does not send a UUID to the gateway',
     fn: () => {
       const name = h.sonicBuyerNameForApi('a1b2c3d4-e5f6-4789-a012-3456789abcde', 'a1b2c3d4-e5f6-4789-a012-3456789abcde');
