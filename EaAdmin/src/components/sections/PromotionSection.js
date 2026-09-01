@@ -278,7 +278,7 @@ const PromotionSection = () => {
         </View>
 
         <TouchableOpacity style={styles.createBtn} onPress={openCreate} activeOpacity={0.85}>
-          <LinearGradient colors={['#7c3aed', '#5b21b6']} style={styles.createGrad}>
+          <LinearGradient colors={['#14b8a6', '#0f766e']} style={styles.createGrad}>
             <Icon name="plus-circle-outline" size={22} color="#fff" />
             <Text style={styles.createText}>Tengeneza tangazo</Text>
           </LinearGradient>
@@ -547,10 +547,11 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
   statCard: {
     flex: 1,
-    backgroundColor: '#111827',
-    borderRadius: 14,
+    backgroundColor: '#0c1220',
+    borderRadius: 16,
     padding: 14,
     borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.12)',
   },
   statValue: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 8 },
   statLabel: { color: '#9ca3af', fontSize: 12, marginTop: 4 },
@@ -565,12 +566,12 @@ const styles = StyleSheet.create({
   createText: { color: '#fff', fontWeight: '800', fontSize: 16 },
   empty: { color: '#6b7280', textAlign: 'center', marginTop: 24 },
   card: {
-    backgroundColor: '#111827',
-    borderRadius: 14,
+    backgroundColor: '#0c1220',
+    borderRadius: 16,
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: 'rgba(148, 163, 184, 0.12)',
   },
   typeBadge: {
     flexDirection: 'row',

@@ -51,7 +51,7 @@ class NativeAndroidPlayer {
           ? (playerPolicy?.defaultLanguage ?? 'sw')
           : audioLanguage,
       if (playerPolicy != null) 'playerPolicyJson': jsonEncode(_policyToMap(playerPolicy)),
-      'defaultQuality': playerPolicy?.defaultQuality ?? '360p',
+      'defaultQuality': playerPolicy?.defaultQuality ?? '480p',
       'defaultLanguage': playerPolicy?.defaultLanguage ?? audioLanguage ?? 'sw',
     });
   }

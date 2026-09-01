@@ -507,6 +507,21 @@ const cases = [
     },
   },
   {
+    name: 'Sonic USSD push: channel field means STK was routed',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        message: 'OK',
+        data: {
+          order_id: 'sp_channel',
+          payment_status: 'PENDING',
+          channel: 'MPESATZ',
+        },
+      };
+      assert(h.isSonicUssdPushSent(payload) === true, 'expected channel to prove USSD dispatch');
+    },
+  },
+  {
     name: 'Sonic buyer_name does not send a UUID to the gateway',
     fn: () => {
       const name = h.sonicBuyerNameForApi('a1b2c3d4-e5f6-4789-a012-3456789abcde', 'a1b2c3d4-e5f6-4789-a012-3456789abcde');

@@ -101,7 +101,7 @@ const AdsSection = () => {
       {/* Header */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Ads Statistics</Text>
+          <Text style={styles.headerTitle}>Performance</Text>
         </View>
         <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh}>
           <Icon name="refresh" size={20} color="#9ca3af" />

@@ -12,19 +12,25 @@ import {
   RefreshControl,
   ToastAndroid,
   Platform,
-  Dimensions,
 } from 'react-native';
 import { TouchableOpacity as GHTouchableOpacity } from 'react-native-gesture-handler';
-import DraggableFlatList, { ScaleDecorator } from 'react-native-draggable-flatlist';
+import {
+  NestableScrollContainer,
+  NestableDraggableFlatList,
+  ScaleDecorator,
+  OpacityDecorator,
+  ShadowDecorator,
+} from 'react-native-draggable-flatlist';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { adminChannelsAPI } from '../../config/api';
 import ChannelStreamsModal from './ChannelStreamsModal';
+import ChannelThumb from '../ui/ChannelThumb';
+import colors from '../../theme/colors';
+import { channelArtworkUrl } from '../../utils/mediaUrl';
 
-const { width } = Dimensions.get('window');
-
-const CHANNEL_ROW_HEIGHT = 80;
+const CHANNEL_ROW_HEIGHT = 92;
 
 const logReorder = (msg, extra) => {
   if (extra != null) {
@@ -236,7 +242,11 @@ const ContentSection = () => {
   const fetchChannels = useCallback(async () => {
     try {
       const data = await adminChannelsAPI.getChannels();
-      const sorted = sortChannelsByOrder(data);
+      const list = Array.isArray(data) ? data : [];
+      const sorted = sortChannelsByOrder(list).map((ch) => ({
+        ...ch,
+        thumbnail_url: channelArtworkUrl(ch) || ch.thumbnail_url || ch.thumbnailUrl || '',
+      }));
       setChannels(sorted);
       setOrderedChannels(sorted);
     } catch (error) {
@@ -264,17 +274,6 @@ const ContentSection = () => {
     setRefreshing(true);
     fetchChannels();
   };
-
-  const colorOptions = [
-    { id: 1, color: '#e11d48', name: 'Red' },
-    { id: 2, color: '#3b82f6', name: 'Blue' },
-    { id: 3, color: '#10b981', name: 'Green' },
-    { id: 4, color: '#f59e0b', name: 'Orange' },
-    { id: 5, color: '#7c3aed', name: 'Purple' },
-    { id: 6, color: '#ec4899', name: 'Pink' },
-    { id: 7, color: '#06b6d4', name: 'Cyan' },
-    { id: 8, color: '#8b5cf6', name: 'Violet' },
-  ];
 
   const resetForm = () => {
     setChannelName('');
@@ -326,7 +325,7 @@ const ContentSection = () => {
       name: channelName.trim(),
       category: channelCategory,
       streamUrl: urlValue,
-      color: selectedColor,
+      color: getCategoryDef(channelCategory).color || selectedColor,
       isActive,
       drmType,
       pointsRequired: Number.isNaN(pointsNum) ? 0 : Math.max(0, pointsNum),
@@ -384,11 +383,11 @@ const ContentSection = () => {
   };
 
   const filters = [
-    { id: 'all', label: 'All' },
-    { id: 'bure', label: 'Za bure' },
-    { id: 'kabumbu', label: 'Kabumbu' },
-    { id: 'habari', label: 'Habari' },
-    { id: 'moviesapp', label: 'Movies' },
+    { id: 'all', label: 'All', icon: 'view-grid-outline' },
+    { id: 'bure', label: 'Za bure', icon: 'gift-outline' },
+    { id: 'kabumbu', label: 'Kabumbu', icon: 'soccer' },
+    { id: 'habari', label: 'Habari', icon: 'newspaper-variant-outline' },
+    { id: 'moviesapp', label: 'Movies', icon: 'movie-open-outline' },
   ];
 
   const searchTrimmed = (channelSearchQuery || '').trim().toLowerCase();
@@ -535,7 +534,7 @@ const ContentSection = () => {
     setEditingChannel(channel);
     setChannelName(channel.name || '');
     setChannelCategory(channel.category || 'football');
-    setThumbnailUrl(channel.thumbnail_url || '');
+    setThumbnailUrl(channelArtworkUrl(channel) || channel.thumbnail_url || '');
     setThumbnailEmoji(channel.thumbnail_emoji || '');
     setUseEmoji(!!channel.thumbnail_emoji);
     setVideoUrl(channel.stream_url || '');
@@ -584,13 +583,14 @@ const ContentSection = () => {
       }
 
       return (
-        <DraggableFlatList
+        <NestableDraggableFlatList
           data={categoryChannels}
           keyExtractor={(item) => String(item.id)}
           scrollEnabled={false}
-          activationDistance={8}
-          autoscrollThreshold={100}
-          autoscrollSpeed={120}
+          activationDistance={28}
+          autoscrollThreshold={70}
+          autoscrollSpeed={90}
+          animationConfig={{ damping: 26, stiffness: 180, mass: 0.8 }}
           dragItemOverflow
           onDragEnd={({ from, to }) => {
             if (from !== to) {
@@ -598,21 +598,25 @@ const ContentSection = () => {
             }
           }}
           renderItem={({ item, drag, isActive, getIndex }) => (
-            <ScaleDecorator activeScale={1.015}>
-              <ChannelRow
-                channel={item}
-                index={getIndex() ?? 0}
-                categoryKey={catDef.key}
-                listLength={listLen}
-                canReorder
-                savingOrder={savingOrder}
-                isDragging={isActive}
-                onDrag={drag}
-                onEdit={openEditChannel}
-                onStreams={setStreamsChannel}
-                onDelete={handleDeleteChannel}
-              />
-            </ScaleDecorator>
+            <ShadowDecorator>
+              <ScaleDecorator activeScale={1.012}>
+                <OpacityDecorator activeOpacity={0.96}>
+                  <ChannelRow
+                    channel={item}
+                    index={getIndex() ?? 0}
+                    categoryKey={catDef.key}
+                    listLength={listLen}
+                    canReorder
+                    savingOrder={savingOrder}
+                    isDragging={isActive}
+                    onDrag={drag}
+                    onEdit={openEditChannel}
+                    onStreams={setStreamsChannel}
+                    onDelete={handleDeleteChannel}
+                  />
+                </OpacityDecorator>
+              </ScaleDecorator>
+            </ShadowDecorator>
           )}
           containerStyle={styles.draggableListContainer}
         />
@@ -635,11 +639,18 @@ const ContentSection = () => {
         <View style={styles.categorySectionHeader}>
           <View style={styles.categorySectionHeaderLeft}>
             <View style={[styles.categorySectionIconWrap, { backgroundColor: `${catDef.color}22` }]}>
-              <Icon name={catDef.icon} size={20} color={catDef.color} />
+              <Icon name={catDef.icon} size={18} color={catDef.color} />
             </View>
-            <Text style={styles.categorySectionTitle}>{catDef.name}</Text>
+            <View>
+              <Text style={styles.categorySectionTitle}>{catDef.name}</Text>
+              {canReorder && categoryChannels.length > 1 ? (
+                <Text style={styles.categorySectionHint}>Hold the grip to reorder</Text>
+              ) : null}
+            </View>
           </View>
-          <Text style={styles.categorySectionCount}>{categoryChannels.length} channels</Text>
+          <View style={styles.categoryCountPill}>
+            <Text style={styles.categorySectionCount}>{categoryChannels.length}</Text>
+          </View>
         </View>
       );
 
@@ -652,7 +663,7 @@ const ContentSection = () => {
         </View>
       );
     },
-    [renderDraggableChannelList],
+    [renderDraggableChannelList, canReorder],
   );
 
   const { freeChannels, grouped, hideFreeInCategories } = displayModel;
@@ -670,14 +681,14 @@ const ContentSection = () => {
   if (loading) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
-        <ActivityIndicator size="large" color="#7c3aed" />
+        <ActivityIndicator size="large" color={colors.primary} />
         <Text style={styles.loadingText}>Loading channels...</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView
+    <NestableScrollContainer
       style={styles.container}
       showsVerticalScrollIndicator={false}
       nestedScrollEnabled
@@ -685,7 +696,7 @@ const ContentSection = () => {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
       {savingOrder ? (
         <View style={styles.savingOrderBanner}>
-          <ActivityIndicator size="small" color="#a78bfa" />
+          <ActivityIndicator size="small" color={colors.primary} />
           <Text style={styles.savingOrderText}>Saving order…</Text>
         </View>
       ) : null}
@@ -705,6 +716,11 @@ const ContentSection = () => {
               activeFilter === filter.id && styles.filterButtonActive,
             ]}
             onPress={() => setActiveFilter(filter.id)}>
+            <Icon
+              name={filter.icon}
+              size={16}
+              color={activeFilter === filter.id ? colors.primary : colors.textMuted}
+            />
             <Text
               style={[
                 styles.filterText,
@@ -770,7 +786,8 @@ const ContentSection = () => {
                   return (
                     <View key="bure" style={styles.appGroupBlock}>
                       <View style={styles.appGroupHeader}>
-                        <Icon name={appGroup.icon} size={22} color={appGroup.color} />
+                        <View style={[styles.appGroupMark, { backgroundColor: appGroup.color }]} />
+                        <Icon name={appGroup.icon} size={18} color={appGroup.color} />
                         <Text style={styles.appGroupTitle}>{appGroup.label}</Text>
                       </View>
                       {renderCategorySection(BURE_DEF, freeChannels, hideFreeInCategories)}
@@ -783,7 +800,8 @@ const ContentSection = () => {
                 return (
                   <View key={appGroup.id} style={styles.appGroupBlock}>
                     <View style={styles.appGroupHeader}>
-                      <Icon name={appGroup.icon} size={22} color={appGroup.color} />
+                      <View style={[styles.appGroupMark, { backgroundColor: appGroup.color }]} />
+                      <Icon name={appGroup.icon} size={18} color={appGroup.color} />
                       <Text style={styles.appGroupTitle}>{appGroup.label}</Text>
                     </View>
                     {defs.map((def) =>
@@ -919,6 +937,19 @@ const ContentSection = () => {
                     </TouchableOpacity>
                   </View>
                 </View>
+                <View style={styles.thumbPreviewRow}>
+                  <ChannelThumb
+                    url={!useEmoji ? thumbnailUrl : ''}
+                    emoji={useEmoji ? thumbnailEmoji : ''}
+                    icon={getCategoryDef(channelCategory).icon}
+                    fallbackColor={getCategoryDef(channelCategory).color}
+                    size={72}
+                    radius={18}
+                  />
+                  <Text style={styles.thumbPreviewHint}>
+                    Artwork is what viewers see in the library. Solid colors are no longer used as logos.
+                  </Text>
+                </View>
                 {!useEmoji ? (
                   <View style={styles.inputSection}>
                     <Text style={styles.inputLabel}>Thumbnail URL *</Text>
@@ -947,9 +978,9 @@ const ContentSection = () => {
                 )}
               </View>
 
-              {/* Appearance & access card */}
+              {/* Access card */}
               <View style={styles.formCard}>
-                <Text style={styles.formCardTitle}>Appearance & access</Text>
+                <Text style={styles.formCardTitle}>Access</Text>
                 <View style={styles.inputSection}>
                   <Text style={styles.inputLabel}>Points required to unlock</Text>
                   <TextInput
@@ -987,28 +1018,6 @@ const ContentSection = () => {
                     trackColor={{ false: '#7c3aed', true: '#22c55e' }}
                     thumbColor="#fff"
                   />
-                </View>
-                <View style={styles.inputSection}>
-                  <Text style={styles.inputLabel}>Channel color</Text>
-                  <View style={styles.colorPicker}>
-                    {colorOptions.map((option) => (
-                      <TouchableOpacity
-                        key={option.id}
-                        style={[
-                          styles.colorOption,
-                          selectedColor === option.color && styles.colorOptionActive,
-                          { backgroundColor: option.color },
-                        ]}
-                        onPress={() => setSelectedColor(option.color)}>
-                        {selectedColor === option.color && (
-                          <Icon name="check" size={20} color="#fff" />
-                        )}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <Text style={styles.colorPreviewText}>
-                    {colorOptions.find(c => c.color === selectedColor)?.name || 'Custom'}
-                  </Text>
                 </View>
               </View>
 
@@ -1182,7 +1191,7 @@ const ContentSection = () => {
           </View>
         </View>
       </Modal>
-    </ScrollView>
+    </NestableScrollContainer>
   );
 };
 
@@ -1212,37 +1221,43 @@ const styles = StyleSheet.create({
     paddingRight: 16,
   },
   filterButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    backgroundColor: colors.panelMuted,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   filterButtonActive: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: colors.primaryDim,
+    borderColor: 'rgba(110, 231, 210, 0.35)',
   },
   filterText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#9ca3af',
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textSecondary,
   },
   filterTextActive: {
-    color: '#fff',
+    color: colors.textPrimary,
   },
   addIconButton: {
-    width: 44,
-    height: 44,
-    backgroundColor: '#7c3aed',
-    borderRadius: 12,
+    width: 42,
+    height: 42,
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
   },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderRadius: 12,
+    backgroundColor: colors.panel,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: colors.border,
     paddingHorizontal: 14,
     marginBottom: 16,
     minHeight: 48,
@@ -1273,17 +1288,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     paddingVertical: 6,
   },
+  appGroupMark: {
+    width: 4,
+    height: 18,
+    borderRadius: 4,
+  },
   appGroupTitle: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '800',
-    color: '#e5e7eb',
-    letterSpacing: 0.3,
+    color: colors.textPrimary,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
   categorySection: {
-    backgroundColor: 'rgba(17, 24, 39, 0.85)',
-    borderRadius: 16,
+    backgroundColor: colors.panel,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: colors.border,
     overflow: 'hidden',
   },
   categorySectionHeader: {
@@ -1292,9 +1313,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: 'rgba(31, 41, 55, 0.55)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
     borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
+    borderBottomColor: colors.borderSoft,
   },
   categorySectionHeaderLeft: {
     flexDirection: 'row',
@@ -1311,12 +1332,43 @@ const styles = StyleSheet.create({
   categorySectionTitle: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: colors.textPrimary,
+  },
+  categorySectionHint: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  categoryCountPill: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 8,
   },
   categorySectionCount: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#9ca3af',
+    fontWeight: '800',
+    color: colors.textSecondary,
+  },
+  thumbPreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 16,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  thumbPreviewHint: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textSecondary,
   },
   categorySectionList: {
     overflow: 'visible',
@@ -1333,38 +1385,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: CHANNEL_ROW_HEIGHT,
+    paddingVertical: 8,
+    paddingRight: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    borderBottomColor: colors.borderSoft,
+    backgroundColor: 'transparent',
   },
   channelRowLast: {
     borderBottomWidth: 0,
   },
   channelRowDragging: {
-    backgroundColor: 'rgba(124, 58, 237, 0.22)',
-    elevation: 6,
-    shadowColor: '#a855f7',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
+    backgroundColor: colors.primaryDim,
+    borderRadius: 16,
+    elevation: 10,
+    shadowColor: '#14b8a6',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
   },
   savingOrderBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
-    marginHorizontal: 16,
-    marginBottom: 8,
+    marginHorizontal: 0,
+    marginBottom: 12,
     paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: 'rgba(124, 58, 237, 0.15)',
+    borderRadius: 12,
+    backgroundColor: colors.primaryDim,
     borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.35)',
+    borderColor: 'rgba(110, 231, 210, 0.28)',
   },
   savingOrderText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#c4b5fd',
+    fontWeight: '700',
+    color: colors.primary,
   },
   reorderHint: {
     fontSize: 12,
@@ -1377,22 +1432,17 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   dragHandle: {
-    width: 44,
+    width: 36,
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(55, 65, 81, 0.45)',
   },
   dragHandleActive: {
-    backgroundColor: 'rgba(124, 58, 237, 0.35)',
-  },
-  channelRowAccent: {
-    width: 4,
-    alignSelf: 'stretch',
+    transform: [{ scale: 1.08 }],
   },
   channelRowMain: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 6,
     paddingRight: 8,
   },
   channelRowTop: {
@@ -1400,87 +1450,70 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  channelThumb: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  channelThumbEmoji: {
-    fontSize: 22,
-  },
   channelRowInfo: {
     flex: 1,
     minWidth: 0,
   },
   channelRowName: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#f8fafc',
-    marginBottom: 4,
+    fontWeight: '800',
+    color: colors.textPrimary,
+    letterSpacing: -0.2,
+    marginBottom: 6,
   },
   channelRowMeta: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
-  channelRowCategory: {
-    fontSize: 12,
-    color: '#94a3b8',
-    fontWeight: '600',
+  metaChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
-  channelRowBureTag: {
-    fontSize: 12,
-    color: '#4ade80',
-    fontWeight: '700',
-  },
-  channelRowPremiumTag: {
-    fontSize: 12,
-    color: '#c4b5fd',
-    fontWeight: '700',
-  },
-  channelRowPlayerTag: {
+  metaChipText: {
     fontSize: 11,
-    color: '#fbbf24',
     fontWeight: '700',
-    maxWidth: 120,
+    color: colors.textSecondary,
   },
-  channelRowDot: {
-    fontSize: 12,
-    color: '#4b5563',
+  metaChipLive: {
+    backgroundColor: 'rgba(52, 211, 153, 0.14)',
   },
-  channelRowStatus: {
-    fontSize: 12,
-    fontWeight: '600',
+  metaChipLiveText: {
+    color: colors.success,
   },
-  channelRowStatusActive: {
-    color: '#34d399',
+  metaChipOff: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
   },
-  channelRowStatusOff: {
-    color: '#9ca3af',
+  metaChipFree: {
+    backgroundColor: 'rgba(52, 211, 153, 0.14)',
   },
-  channelRowViews: {
-    fontSize: 12,
-    color: '#6b7280',
+  metaChipFreeText: {
+    color: '#86efac',
+  },
+  metaChipPremium: {
+    backgroundColor: colors.accentDim,
+  },
+  metaChipPremiumText: {
+    color: '#c4b5fd',
   },
   channelRowActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingRight: 10,
   },
   channelIconBtn: {
-    width: 38,
-    height: 38,
+    width: 36,
+    height: 36,
     borderRadius: 10,
-    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   channelIconBtnDanger: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
   },
   modalContainer: {
     flex: 1,
@@ -1765,7 +1798,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#9ca3af',
     lineHeight: 17,
-    maxWidth: width - 120,
   },
   toggleInfo: {
     flex: 1,
@@ -1953,7 +1985,8 @@ const ChannelRow = memo(function ChannelRow({
     categoryKey === BURE_SECTION_KEY ? getCategoryDef(channel.category) : getCategoryDef(categoryKey);
   const isLast = index === listLength - 1;
   const originDef = getCategoryDef(channel.category);
-  const accentColor = channel.color || def.color;
+  const thumbUrl = channelArtworkUrl(channel);
+  const views = typeof channel.view_count === 'number' ? channel.view_count : 0;
 
   return (
     <View
@@ -1965,59 +1998,54 @@ const ChannelRow = memo(function ChannelRow({
       {canReorder && onDrag ? (
         <GHTouchableOpacity
           onLongPress={onDrag}
-          delayLongPress={80}
+          delayLongPress={280}
           disabled={savingOrder}
           style={[styles.dragHandle, isDragging && styles.dragHandleActive]}
           activeOpacity={0.85}
           accessibilityLabel="Drag to reorder">
-          <Icon name="drag-vertical" size={22} color={isDragging ? '#e9d5ff' : '#9ca3af'} />
+          <Icon name="drag" size={22} color={isDragging ? colors.primary : colors.textMuted} />
         </GHTouchableOpacity>
       ) : (
         <View style={styles.dragHandle} />
       )}
-      <View style={[styles.channelRowAccent, { backgroundColor: accentColor }]} />
       <View style={styles.channelRowMain}>
         <View style={styles.channelRowTop}>
-          <View style={[styles.channelThumb, { backgroundColor: `${accentColor}33` }]}>
-            {channel.thumbnail_emoji ? (
-              <Text style={styles.channelThumbEmoji}>{channel.thumbnail_emoji}</Text>
-            ) : (
-              <Icon name={def.icon} size={22} color="#fff" />
-            )}
-          </View>
+          <ChannelThumb
+            url={thumbUrl}
+            channel={channel}
+            emoji={channel.thumbnail_emoji || channel.thumbnailEmoji}
+            icon={def.icon}
+            fallbackColor="#1f2937"
+            size={64}
+            radius={16}
+          />
           <View style={styles.channelRowInfo}>
             <Text style={styles.channelRowName} numberOfLines={1}>
               {channel.name}
             </Text>
             <View style={styles.channelRowMeta}>
               {categoryKey === BURE_SECTION_KEY ? (
-                <>
-                  <Text style={styles.channelRowCategory}>{originDef.name}</Text>
-                  <Text style={styles.channelRowDot}>·</Text>
-                </>
+                <View style={styles.metaChip}>
+                  <Text style={styles.metaChipText}>{originDef.name}</Text>
+                </View>
               ) : null}
-              <Text
-                style={[
-                  styles.channelRowStatus,
-                  channel.is_active ? styles.channelRowStatusActive : styles.channelRowStatusOff,
-                ]}>
-                {channel.is_active ? 'Active' : 'Inactive'}
-              </Text>
+              <View style={[styles.metaChip, channel.is_active ? styles.metaChipLive : styles.metaChipOff]}>
+                <Text style={[styles.metaChipText, channel.is_active && styles.metaChipLiveText]}>
+                  {channel.is_active ? 'Live' : 'Off'}
+                </Text>
+              </View>
               {hasFreeAccess(channel) ? (
-                <>
-                  <Text style={styles.channelRowDot}>·</Text>
-                  <Text style={styles.channelRowBureTag}>Bure</Text>
-                </>
+                <View style={[styles.metaChip, styles.metaChipFree]}>
+                  <Text style={[styles.metaChipText, styles.metaChipFreeText]}>Bure</Text>
+                </View>
               ) : (
-                <>
-                  <Text style={styles.channelRowDot}>·</Text>
-                  <Text style={styles.channelRowPremiumTag}>Premium</Text>
-                </>
+                <View style={[styles.metaChip, styles.metaChipPremium]}>
+                  <Text style={[styles.metaChipText, styles.metaChipPremiumText]}>Premium</Text>
+                </View>
               )}
-              <Text style={styles.channelRowDot}>·</Text>
-              <Text style={styles.channelRowViews}>
-                {typeof channel.view_count === 'number' ? `${channel.view_count} views` : '0 views'}
-              </Text>
+              <View style={styles.metaChip}>
+                <Text style={styles.metaChipText}>{views} views</Text>
+              </View>
             </View>
           </View>
         </View>
@@ -2027,19 +2055,19 @@ const ChannelRow = memo(function ChannelRow({
           style={styles.channelIconBtn}
           onPress={() => onStreams?.(channel)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Icon name="play-network" size={20} color="#a78bfa" />
+          <Icon name="play-network-outline" size={18} color={colors.accent} />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.channelIconBtn}
           onPress={() => onEdit(channel)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Icon name="pencil" size={20} color="#60a5fa" />
+          <Icon name="pencil-outline" size={18} color={colors.info} />
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.channelIconBtn, styles.channelIconBtnDanger]}
           onPress={() => onDelete(channel)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Icon name="delete" size={20} color="#f87171" />
+          <Icon name="trash-can-outline" size={18} color={colors.danger} />
         </TouchableOpacity>
       </View>
     </View>

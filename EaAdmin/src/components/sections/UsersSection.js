@@ -64,6 +64,41 @@ const userCreatedAtMs = (user) => {
   return Number.isFinite(t) ? t : 0;
 };
 
+/** Preview additive admin grant (matches backend GREATEST(expiry, now()) + duration). */
+const previewPremiumExpiryAfterGrant = (currentExpiryIso, duration, unit) => {
+  const n = Math.floor(Number(duration));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const now = new Date();
+  const current = currentExpiryIso ? new Date(currentExpiryIso) : null;
+  const base =
+    current && !Number.isNaN(current.getTime()) && current > now ? current : now;
+  const result = new Date(base);
+  switch (unit) {
+    case 'hours':
+      result.setHours(result.getHours() + n);
+      break;
+    case 'days':
+      result.setDate(result.getDate() + n);
+      break;
+    case 'weeks':
+      result.setDate(result.getDate() + n * 7);
+      break;
+    case 'months':
+      result.setMonth(result.getMonth() + n);
+      break;
+    default:
+      result.setDate(result.getDate() + n);
+  }
+  return result;
+};
+
+const formatGrantError = (error) => {
+  const msg = String(error?.message || error || '').trim();
+  if (!msg) return 'Failed to grant access. Check admin API key and network.';
+  if (msg.length > 280) return `${msg.slice(0, 277)}…`;
+  return msg;
+};
+
 const mergeUsersById = (existing, incoming) => {
   const byId = new Map();
   for (const row of existing) {
@@ -381,26 +416,33 @@ const UsersSection = ({ isActive }) => {
     }
   };
 
-  // Handle special access
+  // Handle special access — adds time on top of existing premium (never shortens).
   const handleGrantSpecialAccess = async () => {
-    if (!accessValue || parseInt(accessValue) <= 0) {
-      showStatusModal('error', 'Invalid Duration', 'Please enter a valid duration');
+    const duration = Math.floor(Number(String(accessValue || '').trim()));
+    if (!Number.isFinite(duration) || duration <= 0) {
+      showStatusModal('error', 'Invalid Duration', 'Please enter a valid positive number');
       return;
     }
 
-    if (!selectedUser?.rawData) return;
+    const userId = Number(selectedUser?.rawData?.id);
+    if (!selectedUser?.rawData || !Number.isFinite(userId) || userId <= 0) {
+      showStatusModal('error', 'Invalid User', 'Could not resolve user id. Refresh the list and try again.');
+      return;
+    }
 
     try {
       setGrantingAccess(true);
-      await adminUsersAPI.giveSpecialAccess(
-        selectedUser.rawData.id,
-        parseInt(accessValue),
-        accessType
-      );
+      const result = await adminUsersAPI.giveSpecialAccess(userId, duration, accessType);
+      const expiresAfter =
+        result?.expiresAfter || result?.premium_expires_at || result?.premiumExpiresAt;
+      const expiresLabel = expiresAfter
+        ? new Date(expiresAfter).toLocaleString()
+        : 'updated on server';
       showStatusModal(
         'success',
         'Access Granted',
-        `Special access granted: ${accessValue} ${accessType} of premium access for ${selectedUser.name}. All channels have been unlocked.`
+        result?.message ||
+          `Added ${duration} ${accessType} for ${selectedUser.name}. Premium until ${expiresLabel}. All channels unlocked.`,
       );
       setSpecialAccessModalVisible(false);
       setAccessValue('');
@@ -409,11 +451,17 @@ const UsersSection = ({ isActive }) => {
       fetchDashboardStats();
     } catch (error) {
       console.error('Failed to grant special access:', error);
-      showStatusModal('error', 'Grant Failed', 'Failed to grant access. Please try again.');
+      showStatusModal('error', 'Grant Failed', formatGrantError(error));
     } finally {
       setGrantingAccess(false);
     }
   };
+
+  const grantPreviewDate = previewPremiumExpiryAfterGrant(
+    selectedUser?.premiumExpiresAt || selectedUser?.rawData?.premium_expires_at,
+    accessValue,
+    accessType,
+  );
 
   const formatStat = (n) => {
     if (n == null || n === '') return '—';
@@ -807,7 +855,7 @@ const UsersSection = ({ isActive }) => {
                 <View style={styles.optionContent}>
                   <Text style={styles.optionTitle}>Give Special Access</Text>
                   <Text style={styles.optionDescription}>
-                    Grant temporary premium access
+                    Add premium time (stacks on existing expiry) and unlock all channels
                   </Text>
                 </View>
                 <Icon name="chevron-right" size={20} color="#9ca3af" />
@@ -845,6 +893,42 @@ const UsersSection = ({ isActive }) => {
             </View>
 
             <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              {selectedUser ? (
+                <View style={styles.grantSummaryCard}>
+                  <Text style={styles.grantSummaryTitle}>{selectedUser.name}</Text>
+                  <Text style={styles.grantSummaryMeta}>
+                    {selectedUser.premiumExpiresAt
+                      ? `Current expiry: ${new Date(selectedUser.premiumExpiresAt).toLocaleString()}`
+                      : 'No active premium — time will start from now'}
+                  </Text>
+                  {grantPreviewDate ? (
+                    <Text style={styles.grantSummaryPreview}>
+                      After grant: {grantPreviewDate.toLocaleString()}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {/* Quick presets */}
+              <View style={styles.presetRow}>
+                {[
+                  { value: '1', unit: 'days', label: '+1 day' },
+                  { value: '7', unit: 'days', label: '+7 days' },
+                  { value: '30', unit: 'days', label: '+30 days' },
+                  { value: '90', unit: 'days', label: '+90 days' },
+                ].map((preset) => (
+                  <TouchableOpacity
+                    key={preset.label}
+                    style={styles.presetChip}
+                    onPress={() => {
+                      setAccessValue(preset.value);
+                      setAccessType(preset.unit);
+                    }}>
+                    <Text style={styles.presetChipText}>{preset.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
               {/* Access Type Selection */}
               <View style={styles.accessTypeContainer}>
                 <Text style={styles.inputLabel}>Access Duration</Text>
@@ -1173,12 +1257,12 @@ const styles = StyleSheet.create({
   statCard: {
     flex: 1,
     minWidth: 68,
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
-    borderRadius: 12,
+    backgroundColor: '#0c1220',
+    borderRadius: 14,
     padding: 10,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: 'rgba(148, 163, 184, 0.12)',
   },
   statCardTotal: {
     borderColor: 'rgba(56, 189, 248, 0.35)',
@@ -1229,8 +1313,8 @@ const styles = StyleSheet.create({
     borderColor: '#1f2937',
   },
   filterTabActive: {
-    backgroundColor: '#7c3aed',
-    borderColor: '#7c3aed',
+    backgroundColor: 'rgba(20, 184, 166, 0.18)',
+    borderColor: 'rgba(110, 231, 210, 0.35)',
   },
   filterTabText: {
     fontSize: 13,
@@ -1284,6 +1368,49 @@ const styles = StyleSheet.create({
   modalBody: {
     flex: 1,
     padding: 16,
+  },
+  grantSummaryCard: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+  },
+  grantSummaryTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 6,
+  },
+  grantSummaryMeta: {
+    fontSize: 13,
+    color: '#9ca3af',
+    marginBottom: 4,
+  },
+  grantSummaryPreview: {
+    fontSize: 13,
+    color: '#6ee7b7',
+    fontWeight: '600',
+  },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(55, 65, 81, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(75, 85, 99, 0.9)',
+  },
+  presetChipText: {
+    color: '#e5e7eb',
+    fontSize: 12,
+    fontWeight: '600',
   },
   modalSubtitle: {
     fontSize: 14,

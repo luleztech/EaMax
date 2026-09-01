@@ -37,8 +37,11 @@ import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
 import com.eamax.player.PlayerManager
+import com.eamax.player.PlayerRuntimeConfig
 import com.eamax.player.StreamSessionBuilder
+import com.eamax.player.FallbackStreamParser
 import com.eamax.player.EamaxPlayerOverlay
+import org.json.JSONObject
 
 /**
  * Full-screen landscape player with leotena-style chrome:
@@ -53,7 +56,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
     private lateinit var playerManager: PlayerManager
     private var exoBoundToView = false
-    private var selectedOkoaQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var selectedOkoaQuality: StreamQuality = StreamQuality.QUALITY_480P
     private var preferredAudioLanguage: String = "sw"
     private lateinit var playerOverlay: EamaxPlayerOverlay
     private lateinit var loadingOverlay: View
@@ -82,6 +85,8 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         if (!humanCheckActive) hideControls()
     }
     private var channelName: String = ""
+    private var playbackErrorPending = false
+    private var webViewAttachAttempts = 0
 
     private val exoPlayListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -96,17 +101,30 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
 
     private fun showChannelUnavailableAndFinish() {
         if (isFinishing) return
-        try {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.player_error_title)
-                .setMessage(R.string.channel_unavailable_message)
-                .setPositiveButton(R.string.ok_understood) { _, _ -> finish() }
-                .setOnCancelListener { finish() }
-                .setCancelable(true)
-                .show()
-        } catch (_: Exception) {
-            finish()
-        }
+        if (playbackErrorPending) return
+        playbackErrorPending = true
+        mainHandler.postDelayed({
+            if (isFinishing) return@postDelayed
+            if (playerManager.isPlaying()) {
+                playbackErrorPending = false
+                return@postDelayed
+            }
+            try {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.player_error_title)
+                    .setMessage(R.string.channel_unavailable_message)
+                    .setPositiveButton(R.string.ok_understood) { _, _ -> finish() }
+                    .setOnCancelListener { finish() }
+                    .setCancelable(true)
+                    .show()
+            } catch (_: Exception) {
+                finish()
+            }
+        }, 8_000L)
+    }
+
+    private fun cancelPendingPlaybackError() {
+        playbackErrorPending = false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,6 +158,27 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
 
         channelName = extras.getString("channelName").orEmpty().ifBlank { getString(R.string.player_live) }
+
+        extras.getString("playerPolicyJson")?.trim()?.takeIf { it.isNotEmpty() }?.let { policyJson ->
+            try {
+                val o = JSONObject(policyJson)
+                val map = buildMap<String, Any?> {
+                    for (key in o.keys()) {
+                        put(key, o.get(key))
+                    }
+                }
+                PlayerRuntimeConfig.applyFromArgs(map)
+            } catch (e: Exception) {
+                Log.w(TAG, "playerPolicyJson parse failed: ${e.message}")
+            }
+        }
+
+        val defaultQualityRaw = extras.getString("defaultQuality")
+        selectedOkoaQuality = PlayerRuntimeConfig.parseQuality(defaultQualityRaw)
+        PlayerRuntimeConfig.defaultQuality = selectedOkoaQuality
+
+        val fallbackJson = extras.getString("fallbackStreamsJson").orEmpty()
+        val fallbackSessions = FallbackStreamParser.parse(fallbackJson, session)
 
         playerViewRef = findViewById<PlayerView>(R.id.player_view).apply {
             applyResizeModeForOrientation()
@@ -187,8 +226,6 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         refreshLanguageChip()
         refreshQualityChip()
 
-        val playbackSession = session.copy(preferredAudioLanguage = preferredAudioLanguage)
-
         playerManager = PlayerManager(
             context = this,
             onStateChanged = { state ->
@@ -207,6 +244,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                                 attachWebViewIfNeeded(webContainer, playerView)
                                 ensureAutoplay()
                                 if (state == PlaybackState.PLAYING) {
+                                    cancelPendingPlaybackError()
                                     updatePlayPauseIcon(true)
                                     if (!humanCheckActive) scheduleHideControls()
                                 }
@@ -229,6 +267,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                     }
                     when (state) {
                         PlaybackState.PLAYING -> {
+                            cancelPendingPlaybackError()
                             updatePlayPauseIcon(true)
                             scheduleHideControls()
                         }
@@ -257,14 +296,13 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                 }
             },
         )
-        playerManager.initialize(playbackSession)
+        playerManager.setInitialQuality(selectedOkoaQuality)
+        val playbackSession = session.copy(preferredAudioLanguage = preferredAudioLanguage)
+        playerManager.initialize(playbackSession, fallbackSessions)
         playbackReady = true
         syncPlaybackSurface()
         ensureAutoplay()
-        // Retry autoplay while gateway extract / first buffer settles.
-        listOf(300L, 800L, 1600L, 3000L).forEach { delay ->
-            mainHandler.postDelayed({ if (!isFinishing) ensureAutoplay() }, delay)
-        }
+        mainHandler.postDelayed({ if (!isFinishing) ensureAutoplay() }, 800L)
         showControls()
         scheduleHideControls()
     }
@@ -441,16 +479,15 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         }
     }
 
-    /** Every opened channel must start playing without an extra tap. */
+    /** Start playback once — Exo uses playWhenReady; avoid duplicate play() storms. */
     private fun ensureAutoplay() {
         if (!::playerManager.isInitialized || isFinishing) return
+        if (!PlayerRuntimeConfig.autoPlay) return
         try {
             playerManager.play()
             playerManager.getExoPlayer()?.let { p ->
-                p.playWhenReady = true
-                p.volume = 1f
-                p.play()
-                updatePlayPauseIcon(true)
+                if (!p.playWhenReady) p.playWhenReady = true
+                updatePlayPauseIcon(p.isPlaying)
             }
             if (playerManager.isWebViewPlayback()) {
                 updatePlayPauseIcon(true)
@@ -478,7 +515,6 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                         playerManager.setAudioLanguage(preferredAudioLanguage)
                         refreshLanguageChip()
                         ensureAutoplay()
-                        mainHandler.postDelayed({ ensureAutoplay() }, 600)
                     } catch (e: Exception) {
                         Log.e(TAG, "language switch failed", e)
                     }
@@ -501,7 +537,7 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
             StreamQuality.QUALITY_720P,
             StreamQuality.QUALITY_1080P,
         )
-        val initial = qualities.indexOf(selectedOkoaQuality).let { if (it >= 0) it else 2 }
+        val initial = qualities.indexOf(selectedOkoaQuality).let { if (it >= 0) it else 0 }
         try {
             AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
                 .setTitle(R.string.pick_quality)
@@ -515,7 +551,6 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
                         playerManager.setQuality(q, fromUser = true)
                         refreshQualityChip()
                         ensureAutoplay()
-                        mainHandler.postDelayed({ ensureAutoplay() }, 500)
                         Log.d(TAG, "User picked quality: $q")
                     } catch (e: Exception) {
                         Log.e(TAG, "quality switch failed", e)
@@ -596,10 +631,17 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
     }
 
     private fun attachWebViewIfNeeded(webContainer: FrameLayout, playerView: PlayerView) {
-        val w = playerManager.getWebView() ?: run {
-            showChannelUnavailableAndFinish()
+        val w = playerManager.getWebView()
+        if (w == null) {
+            if (webViewAttachAttempts < 8) {
+                webViewAttachAttempts++
+                mainHandler.postDelayed({
+                    if (!isFinishing) attachWebViewIfNeeded(webContainer, playerView)
+                }, 400L)
+            }
             return
         }
+        webViewAttachAttempts = 0
         try {
             playerView.player = null
         } catch (_: Exception) {

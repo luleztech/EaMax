@@ -401,9 +401,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 16,
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    backgroundColor: '#0c1220',
     borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
+    borderBottomColor: 'rgba(148, 163, 184, 0.12)',
   },
   headerLeft: {
     flexDirection: 'row',
@@ -438,7 +438,7 @@ const styles = StyleSheet.create({
     borderColor: '#374151',
   },
   tabPillActive: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#14b8a6',
     borderColor: '#a855f7',
   },
   tabPillText: {
@@ -620,7 +620,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#14b8a6',
     borderRadius: 12,
   },
   composeNewButtonText: {
@@ -649,7 +649,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#14b8a6',
     borderRadius: 12,
   },
   sendButtonText: {

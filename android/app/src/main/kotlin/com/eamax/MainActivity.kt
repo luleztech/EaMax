@@ -3,6 +3,7 @@ package com.eamax
 import android.content.Intent
 import android.os.Bundle
 import com.eamax.player.GatewayWebPlayerFactory
+import com.eamax.player.PlayerRuntimeConfig
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -97,19 +98,29 @@ class MainActivity : FlutterActivity() {
                         )
                         intent.putExtra(
                             "defaultQuality",
-                            args["defaultQuality"]?.toString().orEmpty().ifEmpty { "360p" },
+                            args["defaultQuality"]?.toString().orEmpty().ifEmpty { "480p" },
                         )
                         intent.putExtra(
                             "defaultLanguage",
                             args["defaultLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
+                        args["playerPolicyJson"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            intent.putExtra("playerPolicyJson", it)
+                        }
                         startActivity(intent)
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
                     }
                 }
-                "updatePlayerConfig" -> result.success(null)
+                "updatePlayerConfig" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = call.arguments as? Map<String, Any?>
+                    if (args != null) {
+                        PlayerRuntimeConfig.applyFromArgs(args)
+                    }
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }

@@ -36,7 +36,7 @@ class WebViewEngine(
     private var userPickedQuality = false
     private var qualityConfirmed = false
     private var qualityRetryGeneration = 0
-    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_480P
     private var preferredAudioLanguage = "sw"
     private var lastLoadedAudioLanguage = ""
     private var audioLanguageConfirmed = false
@@ -489,9 +489,8 @@ class WebViewEngine(
     }
 
     private fun applyQualityAfterPageLoad() {
-        // Startup: use AUTO (no maxHeight clamp). Forcing 360p via restrictions on DRM
-        // live streams that only offer 540p caused Shaka 4012 hasAppRestrictions + audio-only.
-        val mode = if (userPickedQuality) qualityModeFor(selectedQuality) else "auto"
+        // Startup default: 480p — select track, not maxHeight restrictions (avoids Shaka 4012).
+        val mode = if (userPickedQuality) qualityModeFor(selectedQuality) else "480"
         val fromUser = userPickedQuality
         Log.d(QUALITY_TAG, "applyQualityAfterPageLoad mode=$mode fromUser=$fromUser")
         applyQualityJs(mode, fromUser, scheduleRetries = true)

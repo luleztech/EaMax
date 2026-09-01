@@ -393,7 +393,7 @@ class PaymentsApi {
       },
       // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
       enableRetries: false,
-      timeout: const Duration(seconds: 28),
+      timeout: const Duration(seconds: 42),
     );
     return Map<String, dynamic>.from(r as Map);
   }
@@ -424,8 +424,15 @@ class PaymentsApi {
       return Map<String, dynamic>.from(r as Map);
     } catch (e) {
       final msg = e.toString().toLowerCase();
-      if (msg.contains('no order found') || msg.contains('order not found') || msg.contains('404')) {
-        return {'status': 'PENDING', 'raw': {}};
+      if (msg.contains('no order found') ||
+          msg.contains('order not found') ||
+          msg.contains('404') ||
+          msg.contains('http 400') ||
+          msg.contains('http 502') ||
+          msg.contains('http 503') ||
+          msg.contains('network timeout') ||
+          msg.contains('socketexception')) {
+        return {'status': 'PENDING', 'raw': <String, dynamic>{}};
       }
       rethrow;
     }

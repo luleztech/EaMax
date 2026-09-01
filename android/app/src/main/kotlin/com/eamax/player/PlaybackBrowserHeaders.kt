@@ -59,6 +59,10 @@ object PlaybackBrowserHeaders {
         )
         h.putIfAbsent("sec-ch-ua-mobile", "?1")
         h.putIfAbsent("sec-ch-ua-platform", "\"Android\"")
+        // PHP gateways (sp1.php, etc.) require the app package header.
+        if (trimmed.contains(".php", ignoreCase = true)) {
+            h.putIfAbsent("X-Requested-With", "com.eamax")
+        }
         return h
     }
 }

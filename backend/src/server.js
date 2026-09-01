@@ -488,12 +488,12 @@ try {
         reconcilePendingSubscriptionPayments().catch((err) => {
           console.warn('[Payment] Boot reconcile failed:', err.message || err);
         });
-        // Every 45s — catch paid gateway orders when webhook/app poll missed completion.
+        // Every 30s — catch paid gateway orders when webhook/app poll missed completion.
         setInterval(() => {
           reconcilePendingSubscriptionPayments().catch((err) => {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
-        }, 45 * 1000);
+        }, 30 * 1000);
         setInterval(() => {
           repairCompletedPaymentsMissingPremium().catch((err) => {
             console.warn('[Entitlements] Scheduled repair failed:', err.message || err);

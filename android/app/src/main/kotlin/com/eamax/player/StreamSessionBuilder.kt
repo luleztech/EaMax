@@ -55,12 +55,20 @@ object StreamSessionBuilder {
             else -> DrmData(headers = null)
         }
 
+        val playbackEngine = b.getString("playbackEngine")?.trim().orEmpty().lowercase()
+        val gatewayPage = isGatewayPage(url)
+        val playerMode = when {
+            !gatewayPage -> PlayerMode.EXO
+            playbackEngine == "exo" || playbackEngine == "kotlin" -> PlayerMode.EXO
+            else -> PlayerMode.WEB
+        }
+
         return StreamSession(
             mpdUrl = url,
             licenseUrl = licenseUrl,
             token = token,
             expiresAt = expiresAt,
-            playerMode = if (isGatewayPage(url)) PlayerMode.WEB else PlayerMode.EXO,
+            playerMode = playerMode,
             drmType = drmType,
             drmData = drmData,
             trialRemaining = 999_999,
@@ -105,6 +113,9 @@ object StreamSessionBuilder {
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         return b64.replace('+', '-').replace('/', '_').trimEnd('=')
     }
+
+    /** Parse `kid:key` / JSON clearkey payloads from PHP gateway pages. */
+    fun parseClearKeysFromGateway(raw: String): List<ClearKey> = parseClearKeysFromHex(raw)
 
     private fun parseClearKeysFromHex(raw: String): List<ClearKey> {
         if (raw.isEmpty()) return emptyList()

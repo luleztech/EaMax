@@ -10,7 +10,7 @@ function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <StatusBar barStyle="light-content" backgroundColor="#030712" />
+        <StatusBar barStyle="light-content" backgroundColor="#05070d" />
         <AdminApp />
       </SafeAreaProvider>
     </GestureHandlerRootView>

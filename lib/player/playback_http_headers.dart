@@ -18,7 +18,7 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
   final referer = tokenHeaders?['referer'] ?? '$cdnOrigin/';
   final origin = tokenHeaders?['origin'] ?? cdnOrigin;
 
-  return {
+  final headers = <String, String>{
     'Referer': referer,
     'Origin': origin,
     'User-Agent':
@@ -33,6 +33,11 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
+  // Hostinger PHP gateways reject requests without the app package header.
+  if (u.toLowerCase().contains('.php')) {
+    headers['X-Requested-With'] = 'com.eamax';
+  }
+  return headers;
 }
 
 /// Merges API-provided headers over URL-derived defaults (playback API wins).

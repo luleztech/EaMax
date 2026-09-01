@@ -16,7 +16,7 @@
     <string name="rotate_hint_message">Geuza simu yako kuona kwa ukubwa kamili</string>
     <string name="rotate_hint_later">Baadae</string>
     <string name="rotate_hint_never_again">Usioneshe tena</string>
-    <string name="channel_unavailable_message"></string>
+    <string name="channel_unavailable_message">Channel haikuweza kuchezwa. Angalia mtandao wako kisha jaribu tena.</string>
     <string name="player_connecting">Inaunganisha…</string>
     <string name="ok_understood">Sawa</string>
     <string name="player_live">LIVE</string>
@@ -25,7 +25,7 @@
     <string name="player_chip_language_en">Lugha · English</string>
     <string name="player_chip_quality">Ubora · %1$s</string>
     <string name="player_error_title">Video haikuweza kuchezwa</string>
-    <string name="player_chip_quality_default">Ubora · 360p</string>
+    <string name="player_chip_quality_default">Ubora · 480p</string>
     <string name="player_chip_switch">Badili Kituo</string>
     <string name="player_live_subtitle">Moja kwa moja</string>
     <string name="player_moja_kwa_moja">MOJA KWA MOJA</string>

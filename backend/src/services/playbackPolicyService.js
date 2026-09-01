@@ -20,7 +20,7 @@ function sanitizeReconnectionPolicy(raw) {
   return VALID_RECONNECTION_POLICIES.has(p) ? p : 'balanced';
 }
 
-function sanitizeQuality(raw, fallback = '360p') {
+function sanitizeQuality(raw, fallback = '480p') {
   const q = String(raw || fallback).trim().toLowerCase();
   const allowed = new Set(['auto', '240p', '360p', '480p', '720p', '1080p', '2k', '4k']);
   return allowed.has(q) ? q : fallback;
@@ -76,7 +76,7 @@ async function resolvePlaybackPolicy(channelRow) {
     autoPlay: global.autoPlay !== false,
     defaultQuality: sanitizeQuality(
       channelRow?.preferred_quality || global.defaultQuality,
-      global.defaultQuality || '360p',
+      global.defaultQuality || '480p',
     ),
     defaultLanguage: sanitizeDefaultLanguage(global.defaultLanguage || 'sw'),
     failoverToWebview: global.failoverToWebview !== false,

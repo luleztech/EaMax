@@ -982,26 +982,26 @@ object GatewayPlaybackJs {
                 } catch (e) {}
                 return applied;
               }
-              window.__eaMaxOkoaApplyStartup360 = function() {
+              window.__eaMaxOkoaApplyStartup480 = function() {
                 if (window.__eaMaxUserQualityLocked || window.__eaMaxOkoaUserInitiated) return true;
-                if (window.__eaMaxOkoaLastApplied === '360') return true;
-                if (window.__eaMaxStartup360Active) return false;
-                window.__eaMaxStartup360Active = true;
+                if (window.__eaMaxOkoaLastApplied === '480') return true;
+                if (window.__eaMaxStartup480Active) return false;
+                window.__eaMaxStartup480Active = true;
                 var tries = 0;
                 function attempt() {
                   if (window.__eaMaxOkoaUserInitiated) {
-                    window.__eaMaxStartup360Active = false;
+                    window.__eaMaxStartup480Active = false;
                     return;
                   }
-                  if (applyOkoaQuality('360')) {
-                    window.__eaMaxOkoaLastApplied = '360';
-                    window.__eaMaxStartup360Active = false;
+                  if (applyOkoaQuality('480')) {
+                    window.__eaMaxOkoaLastApplied = '480';
+                    window.__eaMaxStartup480Active = false;
                     return;
                   }
                   if (++tries < 8) {
                     setTimeout(attempt, 700);
                   } else {
-                    window.__eaMaxStartup360Active = false;
+                    window.__eaMaxStartup480Active = false;
                   }
                 }
                 attempt();
@@ -1012,7 +1012,7 @@ object GatewayPlaybackJs {
                 if (!userInitiated) {
                   if (window.__eaMaxUserQualityLocked) return true;
                   window.__eaMaxOkoaLastMode = String(mode);
-                  return window.__eaMaxOkoaApplyStartup360();
+                  return window.__eaMaxOkoaApplyStartup480();
                 }
                 window.__eaMaxUserQualityLocked = true;
                 window.__eaMaxOkoaUserInitiated = true;

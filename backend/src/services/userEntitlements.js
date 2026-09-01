@@ -89,6 +89,30 @@ const grantPremiumWithIntervalInTransaction = async (client, userId, planInterva
   return userUpdate.rows[0];
 };
 
+/** Convert EaAdmin duration picker → PostgreSQL interval (additive grants). */
+const adminDurationToPlanInterval = (duration, unit) => {
+  const n = Math.floor(Number(duration));
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error('Duration must be a positive number');
+  }
+  switch (String(unit || 'days').toLowerCase()) {
+    case 'hours':
+      if (n > 8760) throw new Error('Maximum admin grant is 8760 hours (1 year)');
+      return `${n} hours`;
+    case 'days':
+      if (n > 366) throw new Error('Maximum admin grant is 366 days');
+      return `${n} days`;
+    case 'weeks':
+      if (n > 52) throw new Error('Maximum admin grant is 52 weeks');
+      return `${n * 7} days`;
+    case 'months':
+      if (n > 24) throw new Error('Maximum admin grant is 24 months');
+      return `${n} months`;
+    default:
+      return `${n} days`;
+  }
+};
+
 /** Admin grants / extensions — never shorten an existing later expiry. */
 const grantPremiumUntilInTransaction = async (client, userId, expiresAt) => {
   const userUpdate = await client.query(
@@ -374,6 +398,7 @@ const repairCompletedPaymentsMissingPremium = async () => {
 };
 
 module.exports = {
+  adminDurationToPlanInterval,
   unlockAllChannelsInTransaction,
   grantUserEntitlementsInTransaction,
   userMissingChannelUnlocks,

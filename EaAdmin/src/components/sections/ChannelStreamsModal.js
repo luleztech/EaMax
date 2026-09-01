@@ -230,20 +230,20 @@ const ChannelStreamsModal = ({ visible, channel, onClose }) => {
 };
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
   card: {
-    backgroundColor: '#111827',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: '#0c1220',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     maxHeight: '88%',
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: 'rgba(148, 163, 184, 0.12)',
     padding: 18,
   },
   header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
   headerText: { flex: 1, paddingRight: 12 },
-  title: { color: '#fff', fontSize: 18, fontWeight: '800' },
-  subtitle: { color: '#9ca3af', fontSize: 12, marginTop: 4 },
+  title: { color: '#f4f7fb', fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
+  subtitle: { color: '#9aa8bd', fontSize: 12, marginTop: 4 },
   center: { padding: 40, alignItems: 'center' },
   scroll: { maxHeight: 520 },
   streamRow: {

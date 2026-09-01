@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api.dart';
+import '../config/app_version.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/app_header.dart';
@@ -99,7 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _sectionTitle(t, Ionicons.information_circle_outline, 'APP INFO'),
                 _group(t, [
                   _row(t, Ionicons.phone_portrait_outline, 'App Name', 'EaMax'),
-                  _row(t, Ionicons.pricetag_outline, 'Version', '1.3.1'),
+                  _row(t, Ionicons.pricetag_outline, 'Version', appVersion),
                 ]),
                 const SizedBox(height: 24),
                 _sectionTitle(t, Ionicons.flash_outline, 'ACTIONS'),

@@ -18,23 +18,33 @@ const AdminApp = () => {
 
   const primaryNavItems = useMemo(
     () => [
-      { id: 'overview', label: 'Overview', shortLabel: 'Home', icon: 'view-dashboard' },
-      { id: 'users', label: 'Users', shortLabel: 'Users', icon: 'account-group' },
-      { id: 'channels', label: 'Channels', shortLabel: 'Channels', icon: 'movie-open' },
-      { id: 'control', label: 'Control Center', shortLabel: 'Control', icon: 'shield-alert' },
+      { id: 'overview', label: 'Overview', shortLabel: 'Home', icon: 'view-dashboard-outline' },
+      { id: 'users', label: 'Users', shortLabel: 'Users', icon: 'account-group-outline' },
+      { id: 'channels', label: 'Channels', shortLabel: 'Library', icon: 'television-classic' },
+      { id: 'control', label: 'Control', shortLabel: 'Control', icon: 'tune-variant' },
     ],
     []
   );
 
   const menuNavItems = useMemo(
     () => [
-      { id: 'promotions', label: 'Promotion Center', icon: 'bullhorn-variant' },
-      { id: 'plans', label: 'Vifurushi', icon: 'cash-multiple' },
-      { id: 'ads', label: 'Ads & Points', icon: 'bullhorn' },
-      { id: 'analytics', label: 'Analytics', icon: 'chart-bar' },
-      { id: 'settings', label: 'Settings', icon: 'cog' },
+      { id: 'promotions', label: 'Promotions', icon: 'bullhorn-variant-outline' },
+      { id: 'plans', label: 'Vifurushi', icon: 'ticket-percent-outline' },
+      { id: 'ads', label: 'Ads & Points', icon: 'chart-box-outline' },
+      { id: 'analytics', label: 'Analytics', icon: 'chart-timeline-variant' },
+      { id: 'settings', label: 'Settings', icon: 'cog-outline' },
     ],
     []
+  );
+
+  const navGroups = useMemo(
+    () => [
+      { label: 'Operate', items: primaryNavItems.slice(0, 2) },
+      { label: 'Library', items: [primaryNavItems[2], primaryNavItems[3]] },
+      { label: 'Grow', items: menuNavItems.slice(0, 3) },
+      { label: 'System', items: menuNavItems.slice(3) },
+    ],
+    [primaryNavItems, menuNavItems]
   );
 
   const navItems = useMemo(
@@ -44,15 +54,15 @@ const AdminApp = () => {
 
   const activeMeta = useMemo(() => {
     const map = {
-      overview: { title: 'Overview' },
-      users: { title: 'Users' },
-      channels: { title: 'Channels' },
-      promotions: { title: 'Promotion Center' },
-      plans: { title: 'Vifurushi' },
-      control: { title: 'Control Center' },
-      ads: { title: 'Ads & Points' },
-      analytics: { title: 'Analytics' },
-      settings: { title: 'Settings' },
+      overview: { title: 'Overview', subtitle: 'Live installs, revenue, and home content' },
+      users: { title: 'Users', subtitle: 'Search, access, and subscription status' },
+      channels: { title: 'Channel library', subtitle: 'Thumbnails, categories, and order' },
+      promotions: { title: 'Promotions', subtitle: 'In-app offers and announcements' },
+      plans: { title: 'Vifurushi', subtitle: 'Premium packages and pricing' },
+      control: { title: 'Control Center', subtitle: 'Player engine and emergency switches' },
+      ads: { title: 'Ads & Points', subtitle: 'Watch activity and rewards' },
+      analytics: { title: 'Analytics', subtitle: 'Playback and platform mix' },
+      settings: { title: 'Settings', subtitle: 'Support, access, and payments' },
     };
     return map[activeTab] || map.overview;
   }, [activeTab]);
@@ -89,11 +99,13 @@ const AdminApp = () => {
   return (
     <AppShell
       navItems={navItems}
+      navGroups={navGroups}
       primaryNavItems={primaryNavItems}
       menuNavItems={menuNavItems}
       activeTab={activeTab}
       onSelectTab={(tabId) => setActiveTab(tabId)}
       title={activeMeta.title}
+      subtitle={activeMeta.subtitle}
       onOpenNotifications={() => setNotificationsPanelVisible(true)}>
       {renderSection()}
       <NotificationsPanel

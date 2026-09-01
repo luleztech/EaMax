@@ -334,7 +334,10 @@ const isSonicUssdPushSent = (sonicData) => {
   }
   const nest = pickSonicNestedData(sonicData);
   const msisdn = String(nest?.msisdn || nest?.phone || nest?.buyer_phone || '').replace(/\D/g, '');
-  return msisdn.length >= 9;
+  if (msisdn.length >= 9) return true;
+  const channel = String(nest?.channel || sonicData.channel || '').trim();
+  if (channel && channel.toLowerCase() !== 'null') return true;
+  return false;
 };
 
 const isSonicInitiateSuccess = (sonicData, httpResponse) => {
@@ -1883,7 +1886,9 @@ async function handlePaymentStart(req, res, next) {
         const initiateCode = sonicData.resultcode || sonicData.code;
         const sendFailed = isSonicPaymentSendFailure(initiateMsg, initiateCode);
 
-        if (sonicOrderId && !sendFailed) {
+        // Require proof that Push USSD was dispatched — Sonic often returns
+        // status:"success" + order_id without ever ringing the user's phone.
+        if (sonicOrderId && !sendFailed && ussdSent) {
           await query(
             `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -1900,12 +1905,14 @@ async function handlePaymentStart(req, res, next) {
         }
 
         sonicFailureForClient = {
-          message: initiateMsg || 'SonicPesa haikutuma ombi la malipo kwenye simu',
+          message:
+            initiateMsg ||
+            (ussdSent ? 'SonicPesa haikutuma ombi la malipo kwenye simu' : 'SonicPesa haikutuma ombi la malipo kwenye simu (hakuna uthibitisho wa USSD)'),
           code: initiateCode,
           sonicData,
         };
         if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
-          console.warn('[Payment] SonicPesa did not create a push — falling back to Aurax Pay', {
+          console.warn('[Payment] SonicPesa did not dispatch USSD — falling back to Aurax Pay', {
             phonePrefix: normalizedPhone.slice(0, 3),
             phoneForSonicApi,
             resultcode: initiateCode,
@@ -1985,7 +1992,8 @@ async function handlePaymentStart(req, res, next) {
       data: { ...data, bundle: planKey },
       externalId: data.externalId,
       callbackUrl,
-      ...(usedAuraxFallbackFromSonic ? { timeoutMs: 10000, maxAttempts: 1 } : {}),
+      // Give Aurax the same window as a direct start — Sonic may have already consumed ~13s.
+      ...(usedAuraxFallbackFromSonic ? { timeoutMs: 20000, maxAttempts: 2 } : {}),
     });
 
     console.log('[AuraxPay] Response:', {
@@ -2369,16 +2377,76 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
   }
 };
 
-/** Only tell the app COMPLETED once premium is actually active on the user row. */
-const respondPaymentCompletion = async (orderId, rawPayload, res) => {
-  const payRowRes = await query(
-    `SELECT status, user_id, plan, amount_cents
+/**
+ * Gateway reported a wallet debit but the local row may still be pending (ref race,
+ * phone-hint miss, webhook lag). Retry apply before telling the app to keep polling.
+ */
+const ensurePaymentAppliedAfterGatewayPaid = async (orderId, rawPayload, gatewayHint = null) => {
+  const lookup = await query(
+    `SELECT status, user_id, plan, amount_cents, payment_provider
        FROM subscription_payments
       WHERE provider_ref = $1 OR gateway_ref = $1
       LIMIT 1`,
     [orderId],
   );
-  const payRow = payRowRes.rows[0] || null;
+  let payRow = lookup.rows[0] || null;
+  if (payRow?.status === 'completed') return payRow;
+
+  const resolvedGateway =
+    normalizeStoredPaymentProvider(payRow?.payment_provider) ||
+    normalizeStoredPaymentProvider(gatewayHint) ||
+    (await resolveGatewayForOrderId(orderId));
+
+  try {
+    if (resolvedGateway === PAYMENT_PROVIDERS.SONICPESA) {
+      const meta = rawPayload?.data || rawPayload || {};
+      await tryApplySonicCompletedPayment(orderId, meta, {
+        altRefs: [
+          rawPayload?.data?.order_id,
+          rawPayload?.data?.orderId,
+          rawPayload?.data?.reference,
+          rawPayload?.reference,
+          rawPayload?.transid,
+          rawPayload?.transaction?.order_id,
+        ].filter(Boolean),
+      });
+    } else {
+      await tryApplyAuraxCompletedPayment(orderId, rawPayload || {}, {
+        altRefs: [...collectAuraxOrderRefs(rawPayload || {}), orderId].filter(Boolean),
+      });
+    }
+  } catch (err) {
+    console.warn('[Payment] ensurePaymentAppliedAfterGatewayPaid failed:', orderId, err?.message || err);
+  }
+
+  const refreshed = await query(
+    `SELECT status, user_id, plan, amount_cents, payment_provider
+       FROM subscription_payments
+      WHERE provider_ref = $1 OR gateway_ref = $1
+      LIMIT 1`,
+    [orderId],
+  );
+  return refreshed.rows[0] || payRow;
+};
+
+/** Only tell the app COMPLETED once premium is actually active on the user row. */
+const respondPaymentCompletion = async (orderId, rawPayload, res, options = {}) => {
+  const { gatewayConfirmedPaid = false, gatewayHint = null } = options;
+  let payRow = null;
+
+  if (gatewayConfirmedPaid) {
+    payRow = await ensurePaymentAppliedAfterGatewayPaid(orderId, rawPayload, gatewayHint);
+  }
+  if (!payRow) {
+    const payRowRes = await query(
+      `SELECT status, user_id, plan, amount_cents
+         FROM subscription_payments
+        WHERE provider_ref = $1 OR gateway_ref = $1
+        LIMIT 1`,
+      [orderId],
+    );
+    payRow = payRowRes.rows[0] || null;
+  }
 
   if (payRow?.status === 'completed' && payRow.user_id) {
     const planInterval = await resolvePlanIntervalForPayment(payRow.plan, payRow.amount_cents);
@@ -2506,7 +2574,10 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
           console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
           return res.json({ status: 'PENDING', applying: true, raw: statusData });
         }
-        return respondPaymentCompletion(orderId, statusData, res);
+        return respondPaymentCompletion(orderId, statusData, res, {
+          gatewayConfirmedPaid: true,
+          gatewayHint: PAYMENT_PROVIDERS.SONICPESA,
+        });
       }
 
       if (isPaymentTerminalStatus(rawStatus)) {
@@ -2546,12 +2617,12 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     }
 
     if (!statusResp.ok) {
-      return res.status(400).json({
-        error: mapPaymentGatewayUserError(
-          statusData.message || statusData.error || 'Failed to fetch order status',
-          '',
-        ),
+      console.warn('[AuraxPay] order_status HTTP error — keeping payment pending', {
+        orderId,
+        httpStatus: statusResp.status,
+        message: statusData.message || statusData.error,
       });
+      return res.json({ status: 'PENDING', raw: statusData });
     }
 
     const { isCompleted, rawStatus, transaction } = evaluateAuraxOrderStatusForApply(statusData);
@@ -2575,7 +2646,10 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         console.error('[Payment] Aurax applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
         return res.json({ status: 'PENDING', applying: true, raw: statusData });
       }
-      return respondPaymentCompletion(orderId, statusData, res);
+      return respondPaymentCompletion(orderId, statusData, res, {
+        gatewayConfirmedPaid: true,
+        gatewayHint: PAYMENT_PROVIDERS.AURAX,
+      });
     }
 
     let clientStatus = rawStatus || 'PENDING';
@@ -3091,7 +3165,7 @@ const reconcilePendingSubscriptionPayments = async () => {
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND created_at < NOW() - INTERVAL '20 seconds'
+        AND created_at < NOW() - INTERVAL '12 seconds'
       ORDER BY
         CASE WHEN gateway_ref IS NULL OR gateway_ref = '' THEN 1 ELSE 0 END,
         created_at ASC

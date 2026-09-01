@@ -3,7 +3,12 @@ const { z } = require('zod');
 const { query, pool } = require('../db');
 const { sendPushNotification } = require('../services/firebase');
 const { buildPremiumPayload } = require('../services/premiumStatus');
-const { grantUserEntitlementsInTransaction } = require('../services/userEntitlements');
+const {
+  grantUserEntitlementsInTransaction,
+  adminDurationToPlanInterval,
+  repairUserEntitlementsIfNeeded,
+  fetchUserPremiumSnapshotByUserId,
+} = require('../services/userEntitlements');
 
 const promotionsAdminRouter = require('./promotionsAdmin');
 const {
@@ -287,76 +292,69 @@ router.post('/subscriptions/remind-expired', async (req, res, next) => {
   }
 });
 
-// Admin: give special access (premium for duration) – user receives access for the given time
+// Admin: add premium time + unlock all channels (stacks on existing active expiry).
 router.post('/users/:id/special-access', async (req, res, next) => {
   try {
     const paramsSchema = z.object({
-      id: z.string().regex(/^\d+$/),
+      id: z.coerce.number().int().positive(),
     });
     const bodySchema = z.object({
-      duration: z.number().int().positive(),
+      duration: z.coerce.number().int().positive().max(10000),
       unit: z.enum(['hours', 'days', 'weeks', 'months']),
     });
 
-    const { id } = paramsSchema.parse(req.params);
+    const { id: userId } = paramsSchema.parse(req.params);
     const { duration, unit } = bodySchema.parse(req.body);
 
-    const userId = Number(id);
+    let planInterval;
+    try {
+      planInterval = adminDurationToPlanInterval(duration, unit);
+    } catch (intervalErr) {
+      return res.status(400).json({ error: intervalErr.message || 'Invalid duration' });
+    }
 
-    const userCheck = await query('SELECT id FROM users WHERE id = $1 LIMIT 1', [userId]);
-    if (userCheck.rows.length === 0) {
+    const beforeRes = await query(
+      `SELECT id, external_id, is_premium, premium_expires_at, blocked
+         FROM users WHERE id = $1 LIMIT 1`,
+      [userId],
+    );
+    if (beforeRes.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
+    const before = beforeRes.rows[0];
 
-    const expiresAt = new Date();
-
-    switch (unit) {
-      case 'hours':
-        expiresAt.setHours(expiresAt.getHours() + duration);
-        break;
-      case 'days':
-        expiresAt.setDate(expiresAt.getDate() + duration);
-        break;
-      case 'weeks':
-        expiresAt.setDate(expiresAt.getDate() + duration * 7);
-        break;
-      case 'months':
-        expiresAt.setMonth(expiresAt.getMonth() + duration);
-        break;
-      default:
-        expiresAt.setDate(expiresAt.getDate() + duration);
+    let row;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      row = await grantUserEntitlementsInTransaction(client, userId, { planInterval });
+      await client.query('COMMIT');
+    } catch (grantErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Admin] special-access grant failed:', grantErr?.message || grantErr);
+      return res.status(500).json({
+        error: 'Failed to grant premium access',
+        details: grantErr?.message || String(grantErr),
+      });
+    } finally {
+      client.release();
     }
 
-    const updated = await (async () => {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const row = await grantUserEntitlementsInTransaction(client, userId, {
-          expiresAt: expiresAt.toISOString(),
-        });
-        await client.query('COMMIT');
-        return { rows: [row] };
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw err;
-      } finally {
-        client.release();
-      }
-    })();
+    // Safety net: repair channel unlock rows if insert lagged (never fail the admin request).
+    await repairUserEntitlementsIfNeeded(userId, planInterval).catch((repairErr) => {
+      console.warn('[Admin] post-grant repair skipped:', repairErr?.message || repairErr);
+    });
 
-    if (updated.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    const snapshot = (await fetchUserPremiumSnapshotByUserId(userId)) || row;
+    const premium = buildPremiumPayload(snapshot);
 
-    // Send push notification to user about admin granting access (best-effort)
+    // Push + realtime (best-effort)
     try {
       const userResult = await query('SELECT fcm_token, external_id FROM users WHERE id = $1', [userId]);
       const fcmToken = userResult.rows[0]?.fcm_token;
-      const externalId = userResult.rows[0]?.external_id;
+      const externalId = userResult.rows[0]?.external_id || snapshot.externalId || row.external_id;
 
       if (fcmToken) {
-        const row = updated.rows[0];
-        const premium = buildPremiumPayload(row);
         await sendPushNotification(
           fcmToken,
           'Access Granted!',
@@ -367,37 +365,41 @@ router.post('/users/:id/special-access', async (req, res, next) => {
             is_premium: String(!!premium.is_premium),
             premiumExpiresAt: premium.premiumExpiresAt || '',
             subscriptionEndDate: premium.subscriptionEndDate || '',
-            externalId: externalId || row.external_id || '',
+            externalId: externalId || '',
           },
         );
-        console.log('[Admin] Push notification sent to user:', userId);
       }
 
-      // Send real-time update via WebSocket if available
       if (global.realtimeServer && externalId) {
         try {
-          const row = updated.rows[0];
-          global.realtimeServer.notifyPremiumUpdate(externalId, buildPremiumPayload(row));
-        } catch (err) {
-          console.error('[Admin] Failed to send real-time update:', err.message);
+          global.realtimeServer.notifyPremiumUpdate(externalId, premium);
+        } catch (rtErr) {
+          console.error('[Admin] Failed to send real-time update:', rtErr.message);
         }
       }
     } catch (notifErr) {
       console.error('[Admin] Failed to send notifications:', notifErr.message);
-      // Continue - don't fail the request if notifications fail
     }
 
-    const row = updated.rows[0];
-    const premium = buildPremiumPayload(row);
+    const expiresAfter = snapshot.premium_expires_at || row.premium_expires_at;
     return res.json({
       id: row.id,
       external_id: row.external_id,
-      is_premium: row.is_premium,
-      premium_expires_at: row.premium_expires_at,
+      is_premium: premium.is_premium,
+      premium_expires_at: expiresAfter,
       ...premium,
-      message: `User is now premium until ${row.premium_expires_at}`,
+      addedDuration: duration,
+      addedUnit: unit,
+      planInterval,
+      expiresBefore: before.premium_expires_at,
+      expiresAfter,
+      message: `Added ${duration} ${unit}. Premium active until ${expiresAfter}`,
     });
   } catch (err) {
+    if (err.name === 'ZodError') {
+      const details = err.errors?.map((e) => `${e.path?.join('.') || 'field'}: ${e.message}`).join('; ') || err.message;
+      return res.status(400).json({ error: 'Validation failed', details });
+    }
     return next(err);
   }
 });

@@ -292,11 +292,11 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   settingsCard: {
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
-    borderRadius: 16,
+    backgroundColor: '#0c1220',
+    borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: 'rgba(148, 163, 184, 0.12)',
     marginBottom: 16,
   },
   headerSection: {
@@ -306,9 +306,11 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   settingsTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#9aa8bd',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   settingsDescription: {
     fontSize: 14,
@@ -364,9 +366,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#14b8a6',
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
   },
   saveButtonText: {
     color: '#fff',

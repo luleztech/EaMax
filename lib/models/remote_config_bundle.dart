@@ -271,7 +271,7 @@ class RemotePlayerConfig {
       retryDelayMs: int.tryParse('${json['retryDelayMs']}') ?? 1200,
       reconnectEnabled: json['reconnectEnabled'] != false,
       autoPlay: json['autoPlay'] != false,
-      defaultQuality: json['defaultQuality']?.toString() ?? '360p',
+      defaultQuality: json['defaultQuality']?.toString() ?? '480p',
       defaultLanguage: _readDefaultLanguage(json['defaultLanguage']),
       failoverToWebview: json['failoverToWebview'] != false,
       hardwareAcceleration: json['hardwareAcceleration'] != false,

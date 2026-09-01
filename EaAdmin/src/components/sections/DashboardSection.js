@@ -10,13 +10,15 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
-  ImageBackground,
   Animated,
   Easing,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import AntDesign from 'react-native-vector-icons/AntDesign';
+import ChannelThumb from '../ui/ChannelThumb';
+import CoverImage from '../ui/CoverImage';
+import { channelArtworkUrl, slideArtworkUrl } from '../../utils/mediaUrl';
 import {
   dashboardAPI,
   adminChannelsAPI,
@@ -223,7 +225,7 @@ const DashboardSection = ({ refreshTrigger }) => {
         .filter((ch) => ch.is_active)
         .sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
         .slice(0, 5)
-        .map((ch, index) => ({
+        .map((ch) => ({
           title: ch.name,
           views: typeof ch.view_count === 'number' ? `${ch.view_count} views` : (ch.view_count != null ? `${ch.view_count} views` : '0 views'),
           change: typeof ch.view_count === 'number' && ch.view_count > 0 ? '—' : '—',
@@ -233,12 +235,8 @@ const DashboardSection = ({ refreshTrigger }) => {
               : ch.category === 'movies'
               ? 'movie'
               : 'newspaper-variant',
-          gradient:
-            ch.color && ch.color.startsWith('#')
-              ? [ch.color, '#020617']
-              : index % 2 === 0
-              ? ['#0ea5e9', '#0369a1']
-              : ['#7c3aed', '#4c1d95'],
+          thumbnailUrl: channelArtworkUrl(ch),
+          emoji: ch.thumbnail_emoji || ch.thumbnailEmoji,
         }));
 
       setMostWatchedChannels(top);
@@ -289,7 +287,8 @@ const DashboardSection = ({ refreshTrigger }) => {
       const mapSlides = (slides) =>
         (slides || []).map((s) => ({
           ...s,
-          imageUrl: s.image_url,
+          imageUrl: slideArtworkUrl(s),
+          image_url: slideArtworkUrl(s),
           gradient: [
             s.gradient_start || '#14532d',
             s.gradient_mid || '#111827',
@@ -622,7 +621,7 @@ const DashboardSection = ({ refreshTrigger }) => {
               <View style={styles.liveDot} />
               <Text style={styles.livePillText}>Live</Text>
             </View>
-            <Text style={styles.overviewHeroTitle}>Overview</Text>
+            <Text style={styles.overviewHeroTitle}>Today</Text>
           </View>
         </Animated.View>
 
@@ -690,7 +689,8 @@ const DashboardSection = ({ refreshTrigger }) => {
           end={{ x: 1, y: 1 }}>
           <View style={styles.carouselHubHeader}>
             <View>
-              <Text style={styles.carouselHubTitle}>Home Carousels</Text>
+              <Text style={styles.carouselHubKicker}>Home</Text>
+              <Text style={styles.carouselHubTitle}>Carousels</Text>
             </View>
             <TouchableOpacity
               style={styles.carouselAddButton}
@@ -749,17 +749,26 @@ const DashboardSection = ({ refreshTrigger }) => {
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.slideCardScrollContent}>
-                {activeSlides.map((slide) => (
+                {activeSlides.map((slide) => {
+                  const art = slideArtworkUrl(slide);
+                  return (
                   <View key={slide.id} style={styles.slideCardPro}>
-                    <ImageBackground
-                      source={(slide.image_url || slide.imageUrl) ? { uri: slide.image_url || slide.imageUrl } : undefined}
-                      style={styles.slideCardImagePro}
-                      imageStyle={styles.slideCardImageBg}>
+                    <View style={styles.slideCardImagePro}>
+                      {art ? (
+                        <CoverImage url={art} style={StyleSheet.absoluteFill} />
+                      ) : (
+                        <LinearGradient
+                          colors={slide.gradient || defaultGradient}
+                          style={StyleSheet.absoluteFill}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                        />
+                      )}
                       <LinearGradient
-                        colors={slide.gradient || defaultGradient}
+                        colors={['rgba(0,0,0,0.18)', 'transparent', 'rgba(0,0,0,0.78)']}
                         style={styles.slideCardOverlay}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}>
+                        start={{ x: 0.5, y: 0 }}
+                        end={{ x: 0.5, y: 1 }}>
                         <View style={styles.slideCardTopRow}>
                           <View style={styles.slideCardCategoryPill}>
                             <Icon
@@ -786,7 +795,7 @@ const DashboardSection = ({ refreshTrigger }) => {
                           ) : null}
                         </View>
                       </LinearGradient>
-                    </ImageBackground>
+                    </View>
                     <View style={styles.slideCardBodyPro}>
                       <TouchableOpacity
                         style={styles.slideCardEditBtn}
@@ -802,7 +811,8 @@ const DashboardSection = ({ refreshTrigger }) => {
                       </TouchableOpacity>
                     </View>
                   </View>
-                ))}
+                  );
+                })}
               </ScrollView>
             );
           })()}
@@ -836,7 +846,7 @@ const DashboardSection = ({ refreshTrigger }) => {
               const timeStr = item.dateTime
                 ? String(item.dateTime).replace('T', ' ').slice(0, 16)
                 : '';
-              const img = item.imageUrl || item.image_url || '';
+              const img = slideArtworkUrl(item) || item.imageUrl || item.image_url || '';
               const subtitleParts = [
                 isMatch ? 'MECHI' : 'KIPINDI',
                 item.channel,
@@ -846,12 +856,7 @@ const DashboardSection = ({ refreshTrigger }) => {
               return (
                 <View key={item.id} style={[styles.matchItem, item.active === false && { opacity: 0.55 }]}>
                   {img ? (
-                    <ImageBackground
-                      source={{ uri: img }}
-                      style={styles.ratibaThumb}
-                      imageStyle={{ borderRadius: 12 }}>
-                      <View style={styles.ratibaThumbOverlay} />
-                    </ImageBackground>
+                    <CoverImage url={img} style={styles.ratibaThumb} radius={12} />
                   ) : (
                     <LinearGradient
                       colors={item.gradient || ['#1D4A82', '#2C6DB5']}
@@ -909,13 +914,13 @@ const DashboardSection = ({ refreshTrigger }) => {
           <View style={styles.topContentList}>
             {mostWatchedChannels.map((item, index) => (
               <View key={index} style={styles.topContentItem}>
-                <LinearGradient
-                  colors={item.gradient}
-                  style={styles.topContentIcon}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}>
-                  <Icon name={item.icon} size={24} color="#fff" />
-                </LinearGradient>
+                <ChannelThumb
+                  url={item.thumbnailUrl}
+                  emoji={item.emoji}
+                  icon={item.icon}
+                  size={48}
+                  radius={12}
+                />
                 <View style={styles.topContentInfo}>
                   <Text style={styles.topContentTitle}>{item.title}</Text>
                   <Text style={styles.topContentViews}>{item.views}</Text>
@@ -1203,6 +1208,9 @@ const DashboardSection = ({ refreshTrigger }) => {
                   onChangeText={setSlideImageUrl}
                   autoCapitalize="none"
                 />
+                {slideImageUrl.trim() ? (
+                  <CoverImage url={slideImageUrl} style={styles.slideFormPreview} radius={14} />
+                ) : null}
               </View>
 
               <View style={styles.formCard}>
@@ -1420,12 +1428,11 @@ const DashboardSection = ({ refreshTrigger }) => {
                   autoCapitalize="none"
                 />
                 {!!matchImageUrl.trim() && (
-                  <ImageBackground
-                    source={{ uri: matchImageUrl.trim() }}
-                    style={{ height: 120, borderRadius: 14, marginBottom: 12, overflow: 'hidden' }}
-                    imageStyle={{ borderRadius: 14 }}>
-                    <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' }} />
-                  </ImageBackground>
+                  <CoverImage
+                    url={matchImageUrl.trim()}
+                    style={{ height: 120, borderRadius: 14, marginBottom: 12 }}
+                    radius={14}
+                  />
                 )}
 
                 <Text style={styles.inputLabel}>Tarehe & saa (EAT) *</Text>
@@ -1697,7 +1704,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 15,
   },
   slideCardOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     padding: 12,
     justifyContent: 'flex-end',
   },
@@ -1831,6 +1838,14 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 14,
   },
+  carouselHubKicker: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#6ee7d2',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
   carouselHubTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -1905,6 +1920,13 @@ const styles = StyleSheet.create({
   },
   slideCardImagePro: {
     height: 148,
+    overflow: 'hidden',
+    backgroundColor: '#0f172a',
+  },
+  slideFormPreview: {
+    height: 120,
+    marginTop: 10,
+    marginBottom: 4,
   },
   slideCardTopRow: {
     flexDirection: 'row',

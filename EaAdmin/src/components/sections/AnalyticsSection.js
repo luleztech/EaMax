@@ -137,7 +137,7 @@ const AnalyticsSection = ({ isActive }) => {
       }>
       {playbackStats ? (
         <View style={styles.playbackCard}>
-          <Text style={styles.sectionTitle}>Playback (7 days)</Text>
+            <Text style={styles.sectionTitle}>Playback · 7 days</Text>
           <View style={styles.playbackGrid}>
             <View style={styles.playbackStat}>
               <Text style={styles.playbackValue}>{formatNumber(playbackStats.channelOpens)}</Text>
@@ -186,7 +186,7 @@ const AnalyticsSection = ({ isActive }) => {
 
       {/* Most Watched Platforms */}
       <View style={styles.chartCard}>
-        <Text style={styles.chartTitle}>Most Watched Platforms</Text>
+        <Text style={styles.chartTitle}>Platform mix</Text>
         <View style={styles.platformsList}>
           {mostWatchedPlatforms.map((platform, index) => (
             <View key={index} style={styles.platformItem}>
@@ -347,18 +347,20 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   playbackCard: {
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
-    borderRadius: 16,
+    backgroundColor: '#0c1220',
+    borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: 'rgba(148, 163, 184, 0.12)',
     marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#9aa8bd',
     marginBottom: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   playbackGrid: {
     flexDirection: 'row',

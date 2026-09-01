@@ -20,9 +20,10 @@ import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.smoothstreaming.SsMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
@@ -97,37 +98,26 @@ class ExoPlayerEngine(
     private val trackSelector = DefaultTrackSelector(context)
     private var currentSession: StreamSession? = null
     private var preferredAudioLanguage = "sw"
-    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_360P
+    private var selectedQuality: StreamQuality = StreamQuality.AUTO
     /** Avoid re-overriding the same audio track on every live playlist refresh. */
     private var lastAudioOverrideKey: String? = null
+    private var lastVideoOverrideKey: String? = null
 
     companion object {
         private const val TAG = "ExoPlayerEngine"
-        
-        // Buffer configuration — smart/fast start (leotena-style goals)
-        private const val MIN_BUFFER_MS = 8_000
-        private const val MAX_BUFFER_MS = 30_000
-        private const val BUFFER_FOR_PLAYBACK_MS = 1_200
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 2_500
-
-        // Timeout configuration
-        private const val CONNECT_TIMEOUT_MS = 12_000
-        private const val READ_TIMEOUT_MS = 12_000
     }
 
-    fun initialize(streamSession: StreamSession) {
+    fun initialize(streamSession: StreamSession, initialQuality: StreamQuality? = null) {
         currentSession = streamSession
         preferredAudioLanguage = normalizeAudioLanguage(streamSession.preferredAudioLanguage)
         lastAudioOverrideKey = null
-        
-        Log.d(TAG, "=".repeat(70))
-        Log.d(TAG, "INITIALIZING UNIVERSAL STREAM PLAYER v4.0")
-        Log.d(TAG, "URL: ${streamSession.mpdUrl}")
-        Log.d(TAG, "DRM Type: ${streamSession.drmType}")
-        Log.d(TAG, "License URL: ${streamSession.licenseUrl}")
-        Log.d(TAG, "Session Token: ${streamSession.token.take(20)}...")
-        Log.d(TAG, "Headers Count: ${streamSession.headers.size}")
-        Log.d(TAG, "=".repeat(70))
+        lastVideoOverrideKey = null
+        selectedQuality = initialQuality ?: PlayerRuntimeConfig.defaultQuality
+
+        Log.d(
+            TAG,
+            "Init url=${streamSession.mpdUrl.take(96)} drm=${streamSession.drmType} quality=$selectedQuality",
+        )
 
         try {
             // Step 1: Prepare headers (including auth & DRM headers)
@@ -156,14 +146,15 @@ class ExoPlayerEngine(
             )
             Log.d(TAG, "✅ Media source created: $streamFormat")
 
-            // Step 6: Build and configure player with real load control (was unused before).
+            val cfg = PlayerRuntimeConfig
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    MIN_BUFFER_MS,
-                    MAX_BUFFER_MS,
-                    BUFFER_FOR_PLAYBACK_MS,
-                    BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                    cfg.bufferMinMs,
+                    cfg.bufferMaxMs,
+                    cfg.bufferForPlaybackMs,
+                    cfg.bufferForPlaybackAfterRebufferMs,
                 )
+                .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
             // Configure preferred audio before build (avoid ExoPlayer.trackSelector nullable shadow).
@@ -182,11 +173,17 @@ class ExoPlayerEngine(
                     addListener(PlayerEventListener())
                     setMediaSource(mediaSource)
                     prepare()
-                    playWhenReady = true
-                    Log.d(TAG, "✅ Player prepared with playWhenReady=true loadControl=${MIN_BUFFER_MS}-${MAX_BUFFER_MS}ms")
+                    playWhenReady = PlayerRuntimeConfig.autoPlay
+                    Log.d(
+                        TAG,
+                        "Prepared playWhenReady=${PlayerRuntimeConfig.autoPlay} " +
+                            "buffer=${cfg.bufferMinMs}-${cfg.bufferMaxMs}ms",
+                    )
                 }
 
-            setQuality(StreamQuality.QUALITY_360P)
+            if (selectedQuality != StreamQuality.AUTO) {
+                setQuality(selectedQuality)
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Initialization failed", e)
@@ -226,15 +223,19 @@ class ExoPlayerEngine(
             urlLower.contains(".flv") -> StreamFormat.PROGRESSIVE
             urlLower.contains(".ts") -> StreamFormat.PROGRESSIVE
             
+            // Smooth Streaming
+            urlLower.contains(".ism") -> StreamFormat.SMOOTH_STREAMING
+            urlLower.contains("smoothstreaming") -> StreamFormat.SMOOTH_STREAMING
+            
             // Relay/proxy detection (should use format specified by upstream)
             urlLower.contains("/relay/stream") -> StreamFormat.DASH  // Most relay streams are DASH
             urlLower.contains("/relay/m3u8") -> StreamFormat.HLS
             urlLower.contains("/api/relay/") -> StreamFormat.DASH
             
-            // Default to DASH for unknown formats (most adaptive streaming)
+            // Let Media3 sniff Content-Type when URL has no extension hint.
             else -> {
-                Log.w(TAG, "⚠️ Unknown format, defaulting to DASH: $url")
-                StreamFormat.DASH
+                Log.d(TAG, "Format unknown — using auto-detect factory: ${url.take(80)}")
+                StreamFormat.AUTO
             }
         }
     }
@@ -314,15 +315,13 @@ class ExoPlayerEngine(
      * Creates a data source factory with custom headers and timeouts
      */
     private fun createDataSourceFactory(headers: Map<String, String>): HttpDataSource.Factory {
+        val timeout = PlayerRuntimeConfig.networkTimeoutMs
         return DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(headers)
-            .setAllowCrossProtocolRedirects(true)  // Important for CDN redirects
-            .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-            .setReadTimeoutMs(READ_TIMEOUT_MS)
-            .setKeepPostFor302Redirects(true)  // Keep POST method on redirects
-            .apply {
-                Log.d(TAG, "🌐 Data source: connect=${CONNECT_TIMEOUT_MS}ms, read=${READ_TIMEOUT_MS}ms, cross-protocol=true")
-            }
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(timeout)
+            .setReadTimeoutMs(timeout)
+            .setKeepPostFor302Redirects(true)
     }
 
     /**
@@ -336,22 +335,23 @@ class ExoPlayerEngine(
         val format = detectStreamFormat(streamSession.mpdUrl)
 
         val mimeType = when(format) {
-            StreamFormat.HLS -> "application/x-mpegurl" // ✅ Crucial for HLS
+            StreamFormat.HLS -> "application/x-mpegurl"
             StreamFormat.DASH -> "application/dash+xml"
-            StreamFormat.PROGRESSIVE -> null // Let extractor figure it out
+            StreamFormat.SMOOTH_STREAMING -> "application/vnd.ms-sstr+xml"
+            StreamFormat.PROGRESSIVE -> null
+            StreamFormat.AUTO -> null
         }
 
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(streamSession.mpdUrl)
             .setMimeType(mimeType) // ✅ ADD THIS
 
-        // Live offset window reduces chase-the-edge stutter / rebuffer loops.
         if (format == StreamFormat.HLS || format == StreamFormat.DASH) {
             mediaItemBuilder.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(35_000)
-                    .setMinOffsetMs(20_000)
-                    .setMaxOffsetMs(70_000)
+                    .setTargetOffsetMs(8_000)
+                    .setMinOffsetMs(3_000)
+                    .setMaxOffsetMs(30_000)
                     .setMinPlaybackSpeed(0.97f)
                     .setMaxPlaybackSpeed(1.03f)
                     .build(),
@@ -436,16 +436,24 @@ class ExoPlayerEngine(
     ): MediaSource {
         return when (format) {
             StreamFormat.DASH -> {
-                Log.d(TAG, "🎬 Creating DASH media source")
+                Log.d(TAG, "Creating DASH media source")
                 createDashMediaSource(streamSession, mediaItem, dataSourceFactory, headers)
             }
             StreamFormat.HLS -> {
-                Log.d(TAG, "🎬 Creating HLS media source")
+                Log.d(TAG, "Creating HLS media source")
                 createHlsMediaSource(streamSession, mediaItem, dataSourceFactory, headers)
             }
+            StreamFormat.SMOOTH_STREAMING -> {
+                Log.d(TAG, "Creating SmoothStreaming media source")
+                createSmoothStreamingMediaSource(streamSession, mediaItem, dataSourceFactory, headers)
+            }
             StreamFormat.PROGRESSIVE -> {
-                Log.d(TAG, "🎬 Creating Progressive media source")
+                Log.d(TAG, "Creating Progressive media source")
                 createProgressiveMediaSource(mediaItem, dataSourceFactory)
+            }
+            StreamFormat.AUTO -> {
+                Log.d(TAG, "Creating auto-detect media source")
+                createAutoDetectMediaSource(streamSession, mediaItem, dataSourceFactory, headers)
             }
         }
     }
@@ -498,7 +506,7 @@ class ExoPlayerEngine(
         headers: Map<String, String>
     ): MediaSource {
         val hlsFactory = HlsMediaSource.Factory(dataSourceFactory)
-            .setAllowChunklessPreparation(false) // ✅ Change to FALSE for better compatibility
+            .setAllowChunklessPreparation(streamSession.drmType == DrmType.NONE)
 
         // Add DRM session manager if needed (for SAMPLE-AES encryption)
         if (streamSession.drmType != DrmType.NONE) {
@@ -513,6 +521,35 @@ class ExoPlayerEngine(
         }
 
         return hlsFactory.createMediaSource(mediaItem)
+    }
+
+    private fun createSmoothStreamingMediaSource(
+        streamSession: StreamSession,
+        mediaItem: MediaItem,
+        dataSourceFactory: HttpDataSource.Factory,
+        headers: Map<String, String>,
+    ): MediaSource {
+        val ssFactory = SsMediaSource.Factory(dataSourceFactory)
+        if (streamSession.drmType != DrmType.NONE) {
+            val drmSessionManager = createDrmSessionManager(streamSession, dataSourceFactory, headers)
+            ssFactory.setDrmSessionManagerProvider { drmSessionManager }
+        }
+        return ssFactory.createMediaSource(mediaItem)
+    }
+
+    private fun createAutoDetectMediaSource(
+        streamSession: StreamSession,
+        mediaItem: MediaItem,
+        dataSourceFactory: HttpDataSource.Factory,
+        headers: Map<String, String>,
+    ): MediaSource {
+        val factory = DefaultMediaSourceFactory(context)
+            .setDataSourceFactory(dataSourceFactory)
+        if (streamSession.drmType != DrmType.NONE) {
+            val drmSessionManager = createDrmSessionManager(streamSession, dataSourceFactory, headers)
+            factory.setDrmSessionManagerProvider { drmSessionManager }
+        }
+        return factory.createMediaSource(mediaItem)
     }
 
     /**
@@ -539,12 +576,13 @@ class ExoPlayerEngine(
                 Log.d(TAG, "🔑 Creating Widevine DRM session manager")
                 Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
                 
+                val timeout = PlayerRuntimeConfig.networkTimeoutMs
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
                     DefaultHttpDataSource.Factory()
                         .setDefaultRequestProperties(headers)
-                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-                        .setReadTimeoutMs(READ_TIMEOUT_MS)
+                        .setConnectTimeoutMs(timeout)
+                        .setReadTimeoutMs(timeout)
                 )
 
                 // Prefer L3 on mobile — L1/HDCP restrictions cause audio-only (Shaka 4012 /
@@ -572,12 +610,13 @@ class ExoPlayerEngine(
                 Log.d(TAG, "🔑 Creating PlayReady DRM session manager")
                 Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
                 
+                val timeout = PlayerRuntimeConfig.networkTimeoutMs
                 val drmCallback = HttpMediaDrmCallback(
                     streamSession.licenseUrl,
                     DefaultHttpDataSource.Factory()
                         .setDefaultRequestProperties(headers)
-                        .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
-                        .setReadTimeoutMs(READ_TIMEOUT_MS)
+                        .setConnectTimeoutMs(timeout)
+                        .setReadTimeoutMs(timeout)
                 )
                 
                 DefaultDrmSessionManager.Builder()
@@ -670,6 +709,7 @@ class ExoPlayerEngine(
         val player = exoPlayer ?: return
         try {
             if (quality == StreamQuality.AUTO) {
+                lastVideoOverrideKey = "auto"
                 player.trackSelectionParameters = player.trackSelectionParameters
                     .buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
@@ -677,25 +717,21 @@ class ExoPlayerEngine(
                     .setMaxVideoBitrate(Int.MAX_VALUE)
                     .setForceHighestSupportedBitrate(false)
                     .build()
-                Log.d(TAG, "🎨 Quality set to AUTO")
-                play()
+                Log.d(TAG, "Quality → AUTO")
                 return
             }
 
             applyFixedQuality(quality, force = true)
-            // If tracks were not ready yet, constraints-only was applied — retry shortly.
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 if (exoPlayer === player && selectedQuality == quality) {
                     try {
                         applyFixedQuality(quality, force = true)
-                        play()
                     } catch (e: Exception) {
                         Log.w(TAG, "setQuality retry: ${e.message}")
                     }
                 }
-            }, 700)
-            play()
-            Log.d(TAG, "🎨 Quality set to: $quality")
+            }, 500)
+            Log.d(TAG, "Quality → $quality")
         } catch (e: Exception) {
             Log.e(TAG, "setQuality failed for $quality", e)
             try {
@@ -706,7 +742,6 @@ class ExoPlayerEngine(
                     .setMaxVideoBitrate(bitrateCapForQuality(quality))
                     .setForceHighestSupportedBitrate(false)
                     .build()
-                play()
             } catch (e2: Exception) {
                 Log.e(TAG, "setQuality fallback failed", e2)
             }
@@ -820,6 +855,10 @@ class ExoPlayerEngine(
             return
         }
 
+        val overrideKey = "${quality.name}:${chosen.group.mediaTrackGroup.id}:${chosen.index}"
+        if (!force && overrideKey == lastVideoOverrideKey) return
+        lastVideoOverrideKey = overrideKey
+
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
@@ -863,14 +902,12 @@ class ExoPlayerEngine(
                         if (!isPreferredAudioAlreadySelected(lang)) {
                             applyAudioTrackOverride(lang)
                         }
-                        play()
                     } catch (e: Exception) {
                         Log.w(TAG, "setAudioLanguage retry: ${e.message}")
                     }
                 }
-            }, 800)
-            play()
-            Log.d(TAG, "🔊 Audio language set to: $lang")
+            }, 500)
+            Log.d(TAG, "Audio language → $lang")
         } catch (e: Exception) {
             Log.e(TAG, "setAudioLanguage failed for $lang", e)
         }
@@ -980,21 +1017,17 @@ class ExoPlayerEngine(
     fun getAvailableTracks(): Tracks = exoPlayer?.currentTracks ?: Tracks.EMPTY
 
     fun refreshSession(newSession: StreamSession) {
-        Log.d(TAG, "🔄 Refreshing session...")
+        Log.d(TAG, "Refreshing session…")
         val currentPosition = getCurrentPosition()
         val wasPlaying = isPlaying()
-        
+        val quality = selectedQuality
+
         release()
-        initialize(newSession)
-        
+        initialize(newSession, quality)
+
         exoPlayer?.seekTo(currentPosition)
-        // Ensure it starts playing automatically after refresh
-        exoPlayer?.playWhenReady = true
-        if (wasPlaying) {
-            play()
-        }
-        
-        Log.d(TAG, "✅ Session refreshed (position: ${currentPosition}ms)")
+        exoPlayer?.playWhenReady = wasPlaying || PlayerRuntimeConfig.autoPlay
+        Log.d(TAG, "Session refreshed (position=${currentPosition}ms)")
     }
 
     // ========== PLAYER EVENT LISTENER ==========
@@ -1053,11 +1086,12 @@ class ExoPlayerEngine(
             }
 
             onTracksChangedCallback(tracks)
-            // Live manifests refresh often — only re-pin audio/video when needed.
             if (!isPreferredAudioAlreadySelected(preferredAudioLanguage)) {
                 applyAudioTrackOverride(preferredAudioLanguage)
             }
-            applyVideoTrackOverride(selectedQuality)
+            if (selectedQuality != StreamQuality.AUTO) {
+                applyVideoTrackOverride(selectedQuality)
+            }
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -1096,8 +1130,10 @@ class ExoPlayerEngine(
      * Stream format enumeration
      */
     enum class StreamFormat {
-        DASH,          // MPEG-DASH (.mpd)
-        HLS,           // HTTP Live Streaming (.m3u8)
-        PROGRESSIVE    // Progressive download (MP4, WebM, MKV, etc.)
+        DASH,
+        HLS,
+        SMOOTH_STREAMING,
+        PROGRESSIVE,
+        AUTO,
     }
 }

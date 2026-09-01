@@ -268,7 +268,16 @@ const checkPaymentStatus = async (orderId) => {
     return await apiRequest(`/api/payments/status?orderId=${encodeURIComponent(orderId)}`);
   } catch (error) {
     const msg = (error.message || '').toLowerCase();
-    if (msg.includes('no order found') || msg.includes('order not found') || (msg.includes('order') && msg.includes('not found'))) {
+    if (
+      msg.includes('no order found') ||
+      msg.includes('order not found') ||
+      (msg.includes('order') && msg.includes('not found')) ||
+      msg.includes('http 400') ||
+      msg.includes('http 502') ||
+      msg.includes('http 503') ||
+      msg.includes('network timeout') ||
+      msg.includes('timeout')
+    ) {
       return { status: 'PENDING', raw: {} };
     }
     throw error;

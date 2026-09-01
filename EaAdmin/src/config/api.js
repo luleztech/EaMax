@@ -127,11 +127,20 @@ export const adminUsersAPI = {
     });
   },
 
-  // Give special access to user
+  // Give special access to user (adds time on top of any existing premium)
   giveSpecialAccess: async (userId, duration, unit) => {
-    return apiRequest(`/api/admin/users/${userId}/special-access`, {
+    const safeId = Number(userId);
+    if (!Number.isFinite(safeId) || safeId <= 0) {
+      throw new Error('Invalid user id');
+    }
+    const safeDuration = Math.floor(Number(duration));
+    if (!Number.isFinite(safeDuration) || safeDuration <= 0) {
+      throw new Error('Duration must be a positive number');
+    }
+    return apiRequest(`/api/admin/users/${safeId}/special-access`, {
       method: 'POST',
-      body: JSON.stringify({ duration, unit }),
+      body: JSON.stringify({ duration: safeDuration, unit }),
+      timeoutMs: 35000,
     });
   },
 

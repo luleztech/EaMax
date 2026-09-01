@@ -35,7 +35,7 @@ class FullscreenVideoPage extends StatefulWidget {
     this.playbackToken,
     this.playbackMode = FlutterPlaybackMode.mediaKit,
     this.audioLanguage = 'sw',
-    this.defaultQuality = '360p',
+    this.defaultQuality = '480p',
   });
 
   final String videoUrl;
