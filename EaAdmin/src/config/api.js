@@ -152,6 +152,24 @@ export const adminUsersAPI = {
     return apiRequest(`/api/admin/users/${userId}/payments`);
   },
 
+  /**
+   * Bulk downgrade premium users to free.
+   * - joinedBefore: ISO date string — only affect users who joined before this date
+   * - userIds: explicit list of user IDs to downgrade
+   * - dryRun: if true, returns count without making changes
+   */
+  bulkDowngradeUsers: async ({ joinedBefore, userIds, dryRun } = {}) => {
+    return apiRequest('/api/admin/users/bulk-downgrade', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(joinedBefore ? { joinedBefore } : {}),
+        ...(Array.isArray(userIds) && userIds.length ? { userIds } : {}),
+        ...(dryRun ? { dryRun: true } : {}),
+      }),
+      timeoutMs: 60000,
+    });
+  },
+
   /** FCM reminder for expired subscriptions (optional userId; force skips 7-day throttle) */
   remindExpiredSubscriptions: async ({ userId, force } = {}) => {
     return apiRequest('/api/admin/subscriptions/remind-expired', {

@@ -165,6 +165,15 @@ const UsersSection = ({ isActive }) => {
   const [remindingBulk, setRemindingBulk] = useState(false);
   const [remindingUserId, setRemindingUserId] = useState(null);
   const [blockingUser, setBlockingUser] = useState(false);
+  // Bulk downgrade state
+  const [downgradeModalVisible, setDowngradeModalVisible] = useState(false);
+  const [downgradeFilterMode, setDowngradeFilterMode] = useState('all'); // 'all' | 'joinedBefore' | 'selected'
+  const [downgradeJoinedBeforeDays, setDowngradeJoinedBeforeDays] = useState('7');
+  const [downgradeSelectedIds, setDowngradeSelectedIds] = useState(new Set());
+  const [downgradeDryRunResult, setDowngradeDryRunResult] = useState(null);
+  const [downgradingBulk, setDowngradingBulk] = useState(false);
+  const [downgradeStep, setDowngradeStep] = useState('configure'); // 'configure' | 'confirm'
+  const [downgradeUserSearch, setDowngradeUserSearch] = useState('');
   const wasActiveRef = useRef(false);
   const fetchGenRef = useRef(0);
   const prevFilterKeyRef = useRef(null);
@@ -457,6 +466,100 @@ const UsersSection = ({ isActive }) => {
     }
   };
 
+  const openDowngradeModal = useCallback(() => {
+    setDowngradeStep('configure');
+    setDowngradeFilterMode('all');
+    setDowngradeJoinedBeforeDays('7');
+    setDowngradeSelectedIds(new Set());
+    setDowngradeDryRunResult(null);
+    setDowngradeUserSearch('');
+    setDowngradeModalVisible(true);
+  }, []);
+
+  const buildDowngradePayload = useCallback((dryRun = false) => {
+    const payload = {};
+    if (dryRun) payload.dryRun = true;
+    if (downgradeFilterMode === 'joinedBefore') {
+      const days = Math.floor(Number(downgradeJoinedBeforeDays));
+      if (!Number.isFinite(days) || days <= 0) return { error: 'Enter a valid number of days.' };
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - days);
+      payload.joinedBefore = cutoff.toISOString();
+    } else if (downgradeFilterMode === 'selected') {
+      const ids = Array.from(downgradeSelectedIds).map(Number).filter((n) => n > 0);
+      if (ids.length === 0) return { error: 'Select at least one user to downgrade.' };
+      payload.userIds = ids;
+    }
+    // 'all' mode — no extra filter
+    return payload;
+  }, [downgradeFilterMode, downgradeJoinedBeforeDays, downgradeSelectedIds]);
+
+  const handleDowngradeDryRun = useCallback(async () => {
+    const payload = buildDowngradePayload(true);
+    if (!payload || payload.error) {
+      showStatusModal('error', 'Invalid Filter', payload?.error || 'Please check your filter settings.');
+      return;
+    }
+    try {
+      setDowngradingBulk(true);
+      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
+      setDowngradeDryRunResult(res.affectedCount ?? 0);
+      setDowngradeStep('confirm');
+    } catch (e) {
+      showStatusModal('error', 'Preview failed', e?.message || 'Could not preview downgrade.');
+    } finally {
+      setDowngradingBulk(false);
+    }
+  }, [buildDowngradePayload, showStatusModal]);
+
+  const handleBulkDowngrade = useCallback(async () => {
+    const payload = buildDowngradePayload(false);
+    if (!payload || payload.error) {
+      showStatusModal('error', 'Invalid Filter', payload?.error || 'Please check your filter settings.');
+      return;
+    }
+    try {
+      setDowngradingBulk(true);
+      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
+      setDowngradeModalVisible(false);
+      showStatusModal(
+        'success',
+        'Downgrade Complete',
+        `${res.downgradedCount ?? 0} user(s) reverted to free plan. Their premium access has been cleared.`,
+      );
+      fetchUsers();
+      fetchDashboardStats();
+    } catch (e) {
+      showStatusModal('error', 'Downgrade failed', e?.message || 'Could not downgrade users.');
+    } finally {
+      setDowngradingBulk(false);
+    }
+  }, [buildDowngradePayload, showStatusModal, fetchUsers, fetchDashboardStats]);
+
+  // Always store IDs as strings to avoid number/string type mismatch in Set
+  const toggleDowngradeSelectUser = useCallback((userId) => {
+    setDowngradeSelectedIds((prev) => {
+      const key = String(userId);
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
+  // Select all / deselect all premium users from the currently loaded list
+  const toggleSelectAllPremiumUsers = useCallback((premiumUsers) => {
+    const allIds = premiumUsers.map((u) => String(u.id));
+    setDowngradeSelectedIds((prev) => {
+      const allSelected = allIds.length > 0 && allIds.every((id) => prev.has(id));
+      if (allSelected) return new Set(); // deselect all
+      return new Set(allIds); // select all
+    });
+  }, []);
+
   const grantPreviewDate = previewPremiumExpiryAfterGrant(
     selectedUser?.premiumExpiresAt || selectedUser?.rawData?.premium_expires_at,
     accessValue,
@@ -607,6 +710,18 @@ const UsersSection = ({ isActive }) => {
                 <Text style={styles.remindAllButtonText}>Remind all expired (push)</Text>
               </>
             )}
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {filter === 'premium' ? (
+        <View style={styles.remindAllWrap}>
+          <TouchableOpacity
+            style={styles.downgradeAllButton}
+            onPress={openDowngradeModal}
+            activeOpacity={0.85}>
+            <Icon name="account-arrow-down-outline" size={18} color="#fff" />
+            <Text style={styles.remindAllButtonText}>Downgrade to Free…</Text>
           </TouchableOpacity>
         </View>
       ) : null}
@@ -996,6 +1111,275 @@ const UsersSection = ({ isActive }) => {
                   )}
                 </TouchableOpacity>
               </View>
+            </ScrollView>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Bulk Downgrade Modal */}
+      <Modal
+        visible={downgradeModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setDowngradeModalVisible(false)}>
+        <SafeAreaView style={styles.modalContainer}>
+          <LinearGradient
+            colors={['#030712', '#111827', '#1f2937']}
+            style={StyleSheet.absoluteFill}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          />
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {downgradeStep === 'confirm' ? 'Confirm Downgrade' : 'Downgrade to Free'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setDowngradeModalVisible(false)}
+                style={styles.closeButton}>
+                <Icon name="close" size={24} color="#9ca3af" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              {downgradeStep === 'configure' ? (
+                <>
+                  {/* Warning banner */}
+                  <View style={styles.downgradeWarnCard}>
+                    <Icon name="alert" size={22} color="#fbbf24" />
+                    <Text style={styles.downgradeWarnText}>
+                      This will clear premium access for the selected users. They will immediately revert to the free plan.
+                    </Text>
+                  </View>
+
+                  {/* Filter mode */}
+                  <Text style={[styles.inputLabel, { marginBottom: 10 }]}>Who to downgrade</Text>
+                  {[
+                    { id: 'all', label: 'All premium users', icon: 'account-group', desc: 'Every user currently on premium.' },
+                    { id: 'joinedBefore', label: 'Joined before N days ago', icon: 'calendar-clock', desc: 'Keep recent users; downgrade older ones.' },
+                    { id: 'selected', label: 'Select specific users', icon: 'format-list-checks', desc: 'Pick individual users from the list below.' },
+                  ].map((opt) => (
+                    <TouchableOpacity
+                      key={opt.id}
+                      style={[
+                        styles.managementOption,
+                        downgradeFilterMode === opt.id && styles.downgradeOptionActive,
+                      ]}
+                      onPress={() => {
+                        setDowngradeFilterMode(opt.id);
+                        setDowngradeSelectedIds(new Set());
+                        setDowngradeDryRunResult(null);
+                        setDowngradeUserSearch('');
+                      }}
+                      activeOpacity={0.8}>
+                      <View style={[styles.optionIconContainer, { backgroundColor: 'rgba(124,58,237,0.2)' }]}>
+                        <Icon name={opt.icon} size={22} color="#a78bfa" />
+                      </View>
+                      <View style={styles.optionContent}>
+                        <Text style={styles.optionTitle}>{opt.label}</Text>
+                        <Text style={styles.optionDescription}>{opt.desc}</Text>
+                      </View>
+                      <Icon
+                        name={downgradeFilterMode === opt.id ? 'radiobox-marked' : 'radiobox-blank'}
+                        size={20}
+                        color={downgradeFilterMode === opt.id ? '#a78bfa' : '#6b7280'}
+                      />
+                    </TouchableOpacity>
+                  ))}
+
+                  {/* joinedBefore input */}
+                  {downgradeFilterMode === 'joinedBefore' ? (
+                    <View style={[styles.inputContainer, { marginTop: 8 }]}>
+                      <Text style={styles.inputLabel}>Keep users who joined in the last N days</Text>
+                      <Text style={styles.optionDescription}>
+                        Users who joined within this many days will be KEPT as premium. All older premium users will be downgraded.
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                        {['3', '7', '14', '30'].map((d) => (
+                          <TouchableOpacity
+                            key={d}
+                            style={[styles.presetChip, downgradeJoinedBeforeDays === d && { backgroundColor: 'rgba(124,58,237,0.4)', borderColor: '#a78bfa' }]}
+                            onPress={() => setDowngradeJoinedBeforeDays(d)}>
+                            <Text style={[styles.presetChipText, downgradeJoinedBeforeDays === d && { color: '#c4b5fd' }]}>Last {d}d</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                      <TextInput
+                        style={[styles.input, { marginTop: 10 }]}
+                        placeholder="Number of days"
+                        placeholderTextColor="#6b7280"
+                        value={downgradeJoinedBeforeDays}
+                        onChangeText={(v) => setDowngradeJoinedBeforeDays(v.replace(/[^0-9]/g, ''))}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  ) : null}
+
+                  {/* Selected users list */}
+                  {downgradeFilterMode === 'selected' ? (() => {
+                    const allPremium = users.filter((u) => u.status === 'Premium');
+                    const searchTerm = downgradeUserSearch.trim().toLowerCase();
+                    const visiblePremium = searchTerm
+                      ? allPremium.filter((u) => u.name.toLowerCase().includes(searchTerm))
+                      : allPremium;
+                    const allVisible = visiblePremium.length > 0 && visiblePremium.every((u) => downgradeSelectedIds.has(String(u.id)));
+                    return (
+                      <View style={{ marginTop: 8 }}>
+                        {/* Header row: count + select-all toggle */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                          <Text style={styles.inputLabel}>
+                            Premium users ({downgradeSelectedIds.size} of {allPremium.length} selected)
+                          </Text>
+                          {allPremium.length > 0 ? (
+                            <TouchableOpacity
+                              onPress={() => toggleSelectAllPremiumUsers(visiblePremium)}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                              <Text style={{ fontSize: 13, color: '#a78bfa', fontWeight: '600' }}>
+                                {allVisible ? 'Deselect all' : 'Select all'}
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+
+                        {/* Search box */}
+                        {allPremium.length > 5 ? (
+                          <View style={[styles.searchBox, { marginBottom: 10 }]}>
+                            <Icon name="magnify" size={18} color="#9ca3af" />
+                            <TextInput
+                              style={[styles.searchInput, { fontSize: 13, paddingVertical: 8 }]}
+                              placeholder="Search by user ID…"
+                              placeholderTextColor="#6b7280"
+                              value={downgradeUserSearch}
+                              onChangeText={setDowngradeUserSearch}
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                            />
+                            {downgradeUserSearch.length > 0 ? (
+                              <TouchableOpacity onPress={() => setDowngradeUserSearch('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                                <Icon name="close-circle" size={18} color="#6b7280" />
+                              </TouchableOpacity>
+                            ) : null}
+                          </View>
+                        ) : null}
+
+                        {/* User list */}
+                        {allPremium.length === 0 ? (
+                          <View style={[styles.downgradeWarnCard, { borderColor: 'rgba(251,191,36,0.3)' }]}>
+                            <Icon name="information-outline" size={20} color="#fbbf24" />
+                            <Text style={styles.downgradeWarnText}>
+                              No premium users in the loaded list. Go back, switch to the Premium filter, then re-open Downgrade.
+                            </Text>
+                          </View>
+                        ) : visiblePremium.length === 0 ? (
+                          <Text style={[styles.optionDescription, { marginBottom: 8 }]}>No users match "{downgradeUserSearch}"</Text>
+                        ) : (
+                          visiblePremium.map((u) => {
+                            const selected = downgradeSelectedIds.has(String(u.id));
+                            return (
+                              <TouchableOpacity
+                                key={u.id}
+                                style={[
+                                  styles.managementOption,
+                                  selected && styles.downgradeOptionActive,
+                                  { marginBottom: 6, paddingVertical: 10 },
+                                ]}
+                                onPress={() => toggleDowngradeSelectUser(u.id)}
+                                activeOpacity={0.8}>
+                                <LinearGradient
+                                  colors={u.gradient}
+                                  style={[styles.userAvatar, { width: 36, height: 36, borderRadius: 18 }]}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 1, y: 1 }}>
+                                  <Text style={[styles.userInitials, { fontSize: 12 }]}>{u.initials}</Text>
+                                </LinearGradient>
+                                <View style={styles.optionContent}>
+                                  <Text style={styles.optionTitle}>{u.name}</Text>
+                                  {u.premiumExpiresAt ? (
+                                    <Text style={[styles.optionDescription, { color: '#6ee7b7', fontSize: 11 }]}>
+                                      Expires: {new Date(u.premiumExpiresAt).toLocaleDateString()}
+                                    </Text>
+                                  ) : (
+                                    <Text style={[styles.optionDescription, { fontSize: 11 }]}>No expiry set</Text>
+                                  )}
+                                  {u.createdAt ? (
+                                    <Text style={[styles.optionDescription, { fontSize: 10, marginTop: 2 }]}>
+                                      Joined: {new Date(u.createdAt).toLocaleDateString()}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                                <Icon
+                                  name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                                  size={24}
+                                  color={selected ? '#a78bfa' : '#6b7280'}
+                                />
+                              </TouchableOpacity>
+                            );
+                          })
+                        )}
+                      </View>
+                    );
+                  })() : null}
+
+                  {/* Preview / Next button */}
+                  <View style={[styles.modalActions, { marginTop: 20 }]}>
+                    <TouchableOpacity
+                      style={styles.cancelButton}
+                      onPress={() => setDowngradeModalVisible(false)}>
+                      <Text style={styles.cancelButtonText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.confirmButton, { backgroundColor: '#dc2626' }, downgradingBulk && { opacity: 0.7 }]}
+                      onPress={handleDowngradeDryRun}
+                      disabled={downgradingBulk}>
+                      {downgradingBulk ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Text style={styles.confirmButtonText}>Preview →</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                /* Confirm step */
+                <>
+                  <View style={[styles.downgradeWarnCard, { borderColor: 'rgba(220,38,38,0.5)', backgroundColor: 'rgba(127,29,29,0.35)' }]}>
+                    <Icon name="alert-circle" size={28} color="#f87171" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.downgradeWarnText, { color: '#fca5a5', fontWeight: '700', fontSize: 16 }]}>
+                        {downgradeDryRunResult ?? '?'} user(s) will be downgraded
+                      </Text>
+                      <Text style={[styles.downgradeWarnText, { marginTop: 6 }]}>
+                        {downgradeFilterMode === 'all'
+                          ? 'All current premium users will be reverted to the free plan.'
+                          : downgradeFilterMode === 'joinedBefore'
+                          ? `Premium users who joined more than ${downgradeJoinedBeforeDays} day(s) ago will be reverted. Recent users are kept.`
+                          : `${downgradeSelectedIds.size} individually selected user(s) will be reverted.`}
+                      </Text>
+                      <Text style={[styles.downgradeWarnText, { marginTop: 6, color: '#fca5a5' }]}>
+                        ⚠ This cannot be undone automatically — re-grant access manually if needed.
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity
+                      style={styles.cancelButton}
+                      onPress={() => setDowngradeStep('configure')}>
+                      <Text style={styles.cancelButtonText}>← Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.confirmButton, { backgroundColor: '#dc2626' }, downgradingBulk && { opacity: 0.7 }]}
+                      onPress={handleBulkDowngrade}
+                      disabled={downgradingBulk}>
+                      {downgradingBulk ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Text style={styles.confirmButtonText}>Downgrade Now</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
             </ScrollView>
           </View>
         </SafeAreaView>
@@ -1625,6 +2009,37 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '700',
+  },
+  downgradeAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#dc2626',
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  downgradeOptionActive: {
+    borderWidth: 1,
+    borderColor: 'rgba(167,139,250,0.6)',
+    backgroundColor: 'rgba(76,29,149,0.25)',
+  },
+  downgradeWarnCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: 'rgba(120,53,15,0.3)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(251,191,36,0.35)',
+  },
+  downgradeWarnText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#fde68a',
+    lineHeight: 18,
   },
 });
 

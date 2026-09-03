@@ -272,6 +272,64 @@ router.patch('/users/:id/block', async (req, res, next) => {
   }
 });
 
+// Admin: bulk downgrade premium users to free (revoke is_premium + clear expiry).
+// Filter options: joinedBefore (ISO date string) — only affect users who joined before that date.
+// If no filter, ALL current premium users are downgraded.
+router.post('/users/bulk-downgrade', async (req, res, next) => {
+  try {
+    const bodySchema = z.object({
+      // Only downgrade users who joined BEFORE this date (ISO string).
+      // Omit to affect all premium users.
+      joinedBefore: z.string().datetime({ offset: true }).optional(),
+      // Optionally pass an explicit list of user IDs (overrides joinedBefore when provided).
+      userIds: z.array(z.number().int().positive()).optional(),
+      // Dry-run: returns the count without actually updating.
+      dryRun: z.boolean().optional(),
+    });
+
+    const body = bodySchema.parse(req.body || {});
+    const { joinedBefore, userIds, dryRun } = body;
+
+    let whereClause = `is_premium = TRUE AND (premium_expires_at IS NULL OR premium_expires_at > now())`;
+    const params = [];
+
+    if (Array.isArray(userIds) && userIds.length > 0) {
+      // Explicit list takes priority
+      params.push(userIds);
+      whereClause += ` AND id = ANY($${params.length})`;
+    } else if (joinedBefore) {
+      params.push(new Date(joinedBefore).toISOString());
+      whereClause += ` AND created_at < $${params.length}`;
+    }
+
+    if (dryRun) {
+      const countRes = await query(
+        `SELECT COUNT(*)::int AS count FROM users WHERE ${whereClause}`,
+        params,
+      );
+      return res.json({ dryRun: true, affectedCount: countRes.rows[0]?.count ?? 0 });
+    }
+
+    const updated = await query(
+      `UPDATE users
+          SET is_premium = FALSE,
+              premium_expires_at = NULL
+        WHERE ${whereClause}
+        RETURNING id, external_id`,
+      params,
+    );
+
+    console.log(`[Admin] bulk-downgrade: revoked premium for ${updated.rows.length} users`);
+    return res.json({
+      ok: true,
+      downgradedCount: updated.rows.length,
+      users: updated.rows.slice(0, 50), // return first 50 as preview
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Admin: remind expired subscribers via FCM (optional single user; force skips 7-day throttle)
 router.post('/subscriptions/remind-expired', async (req, res, next) => {
   try {
