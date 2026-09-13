@@ -6,11 +6,14 @@ import '../theme/ionicons_compat.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../config/payment_helpers.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/app_header.dart';
+import '../widgets/payment_status_card.dart';
+import '../widgets/whatsapp_support_tile.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -24,6 +27,7 @@ class ProfileScreen extends StatefulWidget {
     this.onPointsRefresh,
     this.onOpenPayments,
     this.onOpenSettings,
+    this.onPaymentSuccess,
     this.isActive = false,
   });
 
@@ -36,6 +40,7 @@ class ProfileScreen extends StatefulWidget {
   final Future<void> Function()? onPointsRefresh;
   final VoidCallback? onOpenPayments;
   final VoidCallback? onOpenSettings;
+  final PremiumUnlockCallback? onPaymentSuccess;
   final bool isActive;
 
   @override
@@ -234,6 +239,22 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
               ),
             ),
             const SizedBox(height: 8),
+            if (RemoteConfigService.paymentsEnabled && !isPremium)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: PaymentStatusCard(
+                  isPremium: isPremium,
+                  isActive: widget.isActive,
+                  onPaymentSuccess: widget.onPaymentSuccess,
+                  onRetryPayment: widget.onOpenPayments,
+                ),
+              ),
+            if (RemoteConfigService.paymentsEnabled && !isPremium) const SizedBox(height: 10),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: WhatsappSupportTile(),
+            ),
+            const SizedBox(height: 10),
             if (_subscriptionTimeActive)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),

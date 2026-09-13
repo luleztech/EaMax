@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../models/remote_config_bundle.dart';
+import '../services/payment_pending_session.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../utils/payment_voices.dart';
@@ -278,6 +279,12 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('pendingPaymentOrderId', orderId);
       await prefs.setString(_prefsPhoneKey, phone);
+      await PaymentPendingSession.save(
+        orderId: orderId,
+        phone: phone,
+        bundle: pkg.slug,
+        amount: pkg.priceTzs,
+      );
 
       if (!mounted) return;
       setState(() {
@@ -285,6 +292,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         _waitingHint = TzPaymentConfig.paymentPromptFor(phone);
       });
 
+      var activeOrderId = orderId;
       const maxAttempts = 90;
       for (var i = 0; i < maxAttempts; i++) {
         final delay = i < 20 ? const Duration(seconds: 1) : const Duration(seconds: 2);
@@ -292,18 +300,30 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         if (!mounted || _page != 3 || _paymentSuccess) return;
 
         try {
-          final response = await paymentsApi.checkPaymentStatus(orderId);
-          if (isPaymentStillApplying(response)) {
+          final response = await PaymentPendingSession.checkBestPaymentStatus();
+          final sessionAge = await PaymentPendingSession.sessionAge();
+          if (shouldDeferPaymentTerminal(
+            sessionAge: sessionAge,
+            pollCount: i + 1,
+            response: response,
+          )) {
             if (mounted) {
               setState(() {
-                _waitingHint = (response['message']?.toString().trim().isNotEmpty == true)
-                    ? response['message'].toString()
-                    : 'Malipo yamethibitishwa — tunafungua channel zote…';
+                _waitingHint = (i + 1) <= 1
+                    ? PaymentStatusCopy.requestSent
+                    : PaymentStatusCopy.checking;
               });
             }
             continue;
           }
-          if (isPaymentSuccessResponse(response)) {
+          if (shouldKeepPaymentUnlockPolling(response) || isPaymentSuccessResponse(response)) {
+            if (isPaymentStillApplying(response) || shouldKeepPaymentUnlockPolling(response)) {
+              if (mounted) {
+                setState(() {
+                  _waitingHint = paymentStatusUserMessage(response);
+                });
+              }
+            }
             final userPayload = userPayloadFromPaymentResponse(response) ?? <String, dynamic>{};
             if (response['premiumGranted'] == true || response['premium_granted'] == true) {
               userPayload['premiumGranted'] = true;
@@ -320,21 +340,56 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
               // Keep pending order; keep polling until local premium is confirmed.
               if (mounted) {
                 setState(() {
-                  _waitingHint = 'Malipo yamepokelewa — tunasasisha akaunti yako…';
+                  _waitingHint = PaymentStatusCopy.applying;
                 });
               }
               continue;
             }
-            await prefs.remove('pendingPaymentOrderId');
+            await PaymentPendingSession.clear();
             await _markPaymentSuccess();
             return;
           }
-          if (isPaymentTerminalFailure(response['status'])) {
+          final status = paymentStatusFromResponse(response);
+          if (isPaymentCancelledStatus(status)) {
+            final cancelCount = await PaymentPendingSession.incrementCancelCount();
+            if (cancelCount >= PaymentPendingSession.maxCancelAttempts) {
+              if (!mounted) return;
+              _waitSpin?.stop();
+              setState(() {
+                _paymentBusy = false;
+                _waitingHint = PaymentStatusCopy.cancelFinal;
+              });
+              return;
+            }
+            final left = PaymentPendingSession.maxCancelAttempts - cancelCount;
+            if (mounted) {
+              setState(() {
+                _waitingHint = PaymentStatusCopy.cancelSoft(cancelCount, left);
+              });
+            }
+            final newOrderId = await PaymentPendingSession.resendStk(payerName: name);
+            if (newOrderId != null && newOrderId.isNotEmpty) {
+              activeOrderId = newOrderId;
+              await prefs.setString('pendingPaymentOrderId', activeOrderId);
+              if (mounted) {
+                setState(() {
+                  _waitingHint = PaymentStatusCopy.resendStk(
+                    cancelCount,
+                    PaymentPendingSession.maxCancelAttempts,
+                  );
+                });
+              }
+            } else if (mounted) {
+              setState(() => _waitingHint = PaymentStatusCopy.serverProcessing);
+            }
+            continue;
+          }
+          if (isPaymentTerminalFailure(status) || response['terminal'] == true) {
             if (!mounted) return;
             _waitSpin?.stop();
             setState(() {
               _paymentBusy = false;
-              _waitingHint = 'Malipo hayajakamilika. Jaribu tena.';
+              _waitingHint = paymentStatusUserMessage(response);
             });
             return;
           }
@@ -363,14 +418,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     } catch (e) {
       if (!mounted) return;
       _waitSpin?.stop();
-      final msg = e.toString();
       setState(() {
         _paymentBusy = false;
-        _waitingHint = msg.contains('SocketException') ||
-                msg.contains('Timeout') ||
-                msg.contains('network')
-            ? 'Hitilafu ya mtandao. Jaribu tena.'
-            : 'Malipo hayajatumika. Jaribu tena.';
+        _waitingHint = mapPaymentStartError(e);
       });
     }
   }

@@ -16,6 +16,7 @@ import '../services/player_playback_service.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/home_data_cache.dart';
+import '../services/payment_tracking_controller.dart';
 import '../services/ratiba_reminders.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
@@ -24,6 +25,7 @@ import '../utils/payment_voices.dart';
 import '../widgets/channel_card.dart';
 import '../widgets/channel_unavailable_modal.dart';
 import '../widgets/home_search_bar.dart';
+import '../widgets/payment_tracking_header.dart';
 import '../widgets/premium_lock_modal.dart';
 
 import '../screens/ratiba_tab.dart';
@@ -887,14 +889,30 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         Column(
           children: [
             if (tab == 0 || tab == 1)
-              HomeHeader(
-                title: tab == 0 ? 'EaMax' : 'Ratiba',
-                subtitle: tab == 0 ? 'MPIRA NA TAMTHILIA' : 'MIPANGO YA VIPINDI NA MECHI',
-                points: widget.userPoints,
-                onSearch: tab == 0 ? _toggleSearch : null,
-                onSettings: () {
-                  Navigator.of(context).push<void>(
-                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              ListenableBuilder(
+                listenable: PaymentTrackingController.instance,
+                builder: (context, _) {
+                  final track = PaymentTrackingController.instance;
+                  if (tab == 0 && track.showHomeBanner) {
+                    return PaymentTrackingHeader(
+                      title: track.statusLine,
+                      isPolling: track.isPolling,
+                      onRefresh: () {
+                        unawaited(track.onManualRefresh?.call());
+                      },
+                      onClose: track.dismissHomeBanner,
+                    );
+                  }
+                  return HomeHeader(
+                    title: tab == 0 ? 'EaMax' : 'Ratiba',
+                    subtitle: tab == 0 ? 'MPIRA NA TAMTHILIA' : 'MIPANGO YA VIPINDI NA MECHI',
+                    points: widget.userPoints,
+                    onSearch: tab == 0 ? _toggleSearch : null,
+                    onSettings: () {
+                      Navigator.of(context).push<void>(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                    },
                   );
                 },
               ),
@@ -947,6 +965,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                     onWatchAd: widget.onWatchAd,
                     onPointsRefresh: widget.onPointsRefresh,
                     onOpenPayments: openPaymentsTab,
+                    onPaymentSuccess: widget.onPaymentSuccess,
                     onOpenSettings: () {
                       Navigator.of(context).push<void>(
                         MaterialPageRoute(builder: (_) => const SettingsScreen()),

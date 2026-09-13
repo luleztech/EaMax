@@ -13,6 +13,7 @@ import '../config/payment_helpers.dart';
 import '../models/api_exceptions.dart';
 import '../models/promotion.dart';
 import '../utils/api_error_message.dart';
+import '../services/payment_pending_session.dart';
 import '../services/promotion_service.dart';
 import '../services/user_id.dart';
 
@@ -236,6 +237,13 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
       if (orderId.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('pendingPaymentOrderId', orderId);
+        await PaymentPendingSession.save(
+          orderId: orderId,
+          phone: _normalizePhone(phoneCtrl.text),
+          bundle: 'promo_${p.id}',
+          amount: p.offerAmountTsh!,
+          promotionId: p.id,
+        );
       }
       if (!mounted) return;
       await showDialog<void>(

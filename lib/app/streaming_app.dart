@@ -23,6 +23,7 @@ import '../services/home_data_cache.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
 import '../utils/premium_snapshot.dart';
+import '../services/payment_pending_session.dart';
 import '../services/user_premium_cache.dart';
 import '../services/user_id.dart';
 import '../widgets/ad_reward_modal.dart';
@@ -617,27 +618,32 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     if (paidExternal != null &&
         paidExternal.isNotEmpty &&
         paidExternal != uid &&
-        paidExternal.startsWith('User-')) {
+        (paidExternal.startsWith('User-') || premiumGranted)) {
       debugPrint('[Premium] Adopting paid account $paidExternal (was $uid)');
       await adoptUserId(paidExternal);
       uid = paidExternal;
       unawaited(RealtimeService.instance.connect(uid));
     }
 
-    if (userPayload != null) {
-      await _applyUserPremiumData(userPayload, uid: uid);
+    final payloadLooksPremium = () {
+      if (userPayload == null) return false;
+      final snap = PremiumSnapshot.fromDynamic(userPayload);
+      return snap?.isPremium == true;
+    }();
+
+    // Never apply a non-premium snapshot during the applying window — that
+    // races unlocks and can force channels back to locked.
+    if (userPayload != null && (premiumGranted || payloadLooksPremium || !_premium)) {
+      await _applyUserPremiumData(
+        userPayload,
+        uid: uid,
+        protectExistingPremium: true,
+      );
     }
     await retryPendingRegistrations();
 
     // If userPayload or explicit flags indicate success, force premium immediately.
-    final isExplicitSuccess = premiumGranted ||
-        (userPayload != null &&
-            (userPayload['isPremium'] == true ||
-                userPayload['is_premium'] == true ||
-                userPayload['premiumGranted'] == true ||
-                userPayload['premium_granted'] == true ||
-                userPayload['isPremium']?.toString().toLowerCase() == 'true' ||
-                userPayload['is_premium']?.toString().toLowerCase() == 'true'));
+    final isExplicitSuccess = premiumGranted || payloadLooksPremium;
     if (isExplicitSuccess) {
       final forced = Map<String, dynamic>.from(userPayload ?? const <String, dynamic>{});
       forced['isPremium'] = true;
@@ -648,7 +654,11 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
         forced['premiumExpiresAt'] =
             DateTime.now().toUtc().add(const Duration(days: 1)).toIso8601String();
       }
-      await _applyUserPremiumData(forced, uid: uid);
+      await _applyUserPremiumData(forced, uid: uid, protectExistingPremium: true);
+    } else if (!_premium) {
+      // Applying window without live premium yet — nudge once and let pollers continue.
+      unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
+      return false;
     }
 
     // Confirm premium from server in background; never clear a successful local unlock.
@@ -677,10 +687,25 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
       return;
     }
     try {
-      final res = await paymentsApi.checkPaymentStatus(pending);
-      if (isPaymentStillApplying(res)) {
-        // Keep trying — also nudge local refresh in case entitlements just landed.
-        unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
+      final res = await PaymentPendingSession.checkBestPaymentStatus();
+      if (shouldKeepPaymentUnlockPolling(res)) {
+        final granted =
+            res['premiumGranted'] == true || res['premium_granted'] == true;
+        final userPayload = userPayloadFromPaymentResponse(res);
+        final looksPremium = PremiumSnapshot.fromDynamic(userPayload)?.isPremium == true;
+        if (granted || looksPremium) {
+          final unlocked = await _onPaymentSuccess(
+            userPayload: userPayload,
+            premiumGranted: granted,
+          );
+          if (unlocked) {
+            await PaymentPendingSession.clear();
+          }
+        } else {
+          // Paid at gateway but entitlements not live yet — refresh only; do not
+          // overwrite local premium with a non-premium snapshot.
+          unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
+        }
         return;
       }
       if (isPaymentSuccessResponse(res)) {
@@ -691,12 +716,12 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               res['premiumGranted'] == true || res['premium_granted'] == true,
         );
         if (unlocked) {
-          await prefs.remove('pendingPaymentOrderId');
+          await PaymentPendingSession.clear();
         }
       } else if (isPaymentTerminalFailure(
         res['status'] ?? res['raw']?['data']?[0]?['payment_status'],
       )) {
-        await prefs.remove('pendingPaymentOrderId');
+        await PaymentPendingSession.clear();
       }
     } catch (_) {
       // Keep silent here; watcher will retry automatically.

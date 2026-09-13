@@ -1562,10 +1562,10 @@ const isInsufficientFundsStatus = (raw) => {
 
 const mapTerminalStatusUserMessage = (raw) => {
   if (isPaymentCancelledStatus(raw)) {
-    return 'Ulighairi malipo kwenye simu. Unaweza kujaribu tena ukiwa tayari.';
+    return 'Mpendwa mteja haujamaliza hatua za malipo.';
   }
   if (isInsufficientFundsStatus(raw)) {
-    return 'Salio la wallet yako si la kutosha. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Mixx by Yas, Airtel Money) kisha ujaribu tena.';
+    return 'Hauna salio la kutosha.';
   }
   const u = String(raw || '').toUpperCase().trim();
   if (u === 'EXPIRED' || u === 'TIMEOUT') {
@@ -2487,11 +2487,14 @@ const respondPaymentCompletion = async (orderId, rawPayload, res, options = {}) 
   }
 
   if (!premiumActive) {
+    // Gateway/DB already confirmed paid — never tell the app this is still a
+    // generic PENDING PIN wait. Clients keep polling while applying:true.
     return res.json({
-      status: 'PENDING',
+      status: 'COMPLETED',
       applying: true,
       premiumGranted: false,
       message: 'Malipo yamethibitishwa — tunasasisha akaunti yako…',
+      userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
       raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
       ...(user ? { user } : {}),
     });
@@ -2500,6 +2503,7 @@ const respondPaymentCompletion = async (orderId, rawPayload, res, options = {}) 
   return res.json({
     status: 'COMPLETED',
     premiumGranted: true,
+    userMessage: 'Malipo yamepokelewa.',
     raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
     user: {
       ...user,
@@ -2509,6 +2513,29 @@ const respondPaymentCompletion = async (orderId, rawPayload, res, options = {}) 
       external_id: user.external_id || user.externalId || null,
     },
   });
+};
+
+/**
+ * After STK resend the app often polls the *new* order while the user paid the
+ * *previous* prompt. If that sibling already completed and premium is live,
+ * surface COMPLETED so the client unlocks instead of waiting forever.
+ */
+const findRecentSiblingCompletedPayment = async (userId, excludeOrderId) => {
+  if (!userId) return null;
+  const r = await query(
+    `SELECT provider_ref, gateway_ref, status, user_id, plan, amount_cents, completed_at
+       FROM subscription_payments
+      WHERE user_id = $1
+        AND status = 'completed'
+        AND completed_at IS NOT NULL
+        AND completed_at > NOW() - INTERVAL '45 minutes'
+        AND provider_ref IS DISTINCT FROM $2
+        AND (gateway_ref IS NULL OR gateway_ref IS DISTINCT FROM $2)
+      ORDER BY completed_at DESC
+      LIMIT 1`,
+    [userId, excludeOrderId],
+  );
+  return r.rows[0] || null;
 };
 
 /** Shared GET /status and GET /aurax/status handler. */
@@ -2528,6 +2555,30 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       const planInterval = await resolvePlanIntervalForPayment(planKey, payRow.amount_cents);
       await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
       return respondPaymentCompletion(orderId, { data: [{ payment_status: 'COMPLETED' }] }, res);
+    }
+
+    // Resend-STK orphan: this order is still pending, but a sibling payment already
+    // upgraded the same user. Unlock against the completed sibling ref.
+    if (dbCheck.rows.length > 0 && dbCheck.rows[0].status === 'pending' && dbCheck.rows[0].user_id) {
+      const sibling = await findRecentSiblingCompletedPayment(
+        Number(dbCheck.rows[0].user_id),
+        orderId,
+      );
+      if (sibling?.provider_ref) {
+        const siblingUser = await fetchUserPremiumSnapshotByUserId(Number(sibling.user_id));
+        if (siblingUser && (siblingUser.isPremium === true || siblingUser.is_premium === true)) {
+          console.log('[Payment] Status poll: sibling completed payment unlocks pending order', {
+            polledOrderId: orderId,
+            siblingRef: sibling.provider_ref,
+            userId: sibling.user_id,
+          });
+          return respondPaymentCompletion(
+            sibling.provider_ref,
+            { data: [{ payment_status: 'COMPLETED' }] },
+            res,
+          );
+        }
+      }
     }
 
     const gateway = await resolveGatewayForOrderId(orderId);
@@ -2572,7 +2623,13 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
           });
         } catch (applyErr) {
           console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
-          return res.json({ status: 'PENDING', applying: true, raw: statusData });
+          return res.json({
+            status: 'COMPLETED',
+            applying: true,
+            premiumGranted: false,
+            userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
+            raw: statusData,
+          });
         }
         return respondPaymentCompletion(orderId, statusData, res, {
           gatewayConfirmedPaid: true,
@@ -2644,7 +2701,13 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         });
       } catch (applyErr) {
         console.error('[Payment] Aurax applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
-        return res.json({ status: 'PENDING', applying: true, raw: statusData });
+        return res.json({
+          status: 'COMPLETED',
+          applying: true,
+          premiumGranted: false,
+          userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
+          raw: statusData,
+        });
       }
       return respondPaymentCompletion(orderId, statusData, res, {
         gatewayConfirmedPaid: true,
@@ -2894,7 +2957,16 @@ router.post('/aurax/webhook', async (req, res, next) => {
     }
 
     if (!paid) {
-      return res.status(200).json({ received: true, processed: false });
+      if (orderId && isPaymentTerminalStatus(raw)) {
+        await markOrderTerminalIfPending(orderId, raw);
+        console.log('[AuraxPay] Webhook terminal (unpaid):', { orderId, raw });
+      }
+      return res.status(200).json({
+        received: true,
+        processed: false,
+        terminal: isPaymentTerminalStatus(raw),
+        status: raw || undefined,
+      });
     }
 
     try {
@@ -3036,7 +3108,16 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     }
 
     if (!paid) {
-      return res.status(200).json({ received: true, processed: false });
+      if (orderId && isPaymentTerminalStatus(raw)) {
+        await markOrderTerminalIfPending(orderId, raw);
+        console.log('[SonicPesa] Webhook terminal (unpaid):', { orderId, raw });
+      }
+      return res.status(200).json({
+        received: true,
+        processed: false,
+        terminal: isPaymentTerminalStatus(raw),
+        status: raw || undefined,
+      });
     }
 
     try {

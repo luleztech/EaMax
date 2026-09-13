@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../models/remote_config_bundle.dart';
+import '../services/payment_pending_session.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
@@ -187,14 +188,28 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     if (pending != null && pending.isNotEmpty) {
       try {
-        final res = await paymentsApi.checkPaymentStatus(pending);
-        final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
-        if (isPaymentSuccessResponse(res)) {
+        final res = await PaymentPendingSession.checkBestPaymentStatus();
+        final sessionAge = await PaymentPendingSession.sessionAge();
+        if (shouldDeferPaymentTerminal(
+          sessionAge: sessionAge,
+          pollCount: 1,
+          response: res,
+        )) {
+          setState(() {
+            _pollingOrderId = pending;
+            _paymentUiPhase = _PaymentUiPhase.waiting;
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
+        } else if (shouldKeepPaymentUnlockPolling(res) || isPaymentSuccessResponse(res)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(res),
+            premiumGranted: res['premiumGranted'] == true ||
+                res['premium_granted'] == true,
           );
-        } else if (isPaymentTerminalFailure(st)) {
-          await prefs.remove('pendingPaymentOrderId');
+        } else if (isPaymentTerminalFailure(
+            res['status'] ?? res['raw']?['data']?[0]?['payment_status'])) {
+          final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
+          await PaymentPendingSession.clear();
           if (mounted) {
             setState(() {
               _paymentUiPhase = _PaymentUiPhase.failed;
@@ -261,11 +276,24 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       polls++;
       if (!mounted) return;
       try {
-        final response = await paymentsApi.checkPaymentStatus(orderId);
-        if (isPaymentStillApplying(response)) {
+        final response = await PaymentPendingSession.checkBestPaymentStatus();
+        if (isPaymentStillApplying(response) || shouldKeepPaymentUnlockPolling(response)) {
           applyingStreak++;
+          if (mounted) {
+            setState(() {
+              _sessionEndDetail = paymentStatusUserMessage(response);
+            });
+          }
         } else {
           applyingStreak = 0;
+        }
+        final sessionAge = await PaymentPendingSession.sessionAge();
+        if (shouldDeferPaymentTerminal(
+          sessionAge: sessionAge,
+          pollCount: polls,
+          response: response,
+        )) {
+          return;
         }
         final paymentStatus =
             response['status'] ??
@@ -277,17 +305,31 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           );
           return;
         }
+        if (shouldKeepPaymentUnlockPolling(response)) {
+          if (mounted) {
+            setState(() {
+              _sessionEndDetail = paymentStatusUserMessage(response);
+              if (_paymentUiPhase == _PaymentUiPhase.instruction ||
+                  _paymentUiPhase == _PaymentUiPhase.timedOut) {
+                _paymentUiPhase = _PaymentUiPhase.waiting;
+              }
+            });
+          }
+          final unlocked = await _tryUnlockFromPoll(
+            userPayload: userPayloadFromPaymentResponse(response),
+            premiumGranted: response['premiumGranted'] == true ||
+                response['premium_granted'] == true,
+          );
+          if (unlocked) {
+            await _celebratePaymentUnlocked();
+          }
+          return;
+        }
         if (isPaymentSuccessResponse(response)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(response),
             premiumGranted: response['premiumGranted'] == true ||
                 response['premium_granted'] == true,
-          );
-          return;
-        }
-        if (isPaymentTerminalFailure(paymentStatus)) {
-          await _finalizeSessionFailed(
-            _paymentFailureUserMessage(paymentStatus),
           );
           return;
         }
@@ -331,8 +373,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   }
 
   Future<void> _clearPendingOrderPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('pendingPaymentOrderId');
+    await PaymentPendingSession.clear();
   }
 
   void _handleWaitWindowExpired() {
@@ -496,6 +537,41 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     }
   }
 
+  Future<bool> _tryUnlockFromPoll({
+    Map<String, dynamic>? userPayload,
+    bool premiumGranted = false,
+  }) async {
+    try {
+      return await widget.onPaymentSuccess?.call(
+            userPayload: {
+              ...?userPayload,
+              if (premiumGranted) 'premiumGranted': true,
+              if (premiumGranted) 'isPremium': true,
+              if (premiumGranted) 'is_premium': true,
+            },
+          ) ??
+          false;
+    } catch (e) {
+      debugPrint('[PaymentsScreen] unlock during applying failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _celebratePaymentUnlocked() async {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _waitingTimer?.cancel();
+    _waitingTimer = null;
+    await PaymentPendingSession.clear();
+    if (!mounted) return;
+    setState(() {
+      _pollingOrderId = null;
+      _pendingBundleLabel = null;
+      _paymentUiPhase = _PaymentUiPhase.success;
+      _sessionEndDetail = null;
+    });
+  }
+
   Future<void> _markPaymentCompleted({
     Map<String, dynamic>? userPayload,
     bool premiumGranted = false,
@@ -511,7 +587,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     // Stay on the waiting modal (spinner) while we unlock — never celebrate early.
     setState(() {
       _notFoundStreak = 0;
-      _sessionEndDetail = null;
+      _sessionEndDetail = PaymentStatusCopy.applying;
       if (_paymentUiPhase == _PaymentUiPhase.instruction) {
         _paymentUiPhase = _PaymentUiPhase.waiting;
       }
@@ -544,7 +620,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           setState(() {
             _pollingOrderId = orderId;
             _paymentUiPhase = _PaymentUiPhase.waiting;
-            _sessionEndDetail = null;
+            _sessionEndDetail = PaymentStatusCopy.applying;
           });
           if (_pollTimer == null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -559,23 +635,10 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           _pendingBundleLabel = null;
         });
       }
-      _showStatus(
-        'Malipo yamepokelewa',
-        'Tunafungua channel zote… subiri kidogo au fungua tena app ikiwa bado zimefungwa.',
-        _PayDialogTone.info,
-      );
       return;
     }
 
-    _pollTimer?.cancel();
-    _pollTimer = null;
-    await prefs.remove('pendingPaymentOrderId');
-    // Only here: gateway success helpers already verified + local premium is active.
-    setState(() {
-      _pollingOrderId = null;
-      _pendingBundleLabel = null;
-      _paymentUiPhase = _PaymentUiPhase.success;
-    });
+    await _celebratePaymentUnlocked();
   }
 
   void _dismissPaymentSuccess() {
@@ -688,6 +751,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       if (orderId.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('pendingPaymentOrderId', orderId);
+        await PaymentPendingSession.save(
+          orderId: orderId,
+          phone: clean,
+          bundle: bundle.slug,
+          amount: bundle.priceTzs,
+        );
         if (!mounted) return;
         setState(() {
           _pollingOrderId = orderId;
