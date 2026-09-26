@@ -149,9 +149,10 @@ const grantUserEntitlementsInTransaction = async (client, userId, { planInterval
     );
   }
 
-  // Channel unlock rows are best-effort: playback is gated by premium_expires_at.
-  // Never roll back a successful premium grant solely because unlock inserts failed.
-  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId, { required: false });
+  // Premium and channel unlocks are one entitlement: do not commit a completed
+  // payment unless both have been recorded. The helper retries after creating
+  // the table if an older installation is missing it.
+  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId, { required: true });
   console.log('[Entitlements] Premium granted:', {
     userId,
     premium_expires_at: row.premium_expires_at,
@@ -249,7 +250,7 @@ const repairUserEntitlementsIfNeeded = async (userId, planInterval) => {
         planInterval: planInterval || '30 days',
       });
     } else if (needsChannels) {
-      await unlockAllChannelsInTransaction(client, userId, { required: false });
+      await unlockAllChannelsInTransaction(client, userId, { required: true });
     }
     await client.query('COMMIT');
     return true;

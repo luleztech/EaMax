@@ -2032,6 +2032,14 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
+    // The provider accepted the request. Tell the client to check the phone
+    // (the premium grant still waits for confirmed payment below).
+    providerResponseMessage =
+      String(auraxData.message || '').trim() ||
+      (usedAuraxFallbackFromSonic
+        ? 'Ombi la malipo limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN.'
+        : 'Ombi la malipo limetumwa. Angalia simu yako na uingize PIN ili kuthibitisha.');
+
     const auraxTx = coerceAuraxTransactionObject(auraxData) || {};
     const gatewayRef = String(auraxTx.id || auraxTx.reference || '').trim();
     if (!gatewayRef) {
