@@ -355,37 +355,32 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             return;
           }
           final status = paymentStatusFromResponse(response);
-          if (isPaymentCancelledStatus(status)) {
-            final cancelCount = await PaymentPendingSession.incrementCancelCount();
-            if (cancelCount >= PaymentPendingSession.maxCancelAttempts) {
-              if (!mounted) return;
-              _waitSpin?.stop();
-              setState(() {
-                _paymentBusy = false;
-                _waitingHint = PaymentStatusCopy.cancelFinal;
-              });
-              return;
-            }
-            final left = PaymentPendingSession.maxCancelAttempts - cancelCount;
+          if (isPaymentCancelledStatus(status) || isPaymentPromptNeedsResend(status)) {
             if (mounted) {
               setState(() {
-                _waitingHint = PaymentStatusCopy.cancelSoft(cancelCount, left);
+                _waitingHint = isPaymentCancelledStatus(status)
+                    ? PaymentStatusCopy.cancelResend(phone)
+                    : PaymentStatusCopy.pendingResend(phone);
               });
             }
-            final newOrderId = await PaymentPendingSession.resendStk(payerName: name);
-            if (newOrderId != null && newOrderId.isNotEmpty) {
-              activeOrderId = newOrderId;
-              await prefs.setString('pendingPaymentOrderId', activeOrderId);
-              if (mounted) {
-                setState(() {
-                  _waitingHint = PaymentStatusCopy.resendStk(
-                    cancelCount,
-                    PaymentPendingSession.maxCancelAttempts,
-                  );
-                });
+            try {
+              final resent = await PaymentPendingSession.resendStk(
+                payerName: name,
+                userCancelled: true,
+              );
+              if (resent.sent) {
+                activeOrderId = resent.orderId!;
+                await prefs.setString('pendingPaymentOrderId', activeOrderId);
+                if (mounted) {
+                  setState(() {
+                    _waitingHint = PaymentStatusCopy.resentToPhone(phone, resent.attempt);
+                  });
+                }
+              } else if (resent.capped && mounted) {
+                setState(() => _waitingHint = PaymentStatusCopy.resendCap(phone));
               }
-            } else if (mounted) {
-              setState(() => _waitingHint = PaymentStatusCopy.serverProcessing);
+            } catch (_) {
+              if (mounted) setState(() => _waitingHint = PaymentStatusCopy.serverProcessing);
             }
             continue;
           }
@@ -403,6 +398,26 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             setState(() => _waitingHint = 'Seva inaendelea kuchakata malipo…');
           }
           continue;
+        }
+
+        try {
+          final resent = await PaymentPendingSession.resendStk(payerName: name);
+          if (resent.sent) {
+            activeOrderId = resent.orderId!;
+            await prefs.setString('pendingPaymentOrderId', activeOrderId);
+            if (mounted) {
+              setState(() {
+                _waitingHint = PaymentStatusCopy.resentToPhone(phone, resent.attempt);
+              });
+            }
+            continue;
+          }
+          if (resent.capped && mounted) {
+            setState(() => _waitingHint = PaymentStatusCopy.resendCap(phone));
+            continue;
+          }
+        } catch (_) {
+          // Status polling continues; the next pass retries the push.
         }
 
         if (!mounted) return;

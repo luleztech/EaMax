@@ -145,6 +145,20 @@ bool isPaymentCancelledStatus(Object? status) {
   return s == 'CANCELLED' || s == 'CANCELED' || s == 'CANCEL' || s == 'VOID';
 }
 
+/// Prompt never landed, or the user rejected it. Send a new request to the same number.
+/// Low balance is not retried — another push cannot succeed until they top up.
+bool isPaymentPromptNeedsResend(Object? status) {
+  if (isPaymentInsufficientFunds(status)) return false;
+  if (isPaymentCancelledStatus(status)) return true;
+  final s = normalizedPaymentStatus(status);
+  return s == 'EXPIRED' ||
+      s == 'TIMEOUT' ||
+      s == 'REJECTED' ||
+      s == 'DECLINED' ||
+      s == 'FAILED' ||
+      s == 'ERROR';
+}
+
 /// Wallet rejected due to low balance.
 bool isPaymentInsufficientFunds(Object? status) {
   final s = normalizedPaymentStatus(status);
@@ -280,11 +294,23 @@ abstract final class PaymentStatusCopy {
   static const serverProcessing = 'Seva inaendelea kuchakata malipo yako…';
 
   static String resendStk(int attempt, int max) =>
-      'Tunatuma ombi la malipo tena kwenye simu yako ($attempt/$max)…';
+      'Tunatuma ombi la malipo tena kwenye simu yako ($attempt)…';
+
+  static String resentToPhone(String phone, int attempt) =>
+      'Tunatuma ombi jipya la malipo kwa $phone (mara $attempt). Angalia simu yako na uingize PIN.';
+
+  static String pendingResend(String phone) =>
+      'Hujaona ombi? Tunatuma tena kwa $phone.';
+
+  static String cancelResend(String phone) =>
+      'Uligahiri ombi. Tunatuma tena kwa $phone — thibitisha PIN.';
+
+  static String resendCap(String phone) =>
+      'Tumetuma ombi mara nyingi kwa $phone. Bado tunathibitisha. Ukighairi tena, anza malipo mapya.';
 
   static String cancelSoft(int attempt, int remaining) =>
-      'Mpendwa mteja haujamaliza hatua za malipo (jaribio $attempt/3). '
-      'Bado una nafasi $remaining — thibitisha kwenye simu yako.';
+      'Mpendwa mteja haujamaliza hatua za malipo (jaribio $attempt). '
+      'Tunatuma ombi jipya tena${remaining > 0 ? ' — thibitisha kwenye simu yako' : ''}.';
 }
 
 /// User-facing text when `/api/payments/start` or resend throws.

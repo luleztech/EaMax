@@ -280,6 +280,15 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         final paymentStatus =
             response['status'] ??
             response['raw']?['data']?[0]?['payment_status'];
+        if (isPaymentInsufficientFunds(paymentStatus)) {
+          await _finalizeSessionFailed(PaymentStatusCopy.insufficient);
+          return;
+        }
+        if (isPaymentCancelledStatus(paymentStatus) ||
+            isPaymentPromptNeedsResend(paymentStatus)) {
+          await _resendLivePrompt(userCancelled: true);
+          return;
+        }
         if (response['terminal'] == true || isPaymentTerminalFailure(paymentStatus)) {
           await _finalizeSessionFailed(
             response['userMessage']?.toString() ??
@@ -315,6 +324,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           );
           return;
         }
+        await _resendLivePrompt(userCancelled: false);
       } catch (e) {
         final msg = e.toString().toLowerCase();
         if (msg.contains('no order') || msg.contains('not found')) {
@@ -363,6 +373,33 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   Future<void> _clearPendingOrderPrefs() async {
     await PaymentPendingSession.clear();
+  }
+
+  /// New wallet prompt to the number stored for this checkout.
+  Future<void> _resendLivePrompt({required bool userCancelled}) async {
+    try {
+      final result = await PaymentPendingSession.resendStk(userCancelled: userCancelled);
+      if (!mounted) return;
+      if (result.sent) {
+        setState(() {
+          _pollingOrderId = result.orderId;
+          _notFoundStreak = 0;
+          _paymentUiPhase = _PaymentUiPhase.waiting;
+          _sessionEndDetail = PaymentStatusCopy.resentToPhone(result.phone, result.attempt);
+        });
+        return;
+      }
+      if (result.capped) {
+        setState(() {
+          _sessionEndDetail = PaymentStatusCopy.resendCap(result.phone);
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _sessionEndDetail = PaymentStatusCopy.serverProcessing;
+      });
+    }
   }
 
   void _handleWaitWindowExpired() {

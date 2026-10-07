@@ -44,8 +44,6 @@ class PaymentStatusCard extends StatefulWidget {
 
 class _PaymentStatusCardState extends State<PaymentStatusCard> {
   static const _prefsKey = 'pendingPaymentOrderId';
-  static const _maxCancelAttempts = PaymentPendingSession.maxCancelAttempts;
-
   static const _confirmationHints = [
     'Thibitisha malipo kwa PIN kwenye simu yako.',
     'Ombi la malipo limetumwa — subiri kidogo.',
@@ -58,7 +56,9 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
   String? _orderId;
   bool _polling = false;
   int _pollCount = 0;
-  int _cancelCount = 0;
+  int _resendCount = 0;
+  String _resendPhone = '';
+  bool _resendCapped = false;
   int _hintIndex = 0;
   Timer? _autoPollTimer;
   Timer? _idleWatchTimer;
@@ -119,64 +119,91 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
     _hintRotateTimer = null;
   }
 
-  Future<void> _loadCancelCount() async {
-    _cancelCount = await PaymentPendingSession.cancelCount();
+  Future<void> _loadResendCount() async {
+    final session = await PaymentPendingSession.load();
+    _resendCount = await PaymentPendingSession.resendCount();
+    _resendPhone = session?.phone ?? _resendPhone;
   }
 
   Future<void> _clearCancelCount() async {
     await PaymentPendingSession.clearCancelCount();
-    _cancelCount = 0;
   }
 
-  Future<bool> _resendStkNow() async {
+  /// Push a new wallet prompt to the number saved for this checkout.
+  /// Returns true when a new order was actually created.
+  Future<bool> _pushPromptAgain({required bool becauseCancelled}) async {
     if (!mounted || widget.isPremium || _isTerminalPhase) return false;
     if (_resendingStk) return false;
 
     final session = await PaymentPendingSession.load();
     if (session == null) return false;
 
+    final already = await PaymentPendingSession.resendCount();
+    if (already >= PaymentPendingSession.maxAutoResends) {
+      if (mounted) {
+        setState(() {
+          _phase = _PaymentTrackPhase.tracking;
+          _resendCapped = true;
+          _resendPhone = session.phone;
+          _message = PaymentStatusCopy.resendCap(session.phone);
+        });
+      }
+      _ensurePollingActive();
+      return true;
+    }
+    final age = await PaymentPendingSession.sinceLastPrompt();
+    final gap = becauseCancelled
+        ? PaymentPendingSession.cancelResendGap
+        : PaymentPendingSession.pendingResendGap;
+    if (age < gap) return false;
+
     _resendingStk = true;
     if (mounted) {
       setState(() {
-        _message = PaymentStatusCopy.resendStk(_cancelCount, _maxCancelAttempts);
+        _phase = _PaymentTrackPhase.tracking;
+        _resendPhone = session.phone;
+        _message = becauseCancelled
+            ? PaymentStatusCopy.cancelResend(session.phone)
+            : PaymentStatusCopy.pendingResend(session.phone);
       });
     }
 
     try {
-      final newOrderId = await PaymentPendingSession.resendStk(
+      final result = await PaymentPendingSession.resendStk(
         payerName: 'EaMax ${session.phone}',
+        userCancelled: becauseCancelled,
       );
-      if (!mounted) return newOrderId != null;
-      if (newOrderId != null && newOrderId.isNotEmpty) {
+      if (!mounted) return result.sent;
+      if (result.sent) {
         setState(() {
-          _orderId = newOrderId;
-          _message = PaymentStatusCopy.waitingConfirmation;
+          _orderId = result.orderId;
+          _resendCount = result.attempt;
+          _resendPhone = result.phone;
+          _resendCapped = false;
+          _pollCount = 0;
+          _phase = _PaymentTrackPhase.tracking;
+          _message = PaymentStatusCopy.resentToPhone(result.phone, result.attempt);
         });
-        unawaited(_pollOnce());
+        _ensurePollingActive();
         return true;
       }
-      setState(() => _message = PaymentStatusCopy.serverProcessing);
-      return false;
+      if (result.capped) {
+        setState(() {
+          _phase = _PaymentTrackPhase.tracking;
+          _resendCapped = true;
+          _resendPhone = result.phone;
+          _message = PaymentStatusCopy.resendCap(result.phone);
+        });
+        _ensurePollingActive();
+        return true;
+      }
+      return result.skippedTooSoon;
     } catch (_) {
       if (mounted) setState(() => _message = PaymentStatusCopy.serverProcessing);
-      return false;
+      return true;
     } finally {
       _resendingStk = false;
     }
-  }
-
-  Future<void> _finalizeCancelled() async {
-    final prefs = await SharedPreferences.getInstance();
-    await PaymentPendingSession.clear();
-    await prefs.remove(_prefsKey);
-    _stopTrackingTimers();
-    if (!mounted) return;
-    setState(() {
-      _phase = _PaymentTrackPhase.cancelled;
-      _message = PaymentStatusCopy.cancelFinal;
-      _orderId = null;
-      _cancelCount = 0;
-    });
   }
 
   Future<void> _bootstrap() async {
@@ -185,7 +212,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
     final pending = prefs.getString(_prefsKey)?.trim();
     if (!mounted) return;
     if (pending != null && pending.isNotEmpty) {
-      await _loadCancelCount();
+      await _loadResendCount();
       if (!mounted) return;
       setState(() {
         _orderId = pending;
@@ -245,7 +272,9 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
         setState(() {
           _orderId = null;
           _phase = _PaymentTrackPhase.idle;
-          _cancelCount = 0;
+          _resendCount = 0;
+          _resendPhone = '';
+          _resendCapped = false;
           _pollCount = 0;
           _message = PaymentStatusCopy.noPending;
         });
@@ -256,7 +285,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
         (_phase == _PaymentTrackPhase.tracking || _phase == _PaymentTrackPhase.applying)) {
       return;
     }
-    await _loadCancelCount();
+    await _loadResendCount();
     if (!mounted) return;
     _stopAutoPoll();
     setState(() {
@@ -356,7 +385,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
     if (pending != null && pending.isNotEmpty) {
       if (_orderId != pending) {
         _orderId = pending;
-        await _loadCancelCount();
+        await _loadResendCount();
       }
       if (_phase == _PaymentTrackPhase.idle || _isTerminalPhase) {
         setState(() {
@@ -371,7 +400,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
     }
   }
 
-  Future<void> _handleCancelled(String orderId, Map<String, dynamic> response) async {
+  Future<void> _handleCancelled() async {
     if (_handlingCancel || _resendingStk) return;
 
     final sessionAge = await PaymentPendingSession.sessionAge();
@@ -387,22 +416,8 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
 
     _handlingCancel = true;
     try {
-      final count = await PaymentPendingSession.incrementCancelCount();
-      _cancelCount = count;
       if (!mounted) return;
-
-      if (count >= _maxCancelAttempts) {
-        await _finalizeCancelled();
-        return;
-      }
-
-      final left = _maxCancelAttempts - count;
-      setState(() {
-        _phase = _PaymentTrackPhase.tracking;
-        _message = PaymentStatusCopy.cancelSoft(count, left);
-      });
-
-      await _resendStkNow();
+      await _pushPromptAgain(becauseCancelled: true);
       _ensurePollingActive();
     } finally {
       _handlingCancel = false;
@@ -477,8 +492,8 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
 
       final status = paymentStatusFromResponse(response);
 
-      if (isPaymentCancelledStatus(status)) {
-        await _handleCancelled(orderId, response);
+      if (isPaymentCancelledStatus(status) || isPaymentPromptNeedsResend(status)) {
+        await _handleCancelled();
         return;
       }
 
@@ -501,6 +516,8 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
         return;
       }
 
+      final pushed = await _pushPromptAgain(becauseCancelled: false);
+      if (!mounted || pushed) return;
       setState(() {
         _phase = _PaymentTrackPhase.tracking;
         _message = _confirmationHints[_hintIndex];
@@ -520,6 +537,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
   }
 
   bool get _showRetry =>
+      _resendCapped ||
       _phase == _PaymentTrackPhase.cancelled ||
       _phase == _PaymentTrackPhase.insufficient ||
       _phase == _PaymentTrackPhase.failed;
@@ -752,25 +770,14 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
               ),
             ],
           ),
-          if (_phase == _PaymentTrackPhase.tracking && _cancelCount > 0) ...[
+          if (_phase == _PaymentTrackPhase.tracking && _resendCount > 0) ...[
             const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(_maxCancelAttempts, (i) {
-                final filled = i < _cancelCount;
-                return Container(
-                  width: 10,
-                  height: 10,
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: filled ? const Color(0xFFF97316) : Colors.white.withValues(alpha: 0.15),
-                    border: Border.all(
-                      color: filled ? const Color(0xFFF97316) : Colors.white.withValues(alpha: 0.25),
-                    ),
-                  ),
-                );
-              }),
+            Text(
+              _resendPhone.isEmpty
+                  ? 'Ombi limepelekwa tena mara $_resendCount'
+                  : 'Ombi limepelekwa tena mara $_resendCount kwa $_resendPhone',
+              textAlign: TextAlign.center,
+              style: rajdhani(11, weight: FontWeight.w600).copyWith(color: accent),
             ),
           ],
           const SizedBox(height: 14),
@@ -798,14 +805,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
                     'Ukaguzi #$_pollCount — tunathibitisha moja kwa moja na seva',
                     textAlign: TextAlign.center,
                     style: rajdhani(11).copyWith(color: t.text2),
-                  ),
-                ],
-                if (_phase == _PaymentTrackPhase.tracking && _cancelCount > 0) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    'Ombi la malipo limetumwa tena $_cancelCount/$_maxCancelAttempts',
-                    textAlign: TextAlign.center,
-                    style: rajdhani(11, weight: FontWeight.w600).copyWith(color: accent),
                   ),
                 ],
               ],

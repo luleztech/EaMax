@@ -5,6 +5,25 @@ import '../config/payment_helpers.dart';
 import '../services/user_id.dart';
 import 'payment_tracking_controller.dart';
 
+/// Outcome of a real wallet re-push while a checkout is still being checked.
+class PaymentResendResult {
+  const PaymentResendResult({
+    this.orderId,
+    this.phone = '',
+    this.attempt = 0,
+    this.skippedTooSoon = false,
+    this.capped = false,
+  });
+
+  final String? orderId;
+  final String phone;
+  final int attempt;
+  final bool skippedTooSoon;
+  final bool capped;
+
+  bool get sent => orderId != null && orderId!.isNotEmpty;
+}
+
 /// Persisted STK session so [PaymentStatusCard] can resend prompts while tracking.
 class PaymentPendingSession {
   PaymentPendingSession({
@@ -29,9 +48,15 @@ class PaymentPendingSession {
   static const promotionIdKey = 'pendingPaymentPromotionId';
   static const resendCountKey = 'paymentStkResendCount';
   static const resendAnchorKey = 'paymentStkResendAnchorOrder';
+  static const resendInFlightKey = 'paymentStkResendInFlight';
+  static const promptAtKey = 'pendingPaymentLastPromptAt';
   static const startedAtKey = 'pendingPaymentStartedAt';
   static const cancelCountKey = 'paymentTrackCancelCount';
-  static const maxCancelAttempts = 3;
+  /// Safety stop so a stuck checkout cannot create endless wallet prompts.
+  static const maxAutoResends = 12;
+  static const pendingResendGap = Duration(seconds: 25);
+  static const cancelResendGap = Duration(seconds: 8);
+  static const maxCancelAttempts = maxAutoResends;
 
   static Future<void> save({
     required String orderId,
@@ -53,7 +78,10 @@ class PaymentPendingSession {
     await prefs.setString(resendAnchorKey, orderId);
     await prefs.setInt(resendCountKey, 0);
     await prefs.setInt(cancelCountKey, 0);
-    await prefs.setInt(startedAtKey, DateTime.now().millisecondsSinceEpoch);
+    await prefs.remove(resendInFlightKey);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await prefs.setInt(startedAtKey, now);
+    await prefs.setInt(promptAtKey, now);
     // A new checkout is its own session. Do not keep earlier order ids,
     // or a repeat payment inherits the last attempt's success or failure.
     await prefs.setStringList(relatedOrdersKey, [orderId]);
@@ -186,38 +214,94 @@ class PaymentPendingSession {
     await prefs.remove(cancelCountKey);
   }
 
-  /// Fire a fresh STK for the current session (e.g. after user cancels on phone).
-  static Future<String?> resendStk({String? payerName}) async {
+  static Future<Duration> sinceLastPrompt() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ms = prefs.getInt(promptAtKey) ?? prefs.getInt(startedAtKey);
+    if (ms == null || ms <= 0) return const Duration(hours: 1);
+    return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+  }
+
+  /// Real wallet prompt to the number the user typed.
+  ///
+  /// Pending checkouts retry after [pendingResendGap] (prompt never arrived).
+  /// A cancel or expired prompt retries after [cancelResendGap], again and again,
+  /// until [maxAutoResends]. The phone, plan, and amount stay; the prompt clock
+  /// and in-flight flag are refreshed so the next push is a new order.
+  static Future<PaymentResendResult> resendStk({
+    String? payerName,
+    bool userCancelled = false,
+  }) async {
     final session = await load();
-    if (session == null) return null;
-    final uid = await ensureLocalUserId();
-    final Map<String, dynamic> result;
-    if (session.promotionId != null) {
-      result = await paymentsApi.startOfferPayment(
-        externalId: uid,
-        promotionId: session.promotionId!,
-        amount: session.amount,
-        phone: session.phone,
-        email: '$uid@eamax.app',
-        name: payerName ?? uid,
-      );
-    } else {
-      result = await paymentsApi.startPayment(
-        externalId: uid,
-        bundle: session.bundle,
-        amount: session.amount,
-        phone: session.phone,
-        email: '$uid@eamax.app',
-        name: payerName ?? 'EaMax ${session.phone}',
-      );
+    if (session == null) {
+      return const PaymentResendResult(skippedTooSoon: true);
     }
-    final newOrderId = (result['orderId']?.toString() ?? '').trim();
-    if (newOrderId.isNotEmpty) {
-      // Keep the previous order id so we still unlock if the user paid the
-      // first STK prompt after a cancel/resend cycle.
+    final prefs = await SharedPreferences.getInstance();
+    final inFlightAt = prefs.getInt(resendInFlightKey) ?? 0;
+    if (inFlightAt > 0 &&
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(inFlightAt)) <
+            const Duration(seconds: 40)) {
+      return PaymentResendResult(phone: session.phone, skippedTooSoon: true);
+    }
+    final already = prefs.getInt(resendCountKey) ?? 0;
+    if (already >= maxAutoResends) {
+      return PaymentResendResult(phone: session.phone, attempt: already, capped: true);
+    }
+    final age = await sinceLastPrompt();
+    final gap = userCancelled ? cancelResendGap : pendingResendGap;
+    if (age < gap) {
+      return PaymentResendResult(phone: session.phone, attempt: already, skippedTooSoon: true);
+    }
+
+    await prefs.setInt(resendInFlightKey, DateTime.now().millisecondsSinceEpoch);
+    try {
+      final uid = await ensureLocalUserId();
+      final Map<String, dynamic> result;
+      if (session.promotionId != null) {
+        result = await paymentsApi.startOfferPayment(
+          externalId: uid,
+          promotionId: session.promotionId!,
+          amount: session.amount,
+          phone: session.phone,
+          email: '$uid@eamax.app',
+          name: payerName ?? 'EaMax ${session.phone}',
+        );
+      } else {
+        result = await paymentsApi.startPayment(
+          externalId: uid,
+          bundle: session.bundle,
+          amount: session.amount,
+          phone: session.phone,
+          email: '$uid@eamax.app',
+          name: payerName ?? 'EaMax ${session.phone}',
+        );
+      }
+      final newOrderId = (result['orderId']?.toString() ?? '').trim();
+      if (newOrderId.isEmpty) {
+        await _stampPromptClock(prefs);
+        return PaymentResendResult(phone: session.phone, attempt: already);
+      }
+      // Keep earlier order ids so a PIN on a previous prompt still unlocks.
       await updateOrderId(newOrderId);
+      final attempt = await incrementResendCount();
+      await _stampPromptClock(prefs);
+      await prefs.setInt(cancelCountKey, 0);
+      return PaymentResendResult(
+        orderId: newOrderId,
+        phone: session.phone,
+        attempt: attempt,
+      );
+    } catch (_) {
+      await _stampPromptClock(prefs);
+      rethrow;
+    } finally {
+      await prefs.remove(resendInFlightKey);
     }
-    return newOrderId.isEmpty ? null : newOrderId;
+  }
+
+  static Future<void> _stampPromptClock(SharedPreferences prefs) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await prefs.setInt(promptAtKey, now);
+    await prefs.setInt(startedAtKey, now);
   }
 
   /// Drop every cached checkout so the next payment starts at step 1.
@@ -235,6 +319,8 @@ class PaymentPendingSession {
     await prefs.remove(promotionIdKey);
     await prefs.remove(resendCountKey);
     await prefs.remove(resendAnchorKey);
+    await prefs.remove(resendInFlightKey);
+    await prefs.remove(promptAtKey);
     await prefs.remove(startedAtKey);
     await prefs.remove(cancelCountKey);
     PaymentTrackingController.instance.sync(active: false);
