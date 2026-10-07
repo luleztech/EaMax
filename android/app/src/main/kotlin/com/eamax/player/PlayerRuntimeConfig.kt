@@ -7,24 +7,25 @@ import com.eamax.domain.model.StreamQuality
  * Used by ExoPlayerEngine for buffer sizes, timeouts, and default quality.
  */
 object PlayerRuntimeConfig {
-    var bufferMinMs: Int = 2_500
-    var bufferMaxMs: Int = 20_000
-    var bufferForPlaybackMs: Int = 500
-    var bufferForPlaybackAfterRebufferMs: Int = 1_500
+    var bufferMinMs: Int = 10_000
+    var bufferMaxMs: Int = 40_000
+    var bufferForPlaybackMs: Int = 1_800
+    var bufferForPlaybackAfterRebufferMs: Int = 3_500
     var networkTimeoutMs: Int = 10_000
     var defaultQuality: StreamQuality = StreamQuality.QUALITY_480P
     var autoPlay: Boolean = true
     var failoverToWebview: Boolean = true
 
     fun applyFromArgs(args: Map<String, Any?>) {
+        // Match Washa/Orizon live-TV buffers — low min buffer causes rebuffer scratch on weak networks.
         (args["bufferMinMs"] as? Number)?.toInt()?.takeIf { it in 500..60_000 }?.let {
-            bufferMinMs = it
+            bufferMinMs = it.coerceAtLeast(8_000)
         }
         (args["bufferMaxMs"] as? Number)?.toInt()?.takeIf { it in 2_000..120_000 }?.let {
-            bufferMaxMs = it
+            bufferMaxMs = it.coerceAtLeast(bufferMinMs + 2_000)
         }
         (args["initialBufferMs"] as? Number)?.toInt()?.takeIf { it in 200..10_000 }?.let {
-            bufferForPlaybackMs = it
+            bufferForPlaybackMs = it.coerceIn(1_200, 3_000)
         }
         (args["networkTimeoutMs"] as? Number)?.toInt()?.takeIf { it in 3_000..60_000 }?.let {
             networkTimeoutMs = it
@@ -38,7 +39,7 @@ object PlayerRuntimeConfig {
 
     fun parseQuality(raw: String?): StreamQuality {
         return when (raw?.trim()?.lowercase()) {
-            "auto", "abr", "" -> StreamQuality.AUTO
+            "auto", "abr", "" -> StreamQuality.QUALITY_480P
             "240p", "240" -> StreamQuality.QUALITY_240P
             "360p", "360" -> StreamQuality.QUALITY_360P
             "480p", "480" -> StreamQuality.QUALITY_480P

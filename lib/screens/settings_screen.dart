@@ -3,9 +3,7 @@ import 'package:flutter/services.dart';
 import '../theme/ionicons_compat.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../config/api.dart';
 import '../config/app_version.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
@@ -19,29 +17,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  String? _whatsapp;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadWhatsApp();
-  }
-
-  Future<void> _loadWhatsApp() async {
-    try {
-      final data = await settingsApi.getWhatsAppNumber();
-      final n = data['number']?.toString().replaceAll(RegExp(r'\s+'), '');
-      if (mounted && n != null && n.isNotEmpty) setState(() => _whatsapp = n);
-    } catch (_) {}
-  }
-
-  Future<void> _openWhatsapp() async {
-    final d = _whatsapp?.replaceAll(RegExp(r'\D'), '') ?? '';
-    if (d.length < 8) return;
-    final u = Uri.parse('https://wa.me/$d');
-    if (await canLaunchUrl(u)) await launchUrl(u, mode: LaunchMode.externalApplication);
-  }
-
   @override
   Widget build(BuildContext context) {
     final tc = context.watch<ThemeController>();
@@ -109,11 +84,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Share.share('Tazama TV moja kwa moja na EaMax!', subject: 'EaMax');
                   }),
                   _row(t, Ionicons.heart_outline, 'Kuhusu EaMax', 'Soma', onTap: () => _openAbout(context)),
-                ]),
-                const SizedBox(height: 24),
-                _sectionTitle(t, Ionicons.help_circle_outline, 'HELP'),
-                _group(t, [
-                  _row(t, Ionicons.logo_whatsapp, 'WhatsApp Support', 'Chat Now', onTap: _openWhatsapp),
                 ]),
                 const SizedBox(height: 40),
               ]),

@@ -5,7 +5,7 @@
  *
  * ENV variables:
  *   MIN_APP_VERSION       – oldest build that may access the API (semver, e.g. "1.3.8")
- *   LATEST_APP_VERSION    – current published version shown in the update prompt (e.g. "1.3.10")
+ *   LATEST_APP_VERSION    – current published version shown in the update prompt (e.g. "1.3.28")
  *   FORCE_UPDATE          – "true" makes the Flutter gate block the app
  *   MAINTENANCE_MODE      – "true" shows the maintenance screen
  *   MAINTENANCE_MESSAGE   – optional custom message
@@ -15,7 +15,7 @@
  */
 module.exports = {
   get minimumSupportedVersion() { return process.env.MIN_APP_VERSION || '1.0.0'; },
-  get latestVersion() { return process.env.LATEST_APP_VERSION || '1.3.10'; },
+  get latestVersion() { return process.env.LATEST_APP_VERSION || '1.3.29'; },
   get forceUpdate() { return process.env.FORCE_UPDATE === 'true'; },
   get maintenanceMode() { return process.env.MAINTENANCE_MODE === 'true'; },
   get maintenanceMessage() {

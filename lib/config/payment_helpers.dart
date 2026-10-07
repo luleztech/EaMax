@@ -276,7 +276,7 @@ abstract final class PaymentStatusCopy {
   static const checking = 'Inaangalia malipo yako…';
   static const waitingConfirmation = 'Thibitisha malipo kwa PIN kwenye simu yako.';
   static const noPending = 'Hakuna malipo yanayosubiri kwa sasa.';
-  static const networkError = 'Mtandao umeshindwa. Gusa "Angalia Malipo" tena.';
+  static const networkError = 'Mtandao umeshindwa. Tunajaribu tena kiotomatiki.';
   static const serverProcessing = 'Seva inaendelea kuchakata malipo yako…';
 
   static String resendStk(int attempt, int max) =>

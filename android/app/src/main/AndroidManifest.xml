@@ -38,7 +38,7 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".EaMaxNativePlayerActivity"
+            android:name=".OrizonPlayerActivity"
             android:exported="false"
             android:launchMode="singleTop"
             android:theme="@style/NativePlayerTheme"

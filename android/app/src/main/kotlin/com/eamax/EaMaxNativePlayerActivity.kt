@@ -33,11 +33,13 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.eamax.R
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
 import com.eamax.player.PlayerManager
 import com.eamax.player.PlayerRuntimeConfig
+import com.eamax.player.PlaybackPreferences
 import com.eamax.player.StreamSessionBuilder
 import com.eamax.player.FallbackStreamParser
 import com.eamax.player.EamaxPlayerOverlay
@@ -176,6 +178,11 @@ class EaMaxNativePlayerActivity : AppCompatActivity() {
         val defaultQualityRaw = extras.getString("defaultQuality")
         selectedOkoaQuality = PlayerRuntimeConfig.parseQuality(defaultQualityRaw)
         PlayerRuntimeConfig.defaultQuality = selectedOkoaQuality
+        PlaybackPreferences.update(
+            dataSaver = extras.getBoolean("dataSaver"),
+            defaultQuality = defaultQualityRaw?.ifBlank { "480p" } ?: "480p",
+            videoZoomMode = extras.getString("videoZoomMode")?.lowercase()?.ifBlank { "zoom" } ?: "zoom",
+        )
 
         val fallbackJson = extras.getString("fallbackStreamsJson").orEmpty()
         val fallbackSessions = FallbackStreamParser.parse(fallbackJson, session)

@@ -16,3 +16,21 @@
 
 # Kotlin metadata (helps reflection-heavy libs)
 -keepattributes RuntimeVisibleAnnotations,AnnotationDefault
+
+# WorkManager + Room (flutter_local_notifications / FCM background work).
+# Without these, release R8 strips WorkDatabase_Impl → instant crash on launch.
+-keep class * extends androidx.work.Worker
+-keep class * extends androidx.work.ListenableWorker
+-keep class * extends androidx.work.InputMerger
+-keep class androidx.work.** { *; }
+-keep class androidx.work.impl.** { *; }
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+-keepclassmembers class * {
+    @androidx.room.* <methods>;
+}
+-dontwarn androidx.work.**
+-dontwarn androidx.room.**
+
+# Flutter local notifications plugin.
+-keep class com.dexterous.** { *; }

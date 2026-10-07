@@ -225,6 +225,7 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
 
     setState(() => _submittingOffer = true);
     try {
+      await PaymentPendingSession.resetForNewCheckout();
       final result = await paymentsApi.startOfferPayment(
         externalId: uid,
         promotionId: p.id,

@@ -423,8 +423,13 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}
 const router = express.Router();
 
 const AURAX_HTTP_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.AURAX_HTTP_TIMEOUT_MS) || 22000, 8000),
-  55000,
+  Math.max(Number(process.env.AURAX_HTTP_TIMEOUT_MS) || 9000, 5000),
+  20000,
+);
+/** Status checks must return quickly so a paid PIN unlocks on the next poll. */
+const AURAX_POLL_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.AURAX_POLL_TIMEOUT_MS) || 6000, 4000),
+  12000,
 );
 
 /**
@@ -641,7 +646,7 @@ const pollAuraxOrderStatus = async (orderId) => {
         method: 'GET',
         headers: getAuraxPayRequestHeaders(),
       },
-      AURAX_HTTP_TIMEOUT_MS,
+      AURAX_POLL_TIMEOUT_MS,
     );
     return { statusResp: response, statusData };
   } catch (fetchErr) {
@@ -1032,13 +1037,19 @@ const findPendingPaymentByBuyerHints = async ({ phones = [], amount = null, paym
   const hasAmount = Number.isFinite(amountNum) && amountNum > 0;
 
   const runHintQuery = async (withAmount) => {
-    const params = [uniquePhones];
+    const last9 = [...new Set(
+      uniquePhones.map((p) => String(p).replace(/\D/g, '').slice(-9)).filter((d) => d.length === 9),
+    )];
+    const params = [uniquePhones, last9];
     let sql = `
       SELECT id, user_id, plan, amount_cents, currency, status, payment_provider, provider_ref, gateway_ref, buyer_phone
         FROM subscription_payments
        WHERE status = 'pending'
-         AND created_at > NOW() - INTERVAL '48 hours'
-         AND buyer_phone = ANY($1::text[])`;
+         AND created_at > NOW() - INTERVAL '7 days'
+         AND (
+           buyer_phone = ANY($1::text[])
+           OR RIGHT(regexp_replace(COALESCE(buyer_phone, ''), '[^0-9]', '', 'g'), 9) = ANY($2::text[])
+         )`;
     if (paymentProvider) {
       params.push(paymentProvider);
       sql += ` AND payment_provider = $${params.length}`;
@@ -1208,14 +1219,14 @@ const tryApplySonicCompletedPayment = async (orderId, meta, { altRefs = [] } = {
   }
 };
 
-const SONIC_HTTP_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.SONIC_HTTP_TIMEOUT_MS) || 12000, 6000),
-  25000,
-);
-/** create_order must return quickly so the USSD lands while the user still has the phone in hand. */
 const SONIC_CREATE_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 6500, 4000),
-  10000,
+  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 5000, 3500),
+  8000,
+);
+/** order_status should not block premium unlock behind a slow gateway. */
+const SONIC_POLL_TIMEOUT_MS = Math.min(
+  Math.max(Number(process.env.SONIC_POLL_TIMEOUT_MS) || 6000, 3500),
+  12000,
 );
 
 const isSonicPaidRaw = (rawUpper) => {
@@ -1225,8 +1236,12 @@ const isSonicPaidRaw = (rawUpper) => {
   // `OK` is commonly the gateway's request acknowledgement, not proof that a
   // wallet debit completed. Only explicit completed/paid statuses may grant.
   if (u === 'OK') return false;
+  if (/^(NOT|UN)[\s_-]/.test(u)) return false;
   if (SONIC_WEBHOOK_PAID_STATUSES.has(u)) return true;
   if (/^(SUCCESSFUL|COLLECTED|PAID_OUT|PAYMENT_COMPLETED|TRANSACTION_SUCCESS)/.test(u)) return true;
+  // "COMPLETED SUCCESSFULLY" / "PAYMENT PAID" — whole words only, so UNPAID stays unpaid.
+  if (/\b(COMPLETED|SUCCESSFUL|PAID_OUT|SETTLED|COLLECTED)\b/.test(u)) return true;
+  if (/\bPAID\b/.test(u)) return true;
   const lower = u.toLowerCase();
   return lower === 'successful';
 };
@@ -1270,42 +1285,68 @@ const extractSonicTransid = (statusData) => {
  * Wallet status only. SonicPesa wraps every HTTP call in `{ status: "success" }`
  * (create_order / order_status) while `data.payment_status` stays PENDING until PIN.
  * Never prefer the envelope `status` over `payment_status`.
+ *
+ * An explicit paid `payment_status` always wins over a sibling `transaction.status`
+ * that is still PENDING. That leftover field was leaving successful webhooks pending
+ * and blocking the premium grant.
  */
 const extractSonicPaymentStatus = (statusData) => {
   if (!statusData || typeof statusData !== 'object') return '';
   const nest = pickSonicNestedData(statusData);
   const tx = pickSonicTransactionObject(statusData);
 
-  const walletCandidates = [
+  const explicitWallet = [
     nest?.payment_status,
     nest?.paymentStatus,
     tx?.payment_status,
     tx?.paymentStatus,
     statusData.payment_status,
     statusData.paymentStatus,
-    tx?.status,
-    nest?.transaction_status,
-    statusData.transaction_status,
-    nest?.result,
-    tx?.result,
   ]
     .map(sonicNonEmptyStatus)
     .filter(Boolean);
 
-  for (const s of walletCandidates) {
-    if (SONIC_EXPLICIT_UNPAID_STATUSES.has(s)) return s;
-  }
-  for (const s of walletCandidates) {
-    if (isPaymentTerminalStatus(s)) return s;
-  }
-  for (const s of walletCandidates) {
+  // Paid debit wins even when another field on the same payload is still PENDING.
+  for (const s of explicitWallet) {
     if (isSonicPaidRaw(s)) return s;
   }
-  if (walletCandidates[0]) return walletCandidates[0];
+  for (const s of explicitWallet) {
+    if (isPaymentTerminalStatus(s)) return s;
+  }
+  for (const s of explicitWallet) {
+    if (SONIC_EXPLICIT_UNPAID_STATUSES.has(s)) return s;
+  }
+
+  // transaction.status SUCCESS is a real debit when payment_status is absent.
+  // Bare SUCCESS on data.status is often a copied HTTP ack — ignore that token only.
+  const txState = [tx?.status, tx?.state].map(sonicNonEmptyStatus).filter(Boolean);
+  for (const s of txState) {
+    if (isSonicPaidRaw(s)) return s;
+  }
+  const nestedState = [
+    nest?.transaction_status,
+    statusData.transaction_status,
+    nest?.status,
+    nest?.state,
+    nest?.result,
+    tx?.result,
+    statusData.result,
+  ]
+    .map(sonicNonEmptyStatus)
+    .filter(Boolean);
+  for (const s of nestedState) {
+    if (s === 'SUCCESS' || s === 'OK') continue;
+    if (isSonicPaidRaw(s)) return s;
+  }
+  for (const s of [...txState, ...nestedState]) {
+    if (isPaymentTerminalStatus(s)) return s;
+  }
+  if (explicitWallet[0]) return explicitWallet[0];
 
   // Envelope `status` is not a wallet debit. Only surface it for hard failures.
   const envelope = sonicNonEmptyStatus(statusData.status);
   if (envelope && SONIC_API_ENVELOPE_STATUSES.has(envelope)) return '';
+  if (envelope === 'SUCCESS' || envelope === 'OK') return '';
   if (envelope && isPaymentTerminalStatus(envelope)) return envelope;
   return envelope || '';
 };
@@ -1329,13 +1370,18 @@ const isSonicCompletionEvent = (ev) => {
 
 const evaluateSonicOrderStatusForApply = (payload) => {
   const rawStatus = extractSonicPaymentStatus(payload);
-  if (SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)) {
-    return { isCompleted: false, rawStatus: rawStatus || 'PENDING' };
-  }
+  // Failure / no-money always beats a misleading success envelope.
   if (isPaymentTerminalStatus(rawStatus)) {
     return { isCompleted: false, rawStatus };
   }
-  let isCompleted = isSonicPaidRaw(rawStatus);
+  // Explicit wallet debit — do not keep scanning sibling PENDING fields.
+  if (isSonicPaidRaw(rawStatus)) {
+    return { isCompleted: true, rawStatus };
+  }
+  if (SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)) {
+    return { isCompleted: false, rawStatus: rawStatus || 'PENDING' };
+  }
+  let isCompleted = false;
   const nest = pickSonicNestedData(payload);
   const tx = pickSonicTransactionObject(payload);
   const envelope = sonicNonEmptyStatus(payload?.status);
@@ -1356,6 +1402,8 @@ const evaluateSonicOrderStatusForApply = (payload) => {
   }
 
   // Official SonicPesa webhook: payment.completed + root status SUCCESS (no payment_status field).
+  // Reaching this block means the wallet field is missing — not explicitly PENDING.
+  // A completion event is the debit notice; do not leave it as a defaulted PENDING.
   if (!isCompleted && isSonicCompletionEvent(ev)) {
     if (isSonicPaidRaw(envelope) || isSonicPaidRaw(txStatus)) {
       return { isCompleted: true, rawStatus: envelope || txStatus || 'COMPLETED' };
@@ -1365,6 +1413,15 @@ const evaluateSonicOrderStatusForApply = (payload) => {
     if (msisdn || (Number.isFinite(amount) && amount > 0)) {
       return { isCompleted: true, rawStatus: 'COMPLETED' };
     }
+    if (
+      envelope === 'ERROR' ||
+      envelope === 'FAIL' ||
+      envelope === 'FAILED' ||
+      isPaymentTerminalStatus(envelope)
+    ) {
+      return { isCompleted: false, rawStatus: envelope };
+    }
+    return { isCompleted: true, rawStatus: 'COMPLETED' };
   }
 
   // Poll: wallet debit sometimes appears only on transaction.status (all TZ networks).
@@ -1390,8 +1447,8 @@ const evaluateSonicOrderStatusForApply = (payload) => {
   return { isCompleted, rawStatus: rawStatus || 'PENDING' };
 };
 
-const gatewayFetchJson = async (url, options = {}, timeoutMs = 18000) => {
-  const ms = Math.min(Math.max(Number(timeoutMs) || 18000, 5000), 55000);
+const gatewayFetchJson = async (url, options = {}, timeoutMs = 8000) => {
+  const ms = Math.min(Math.max(Number(timeoutMs) || 8000, 3000), 20000);
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
   try {
@@ -1683,7 +1740,7 @@ const pollSonicOrderStatus = async (orderId) => {
         headers: getSonicPesaRequestHeaders(),
         body: JSON.stringify({ order_id: orderId }),
       },
-      SONIC_HTTP_TIMEOUT_MS,
+      SONIC_POLL_TIMEOUT_MS,
     );
     return { statusResp: response, statusData };
   } catch (fetchErr) {
@@ -1882,6 +1939,9 @@ async function handlePaymentStart(req, res, next) {
         const sonicOrderId = String(
           sonicData.data?.order_id ?? sonicData.data?.orderId ?? sonicData.order_id ?? sonicData.orderId ?? '',
         ).trim();
+        const sonicReference = String(
+          sonicData.data?.reference ?? sonicData.reference ?? sonicData.data?.reference_id ?? '',
+        ).trim();
         const initiateMsg = sonicData.message || sonicData.error || '';
         const initiateCode = sonicData.resultcode || sonicData.code;
         const sendFailed = isSonicPaymentSendFailure(initiateMsg, initiateCode);
@@ -1890,9 +1950,19 @@ async function handlePaymentStart(req, res, next) {
         // status:"success" + order_id without ever ringing the user's phone.
         if (sonicOrderId && !sendFailed && ussdSent) {
           await query(
-            `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, payment_provider, buyer_phone)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [userId, planKey, amountToSend, 'TZS', 'pending', sonicOrderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhoneLocal],
+            `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [
+              userId,
+              planKey,
+              amountToSend,
+              'TZS',
+              'pending',
+              sonicOrderId,
+              sonicReference && sonicReference !== sonicOrderId ? sonicReference : null,
+              PAYMENT_PROVIDERS.SONICPESA,
+              buyerPhoneLocal,
+            ],
           );
           return res.json({
             status: 'pending',
@@ -1992,8 +2062,8 @@ async function handlePaymentStart(req, res, next) {
       data: { ...data, bundle: planKey },
       externalId: data.externalId,
       callbackUrl,
-      // Give Aurax the same window as a direct start — Sonic may have already consumed ~13s.
-      ...(usedAuraxFallbackFromSonic ? { timeoutMs: 20000, maxAttempts: 2 } : {}),
+      // One short Aurax attempt after Sonic — a second 20s try keeps the prompt off the phone.
+      ...(usedAuraxFallbackFromSonic ? { timeoutMs: AURAX_HTTP_TIMEOUT_MS, maxAttempts: 1 } : {}),
     });
 
     console.log('[AuraxPay] Response:', {
@@ -2593,71 +2663,94 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
-      const { statusResp, statusData } = await pollSonicOrderStatus(orderId);
+      const sonicPollIds = [...new Set(
+        [orderId, String(dbCheck.rows[0]?.gateway_ref || '').trim()].filter(Boolean),
+      )];
+      let pendingHit = null;
+      let terminalHit = null;
+      let httpError = null;
 
-      const sonicMessage = String(statusData.message || statusData.error || '').toLowerCase();
-      const isOrderNotFound =
-        !statusResp.ok &&
-        (sonicMessage.includes('no order found') ||
-          sonicMessage.includes('order not found') ||
-          statusResp.status === 404);
-      if (isOrderNotFound) {
-        return res.json({ status: 'PENDING', raw: statusData });
-      }
+      for (const pollId of sonicPollIds) {
+        const { statusResp, statusData } = await pollSonicOrderStatus(pollId);
+        const sonicMessage = String(statusData.message || statusData.error || '').toLowerCase();
+        const isOrderNotFound =
+          !statusResp.ok &&
+          (sonicMessage.includes('no order found') ||
+            sonicMessage.includes('order not found') ||
+            statusResp.status === 404);
+        if (!statusResp.ok) {
+          if (!isOrderNotFound && !httpError) {
+            httpError = { pollId, statusResp, statusData };
+          }
+          continue;
+        }
 
-      if (!statusResp.ok) {
-        console.warn('[SonicPesa] order_status HTTP error — keeping payment pending', {
-          orderId,
-          httpStatus: statusResp.status,
-          message: statusData.message || statusData.error,
-        });
-        return res.json({ status: 'PENDING', raw: statusData });
-      }
-
-      const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
-
-      if (isCompleted) {
-        try {
-          const meta = statusData.data || statusData || {};
-          await tryApplySonicCompletedPayment(orderId, meta, {
-            altRefs: [
-              statusData.data?.order_id,
-              statusData.data?.orderId,
-              statusData.data?.reference,
-              statusData.reference,
-              statusData.transid,
-              statusData.transaction?.order_id,
-            ].filter(Boolean),
-          });
-        } catch (applyErr) {
-          console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
-          return res.json({
-            status: 'COMPLETED',
-            applying: true,
-            premiumGranted: false,
-            userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
-            raw: statusData,
+        const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
+        if (isCompleted) {
+          try {
+            const meta = statusData.data || statusData || {};
+            await tryApplySonicCompletedPayment(orderId, meta, {
+              altRefs: [
+                pollId,
+                statusData.data?.order_id,
+                statusData.data?.orderId,
+                statusData.data?.reference,
+                statusData.reference,
+                statusData.transid,
+                statusData.transaction?.order_id,
+                dbCheck.rows[0]?.gateway_ref,
+              ].filter(Boolean),
+            });
+          } catch (applyErr) {
+            console.error('[Payment] Sonic applyCompletedPayment failed during poll:', applyErr?.message || applyErr);
+            return res.json({
+              status: 'COMPLETED',
+              applying: true,
+              premiumGranted: false,
+              userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
+              raw: statusData,
+            });
+          }
+          return respondPaymentCompletion(orderId, statusData, res, {
+            gatewayConfirmedPaid: true,
+            gatewayHint: PAYMENT_PROVIDERS.SONICPESA,
           });
         }
-        return respondPaymentCompletion(orderId, statusData, res, {
-          gatewayConfirmedPaid: true,
-          gatewayHint: PAYMENT_PROVIDERS.SONICPESA,
-        });
+
+        if (isPaymentTerminalStatus(rawStatus)) {
+          if (!terminalHit) terminalHit = { rawStatus, statusData };
+          continue;
+        }
+        if (!pendingHit) pendingHit = { rawStatus, statusData };
       }
 
-      if (isPaymentTerminalStatus(rawStatus)) {
-        await markOrderTerminalIfPending(orderId, rawStatus);
-        const clientStatus = isPaymentCancelledStatus(rawStatus) ? 'CANCELLED' : rawStatus;
+      if (terminalHit && !pendingHit) {
+        await markOrderTerminalIfPending(orderId, terminalHit.rawStatus);
+        const clientStatus = isPaymentCancelledStatus(terminalHit.rawStatus)
+          ? 'CANCELLED'
+          : terminalHit.rawStatus;
         return res.json({
           status: clientStatus,
           terminal: true,
-          userMessage: mapTerminalStatusUserMessage(rawStatus),
-          raw: statusData,
+          userMessage: mapTerminalStatusUserMessage(terminalHit.rawStatus),
+          raw: terminalHit.statusData,
         });
       }
 
+      if (httpError && !pendingHit) {
+        console.warn('[SonicPesa] order_status HTTP error — keeping payment pending', {
+          orderId,
+          pollId: httpError.pollId,
+          httpStatus: httpError.statusResp.status,
+          message: httpError.statusData.message || httpError.statusData.error,
+        });
+      }
+
+      const rawStatus = pendingHit?.rawStatus;
+      const statusData = pendingHit?.statusData || httpError?.statusData || {};
       let clientStatus = rawStatus || 'PENDING';
-      if (!isCompleted && (clientStatus === 'SUCCESS' || clientStatus === 'OK')) {
+      // Envelope SUCCESS/OK is an STK acknowledgement, not a wallet debit.
+      if (clientStatus === 'SUCCESS' || clientStatus === 'OK') {
         clientStatus = 'PENDING';
       }
 
@@ -2844,9 +2937,15 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
   const walletStatus = extractSonicPaymentStatus(payload);
   const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(payload);
   const ev = String(payload.event || payload.type || '').toLowerCase().trim();
-  let paid = isCompleted;
-  // Do not gate on defaulted rawStatus=PENDING — only explicit unpaid wallet fields block events.
-  if (!paid && isSonicCompletionEvent(ev) && !SONIC_EXPLICIT_UNPAID_STATUSES.has(walletStatus)) {
+  let paid = isCompleted || isSonicPaidRaw(walletStatus);
+  // Missing wallet status defaults to PENDING inside evaluate. That default must
+  // not cancel a completion event — only an explicit unpaid payment_status can.
+  if (
+    !paid &&
+    isSonicCompletionEvent(ev) &&
+    !SONIC_EXPLICIT_UNPAID_STATUSES.has(walletStatus) &&
+    !isPaymentTerminalStatus(walletStatus)
+  ) {
     paid = true;
   }
   if (!paid) {
@@ -2874,17 +2973,19 @@ const extractSonicWebhookOrderAndPaid = (payload) => {
         isTruthyPaidFlag(obj.paymentCompleted) ||
         isTruthyPaidFlag(obj.payment_completed)),
   );
-  // Never treat terminal failure / no-money as paid. Explicit paid flags win over PROCESSING noise.
-  if (paid && isPaymentTerminalStatus(rawStatus)) {
+  // Never treat terminal failure / no-money as paid.
+  // Do not use a defaulted rawStatus of PENDING — that is not an explicit wallet field.
+  if (paid && (isPaymentTerminalStatus(walletStatus) || isPaymentTerminalStatus(rawStatus))) {
     paid = false;
   } else if (
     paid &&
     !hasExplicitPaidFlag &&
-    SONIC_EXPLICIT_UNPAID_STATUSES.has(rawStatus)
+    SONIC_EXPLICIT_UNPAID_STATUSES.has(walletStatus)
   ) {
     paid = false;
   }
-  return { orderId: orderId || null, paid, raw: rawStatus || ev };
+  const reported = isSonicPaidRaw(walletStatus) ? walletStatus : (rawStatus || ev);
+  return { orderId: orderId || null, paid, raw: reported || ev };
 };
 
 // Webhook endpoint for Aurax Pay (configure in Aurax dashboard: /api/payments/aurax/webhook)
@@ -3210,23 +3311,30 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
 
   if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
     if (!SONICPESA_API_KEY) return false;
-    const { statusResp, statusData } = await pollSonicOrderStatus(orderId);
-    if (!statusResp.ok) return false;
-    const { isCompleted } = evaluateSonicOrderStatusForApply(statusData);
-    if (!isCompleted) return false;
-    const meta = statusData.data || statusData || {};
-    const result = await tryApplySonicCompletedPayment(orderId, meta, {
-      altRefs: [
-        statusData.data?.order_id,
-        statusData.data?.orderId,
-        statusData.data?.reference,
-        statusData.reference,
-        statusData.transid,
-        payRow.gateway_ref,
-        statusData.transaction?.order_id,
-      ].filter(Boolean),
-    });
-    return Boolean(result);
+    const pollIds = [...new Set(
+      [orderId, String(payRow.gateway_ref || '').trim()].filter(Boolean),
+    )];
+    for (const pollId of pollIds) {
+      const { statusResp, statusData } = await pollSonicOrderStatus(pollId);
+      if (!statusResp.ok) continue;
+      const { isCompleted } = evaluateSonicOrderStatusForApply(statusData);
+      if (!isCompleted) continue;
+      const meta = statusData.data || statusData || {};
+      const result = await tryApplySonicCompletedPayment(orderId, meta, {
+        altRefs: [
+          pollId,
+          statusData.data?.order_id,
+          statusData.data?.orderId,
+          statusData.data?.reference,
+          statusData.reference,
+          statusData.transid,
+          payRow.gateway_ref,
+          statusData.transaction?.order_id,
+        ].filter(Boolean),
+      });
+      if (result) return true;
+    }
+    return false;
   }
 
   if (!AURAXPAY_API_KEY) return false;
@@ -3254,7 +3362,7 @@ const reconcilePendingSubscriptionPayments = async () => {
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND created_at < NOW() - INTERVAL '12 seconds'
+        AND created_at < NOW() - INTERVAL '4 seconds'
       ORDER BY
         CASE WHEN gateway_ref IS NULL OR gateway_ref = '' THEN 1 ELSE 0 END,
         created_at ASC

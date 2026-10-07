@@ -241,7 +241,7 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
             const SizedBox(height: 8),
             if (RemoteConfigService.paymentsEnabled && !isPremium)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
                 child: PaymentStatusCard(
                   isPremium: isPremium,
                   isActive: widget.isActive,
@@ -249,7 +249,6 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
                   onRetryPayment: widget.onOpenPayments,
                 ),
               ),
-            if (RemoteConfigService.paymentsEnabled && !isPremium) const SizedBox(height: 10),
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: WhatsappSupportTile(),

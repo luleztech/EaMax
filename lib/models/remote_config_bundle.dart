@@ -264,9 +264,9 @@ class RemotePlayerConfig {
     final languages = json['languagesAllowed'];
     return RemotePlayerConfig(
       preferredEngine: json['preferredEngine']?.toString() ?? 'auto',
-      bufferMinMs: int.tryParse('${json['bufferMinMs']}') ?? 800,
-      bufferMaxMs: int.tryParse('${json['bufferMaxMs']}') ?? 12000,
-      initialBufferMs: int.tryParse('${json['initialBufferMs']}') ?? 1500,
+      bufferMinMs: int.tryParse('${json['bufferMinMs']}') ?? 10000,
+      bufferMaxMs: int.tryParse('${json['bufferMaxMs']}') ?? 40000,
+      initialBufferMs: int.tryParse('${json['initialBufferMs']}') ?? 1800,
       retryMax: int.tryParse('${json['retryMax']}') ?? 4,
       retryDelayMs: int.tryParse('${json['retryDelayMs']}') ?? 1200,
       reconnectEnabled: json['reconnectEnabled'] != false,

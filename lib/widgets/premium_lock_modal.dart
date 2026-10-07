@@ -253,6 +253,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       }
       await registerUserInDatabase(id: canonicalUid, maxRetries: 3);
 
+      await PaymentPendingSession.resetForNewCheckout();
+      if (!mounted) return;
+
       final result = await paymentsApi.startPayment(
         externalId: canonicalUid,
         bundle: pkg.slug,
@@ -295,8 +298,10 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       var activeOrderId = orderId;
       const maxAttempts = 90;
       for (var i = 0; i < maxAttempts; i++) {
-        final delay = i < 20 ? const Duration(seconds: 1) : const Duration(seconds: 2);
-        await Future.delayed(delay);
+        if (i > 0) {
+          final delay = i < 25 ? const Duration(milliseconds: 800) : const Duration(seconds: 2);
+          await Future.delayed(delay);
+        }
         if (!mounted || _page != 3 || _paymentSuccess) return;
 
         try {

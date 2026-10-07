@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../services/payment_pending_session.dart';
 import '../services/payment_tracking_controller.dart';
@@ -23,7 +22,8 @@ enum _PaymentTrackPhase {
   failed,
 }
 
-/// Tracks pending subscription payments on the Mtumiaji tab — auto-polls and manual refresh.
+/// Tracks an in-progress subscription payment on the Mtumiaji tab.
+/// Hidden until a payment is actually pending — status updates on its own.
 class PaymentStatusCard extends StatefulWidget {
   const PaymentStatusCard({
     super.key,
@@ -42,7 +42,7 @@ class PaymentStatusCard extends StatefulWidget {
   State<PaymentStatusCard> createState() => _PaymentStatusCardState();
 }
 
-class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProviderStateMixin {
+class _PaymentStatusCardState extends State<PaymentStatusCard> {
   static const _prefsKey = 'pendingPaymentOrderId';
   static const _maxCancelAttempts = PaymentPendingSession.maxCancelAttempts;
 
@@ -65,15 +65,10 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
   Timer? _hintRotateTimer;
   bool _resendingStk = false;
   bool _handlingCancel = false;
-  late final AnimationController _pulseCtrl;
-  late final AnimationController _ringCtrl;
 
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))
-      ..repeat(reverse: true);
-    _ringCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
     PaymentTrackingController.instance.onManualRefresh = _onCheckPaymentTap;
     unawaited(_bootstrap());
     _startIdleWatch();
@@ -114,8 +109,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
     PaymentTrackingController.instance.onManualRefresh = null;
     PaymentTrackingController.instance.sync(active: false);
     _stopTrackingTimers();
-    _pulseCtrl.dispose();
-    _ringCtrl.dispose();
     super.dispose();
   }
 
@@ -227,7 +220,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
   void _startIdleWatch() {
     if (widget.isPremium) return;
     _idleWatchTimer?.cancel();
-    _idleWatchTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _idleWatchTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!mounted) return;
       unawaited(_watchForNewPendingOrder());
     });
@@ -239,15 +232,36 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
   }
 
   Future<void> _watchForNewPendingOrder() async {
-    if (_orderId != null && _orderId!.isNotEmpty) return;
     if (_phase == _PaymentTrackPhase.success) return;
     final prefs = await SharedPreferences.getInstance();
     final pending = prefs.getString(_prefsKey)?.trim();
-    if (!mounted || pending == null || pending.isEmpty) return;
+    if (!mounted) return;
+    if (pending == null || pending.isEmpty) {
+      if (_orderId != null &&
+          _phase != _PaymentTrackPhase.failed &&
+          _phase != _PaymentTrackPhase.cancelled &&
+          _phase != _PaymentTrackPhase.insufficient) {
+        _stopAutoPoll();
+        setState(() {
+          _orderId = null;
+          _phase = _PaymentTrackPhase.idle;
+          _cancelCount = 0;
+          _pollCount = 0;
+          _message = PaymentStatusCopy.noPending;
+        });
+      }
+      return;
+    }
+    if (_orderId == pending &&
+        (_phase == _PaymentTrackPhase.tracking || _phase == _PaymentTrackPhase.applying)) {
+      return;
+    }
     await _loadCancelCount();
     if (!mounted) return;
+    _stopAutoPoll();
     setState(() {
       _orderId = pending;
+      _pollCount = 0;
       _phase = _PaymentTrackPhase.tracking;
       _message = PaymentStatusCopy.requestSent;
     });
@@ -260,7 +274,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
     if (widget.isPremium || _orderId == null || _orderId!.isEmpty) return;
     if (_isTerminalPhase) return;
     _autoPollTimer?.cancel();
-    _autoPollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _autoPollTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
       if (!mounted || widget.isPremium) return;
       unawaited(_pollOnce());
     });
@@ -410,7 +424,7 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
 
   Future<void> _pollOnce() async {
     final orderId = _orderId?.trim();
-    if (orderId == null || orderId.isEmpty || widget.isPremium) {
+    if (orderId == null || orderId.isEmpty || widget.isPremium || _polling) {
       if (widget.isPremium && orderId != null && orderId.isNotEmpty) {
         await _finishUnlockSuccess();
       }
@@ -616,6 +630,15 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
       return const SizedBox.shrink();
     }
 
+    // Nothing to check until a payment is actually in progress. Status updates
+    // itself; the old "Angalia Malipo" button only repeated that poll.
+    if (_phase == _PaymentTrackPhase.idle) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) PaymentTrackingController.instance.sync(active: false);
+      });
+      return const SizedBox.shrink();
+    }
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _syncTrackingController();
     });
@@ -728,62 +751,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> with TickerProvid
                 style: rajdhani(9).copyWith(color: t.text2),
               ),
             ],
-          ),
-          const SizedBox(height: 18),
-          Center(
-            child: GestureDetector(
-              onTap: _polling ? null : _onCheckPaymentTap,
-              child: AnimatedBuilder(
-                animation: Listenable.merge([_pulseCtrl, _ringCtrl]),
-                builder: (context, child) {
-                  final scale = active ? 1.0 + (_pulseCtrl.value * 0.035) : 1.0;
-                  return Transform.scale(
-                    scale: scale,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        if (active)
-                          SizedBox(
-                            width: 88,
-                            height: 88,
-                            child: CircularProgressIndicator(
-                              value: _ringCtrl.value,
-                              strokeWidth: 2,
-                              color: accent.withValues(alpha: 0.25),
-                            ),
-                          ),
-                        Container(
-                          width: 76,
-                          height: 76,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [accent.withValues(alpha: 0.3), accent.withValues(alpha: 0.1)],
-                            ),
-                            border: Border.all(color: accent.withValues(alpha: 0.55), width: 2),
-                            boxShadow: [BoxShadow(color: accent.withValues(alpha: 0.22), blurRadius: 18)],
-                          ),
-                          child: _polling
-                              ? Padding(
-                                  padding: const EdgeInsets.all(20),
-                                  child: CircularProgressIndicator(strokeWidth: 2.5, color: accent),
-                                )
-                              : Icon(Icons.visibility_rounded, size: 32, color: accent),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Angalia Malipo',
-            textAlign: TextAlign.center,
-            style: rajdhani(13, weight: FontWeight.w700).copyWith(color: Colors.white, letterSpacing: 0.6),
           ),
           if (_phase == _PaymentTrackPhase.tracking && _cancelCount > 0) ...[
             const SizedBox(height: 8),

@@ -189,47 +189,27 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     if (pending != null && pending.isNotEmpty) {
       try {
         final res = await PaymentPendingSession.checkBestPaymentStatus();
-        final sessionAge = await PaymentPendingSession.sessionAge();
-        if (shouldDeferPaymentTerminal(
-          sessionAge: sessionAge,
-          pollCount: 1,
-          response: res,
-        )) {
-          setState(() {
-            _pollingOrderId = pending;
-            _paymentUiPhase = _PaymentUiPhase.waiting;
-          });
-          WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
-        } else if (shouldKeepPaymentUnlockPolling(res) || isPaymentSuccessResponse(res)) {
+        if (shouldKeepPaymentUnlockPolling(res) || isPaymentSuccessResponse(res)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(res),
             premiumGranted: res['premiumGranted'] == true ||
                 res['premium_granted'] == true,
           );
-        } else if (isPaymentTerminalFailure(
-            res['status'] ?? res['raw']?['data']?[0]?['payment_status'])) {
-          final st = res['status'] ?? res['raw']?['data']?[0]?['payment_status'];
-          await PaymentPendingSession.clear();
+        } else {
+          // A new visit starts at the plan form. An unfinished or failed
+          // checkout is not resumed.
+          await PaymentPendingSession.resetForNewCheckout();
           if (mounted) {
             setState(() {
-              _paymentUiPhase = _PaymentUiPhase.failed;
-              _sessionEndDetail = _paymentFailureUserMessage(st);
+              _pollingOrderId = null;
+              _paymentUiPhase = _PaymentUiPhase.none;
+              _sessionEndDetail = null;
+              _notFoundStreak = 0;
             });
           }
-        } else {
-          setState(() {
-            _pollingOrderId = pending;
-            _paymentUiPhase = _PaymentUiPhase.waiting;
-          });
-          WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
         }
-      } catch (e) {
-        if (mounted) {
-          setState(() {
-            _paymentUiPhase = _PaymentUiPhase.failed;
-            _sessionEndDetail = _mapPaymentError(e);
-          });
-        }
+      } catch (_) {
+        await PaymentPendingSession.resetForNewCheckout();
       }
     }
   }
@@ -272,9 +252,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
     var polls = 0;
     var applyingStreak = 0;
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    var inFlight = false;
+    Future<void> tick() async {
+      if (inFlight || !mounted) return;
+      inFlight = true;
       polls++;
-      if (!mounted) return;
       try {
         final response = await PaymentPendingSession.checkBestPaymentStatus();
         if (isPaymentStillApplying(response) || shouldKeepPaymentUnlockPolling(response)) {
@@ -337,7 +319,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         final msg = e.toString().toLowerCase();
         if (msg.contains('no order') || msg.contains('not found')) {
           _notFoundStreak++;
-          if (_notFoundStreak >= 12) {
+          if (_notFoundStreak >= 20) {
             _pollTimer?.cancel();
             _pollTimer = null;
             _waitingTimer?.cancel();
@@ -354,8 +336,10 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
             }
           }
         }
+      } finally {
+        inFlight = false;
       }
-      if (polls == 120 && applyingStreak < 3) {
+      if (polls == 160 && applyingStreak < 3) {
         // Soft timeout UI only — leave poll running; background watcher also continues.
         _waitingTimer?.cancel();
         _waitingTimer = null;
@@ -365,10 +349,15 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         ));
       }
       // Never stop while entitlements are still applying; otherwise keep polling longer.
-      if (polls >= 200 && applyingStreak == 0) {
+      if (polls >= 240 && applyingStreak == 0) {
         _pollTimer?.cancel();
         _pollTimer = null;
       }
+    }
+
+    unawaited(tick());
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      unawaited(tick());
     });
   }
 
@@ -722,7 +711,20 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       return;
     }
     final bundle = _plans[bundleIndex];
-    setState(() => _submitting = true);
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _waitingTimer?.cancel();
+    _waitingTimer = null;
+    await PaymentPendingSession.resetForNewCheckout();
+    if (!mounted) return;
+    setState(() {
+      _submitting = true;
+      _pollingOrderId = null;
+      _notFoundStreak = 0;
+      _pendingBundleLabel = null;
+      _sessionEndDetail = null;
+      _paymentUiPhase = _PaymentUiPhase.none;
+    });
     // Let release builds paint “Tunatuma ombi…” before the HTTP work schedules; avoids a dead UI until the waiting modal.
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;

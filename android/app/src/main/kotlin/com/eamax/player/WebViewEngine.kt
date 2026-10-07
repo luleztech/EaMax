@@ -40,6 +40,7 @@ class WebViewEngine(
     private var preferredAudioLanguage = "sw"
     private var lastLoadedAudioLanguage = ""
     private var audioLanguageConfirmed = false
+    private var zoomMode = "contain"
     private var pageLoadGeneration = 0
     private var pageFinishRunnable: Runnable? = null
     private var captchaPollRunnable: Runnable? = null
@@ -157,6 +158,7 @@ class WebViewEngine(
                         if (!isExternalWebPage) return
                         // Install captcha patch ASAP (before delayed ready), so early execute() calls work.
                         injectRecaptchaUnlockHelper()
+                        applyZoomMode()
                         val gen = pageLoadGeneration
                         pageFinishRunnable?.let { mainHandler.removeCallbacks(it) }
                         val r = Runnable {
@@ -405,6 +407,28 @@ class WebViewEngine(
     fun pause() {
         webView?.evaluateJavascript(
             "(function(){try{var v=document.querySelector('video');if(v)v.pause();}catch(e){}})();",
+            null,
+        )
+    }
+
+    fun setZoomMode(mode: String) {
+        zoomMode = when (mode.lowercase().trim()) {
+            "fill", "cover", "zoom" -> "fill"
+            "stretched", "stretch" -> "stretched"
+            "normal", "fit" -> "normal"
+            else -> "contain"
+        }
+        applyZoomMode()
+    }
+
+    private fun applyZoomMode() {
+        val fit = when (zoomMode) {
+            "fill" -> "cover"
+            "stretched" -> "fill"
+            else -> "contain"
+        }
+        webView?.evaluateJavascript(
+            "(function(){try{document.querySelectorAll('video').forEach(function(v){v.style.objectFit='$fit';});}catch(e){}})();",
             null,
         )
     }

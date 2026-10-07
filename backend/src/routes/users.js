@@ -214,6 +214,9 @@ router.post('/:externalId/channels/:channelId/unlock', async (req, res, next) =>
     const userId = userResult.rows[0].id;
     const userPoints = userResult.rows[0].points;
     const isPremium = isPremiumActive(userResult.rows[0]);
+    if (isPremium) {
+      return res.json({ success: true, pointsSpent: 0, premium: true });
+    }
 
     const settingsResult = await query(
       "SELECT value FROM app_settings WHERE key = 'channels_premium_only' LIMIT 1",

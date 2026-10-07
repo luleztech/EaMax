@@ -4,9 +4,9 @@ const { sanitizeDefaultLanguage } = require('../constants/streamLanguages');
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
-  bufferMinMs: 800,
-  bufferMaxMs: 12000,
-  initialBufferMs: 1500,
+  bufferMinMs: 10_000,
+  bufferMaxMs: 40_000,
+  initialBufferMs: 1800,
   retryMax: 4,
   retryDelayMs: 1200,
   reconnectEnabled: true,
@@ -39,9 +39,9 @@ function mapRow(row) {
   if (!row) return { ...DEFAULT_PLAYER_CONFIG };
   return {
     preferredEngine: sanitizeGlobalPlaybackEngine(row.preferred_engine),
-    bufferMinMs: Number(row.buffer_min_ms) || 800,
-    bufferMaxMs: Number(row.buffer_max_ms) || 12000,
-    initialBufferMs: Number(row.initial_buffer_ms) || 1500,
+    bufferMinMs: Number(row.buffer_min_ms) || 10_000,
+    bufferMaxMs: Number(row.buffer_max_ms) || 40_000,
+    initialBufferMs: Number(row.initial_buffer_ms) || 1800,
     retryMax: Number(row.retry_max) || 4,
     retryDelayMs: Number(row.retry_delay_ms) || 1200,
     reconnectEnabled: row.reconnect_enabled !== false,

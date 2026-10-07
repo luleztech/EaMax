@@ -499,6 +499,56 @@ const cases = [
     },
   },
   {
+    name: 'Sonic webhook: payment_status COMPLETED wins over sibling transaction PENDING',
+    fn: () => {
+      const payload = {
+        event: 'payment.completed',
+        order_id: 'SONIC-MIXED-1',
+        status: 'success',
+        data: { payment_status: 'COMPLETED', order_id: 'SONIC-MIXED-1', transid: '26292628111262' },
+        transaction: { order_id: 'SONIC-MIXED-1', status: 'PENDING' },
+      };
+      const { paid, raw } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === true, 'paid wallet status must not stay pending');
+      assert(raw !== 'PENDING', `expected a paid status, got ${raw}`);
+      const { isCompleted } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === true, 'poll path must also treat this as paid');
+    },
+  },
+  {
+    name: 'Sonic webhook: payment.completed with no wallet field is paid (not default PENDING)',
+    fn: () => {
+      const payload = {
+        event: 'payment.completed',
+        order_id: 'SONIC-EVENT-ONLY',
+        data: { order_id: 'SONIC-EVENT-ONLY', status: 'COMPLETED' },
+      };
+      const { paid, raw } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === true, 'completion webhook must not be treated as pending');
+      assert(String(raw).toUpperCase() !== 'PENDING', `got raw ${raw}`);
+    },
+  },
+  {
+    name: 'Sonic webhook: payment.completed alone (no payment_status) is paid',
+    fn: () => {
+      const payload = { event: 'payment.completed', order_id: 'SONIC-EVENT-BARE' };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === true, 'bare payment.completed must grant, not stay pending');
+    },
+  },
+  {
+    name: 'Sonic poll: data.status COMPLETED without payment_status is paid',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        data: { order_id: 'SONIC-DATA-COMPLETED', status: 'COMPLETED', amount: 2000 },
+      };
+      const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === true, 'data.status COMPLETED must be paid');
+      assert(rawStatus === 'COMPLETED', `got ${rawStatus}`);
+    },
+  },
+  {
     name: 'Sonic webhook: payment.failed stays unpaid',
     fn: () => {
       const payload = { event: 'payment.failed', order_id: 'SONIC-FAIL', status: 'FAILED' };

@@ -393,7 +393,7 @@ class PaymentsApi {
       },
       // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
       enableRetries: false,
-      timeout: const Duration(seconds: 42),
+      timeout: const Duration(seconds: 26),
     );
     return Map<String, dynamic>.from(r as Map);
   }
@@ -420,7 +420,10 @@ class PaymentsApi {
   /// Check payment status using the unified endpoint
   Future<Map<String, dynamic>> checkPaymentStatus(String orderId) async {
     try {
-      final r = await apiRequest('/api/payments/status?orderId=${Uri.encodeComponent(orderId)}');
+      final r = await apiRequest(
+        '/api/payments/status?orderId=${Uri.encodeComponent(orderId)}',
+        timeout: const Duration(seconds: 12),
+      );
       return Map<String, dynamic>.from(r as Map);
     } catch (e) {
       final msg = e.toString().toLowerCase();

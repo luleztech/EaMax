@@ -54,7 +54,9 @@ class PaymentPendingSession {
     await prefs.setInt(resendCountKey, 0);
     await prefs.setInt(cancelCountKey, 0);
     await prefs.setInt(startedAtKey, DateTime.now().millisecondsSinceEpoch);
-    await _rememberRelatedOrder(orderId);
+    // A new checkout is its own session. Do not keep earlier order ids,
+    // or a repeat payment inherits the last attempt's success or failure.
+    await prefs.setStringList(relatedOrdersKey, [orderId]);
     PaymentTrackingController.instance.sync(
       active: true,
       polling: true,
@@ -216,6 +218,12 @@ class PaymentPendingSession {
       await updateOrderId(newOrderId);
     }
     return newOrderId.isEmpty ? null : newOrderId;
+  }
+
+  /// Drop every cached checkout so the next payment starts at step 1.
+  static Future<void> resetForNewCheckout() async {
+    await clear();
+    PaymentTrackingController.instance.sync(active: false);
   }
 
   static Future<void> clear() async {

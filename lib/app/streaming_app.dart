@@ -587,7 +587,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _startPendingPaymentWatcher() {
     _pendingPaymentWatcher?.cancel();
-    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 4), (_) {
+    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 2), (_) {
       unawaited(_checkPendingPayment());
     });
   }

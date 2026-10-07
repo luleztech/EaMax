@@ -62,7 +62,6 @@ class PlaybackOrchestrator {
     ));
 
     final policy = session.policy;
-    unawaited(_syncNativePolicy(policy));
 
     final channelData = session.channelData;
     final gatewayPage = isGatewayUrl(url) || useWebViewForUrl(url);
@@ -88,7 +87,11 @@ class PlaybackOrchestrator {
       merged['Authorization'] = 'Bearer $token';
     }
 
-    if (NativeAndroidPlayer.supported && PlayerEngine.usesNativeStack(engine)) {
+    // Android playback uses the Orizon native player for every stream type;
+    // it handles direct media and gateway pages with native WebView failover.
+    if (NativeAndroidPlayer.supported) {
+      // Apply server-driven settings before the native activity builds ExoPlayer.
+      await _syncNativePolicy(policy);
       await NativeAndroidPlayer.open(
         url: url,
         channelId: session.channelId,
@@ -107,6 +110,8 @@ class PlaybackOrchestrator {
       );
       return;
     }
+
+    unawaited(_syncNativePolicy(policy));
 
     final flutterMode = PlayerEngine.flutterModeFor(engine) ??
         (kIsWeb ? FlutterPlaybackMode.webEmbedded : FlutterPlaybackMode.mediaKit);

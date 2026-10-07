@@ -26,7 +26,7 @@ async function apiRequestOnce(endpoint, options = {}) {
   const defaultOptions = {
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Version': '1.3.15',
+      'X-App-Version': '1.3.29',
       'X-App-Bundle': 'com.eamax',
     },
   };

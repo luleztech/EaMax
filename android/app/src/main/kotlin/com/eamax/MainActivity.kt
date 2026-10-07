@@ -2,6 +2,9 @@ package com.eamax
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
 import com.eamax.player.GatewayWebPlayerFactory
 import com.eamax.player.PlayerRuntimeConfig
 import io.flutter.embedding.android.FlutterActivity
@@ -10,9 +13,40 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
+    companion object {
+        private const val NATIVE_PLAYER_REQUEST = 48291
+    }
+
+    private var nativeOpenResult: MethodChannel.Result? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableScreenshotBlocking()
+        // Warm the Android WebView so gateway fallback is ready when requested.
+        Handler(Looper.getMainLooper()).post {
+            try {
+                WebView(applicationContext).apply {
+                    settings.javaScriptEnabled = true
+                    loadUrl("about:blank")
+                    destroy()
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == NATIVE_PLAYER_REQUEST) {
+            val pending = nativeOpenResult
+            nativeOpenResult = null
+            try {
+                pending?.success(null)
+            } catch (_: Exception) {
+                // The Flutter engine can be torn down while native playback closes.
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -69,8 +103,12 @@ class MainActivity : FlutterActivity() {
                         result.error("bad_args", "Expected map", null)
                         return@setMethodCallHandler
                     }
+                    if (nativeOpenResult != null) {
+                        result.error("busy", "Player already open", null)
+                        return@setMethodCallHandler
+                    }
                     try {
-                        val intent = Intent(this, EaMaxNativePlayerActivity::class.java)
+                        val intent = Intent(this, OrizonPlayerActivity::class.java)
                         intent.putExtra("url", args["url"]?.toString().orEmpty())
                         intent.putExtra("licenseUrl", args["licenseUrl"]?.toString().orEmpty())
                         intent.putExtra("token", args["token"]?.toString().orEmpty())
@@ -86,30 +124,20 @@ class MainActivity : FlutterActivity() {
                             "audioLanguage",
                             args["audioLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
-                        intent.putExtra("channelId", (args["channelId"] as? Number)?.toInt() ?: -1)
-                        intent.putExtra("channelName", args["channelName"]?.toString().orEmpty())
                         intent.putExtra(
                             "fallbackStreamsJson",
                             args["fallbackStreamsJson"]?.toString().orEmpty(),
                         )
                         intent.putExtra(
-                            "playbackEngine",
-                            args["playbackEngine"]?.toString().orEmpty(),
-                        )
-                        intent.putExtra(
                             "defaultQuality",
                             args["defaultQuality"]?.toString().orEmpty().ifEmpty { "480p" },
                         )
-                        intent.putExtra(
-                            "defaultLanguage",
-                            args["defaultLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
-                        )
-                        args["playerPolicyJson"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                            intent.putExtra("playerPolicyJson", it)
-                        }
-                        startActivity(intent)
-                        result.success(null)
+                        intent.putExtra("videoZoomMode", "contain")
+                        nativeOpenResult = result
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, NATIVE_PLAYER_REQUEST)
                     } catch (e: Exception) {
+                        nativeOpenResult = null
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
                     }
                 }
