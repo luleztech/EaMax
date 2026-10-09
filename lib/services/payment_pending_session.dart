@@ -52,9 +52,8 @@ class PaymentPendingSession {
   static const promptAtKey = 'pendingPaymentLastPromptAt';
   static const startedAtKey = 'pendingPaymentStartedAt';
   static const cancelCountKey = 'paymentTrackCancelCount';
-  /// One extra prompt after a cancel. More than that makes the wallet say
-  /// "too many attempts" and the next real request never reaches the phone.
-  static const maxAutoResends = 1;
+  /// Status checks never push a second prompt. The Pay button sends the one request.
+  static const maxAutoResends = 0;
   static const pendingResendGap = Duration(minutes: 3);
   static const cancelResendGap = Duration(seconds: 45);
   static const maxCancelAttempts = maxAutoResends;

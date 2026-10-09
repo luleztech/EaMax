@@ -284,9 +284,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           await _finalizeSessionFailed(PaymentStatusCopy.insufficient);
           return;
         }
-        if (isPaymentCancelledStatus(paymentStatus) ||
-            isPaymentPromptNeedsResend(paymentStatus)) {
-          await _resendLivePrompt(userCancelled: true);
+        if (isPaymentCancelledStatus(paymentStatus)) {
+          if (mounted) {
+            setState(() {
+              _sessionEndDetail = PaymentStatusCopy.requestSent;
+            });
+          }
           return;
         }
         if (response['terminal'] == true || isPaymentTerminalFailure(paymentStatus)) {
@@ -374,33 +377,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     await PaymentPendingSession.clear();
   }
 
-  /// New wallet prompt to the number stored for this checkout.
-  Future<void> _resendLivePrompt({required bool userCancelled}) async {
-    try {
-      final result = await PaymentPendingSession.resendStk(userCancelled: userCancelled);
-      if (!mounted) return;
-      if (result.sent) {
-        setState(() {
-          _pollingOrderId = result.orderId;
-          _notFoundStreak = 0;
-          _paymentUiPhase = _PaymentUiPhase.waiting;
-          _sessionEndDetail = PaymentStatusCopy.resentToPhone(result.phone, result.attempt);
-        });
-        return;
-      }
-      if (result.capped) {
-        setState(() {
-          _sessionEndDetail = PaymentStatusCopy.resendCap(result.phone);
-        });
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _sessionEndDetail = PaymentStatusCopy.serverProcessing;
-      });
-    }
-  }
-
   void _handleWaitWindowExpired() {
     if (!mounted || _pollingOrderId == null) return;
     // Keep status polling alive — only end the countdown UI. Mobile-money confirms
@@ -471,6 +447,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   }
 
   String _mapPaymentError(Object e) {
+    if (isPaymentAttemptLimitError(e)) return PaymentStatusCopy.requestSent;
     var raw = e.toString();
     const exc = 'Exception: ';
     if (raw.startsWith(exc)) raw = raw.substring(exc.length).trim();
@@ -822,11 +799,12 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         );
       }
     } catch (e) {
-      _showStatus(
-        'Malipo hayajatumika',
-        _mapPaymentError(e),
-        _PayDialogTone.error,
-      );
+      final msg = _mapPaymentError(e);
+      if (msg == PaymentStatusCopy.requestSent || msg.toLowerCase().contains('limetumwa')) {
+        _showStatus('Angalia simu yako', PaymentStatusCopy.requestSent, _PayDialogTone.info);
+      } else {
+        _showStatus('Malipo hayajatumika', msg, _PayDialogTone.error);
+      }
     } finally {
       if (mounted) setState(() => _submitting = false);
     }

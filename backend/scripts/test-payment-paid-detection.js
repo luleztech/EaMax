@@ -422,23 +422,21 @@ const cases = [
     },
   },
   {
-    name: 'Sonic phone candidates: Halo/Airtel/Tigo try local 0… first',
+    name: 'Sonic phone candidates: one local number for Halo/Airtel/Tigo',
     fn: () => {
       const halo = h.sonicPhoneCandidatesForApi('0611234567');
-      assert(halo[0] === '0611234567', `halo first ${halo[0]}`);
-      assert(halo.includes('255611234567'), `halo missing 255, got ${halo.join(',')}`);
+      assert(halo.length === 1 && halo[0] === '0611234567', `halo ${halo.join(',')}`);
       const airtel = h.sonicPhoneCandidatesForApi('0788123456');
-      assert(airtel[0] === '0788123456', `airtel first ${airtel[0]}`);
+      assert(airtel.length === 1 && airtel[0] === '0788123456', `airtel ${airtel.join(',')}`);
       const tigo = h.sonicPhoneCandidatesForApi('0711234567');
-      assert(tigo[0] === '0711234567', `tigo first ${tigo[0]}`);
+      assert(tigo.length === 1 && tigo[0] === '0711234567', `tigo ${tigo.join(',')}`);
     },
   },
   {
-    name: 'Sonic phone candidates: Vodacom tries 255… first',
+    name: 'Sonic phone candidates: Vodacom sends one 255… number',
     fn: () => {
       const vod = h.sonicPhoneCandidatesForApi('0744123456');
-      assert(vod[0] === '255744123456', `vod first ${vod[0]}`);
-      assert(vod.includes('0744123456'), 'vod missing local');
+      assert(vod.length === 1 && vod[0] === '255744123456', `vod ${vod.join(',')}`);
     },
   },
   {

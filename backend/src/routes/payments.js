@@ -293,14 +293,21 @@ const isVodacomLocalPhone = (local0) => {
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
   const local = formatBuyerPhoneLocal(normalizedPhone);
-  // HaloPesa / Airtel / Mixx often accept local 0… for USSD push; Vodacom follows docs 255….
-  // Always try both so a silent “order created” on the wrong MSISDN can be retried.
+  // One MSISDN per tap. A second format is the same wallet and makes it answer
+  // "too many attempts" before the prompt can arrive.
   const preferLocal =
     isHalotelLocalPhone(normalizedPhone) ||
     isAirtelLocalPhone(normalizedPhone) ||
     isTigoLocalPhone(normalizedPhone);
-  const ordered = preferLocal ? [local, api255] : [api255, local];
-  return [...new Set(ordered.filter((p) => p && p.length > 0))];
+  const only = preferLocal ? local : api255;
+  return only ? [only] : [];
+};
+
+const isGatewayAttemptLimitMessage = (rawMessage, rawCode) => {
+  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
+  return /too many attempt|too many request|too many prompt|maombi mengi|rate limit|attempt limit/i.test(
+    combined,
+  );
 };
 
 const sonicBuyerNameForApi = (rawName, externalId) => {
@@ -389,6 +396,9 @@ const isHalotelLocalPhone = (local0) => {
 const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}) => {
   const code = String(rawCode ?? '').trim();
   const msg = String(rawMessage || '').trim();
+  if (isGatewayAttemptLimitMessage(msg, code)) {
+    return 'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.';
+  }
   if (options.auraxAlsoFailed) {
     return (
       'Hatukuweza kutuma ombi la malipo kwenye simu yako (SonicPesa na Aurax Pay). Hakikisha nambari ni sahihi, mtandao wa pesa unafanya kazi, na una salio la kutosha, kisha jaribu tena.'
@@ -546,9 +556,10 @@ const isAuraxInitiateSuccess = (auraxData, httpResponse) => {
 
 const isRetriableAuraxInitiateFailure = (httpOk, auraxData, httpStatus) => {
   if (httpOk && auraxData?.success === true) return false;
-  if (httpStatus >= 500 || httpStatus === 408 || httpStatus === 429) return true;
   const combined = `${auraxData?.message || ''} ${auraxData?.error || ''}`.toLowerCase();
-  return /timeout|temporarily|unavailable|network|upstream|try again/i.test(combined);
+  if (isGatewayAttemptLimitMessage(combined, httpStatus)) return false;
+  if (httpStatus >= 500 || httpStatus === 408) return true;
+  return /timeout|temporarily|unavailable|network|upstream/i.test(combined);
 };
 
 const initiateAuraxPayment = async ({
@@ -559,7 +570,7 @@ const initiateAuraxPayment = async ({
   callbackUrl,
   orderId,
   timeoutMs = AURAX_HTTP_TIMEOUT_MS,
-  maxAttempts = 2,
+  maxAttempts = 1,
 }) => {
   const channel = resolveAuraxChannelFromPhone(normalizedPhone);
   const phoneCandidates = auraxPhoneCandidatesForApi(normalizedPhone);
@@ -1569,8 +1580,8 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
     }
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
-  if (/too many attempt|too many request|maombi mengi|rate limit|try again later/i.test(combined)) {
-    return 'Mtandao wa pesa umesema majaribio ni mengi. Subiri dakika 2, kisha anza malipo mapya mara moja tu.';
+  if (isGatewayAttemptLimitMessage(msg, code)) {
+    return 'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.';
   }
   if (
     /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
@@ -1655,8 +1666,40 @@ const isActivePaymentProviderConfigured = (provider) => {
 /** Optional legacy escape hatch — disabled unless ALLOW_SONIC_AURAX_FALLBACK=1 on Railway. */
 const shouldFallbackSonicToAurax = (rawMessage, rawCode) =>
   isSonicAuraxFallbackAllowed() &&
+  !isGatewayAttemptLimitMessage(rawMessage, rawCode) &&
   isSonicPaymentSendFailure(rawMessage, rawCode) &&
   isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
+
+/** The prompt is already on this number. Return that order instead of another push. */
+const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
+  const recent = await query(
+    `SELECT provider_ref, payment_provider
+       FROM subscription_payments
+      WHERE user_id = $1
+        AND status = 'pending'
+        AND created_at > now() - interval '20 minutes'
+        AND (
+          buyer_phone = $2
+          OR right(regexp_replace(COALESCE(buyer_phone, ''), '[^0-9]', '', 'g'), 9)
+             = right(regexp_replace($2, '[^0-9]', '', 'g'), 9)
+        )
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [userId, buyerPhoneLocal],
+  );
+  const row = recent.rows[0];
+  const orderId = String(row?.provider_ref || '').trim();
+  if (!orderId) return false;
+  res.json({
+    status: 'pending',
+    orderId,
+    message:
+      'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
+    provider: row.payment_provider || undefined,
+    reusedPending: true,
+  });
+  return true;
+};
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
@@ -1949,9 +1992,9 @@ async function handlePaymentStart(req, res, next) {
         const initiateCode = sonicData.resultcode || sonicData.code;
         const sendFailed = isSonicPaymentSendFailure(initiateMsg, initiateCode);
 
-        // Require proof that Push USSD was dispatched — Sonic often returns
-        // status:"success" + order_id without ever ringing the user's phone.
-        if (sonicOrderId && !sendFailed && ussdSent) {
+        // One accepted order is the phone prompt. A second MSISDN or Aurax
+        // push on the same tap makes the wallet reject the number.
+        if (sonicOrderId && !sendFailed) {
           await query(
             `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -1984,7 +2027,17 @@ async function handlePaymentStart(req, res, next) {
           code: initiateCode,
           sonicData,
         };
-        if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
+        if (isGatewayAttemptLimitMessage(initiateMsg, initiateCode)) {
+          if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+          return res.status(400).json({
+            error: mapSonicInitiateUserError(
+              normalizedPhone,
+              initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
+              initiateCode,
+            ),
+            sonicResponse: sonicData,
+          });
+        } else if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
           console.warn('[Payment] SonicPesa did not dispatch USSD — falling back to Aurax Pay', {
             phonePrefix: normalizedPhone.slice(0, 3),
             phoneForSonicApi,
@@ -2018,7 +2071,13 @@ async function handlePaymentStart(req, res, next) {
 
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
-      if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
+      if (isGatewayAttemptLimitMessage(rawErr, rawCode)) {
+        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+        return res.status(400).json({
+          error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
+          sonicResponse: sonicData,
+        });
+      } else if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
         console.warn('[Payment] SonicPesa STK not sent — falling back to Aurax Pay for this payment', {
           phonePrefix: normalizedPhone.slice(0, 3),
           resultcode: rawCode,
@@ -2085,6 +2144,9 @@ async function handlePaymentStart(req, res, next) {
         auraxData.error ||
         (auraxData.details ? JSON.stringify(auraxData.details) : '') ||
         'Failed to start payment request';
+      if (isGatewayAttemptLimitMessage(rawError, response.status)) {
+        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+      }
       const auraxMapped = mapPaymentGatewayUserError(rawError, '', { context: 'initiate' });
       if (usedAuraxFallbackFromSonic && sonicFailureForClient) {
         return res.status(400).json({

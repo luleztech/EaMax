@@ -145,14 +145,8 @@ bool isPaymentCancelledStatus(Object? status) {
   return s == 'CANCELLED' || s == 'CANCELED' || s == 'CANCEL' || s == 'VOID';
 }
 
-/// Cancelled or expired prompt. One later push is allowed.
-/// Failed / rejected is not retried — that is often "too many attempts".
-bool isPaymentPromptNeedsResend(Object? status) {
-  if (isPaymentInsufficientFunds(status)) return false;
-  if (isPaymentCancelledStatus(status)) return true;
-  final s = normalizedPaymentStatus(status);
-  return s == 'EXPIRED' || s == 'TIMEOUT';
-}
+/// A checkout sends one prompt. Later status checks do not push again.
+bool isPaymentPromptNeedsResend(Object? _) => false;
 
 /// Wallet or server refused because prompts were sent too close together.
 bool isPaymentAttemptLimitError(Object error) {
@@ -309,8 +303,7 @@ abstract final class PaymentStatusCopy {
   static String cancelResend(String phone) =>
       'Uligahiri ombi. Tunatuma tena kwa $phone — thibitisha PIN.';
 
-  static String resendCap(String phone) =>
-      'Ombi la $phone limeshatumwa. Ukirudia sasa, mtandao unasema majaribio ni mengi. Subiri dakika 2, kisha anza malipo mapya mara moja.';
+  static String resendCap(String phone) => requestSent;
 
   static String cancelSoft(int attempt, int remaining) =>
       'Mpendwa mteja haujamaliza hatua za malipo (jaribio $attempt). '
@@ -319,6 +312,7 @@ abstract final class PaymentStatusCopy {
 
 /// User-facing text when `/api/payments/start` or resend throws.
 String mapPaymentStartError(Object error) {
+  if (isPaymentAttemptLimitError(error)) return PaymentStatusCopy.requestSent;
   var raw = error.toString().trim();
   const exc = 'Exception: ';
   if (raw.startsWith(exc)) raw = raw.substring(exc.length).trim();

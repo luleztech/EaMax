@@ -63,8 +63,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
   Timer? _autoPollTimer;
   Timer? _idleWatchTimer;
   Timer? _hintRotateTimer;
-  bool _resendingStk = false;
-  bool _handlingCancel = false;
 
   @override
   void initState() {
@@ -127,83 +125,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
 
   Future<void> _clearCancelCount() async {
     await PaymentPendingSession.clearCancelCount();
-  }
-
-  /// Push a new wallet prompt to the number saved for this checkout.
-  /// Returns true when a new order was actually created.
-  Future<bool> _pushPromptAgain({required bool becauseCancelled}) async {
-    if (!mounted || widget.isPremium || _isTerminalPhase) return false;
-    if (_resendingStk) return false;
-
-    final session = await PaymentPendingSession.load();
-    if (session == null) return false;
-
-    final already = await PaymentPendingSession.resendCount();
-    if (already >= PaymentPendingSession.maxAutoResends) {
-      if (mounted) {
-        setState(() {
-          _phase = _PaymentTrackPhase.tracking;
-          _resendCapped = true;
-          _resendPhone = session.phone;
-          _message = PaymentStatusCopy.resendCap(session.phone);
-        });
-      }
-      _ensurePollingActive();
-      return true;
-    }
-    final age = await PaymentPendingSession.sinceLastPrompt();
-    final gap = becauseCancelled
-        ? PaymentPendingSession.cancelResendGap
-        : PaymentPendingSession.pendingResendGap;
-    if (age < gap) return false;
-
-    _resendingStk = true;
-    if (mounted) {
-      setState(() {
-        _phase = _PaymentTrackPhase.tracking;
-        _resendPhone = session.phone;
-        _message = becauseCancelled
-            ? PaymentStatusCopy.cancelResend(session.phone)
-            : PaymentStatusCopy.pendingResend(session.phone);
-      });
-    }
-
-    try {
-      final result = await PaymentPendingSession.resendStk(
-        payerName: 'EaMax ${session.phone}',
-        userCancelled: becauseCancelled,
-      );
-      if (!mounted) return result.sent;
-      if (result.sent) {
-        setState(() {
-          _orderId = result.orderId;
-          _resendCount = result.attempt;
-          _resendPhone = result.phone;
-          _resendCapped = false;
-          _pollCount = 0;
-          _phase = _PaymentTrackPhase.tracking;
-          _message = PaymentStatusCopy.resentToPhone(result.phone, result.attempt);
-        });
-        _ensurePollingActive();
-        return true;
-      }
-      if (result.capped) {
-        setState(() {
-          _phase = _PaymentTrackPhase.tracking;
-          _resendCapped = true;
-          _resendPhone = result.phone;
-          _message = PaymentStatusCopy.resendCap(result.phone);
-        });
-        _ensurePollingActive();
-        return true;
-      }
-      return result.skippedTooSoon;
-    } catch (_) {
-      if (mounted) setState(() => _message = PaymentStatusCopy.serverProcessing);
-      return true;
-    } finally {
-      _resendingStk = false;
-    }
   }
 
   Future<void> _bootstrap() async {
@@ -401,8 +322,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
   }
 
   Future<void> _handleCancelled() async {
-    if (_handlingCancel || _resendingStk) return;
-
     final sessionAge = await PaymentPendingSession.sessionAge();
     if (sessionAge < kPaymentTerminalGracePeriod && _pollCount < kPaymentMinPollsBeforeTerminal) {
       if (!mounted) return;
@@ -414,14 +333,12 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
       return;
     }
 
-    _handlingCancel = true;
-    try {
-      if (!mounted) return;
-      await _pushPromptAgain(becauseCancelled: true);
-      _ensurePollingActive();
-    } finally {
-      _handlingCancel = false;
-    }
+    if (!mounted) return;
+    setState(() {
+      _phase = _PaymentTrackPhase.tracking;
+      _message = PaymentStatusCopy.requestSent;
+    });
+    _ensurePollingActive();
   }
 
   Future<void> _handleInsufficient(Map<String, dynamic> response) async {
@@ -623,14 +540,11 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
         !_isTerminalPhase &&
         _phase != _PaymentTrackPhase.idle;
     final spinning = _polling ||
-        _resendingStk ||
         _phase == _PaymentTrackPhase.tracking ||
         _phase == _PaymentTrackPhase.applying;
     var title = PaymentStatusCopy.checking;
     if (_phase == _PaymentTrackPhase.applying) {
       title = 'Malipo yamepokelewa — tunafungua channel zote';
-    } else if (_resendingStk) {
-      title = 'Tunatuma ombi la malipo tena';
     } else if (_phase == _PaymentTrackPhase.tracking && _pollCount <= 1) {
       title = PaymentStatusCopy.requestSent;
     }

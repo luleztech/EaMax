@@ -295,7 +295,6 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         _waitingHint = TzPaymentConfig.paymentPromptFor(phone);
       });
 
-      var activeOrderId = orderId;
       const maxAttempts = 90;
       for (var i = 0; i < maxAttempts; i++) {
         if (i > 0) {
@@ -355,32 +354,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             return;
           }
           final status = paymentStatusFromResponse(response);
-          if (isPaymentCancelledStatus(status) || isPaymentPromptNeedsResend(status)) {
+          if (isPaymentCancelledStatus(status)) {
             if (mounted) {
-              setState(() {
-                _waitingHint = isPaymentCancelledStatus(status)
-                    ? PaymentStatusCopy.cancelResend(phone)
-                    : PaymentStatusCopy.pendingResend(phone);
-              });
-            }
-            try {
-              final resent = await PaymentPendingSession.resendStk(
-                payerName: name,
-                userCancelled: true,
-              );
-              if (resent.sent) {
-                activeOrderId = resent.orderId!;
-                await prefs.setString('pendingPaymentOrderId', activeOrderId);
-                if (mounted) {
-                  setState(() {
-                    _waitingHint = PaymentStatusCopy.resentToPhone(phone, resent.attempt);
-                  });
-                }
-              } else if (resent.capped && mounted) {
-                setState(() => _waitingHint = PaymentStatusCopy.resendCap(phone));
-              }
-            } catch (_) {
-              if (mounted) setState(() => _waitingHint = PaymentStatusCopy.serverProcessing);
+              setState(() => _waitingHint = PaymentStatusCopy.requestSent);
             }
             continue;
           }
