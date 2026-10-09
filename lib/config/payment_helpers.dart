@@ -145,18 +145,22 @@ bool isPaymentCancelledStatus(Object? status) {
   return s == 'CANCELLED' || s == 'CANCELED' || s == 'CANCEL' || s == 'VOID';
 }
 
-/// Prompt never landed, or the user rejected it. Send a new request to the same number.
-/// Low balance is not retried — another push cannot succeed until they top up.
+/// Cancelled or expired prompt. One later push is allowed.
+/// Failed / rejected is not retried — that is often "too many attempts".
 bool isPaymentPromptNeedsResend(Object? status) {
   if (isPaymentInsufficientFunds(status)) return false;
   if (isPaymentCancelledStatus(status)) return true;
   final s = normalizedPaymentStatus(status);
-  return s == 'EXPIRED' ||
-      s == 'TIMEOUT' ||
-      s == 'REJECTED' ||
-      s == 'DECLINED' ||
-      s == 'FAILED' ||
-      s == 'ERROR';
+  return s == 'EXPIRED' || s == 'TIMEOUT';
+}
+
+/// Wallet or server refused because prompts were sent too close together.
+bool isPaymentAttemptLimitError(Object error) {
+  final raw = error.toString().toLowerCase();
+  return raw.contains('too many') ||
+      raw.contains('maombi mengi') ||
+      raw.contains('majari') ||
+      raw.contains('rate limit');
 }
 
 /// Wallet rejected due to low balance.
@@ -306,7 +310,7 @@ abstract final class PaymentStatusCopy {
       'Uligahiri ombi. Tunatuma tena kwa $phone — thibitisha PIN.';
 
   static String resendCap(String phone) =>
-      'Tumetuma ombi mara nyingi kwa $phone. Bado tunathibitisha. Ukighairi tena, anza malipo mapya.';
+      'Ombi la $phone limeshatumwa. Ukirudia sasa, mtandao unasema majaribio ni mengi. Subiri dakika 2, kisha anza malipo mapya mara moja.';
 
   static String cancelSoft(int attempt, int remaining) =>
       'Mpendwa mteja haujamaliza hatua za malipo (jaribio $attempt). '

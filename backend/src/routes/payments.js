@@ -1569,6 +1569,9 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
     }
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
+  if (/too many attempt|too many request|maombi mengi|rate limit|try again later/i.test(combined)) {
+    return 'Mtandao wa pesa umesema majaribio ni mengi. Subiri dakika 2, kisha anza malipo mapya mara moja tu.';
+  }
   if (
     /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
       combined,

@@ -400,26 +400,6 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
           continue;
         }
 
-        try {
-          final resent = await PaymentPendingSession.resendStk(payerName: name);
-          if (resent.sent) {
-            activeOrderId = resent.orderId!;
-            await prefs.setString('pendingPaymentOrderId', activeOrderId);
-            if (mounted) {
-              setState(() {
-                _waitingHint = PaymentStatusCopy.resentToPhone(phone, resent.attempt);
-              });
-            }
-            continue;
-          }
-          if (resent.capped && mounted) {
-            setState(() => _waitingHint = PaymentStatusCopy.resendCap(phone));
-            continue;
-          }
-        } catch (_) {
-          // Status polling continues; the next pass retries the push.
-        }
-
         if (!mounted) return;
         setState(() {
           _waitingHint = i < 8

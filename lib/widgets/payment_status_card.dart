@@ -516,8 +516,6 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
         return;
       }
 
-      final pushed = await _pushPromptAgain(becauseCancelled: false);
-      if (!mounted || pushed) return;
       setState(() {
         _phase = _PaymentTrackPhase.tracking;
         _message = _confirmationHints[_hintIndex];

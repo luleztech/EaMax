@@ -17,9 +17,6 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
-subprojects {
-    project.evaluationDependsOn(":app")
-}
 
 // Deprecated APIs in third-party Android deps (ads, firebase, etc.) — not app code.
 subprojects {

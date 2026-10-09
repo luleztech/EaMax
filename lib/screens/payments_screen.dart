@@ -324,7 +324,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           );
           return;
         }
-        await _resendLivePrompt(userCancelled: false);
       } catch (e) {
         final msg = e.toString().toLowerCase();
         if (msg.contains('no order') || msg.contains('not found')) {

@@ -52,10 +52,11 @@ class PaymentPendingSession {
   static const promptAtKey = 'pendingPaymentLastPromptAt';
   static const startedAtKey = 'pendingPaymentStartedAt';
   static const cancelCountKey = 'paymentTrackCancelCount';
-  /// Safety stop so a stuck checkout cannot create endless wallet prompts.
-  static const maxAutoResends = 12;
-  static const pendingResendGap = Duration(seconds: 25);
-  static const cancelResendGap = Duration(seconds: 8);
+  /// One extra prompt after a cancel. More than that makes the wallet say
+  /// "too many attempts" and the next real request never reaches the phone.
+  static const maxAutoResends = 1;
+  static const pendingResendGap = Duration(minutes: 3);
+  static const cancelResendGap = Duration(seconds: 45);
   static const maxCancelAttempts = maxAutoResends;
 
   static Future<void> save({
@@ -221,12 +222,9 @@ class PaymentPendingSession {
     return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
   }
 
-  /// Real wallet prompt to the number the user typed.
-  ///
-  /// Pending checkouts retry after [pendingResendGap] (prompt never arrived).
-  /// A cancel or expired prompt retries after [cancelResendGap], again and again,
-  /// until [maxAutoResends]. The phone, plan, and amount stay; the prompt clock
-  /// and in-flight flag are refreshed so the next push is a new order.
+  /// One extra wallet prompt to the number the user typed, only after they
+  /// cancel or the prompt expires. A checkout that is still waiting is not
+  /// pushed again — repeating it makes the network reject the number.
   static Future<PaymentResendResult> resendStk({
     String? payerName,
     bool userCancelled = false,
@@ -290,8 +288,11 @@ class PaymentPendingSession {
         phone: session.phone,
         attempt: attempt,
       );
-    } catch (_) {
+    } catch (error) {
       await _stampPromptClock(prefs);
+      if (isPaymentAttemptLimitError(error)) {
+        await prefs.setInt(resendCountKey, maxAutoResends);
+      }
       rethrow;
     } finally {
       await prefs.remove(resendInFlightKey);
