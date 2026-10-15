@@ -19,7 +19,6 @@ import { settingsAPI, paymentsAPI } from '../config/api';
 import { getOrCreateUserId } from '../services/userId';
 import {
   isPaymentSuccessResponse,
-  isPaymentStillApplying,
   isPaymentTerminalFailure as isTerminalPaymentStatus,
 } from '../utils/paymentHelpers';
 
@@ -31,7 +30,7 @@ const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '07
 
 function isCancelledPaymentStatus(status) {
   const u = String(status || '').toUpperCase().trim();
-  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID';
+  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID' || u === 'USERCANCELLED' || u === 'USER_CANCELLED';
 }
 
 /** Align with backend `mapPaymentGatewayUserError` for any raw gateway strings still shown in the client. */
@@ -196,11 +195,6 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
             msg,
             false,
           );
-          return;
-        }
-
-        if (isPaymentStillApplying(response)) {
-          console.log('[Payment] Gateway paid — server still applying premium…');
           return;
         }
 

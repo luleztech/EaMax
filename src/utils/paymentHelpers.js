@@ -34,6 +34,8 @@ export const isPaymentTerminalFailure = (status) => {
     'VOID',
     'CANCEL',
     'ERROR',
+    'USERCANCELLED',
+    'USER_CANCELLED',
   ]).has(s);
 };
 
@@ -50,7 +52,9 @@ export const isPaymentStillApplying = (response = {}) => response.applying === t
  * Never treat gateway COMPLETED alone as unlock — entitlements must be live.
  */
 export const isPaymentSuccessResponse = (response = {}) => {
-  if (isPaymentStillApplying(response)) return false;
+  if (response.premiumGranted === true || response.premium_granted === true) {
+    return true;
+  }
 
   const user = userPayloadFromPaymentResponse(response);
   if (user) {
@@ -58,9 +62,7 @@ export const isPaymentSuccessResponse = (response = {}) => {
     if (premium) return true;
   }
 
-  if (response.premiumGranted === true || response.premium_granted === true) {
-    return true;
-  }
+  if (isPaymentStillApplying(response)) return false;
 
   return false;
 };

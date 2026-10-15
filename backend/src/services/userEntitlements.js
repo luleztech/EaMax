@@ -149,10 +149,10 @@ const grantUserEntitlementsInTransaction = async (client, userId, { planInterval
     );
   }
 
-  // Premium and channel unlocks are one entitlement: do not commit a completed
-  // payment unless both have been recorded. The helper retries after creating
-  // the table if an older installation is missing it.
-  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId, { required: true });
+  // Premium is the account upgrade. A channel-unlock glitch must not roll the
+  // payment back and leave a paid user on the free plan. Unlocks are repaired
+  // after commit if this best-effort pass fails.
+  const channelsUnlocked = await unlockAllChannelsInTransaction(client, userId, { required: false });
   console.log('[Entitlements] Premium granted:', {
     userId,
     premium_expires_at: row.premium_expires_at,

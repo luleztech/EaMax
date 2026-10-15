@@ -86,7 +86,7 @@ const SONIC_WEBHOOK_PAID_STATUSES = new Set([
 
 const SONIC_EXPLICIT_UNPAID_STATUSES = new Set([
   'PENDING', 'PROCESSING', 'INITIATED', 'WAITING', 'QUEUED',
-  'CREATED', 'OPEN', 'SENT', 'STK_SENT', 'PROMPT_SENT', 'IN_PROGRESS', 'UNKNOWN',
+  'CREATED', 'OPEN', 'SENT', 'STK_SENT', 'PROMPT_SENT', 'IN_PROGRESS', 'INPROGRESS', 'UNKNOWN',
 ]);
 
 /** HTTP/API envelope only — create_order and order_status both return status:"success" before PIN. */
@@ -114,28 +114,11 @@ const normalizeStoredPaymentProvider = (raw) => {
   return null;
 };
 
-const getSelectedPaymentProvider = async () => {
-  const envDefault =
-    String(process.env.PAYMENT_PROVIDER || '').trim().toLowerCase() === 'sonicpesa'
-      ? PAYMENT_PROVIDERS.SONICPESA
-      : PAYMENT_PROVIDERS.AURAX;
-  const rawValue = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, envDefault);
-  return normalizeStoredPaymentProvider(rawValue) || envDefault;
-};
+/** New checkouts are SonicPesa only (M-Pesa, Airtel Money, Mixx by Yas, HaloPesa). */
+const getSelectedPaymentProvider = async () => PAYMENT_PROVIDERS.SONICPESA;
 
-/** Opt out with DISABLE_SONIC_AURAX_FALLBACK=1. Otherwise fall back to Aurax when Sonic STK cannot be sent. */
-const isSonicAuraxFallbackDisabled = () =>
-  String(process.env.DISABLE_SONIC_AURAX_FALLBACK || '').trim() === '1';
-
-const isSonicAuraxFallbackAllowed = () => {
-  if (isSonicAuraxFallbackDisabled()) return false;
-  if (
-    String(process.env.ALLOW_SONIC_AURAX_FALLBACK || process.env.ALLOW_SONIC_ZENO_FALLBACK || '').trim() === '1'
-  ) {
-    return true;
-  }
-  return isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
-};
+/** Aurax is not used for new prompts. Older Aurax rows can still be polled by their stored provider. */
+const isSonicAuraxFallbackAllowed = () => false;
 
 const paymentRefWhereSql = 'provider_ref = $1 OR gateway_ref = $1';
 
@@ -292,15 +275,9 @@ const isVodacomLocalPhone = (local0) => {
 
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   const api255 = formatPhoneForSonicPesaApi(normalizedPhone);
-  const local = formatBuyerPhoneLocal(normalizedPhone);
-  // One MSISDN per tap. A second format is the same wallet and makes it answer
-  // "too many attempts" before the prompt can arrive.
-  const preferLocal =
-    isHalotelLocalPhone(normalizedPhone) ||
-    isAirtelLocalPhone(normalizedPhone) ||
-    isTigoLocalPhone(normalizedPhone);
-  const only = preferLocal ? local : api255;
-  return only ? [only] : [];
+  // Official SonicPesa create_order uses one 255… MSISDN for every wallet.
+  // A second format on the same tap makes the phone answer "too many attempts".
+  return api255 ? [api255] : [];
 };
 
 const isGatewayAttemptLimitMessage = (rawMessage, rawCode) => {
@@ -330,6 +307,10 @@ const sonicBuyerEmailForApi = (rawEmail, externalId) => {
   return `${id}@eamax.app`;
 };
 
+const sonicOrderIdFromPayload = (sonicData) => String(
+  sonicData?.data?.order_id ?? sonicData?.data?.orderId ?? sonicData?.order_id ?? sonicData?.orderId ?? '',
+).trim();
+
 /** True when SonicPesa actually dispatched Push USSD (not merely created an unpaid order). */
 const isSonicUssdPushSent = (sonicData) => {
   if (!sonicData || typeof sonicData !== 'object') return false;
@@ -340,10 +321,17 @@ const isSonicUssdPushSent = (sonicData) => {
     return true;
   }
   const nest = pickSonicNestedData(sonicData);
-  const msisdn = String(nest?.msisdn || nest?.phone || nest?.buyer_phone || '').replace(/\D/g, '');
+  const msisdn = String(nest?.msisdn || nest?.phone || nest?.buyer_phone || sonicData.msisdn || '').replace(/\D/g, '');
   if (msisdn.length >= 9) return true;
   const channel = String(nest?.channel || sonicData.channel || '').trim();
   if (channel && channel.toLowerCase() !== 'null') return true;
+  // Documented create_order copy, with an order id, means the prompt was queued.
+  if (
+    sonicOrderIdFromPayload(sonicData) &&
+    /order created successfully|payment order created/i.test(msg)
+  ) {
+    return true;
+  }
   return false;
 };
 
@@ -361,9 +349,9 @@ const isSonicInitiateSuccess = (sonicData, httpResponse) => {
   return st !== 'error';
 };
 
-/** Sonic result codes / messages where STK/USSD was not delivered — safe to try Aurax Pay next. */
+/** Sonic result codes / messages where Push USSD was not delivered. 9009/90009 are low balance, not a missed prompt. */
 const SONIC_STK_FAILURE_CODES = new Set([
-  '9012', '999', '103', '9009', '90009', '500', '502', '503', '504', '408', '429',
+  '9012', '999', '103', '500', '502', '503', '504', '408', '429',
 ]);
 
 const isSonicPaymentSendFailure = (rawMessage, rawCode) => {
@@ -393,39 +381,69 @@ const isHalotelLocalPhone = (local0) => {
   return p.startsWith('061') || p.startsWith('062') || p.startsWith('063');
 };
 
-const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode, options = {}) => {
+const sonicNetworkKey = (local0) => {
+  if (isHalotelLocalPhone(local0)) return 'halopesa';
+  if (isAirtelLocalPhone(local0)) return 'airtel';
+  if (isTigoLocalPhone(local0)) return 'tigo';
+  if (isVodacomLocalPhone(local0)) return 'mpesa';
+  return 'mobile';
+};
+
+const sonicNetworkLabel = (local0) => {
+  const key = sonicNetworkKey(local0);
+  if (key === 'halopesa') return 'HaloPesa';
+  if (key === 'airtel') return 'Airtel Money';
+  if (key === 'tigo') return 'Mixx by Yas';
+  if (key === 'mpesa') return 'M-Pesa';
+  return 'Mobile Money';
+};
+
+const sonicCheckoutPrompt = (local0) =>
+  `Ombi la ${sonicNetworkLabel(local0)} limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.`;
+
+const isSonicInvalidMsisdnRejection = (sonicData, httpStatus) => {
+  const msg = String(sonicData?.message || sonicData?.error || '');
+  const code = sonicData?.resultcode || sonicData?.code;
+  if (isGatewayAttemptLimitMessage(msg, code)) return false;
+  if (isSonicPaymentSendFailure(msg, code)) return false;
+  const combined = `${msg} ${code}`.toLowerCase();
+  return (
+    Number(httpStatus) === 422 ||
+    /invalid (phone|msisdn|mobile|buyer_phone)|buyer_phone|wrong phone|phone format|nambari ya simu/i.test(combined)
+  );
+};
+
+const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
   const code = String(rawCode ?? '').trim();
   const msg = String(rawMessage || '').trim();
+  const network = sonicNetworkLabel(localPhone);
   if (isGatewayAttemptLimitMessage(msg, code)) {
-    return 'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.';
+    return `Ombi la ${network} limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.`;
   }
-  if (options.auraxAlsoFailed) {
-    return (
-      'Hatukuweza kutuma ombi la malipo kwenye simu yako (SonicPesa na Aurax Pay). Hakikisha nambari ni sahihi, mtandao wa pesa unafanya kazi, na una salio la kutosha, kisha jaribu tena.'
-    );
+  const combined = `${msg} ${code}`.toLowerCase();
+  if (isExplicitGatewayInsufficientReport(msg, combined, code)) {
+    return swahiliInitiateInsufficientFromProvider(msg, code);
+  }
+  if (looksLikeInsufficientBalance(msg, code, combined)) {
+    return mapPaymentGatewayUserError(rawMessage, rawCode, { context: 'initiate' });
   }
   if (code === '103' || /ongoing ussd/i.test(msg)) {
     return 'Simu yako ina USSD nyingine zinazoendelea. Funga dirisha la malipo/USSD kwenye simu, subiri sekunde 30, kisha jaribu tena.';
   }
   if (isSonicPaymentSendFailure(rawMessage, rawCode)) {
     if (isHalotelLocalPhone(localPhone)) {
-      return (
-        'Halopesa (061–063) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
-      );
+      return 'HaloPesa haikupokea ombi. Hakikisha nambari (061–063) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
     }
     if (isAirtelLocalPhone(localPhone)) {
-      return (
-        'Airtel Money haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
-      );
+      return 'Airtel Money haikupokea ombi. Hakikisha nambari (068, 069, 078) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
     }
     if (isTigoLocalPhone(localPhone)) {
-      return (
-        'Mixx by Yas (Tigo) haikupokea ombi kupitia SonicPesa. Jaribu tena — mfumo utajaribu Aurax Pay kiotomatiki.'
-      );
+      return 'Mixx by Yas haikupokea ombi. Hakikisha nambari (065, 067, 071, 077) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
     }
-    return (
-      'Hatukuweza kutuma ombi la malipo kwenye simu yako. Hakikisha nambari ni sahihi na mtandao wa pesa unafanya kazi, kisha jaribu tena.'
-    );
+    if (isVodacomLocalPhone(localPhone)) {
+      return 'M-Pesa haikupokea ombi. Hakikisha nambari (074–076, 079) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
+    }
+    return 'Hatukuweza kutuma ombi la malipo kwenye simu yako. Hakikisha nambari ni sahihi na mtandao wa pesa unafanya kazi, kisha jaribu tena.';
   }
   return mapPaymentGatewayUserError(rawMessage, rawCode, { context: 'initiate' });
 };
@@ -1231,8 +1249,8 @@ const tryApplySonicCompletedPayment = async (orderId, meta, { altRefs = [] } = {
 };
 
 const SONIC_CREATE_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 5000, 3500),
-  8000,
+  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 12000, 8000),
+  20000,
 );
 /** order_status should not block premium unlock behind a slow gateway. */
 const SONIC_POLL_TIMEOUT_MS = Math.min(
@@ -1306,6 +1324,10 @@ const extractSonicPaymentStatus = (statusData) => {
   const nest = pickSonicNestedData(statusData);
   const tx = pickSonicTransactionObject(statusData);
 
+  const orderStatusData =
+    (nest?.order_status_data && typeof nest.order_status_data === 'object' && nest.order_status_data) ||
+    (statusData.order_status_data && typeof statusData.order_status_data === 'object' && statusData.order_status_data) ||
+    null;
   const explicitWallet = [
     nest?.payment_status,
     nest?.paymentStatus,
@@ -1313,16 +1335,20 @@ const extractSonicPaymentStatus = (statusData) => {
     tx?.paymentStatus,
     statusData.payment_status,
     statusData.paymentStatus,
+    // Some networks only flip the nested wallet snapshot after the PIN.
+    orderStatusData?.payment_status,
+    orderStatusData?.paymentStatus,
   ]
     .map(sonicNonEmptyStatus)
     .filter(Boolean);
 
-  // Paid debit wins even when another field on the same payload is still PENDING.
-  for (const s of explicitWallet) {
-    if (isSonicPaidRaw(s)) return s;
-  }
+  // A real failure (no money) beats a stale SUCCESS on another field.
+  // A paid wallet status beats a sibling that is still PENDING.
   for (const s of explicitWallet) {
     if (isPaymentTerminalStatus(s)) return s;
+  }
+  for (const s of explicitWallet) {
+    if (isSonicPaidRaw(s)) return s;
   }
   for (const s of explicitWallet) {
     if (SONIC_EXPLICIT_UNPAID_STATUSES.has(s)) return s;
@@ -1456,6 +1482,30 @@ const evaluateSonicOrderStatusForApply = (payload) => {
   }
 
   return { isCompleted, rawStatus: rawStatus || 'PENDING' };
+};
+
+/**
+ * Status string the app should see. A confirmed debit is always COMPLETED.
+ * Bare envelope SUCCESS/OK (STK accepted, PIN not entered) stays PENDING.
+ * This remap must never run on a payload evaluate already marked paid.
+ */
+const clientFacingSonicPollStatus = (payload) => {
+  const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(payload);
+  if (isCompleted || isSonicPaidRaw(rawStatus)) return 'COMPLETED';
+  if (isPaymentTerminalStatus(rawStatus)) {
+    return isPaymentCancelledStatus(rawStatus) ? 'CANCELLED' : rawStatus;
+  }
+  const clientStatus = String(rawStatus || 'PENDING').toUpperCase().trim();
+  if (
+    clientStatus === 'SUCCESS' ||
+    clientStatus === 'OK' ||
+    clientStatus === 'INPROGRESS' ||
+    clientStatus === 'IN_PROGRESS' ||
+    SONIC_EXPLICIT_UNPAID_STATUSES.has(clientStatus)
+  ) {
+    return 'PENDING';
+  }
+  return clientStatus || 'PENDING';
 };
 
 const gatewayFetchJson = async (url, options = {}, timeoutMs = 8000) => {
@@ -1601,7 +1651,7 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
 /** Gateway ended without pay — stop app polling; only user cancel gets a soft message. */
 const PAYMENT_TERMINAL_STATUSES = new Set([
   'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT', 'ERROR', 'VOID',
-  'REVERSED', 'CANCEL',
+  'REVERSED', 'CANCEL', 'USERCANCELLED', 'USER_CANCELLED',
   // No-money / wallet reject — never unlock premium.
   'INSUFFICIENT_FUNDS', 'INSUFFICIENT_BALANCE', 'INSUFFICIENT', 'NO_BALANCE', 'NO_FUNDS',
   'LOW_BALANCE', 'BALANCE_TOO_LOW', 'NOT_ENOUGH_BALANCE', 'FUNDS_INSUFFICIENT',
@@ -1616,8 +1666,8 @@ const isPaymentTerminalStatus = (raw) => {
 };
 
 const isPaymentCancelledStatus = (raw) => {
-  const u = String(raw || '').toUpperCase().trim();
-  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID';
+  const u = String(raw || '').toUpperCase().trim().replace(/[\s_-]+/g, '');
+  return u === 'CANCELLED' || u === 'CANCELED' || u === 'CANCEL' || u === 'VOID' || u === 'USERCANCELLED';
 };
 
 const isInsufficientFundsStatus = (raw) => {
@@ -1693,8 +1743,8 @@ const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
   res.json({
     status: 'pending',
     orderId,
-    message:
-      'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
+    message: sonicCheckoutPrompt(buyerPhoneLocal),
+    network: sonicNetworkKey(buyerPhoneLocal),
     provider: row.payment_provider || undefined,
     reusedPending: true,
   });
@@ -1703,7 +1753,7 @@ const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
   const phoneLocal = formatBuyerPhoneLocal(normalizedPhone);
-  const candidates = sonicPhoneCandidatesForApi(normalizedPhone);
+  const candidates = [...sonicPhoneCandidatesForApi(normalizedPhone)];
   let last = {
     response: { ok: false, status: 500 },
     sonicData: { status: 'error', message: 'Failed to start SonicPesa payment' },
@@ -1753,17 +1803,23 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
       }
       if (created) {
         lastCreated = last;
-        console.warn('[SonicPesa] Order created without USSD proof — retrying other MSISDN format immediately', {
-          phoneForSonicApi,
-          httpStatus: response.status,
-        });
-        continue;
+        // An order id means Sonic accepted this number. Do not push a second format.
+        break;
       }
       console.warn('[SonicPesa] create_order attempt failed:', {
         phoneForSonicApi,
         httpStatus: response.status,
         message: sonicData?.message || sonicData?.error,
       });
+      if (
+        phoneLocal &&
+        phoneLocal !== phoneForSonicApi &&
+        !candidates.includes(phoneLocal) &&
+        isSonicInvalidMsisdnRejection(sonicData, response.status)
+      ) {
+        console.warn('[SonicPesa] 255 number rejected — one local-format retry', { phoneForSonicApi });
+        candidates.push(phoneLocal);
+      }
     } catch (fetchErr) {
       last = {
         response: { ok: false, status: 502 },
@@ -1777,7 +1833,7 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
   return lastCreated || last;
 };
 
-const pollSonicOrderStatus = async (orderId) => {
+const pollSonicOrderStatus = async (orderId, timeoutMs = SONIC_POLL_TIMEOUT_MS) => {
   try {
     const { response, data: statusData } = await gatewayFetchJson(
       `${SONICPESA_API_BASE}/payment/order_status`,
@@ -1786,7 +1842,7 @@ const pollSonicOrderStatus = async (orderId) => {
         headers: getSonicPesaRequestHeaders(),
         body: JSON.stringify({ order_id: orderId }),
       },
-      SONIC_POLL_TIMEOUT_MS,
+      timeoutMs,
     );
     return { statusResp: response, statusData };
   } catch (fetchErr) {
@@ -1797,8 +1853,8 @@ const pollSonicOrderStatus = async (orderId) => {
   }
 };
 
-// Mobile money start: `/start` and legacy `/aurax/start` share this handler.
-// Active gateway for NEW payments is ONLY `app_settings.payment_provider` (never inferred from the URL path).
+// Mobile money start: `/start` and legacy `/aurax/start` always open a SonicPesa prompt.
+// Aurax is not used for new payments. Status polls still follow the row's stored provider.
 async function handlePaymentStart(req, res, next) {
   try {
     const bodySchema = z
@@ -1914,39 +1970,17 @@ async function handlePaymentStart(req, res, next) {
     const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
 
-    const auraxReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
     const sonicReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.SONICPESA);
-    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady && !auraxReady) {
+    if (!sonicReady) {
       return res.status(503).json({
-        error: 'SonicPesa na Aurax Pay hazijasanidi kwenye seva. Wasiliana na admin.',
-        activeProvider: provider,
+        error: 'SonicPesa haijasanidi kwenye seva. Weka SONICPESA_API_KEY kwenye Railway.',
+        activeProvider: PAYMENT_PROVIDERS.SONICPESA,
         configured: false,
       });
     }
-    if (provider === PAYMENT_PROVIDERS.AURAX && !auraxReady) {
-      return res.status(503).json({
-        error: 'Aurax Pay haijasanidi kwenye seva. Wasiliana na admin au chagua SonicPesa kwenye EaAdmin.',
-        activeProvider: provider,
-        configured: false,
-      });
-    }
-    let paymentProviderForRow = provider;
+    let paymentProviderForRow = PAYMENT_PROVIDERS.SONICPESA;
     let usedAuraxFallbackFromSonic = false;
     let sonicFailureForClient = null;
-
-    if (provider === PAYMENT_PROVIDERS.SONICPESA && !sonicReady) {
-      if (auraxReady && isSonicAuraxFallbackAllowed()) {
-        console.warn('[Payment] SonicPesa not configured — using Aurax Pay (ALLOW_SONIC_AURAX_FALLBACK=1)');
-        paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
-      } else {
-        return res.status(503).json({
-          error:
-            'SonicPesa imewashwa kwenye admin lakini SONICPESA_API_KEY haipo kwenye seva. Weka funguo kwenye Railway.',
-          activeProvider: provider,
-          configured: false,
-        });
-      }
-    }
 
     if (paymentProviderForRow === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
@@ -2013,10 +2047,10 @@ async function handlePaymentStart(req, res, next) {
           return res.json({
             status: 'pending',
             orderId: sonicOrderId,
-            message:
-              'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.',
+            message: sonicCheckoutPrompt(normalizedPhone),
+            network: sonicNetworkKey(normalizedPhone),
             provider: PAYMENT_PROVIDERS.SONICPESA,
-            activeProvider: provider,
+            activeProvider: PAYMENT_PROVIDERS.SONICPESA,
           });
         }
 
@@ -2298,6 +2332,56 @@ const resolvePlanIntervalForPayment = async (plan, amountCents) => {
   return '30 days';
 };
 
+/** Push + realtime after premium is already committed. Never throws to the caller. */
+const notifyPaymentActivated = async (userId, payment, orderId) => {
+  const userResult = await query('SELECT fcm_token, external_id FROM users WHERE id = $1', [userId]);
+  const fcmToken = userResult.rows[0]?.fcm_token;
+  const externalId = userResult.rows[0]?.external_id;
+
+  if (fcmToken) {
+    const updatedUser = await query(
+      'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
+      [userId],
+    );
+    const premium = updatedUser.rows[0]
+      ? buildPremiumPayload(updatedUser.rows[0])
+      : { isPremium: true, is_premium: true, premiumExpiresAt: '', subscriptionEndDate: '' };
+    await sendPushNotification(
+      fcmToken,
+      'Malipo Yamefaulu!',
+      'Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
+      {
+        type: 'payment_success',
+        orderId: String(payment.provider_ref || orderId || ''),
+        isPremium: String(!!premium.isPremium),
+        is_premium: String(!!premium.is_premium),
+        premiumExpiresAt: premium.premiumExpiresAt || '',
+        subscriptionEndDate: premium.subscriptionEndDate || '',
+        externalId: externalId || '',
+      },
+    );
+    console.log('[Payment] Push notification sent to user:', userId);
+  }
+
+  if (global.realtimeServer && externalId) {
+    const updatedUser = await query(
+      'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
+      [userId],
+    );
+    if (updatedUser.rows[0]) {
+      const premiumPayload = buildPremiumPayload(updatedUser.rows[0]);
+      global.realtimeServer.notifyPremiumUpdate(externalId, premiumPayload);
+      if (typeof global.realtimeServer.notifyPaymentReceived === 'function') {
+        global.realtimeServer.notifyPaymentReceived(externalId, {
+          provider_ref: payment.provider_ref,
+          amount_cents: payment.amount_cents,
+          status: 'completed',
+        });
+      }
+    }
+  }
+};
+
 // Internal helper: apply completed payment to user (uses single DB client so transaction works)
 // On success: unlocks all channels, starts remaining time, marks payment completed (revenue + premium count in admin)
 // [expectedPaymentProvider] when set (e.g. from webhooks), must match DB row payment_provider — prevents cross-gateway completion.
@@ -2435,62 +2519,13 @@ const applyCompletedPayment = async (orderId, meta, options = {}) => {
     await client.query('COMMIT');
     console.log('[Payment] Transaction committed for order:', payment.provider_ref, '- revenue and premium users will reflect in admin.');
 
-    // Send push notification to user about successful payment
-    try {
-      const userResult = await query('SELECT fcm_token, external_id FROM users WHERE id = $1', [userId]);
-      const fcmToken = userResult.rows[0]?.fcm_token;
-      const externalId = userResult.rows[0]?.external_id;
-      
-      if (fcmToken) {
-        const updatedUser = await query(
-          'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
-          [userId],
-        );
-        const premium = updatedUser.rows[0]
-          ? buildPremiumPayload(updatedUser.rows[0])
-          : { isPremium: true, is_premium: true, premiumExpiresAt: '', subscriptionEndDate: '' };
-        await sendPushNotification(
-          fcmToken,
-          'Malipo Yamefaulu!',
-          'Umebadilisha kuwa Premium. Sasa una access kwenye chaneli zote.',
-          {
-            type: 'payment_success',
-            orderId: String(payment.provider_ref || orderId || ''),
-            isPremium: String(!!premium.isPremium),
-            is_premium: String(!!premium.is_premium),
-            premiumExpiresAt: premium.premiumExpiresAt || '',
-            subscriptionEndDate: premium.subscriptionEndDate || '',
-            externalId: externalId || '',
-          },
-        );
-        console.log('[Payment] Push notification sent to user:', userId);
-      }
-
-      // Send real-time update via WebSocket if available
-      if (global.realtimeServer && externalId) {
-        try {
-          const updatedUser = await query(
-            'SELECT is_premium, premium_expires_at, blocked FROM users WHERE id = $1',
-            [userId]
-          );
-          if (updatedUser.rows[0]) {
-            const premiumPayload = buildPremiumPayload(updatedUser.rows[0]);
-            global.realtimeServer.notifyPremiumUpdate(externalId, premiumPayload);
-            if (typeof global.realtimeServer.notifyPaymentReceived === 'function') {
-              global.realtimeServer.notifyPaymentReceived(externalId, {
-                provider_ref: payment.provider_ref,
-                amount_cents: payment.amount_cents,
-                status: 'completed',
-              });
-            }
-          }
-        } catch (err) {
-          console.error('[Payment] Failed to send real-time update:', err.message);
-        }
-      }
-    } catch (notifErr) {
-      console.error('[Payment] Failed to send notifications:', notifErr.message);
-    }
+    // Push and websocket must not hold the HTTP response. SonicPesa drops
+    // webhooks that take longer than 5 seconds, which left paid users on free.
+    setImmediate(() => {
+      notifyPaymentActivated(userId, payment, orderId).catch((notifErr) => {
+        console.error('[Payment] Failed to send notifications:', notifErr?.message || notifErr);
+      });
+    });
 
     // Return success result immediately after commit - MUST be inside try block
     let user = await fetchUserPremiumSnapshotByUserId(userId);
@@ -2811,13 +2846,10 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
         });
       }
 
-      const rawStatus = pendingHit?.rawStatus;
       const statusData = pendingHit?.statusData || httpError?.statusData || {};
-      let clientStatus = rawStatus || 'PENDING';
-      // Envelope SUCCESS/OK is an STK acknowledgement, not a wallet debit.
-      if (clientStatus === 'SUCCESS' || clientStatus === 'OK') {
-        clientStatus = 'PENDING';
-      }
+      // Unpaid only. clientFacingSonicPollStatus returns COMPLETED for any
+      // wallet debit, so a successful payment cannot be rewritten to PENDING.
+      const clientStatus = clientFacingSonicPollStatus(statusData);
 
       return res.json({
         status: clientStatus,
@@ -3180,7 +3212,97 @@ router.post('/aurax/webhook', async (req, res, next) => {
   }
 });
 
-// Webhook endpoint for SonicPesa
+const unwrapSonicPayload = (payload) => {
+  const out = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {};
+  if (typeof out.data === 'string') {
+    const trimmed = out.data.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') out.data = parsed;
+      } catch (_) {
+        /* keep the original string */
+      }
+    }
+  }
+  return out;
+};
+
+/** Accept JSON even when amount/transid/msisdn arrive as numbers or strings. */
+const readSonicWebhookPayload = (req) => {
+  const body = req.body;
+  if (body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length > 0) {
+    return unwrapSonicPayload(body);
+  }
+  const raw = typeof req.rawBody === 'string' ? req.rawBody.trim() : '';
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return unwrapSonicPayload(Array.isArray(parsed) ? { data: parsed } : parsed);
+      }
+    } catch (_) {
+      /* not JSON */
+    }
+  }
+  return unwrapSonicPayload(body && typeof body === 'object' ? body : {});
+};
+
+const collectSonicOrderRefs = (payload) => {
+  const nest = pickSonicNestedData(payload);
+  const tx = pickSonicTransactionObject(payload);
+  const osd = (nest && nest.order_status_data) || payload?.order_status_data || null;
+  return [...new Set(
+    [
+      payload?.order_id,
+      payload?.orderId,
+      nest?.order_id,
+      nest?.orderId,
+      osd?.order_id,
+      osd?.orderId,
+      tx?.order_id,
+      tx?.orderId,
+      payload?.reference,
+      payload?.reference_id,
+      payload?.invoice_id,
+      nest?.reference,
+      nest?.reference_id,
+      payload?.transid,
+      nest?.transid,
+      osd?.transid,
+      tx?.transid,
+    ].map((r) => String(r ?? '').trim()).filter((r) => r && r.toLowerCase() !== 'null' && r !== 'undefined'),
+  )];
+};
+
+/**
+ * Ask Sonic whether this order was actually debited.
+ * Used when the webhook signature is missing or does not match, so a paid
+ * M-Pesa / Airtel / Mixx / Halopesa callback still upgrades the account.
+ */
+const confirmSonicOrderWithGateway = async (orderId, payload) => {
+  if (!SONICPESA_API_KEY) return null;
+  const refs = [...new Set([orderId, ...collectSonicOrderRefs(payload)].filter(Boolean))].slice(0, 3);
+  if (!refs.length) return null;
+  for (const ref of refs) {
+    const { statusResp, statusData } = await pollSonicOrderStatus(ref, 3500);
+    if (!statusResp.ok) continue;
+    const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
+    const nest = pickSonicNestedData(statusData);
+    const resolvedId = String(
+      nest?.order_id || nest?.orderId || statusData?.order_id || statusData?.orderId || ref,
+    ).trim();
+    return {
+      paid: isCompleted === true,
+      rawStatus,
+      statusData,
+      orderId: resolvedId || ref,
+    };
+  }
+  return null;
+};
+
+// Webhook: https://eamax-production.up.railway.app/api/payments/sonicpesa/webhook
 router.post('/sonicpesa/webhook', async (req, res, next) => {
   try {
     ensureSonicPesaConfigured();
@@ -3193,87 +3315,77 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     const sigHeader =
       req.headers['x-sonicpesa-signature'] ||
       req.headers['x-webhook-signature'] ||
-      req.headers['x-signature'];
+      req.headers['x-signature'] ||
+      req.headers['x-sonic-signature'];
 
     const signatureValid = verifySonicPesaWebhookHmac(rawBodyString, sigHeader);
+    const secretConfigured = isSonicWebhookVerificationConfigured();
+    const signatureOk = secretConfigured && signatureValid;
 
-    const bodySchema = z.object({
-      event: z.string().optional(),
-      type: z.string().optional(),
-      order_id: z.union([z.string(), z.number()]).optional(),
-      orderId: z.union([z.string(), z.number()]).optional(),
-      amount: z.number().optional(),
-      currency: z.string().optional(),
-      status: z.string().optional(),
-      transid: z.string().optional(),
-      channel: z.string().optional(),
-      reference: z.string().optional(),
-      reference_id: z.string().optional(),
-      invoice_id: z.string().optional(),
-      msisdn: z.string().optional(),
-      timestamp: z.string().optional(),
-      data: z.any().optional(),
-    }).passthrough();
+    const payload = readSonicWebhookPayload(req);
+    let { orderId, paid, raw } = extractSonicWebhookOrderAndPaid(payload);
+    let applyPayload = payload;
+    let decidedBy = signatureOk ? 'webhook_signature' : 'pending_gateway_check';
 
-    let payload;
-    try {
-      payload = bodySchema.parse(req.body || {});
-    } catch (e) {
-      console.error('[SonicPesa] Webhook payload validation failed:', e?.errors || e.message);
-      return res.status(400).json({ error: 'Invalid payload' });
-    }
-
-    const { orderId, paid, raw } = extractSonicWebhookOrderAndPaid(payload);
     console.log('[SonicPesa] Webhook:', {
       orderId,
       paid,
       raw,
+      channel: payload.channel || payload.data?.channel || null,
+      event: payload.event || payload.type || null,
       signatureValid,
-      secretConfigured: isSonicWebhookVerificationConfigured(),
+      secretConfigured,
     });
 
-    if (isSonicWebhookVerificationConfigured()) {
-      if (!signatureValid) {
-        console.warn('[SonicPesa] Webhook rejected: invalid HMAC (check SONICPESA_WEBHOOK_SECRET or SONICPESA_SECRET_KEY).');
-        return res.status(401).json({ error: 'Invalid webhook signature' });
-      }
-    } else {
+    // Signed callbacks grant immediately. Unsigned or mismatched callbacks are
+    // not trusted on their own — Sonic order_status is the source of truth.
+    if (!signatureOk) {
       console.warn(
-        '[SonicPesa] Webhook rejected: set SONICPESA_WEBHOOK_SECRET or SONICPESA_SECRET_KEY to verify payment completion.',
+        secretConfigured
+          ? '[SonicPesa] Webhook signature mismatch — confirming with order_status before any upgrade'
+          : '[SonicPesa] Webhook secret is not set — confirming with order_status before any upgrade',
       );
-      return res.status(503).json({ error: 'Webhook verification is not configured' });
+      const confirmed = await confirmSonicOrderWithGateway(orderId, payload);
+      if (!confirmed) {
+        return res.status(401).json({
+          error: secretConfigured ? 'Invalid webhook signature' : 'Webhook verification is not configured',
+          retry: true,
+        });
+      }
+      paid = confirmed.paid;
+      raw = confirmed.rawStatus || raw;
+      if (confirmed.orderId) orderId = confirmed.orderId;
+      applyPayload = confirmed.statusData || payload;
+      decidedBy = 'sonic_order_status';
     }
 
     if (!orderId) {
-      // Some Sonic payloads omit order_id but still carry msisdn + amount after a successful debit.
-      if (paid) {
-        const phones = [];
-        for (const phoneRaw of [payload.msisdn, payload.phone, payload.data?.msisdn, payload.data?.phone]) {
-          const s = String(phoneRaw || '').trim();
-          if (!s) continue;
-          const digits = s.replace(/\D/g, '');
-          if (digits.length >= 9) phones.push(`0${digits.slice(-9)}`);
-        }
-        const amount = Number(payload.amount ?? payload.data?.amount);
+      if (paid && signatureOk) {
+        const phones = collectPaymentPhoneHints(payload);
+        const amount = collectPaymentAmountHint(payload);
         if (phones.length) {
           const hinted = await findPendingPaymentByBuyerHints({
             phones,
-            amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+            amount,
             paymentProvider: PAYMENT_PROVIDERS.SONICPESA,
           });
           if (hinted?.provider_ref) {
             try {
-              const result = await tryApplySonicCompletedPayment(hinted.provider_ref, payload);
+              const result = await tryApplySonicCompletedPayment(hinted.provider_ref, applyPayload, {
+                altRefs: collectSonicOrderRefs(payload),
+              });
               if (result) {
                 return res.status(200).json({
                   received: true,
                   processed: true,
                   recoveredBy: 'buyer_phone',
-                  userId: result.user?.external_id,
+                  decidedBy,
+                  userId: result.user?.external_id || result.user?.externalId,
                 });
               }
             } catch (e) {
               console.error('[SonicPesa] Phone-hint apply failed:', e?.message || e);
+              return res.status(500).json({ error: 'Processing failed' });
             }
           }
         }
@@ -3282,29 +3394,22 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
     }
 
     if (!paid) {
-      if (orderId && isPaymentTerminalStatus(raw)) {
+      if (isPaymentTerminalStatus(raw)) {
         await markOrderTerminalIfPending(orderId, raw);
-        console.log('[SonicPesa] Webhook terminal (unpaid):', { orderId, raw });
+        console.log('[SonicPesa] Webhook terminal (unpaid):', { orderId, raw, decidedBy });
       }
       return res.status(200).json({
         received: true,
         processed: false,
         terminal: isPaymentTerminalStatus(raw),
         status: raw || undefined,
+        decidedBy,
       });
     }
 
     try {
-      const result = await tryApplySonicCompletedPayment(orderId, payload, {
-        altRefs: [
-          payload.reference,
-          payload.reference_id,
-          payload.invoice_id,
-          payload.transid,
-          payload.data?.order_id,
-          payload.data?.orderId,
-          payload.data?.reference,
-        ].filter(Boolean),
+      const result = await tryApplySonicCompletedPayment(orderId, applyPayload, {
+        altRefs: collectSonicOrderRefs({ ...payload, ...(applyPayload || {}) }),
       });
       if (!result) {
         console.warn('[SonicPesa] Payment processing returned null for paid webhook:', orderId);
@@ -3313,6 +3418,7 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
           processed: false,
           reason: 'payment_not_found_or_still_linking',
           retry: true,
+          decidedBy,
         });
       }
       const premiumOk = isPremiumActive({
@@ -3327,8 +3433,13 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
         const planInterval = await resolvePlanIntervalForPayment(result.plan, result.amount_cents);
         await repairUserEntitlements(Number(result.user_id), planInterval || '30 days');
       }
-      console.log('[SonicPesa] Payment processing completed for:', orderId, 'user:', result.user?.external_id);
-      return res.status(200).json({ received: true, processed: true, userId: result.user?.external_id });
+      console.log('[SonicPesa] Premium activated for:', orderId, 'user:', result.user?.external_id || result.user?.externalId, 'via', decidedBy);
+      return res.status(200).json({
+        received: true,
+        processed: true,
+        decidedBy,
+        userId: result.user?.external_id || result.user?.externalId,
+      });
     } catch (e) {
       console.error('[SonicPesa] Webhook applyCompletedPayment failed:', e?.message || e);
       return res.status(500).json({ error: 'Processing failed' });
@@ -3380,7 +3491,7 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
       [orderId, String(payRow.gateway_ref || '').trim()].filter(Boolean),
     )];
     for (const pollId of pollIds) {
-      const { statusResp, statusData } = await pollSonicOrderStatus(pollId);
+      const { statusResp, statusData } = await pollSonicOrderStatus(pollId, 4000);
       if (!statusResp.ok) continue;
       const { isCompleted } = evaluateSonicOrderStatusForApply(statusData);
       if (!isCompleted) continue;
@@ -3423,26 +3534,32 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
 };
 
 const reconcilePendingSubscriptionPayments = async () => {
+  // Newest checkouts first. An old backlog of abandoned prompts must not
+  // delay the order the user just paid on M-Pesa, Airtel, Mixx, or Halopesa.
   const result = await query(
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND created_at < NOW() - INTERVAL '4 seconds'
-      ORDER BY
-        CASE WHEN gateway_ref IS NULL OR gateway_ref = '' THEN 1 ELSE 0 END,
-        created_at ASC
-      LIMIT 150`,
+        AND created_at > NOW() - INTERVAL '2 days'
+        AND created_at < NOW() - INTERVAL '2 seconds'
+      ORDER BY created_at DESC
+      LIMIT 12`,
   );
   if (!result.rows.length) return 0;
 
   let upgraded = 0;
-  for (const row of result.rows) {
-    try {
-      const ok = await tryCompletePendingPaymentFromGateway(row);
-      if (ok) upgraded += 1;
-    } catch (err) {
-      console.warn('[Payment] Reconcile failed for', row.provider_ref, err?.message || err);
-    }
+  const concurrency = 4;
+  for (let i = 0; i < result.rows.length; i += concurrency) {
+    const batch = result.rows.slice(i, i + concurrency);
+    const settled = await Promise.all(batch.map(async (row) => {
+      try {
+        return await tryCompletePendingPaymentFromGateway(row);
+      } catch (err) {
+        console.warn('[Payment] Reconcile failed for', row.provider_ref, err?.message || err);
+        return false;
+      }
+    }));
+    upgraded += settled.filter(Boolean).length;
   }
   if (upgraded > 0) {
     console.log(`[Payment] Background reconcile completed ${upgraded} pending payment(s)`);
@@ -3682,6 +3799,7 @@ module.exports.__paymentTestHelpers = {
   extractSonicWebhookOrderAndPaid,
   extractSonicPaymentStatus,
   evaluateSonicOrderStatusForApply,
+  clientFacingSonicPollStatus,
   isSonicUssdPushSent,
   sonicPhoneCandidatesForApi,
   sonicBuyerNameForApi,

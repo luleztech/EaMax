@@ -49,7 +49,20 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: '*' }));
 
 // ── Body parsing ──────────────────────────────────────────────────────────
-app.use(express.json({ verify: getRawBody }));
+// SonicPesa webhooks are JSON, but the gateway sometimes omits
+// application/json or sends text/plain. Parse those too so a paid callback
+// is not dropped before the route runs. Form posts stay on urlencoded.
+app.use(express.json({
+  verify: getRawBody,
+  type: (req) => {
+    const method = String(req.method || '').toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false;
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/')) return false;
+    return true;
+  },
+}));
+app.use(express.urlencoded({ extended: false, verify: getRawBody }));
 app.use(morgan('dev'));
 
 // ── Attach parsed version info to every request ───────────────────────────
@@ -488,12 +501,13 @@ try {
         reconcilePendingSubscriptionPayments().catch((err) => {
           console.warn('[Payment] Boot reconcile failed:', err.message || err);
         });
-        // Every 12s — catch paid gateway orders soon after the PIN, if the app poll missed them.
+        // Every 8s — newest pending orders are checked first so a successful
+        // PIN upgrades the account even if the app never polls again.
         setInterval(() => {
           reconcilePendingSubscriptionPayments().catch((err) => {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
-        }, 12 * 1000);
+        }, 8 * 1000);
         setInterval(() => {
           repairCompletedPaymentsMissingPremium().catch((err) => {
             console.warn('[Entitlements] Scheduled repair failed:', err.message || err);

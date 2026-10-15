@@ -11,6 +11,8 @@ bool isPaymentPending(Object? status) {
   return s.isEmpty ||
       s == 'PENDING' ||
       s == 'PROCESSING' ||
+      s == 'INPROGRESS' ||
+      s == 'IN_PROGRESS' ||
       s == 'UNKNOWN' ||
       s == 'INITIATED' ||
       s == 'WAITING' ||
@@ -53,6 +55,8 @@ bool isPaymentTerminalFailure(Object? status) {
     'CANCEL',
     'ERROR',
     'TIMEOUT',
+    'USERCANCELLED',
+    'USER_CANCELLED',
     'REVERSED',
     'INSUFFICIENT_FUNDS',
     'INSUFFICIENT_BALANCE',
@@ -94,14 +98,15 @@ bool _userPayloadIsPremium(Map<String, dynamic>? user) {
 /// Never treat gateway `COMPLETED` alone as unlock — entitlements must be live
 /// (`premiumGranted` or an active user premium payload).
 bool isPaymentSuccessResponse(Map<String, dynamic> response) {
-  if (isPaymentStillApplying(response)) return false;
-
+  // A live premium grant wins even if the server also set applying:true.
   if (response['premiumGranted'] == true || response['premium_granted'] == true) {
     return true;
   }
 
   final user = userPayloadFromPaymentResponse(response);
   if (_userPayloadIsPremium(user)) return true;
+
+  if (isPaymentStillApplying(response)) return false;
 
   // Backend sometimes returns COMPLETED with user premium but without the flag.
   final status = normalizedPaymentStatus(response['status']);
@@ -136,13 +141,20 @@ bool isPaymentGatewayPaidAwaitingUnlock(Map<String, dynamic> response) {
 }
 
 /// Whether the poll response means we should keep checking and try to unlock.
-bool shouldKeepPaymentUnlockPolling(Map<String, dynamic> response) =>
-    isPaymentStillApplying(response) || isPaymentGatewayPaidAwaitingUnlock(response);
+bool shouldKeepPaymentUnlockPolling(Map<String, dynamic> response) {
+  if (isPaymentSuccessResponse(response)) return false;
+  return isPaymentStillApplying(response) || isPaymentGatewayPaidAwaitingUnlock(response);
+}
 
 /// User cancelled before completing the STK/USSD steps.
 bool isPaymentCancelledStatus(Object? status) {
   final s = normalizedPaymentStatus(status);
-  return s == 'CANCELLED' || s == 'CANCELED' || s == 'CANCEL' || s == 'VOID';
+  return s == 'CANCELLED' ||
+      s == 'CANCELED' ||
+      s == 'CANCEL' ||
+      s == 'VOID' ||
+      s == 'USERCANCELLED' ||
+      s == 'USER_CANCELLED';
 }
 
 /// A checkout sends one prompt. Later status checks do not push again.

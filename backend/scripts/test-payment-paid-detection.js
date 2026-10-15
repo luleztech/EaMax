@@ -422,21 +422,53 @@ const cases = [
     },
   },
   {
-    name: 'Sonic phone candidates: one local number for Halo/Airtel/Tigo',
+    name: 'Sonic phone candidates: every network sends one 255… number',
     fn: () => {
-      const halo = h.sonicPhoneCandidatesForApi('0611234567');
-      assert(halo.length === 1 && halo[0] === '0611234567', `halo ${halo.join(',')}`);
-      const airtel = h.sonicPhoneCandidatesForApi('0788123456');
-      assert(airtel.length === 1 && airtel[0] === '0788123456', `airtel ${airtel.join(',')}`);
-      const tigo = h.sonicPhoneCandidatesForApi('0711234567');
-      assert(tigo.length === 1 && tigo[0] === '0711234567', `tigo ${tigo.join(',')}`);
+      const cases = [
+        ['0611234567', '255611234567'],
+        ['0621234567', '255621234567'],
+        ['0631234567', '255631234567'],
+        ['0688123456', '255688123456'],
+        ['0698123456', '255698123456'],
+        ['0788123456', '255788123456'],
+        ['0651234567', '255651234567'],
+        ['0671234567', '255671234567'],
+        ['0711234567', '255711234567'],
+        ['0771234567', '255771234567'],
+        ['0744123456', '255744123456'],
+        ['0755123456', '255755123456'],
+        ['0766123456', '255766123456'],
+        ['0799123456', '255799123456'],
+      ];
+      for (const [local, intl] of cases) {
+        const got = h.sonicPhoneCandidatesForApi(local);
+        assert(got.length === 1 && got[0] === intl, `${local} → ${got.join(',')} expected ${intl}`);
+      }
     },
   },
   {
-    name: 'Sonic phone candidates: Vodacom sends one 255… number',
+    name: 'Sonic poll: INPROGRESS stays unpaid',
     fn: () => {
-      const vod = h.sonicPhoneCandidatesForApi('0744123456');
-      assert(vod.length === 1 && vod[0] === '255744123456', `vod ${vod.join(',')}`);
+      const payload = {
+        status: 'success',
+        data: { order_id: 'SONIC-IP', payment_status: 'INPROGRESS', channel: 'HALOPESATZ' },
+      };
+      const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === false, 'INPROGRESS must not unlock');
+      assert(rawStatus === 'INPROGRESS', `expected INPROGRESS, got ${rawStatus}`);
+    },
+  },
+  {
+    name: 'Sonic poll: USERCANCELLED is terminal and unpaid',
+    fn: () => {
+      const payload = {
+        status: 'success',
+        data: { order_id: 'SONIC-UC', payment_status: 'USERCANCELLED', channel: 'AIRTELMONEY' },
+      };
+      const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+      assert(isCompleted === false, 'USERCANCELLED must not unlock');
+      assert(h.isPaymentTerminalStatus(rawStatus) === true, 'USERCANCELLED should stop polling');
+      assert(h.extractSonicWebhookOrderAndPaid(payload).paid === false, 'webhook must stay unpaid');
     },
   },
   {
@@ -567,6 +599,144 @@ const cases = [
         },
       };
       assert(h.isSonicUssdPushSent(payload) === true, 'expected channel to prove USSD dispatch');
+    },
+  },
+  {
+    name: 'Sonic: nested order_status_data SUCCESS beats outer PENDING (all networks)',
+    fn: () => {
+      for (const channel of ['MPESATZ', 'TIGOPESATZ', 'AIRTELMONEY', 'HALOPESATZ']) {
+        const payload = {
+          status: 'success',
+          message: 'Order status retrieved successfully',
+          data: {
+            order_id: `SONIC-${channel}`,
+            payment_status: 'PENDING',
+            channel,
+            order_status_data: {
+              order_id: `SONIC-${channel}`,
+              payment_status: 'SUCCESS',
+              transid: '26292628111262',
+              channel,
+            },
+          },
+        };
+        const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+        assert(isCompleted === true, `${channel}: nested SUCCESS must be paid`);
+        assert(rawStatus === 'SUCCESS', `${channel}: expected SUCCESS, got ${rawStatus}`);
+        const hook = h.extractSonicWebhookOrderAndPaid(payload);
+        assert(hook.paid === true, `${channel}: webhook extract must be paid`);
+      }
+    },
+  },
+  {
+    name: 'Sonic: FAILED payment_status stays unpaid even if order_status_data says SUCCESS',
+    fn: () => {
+      const payload = {
+        order_id: 'SONIC-FAIL-STALE',
+        data: {
+          payment_status: 'FAILED',
+          order_status_data: { payment_status: 'SUCCESS' },
+        },
+      };
+      const { paid } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === false, 'terminal failure must not upgrade the account');
+    },
+  },
+  {
+    name: 'Sonic official webhook: numeric amount and transid still paid',
+    fn: () => {
+      const payload = {
+        event: 'payment.completed',
+        order_id: 'sp_67890abcdef',
+        amount: '10000',
+        currency: 'TZS',
+        status: 'SUCCESS',
+        transid: 26292628111262,
+        channel: 'MPESATZ',
+        reference: 289999288,
+        msisdn: 255744123456,
+      };
+      const { paid, orderId } = h.extractSonicWebhookOrderAndPaid(payload);
+      assert(paid === true, 'string/number fields must still count as paid');
+      assert(orderId === 'sp_67890abcdef', `got ${orderId}`);
+    },
+  },
+  {
+    name: 'Successful Sonic payments are never returned to the app as PENDING',
+    fn: () => {
+      const paidPayloads = [
+        {
+          event: 'payment.completed',
+          order_id: 'sp_paid_mpesa',
+          status: 'SUCCESS',
+          transid: 'TXN1',
+          channel: 'MPESATZ',
+          msisdn: '255744123456',
+          amount: 2000,
+        },
+        {
+          event: 'payment.completed',
+          order_id: 'sp_paid_airtel',
+          status: 'SUCCESS',
+          channel: 'AIRTELMONEY',
+          msisdn: '255688123456',
+          amount: 2000,
+        },
+        {
+          status: 'success',
+          data: {
+            order_id: 'sp_paid_tigo',
+            payment_status: 'SUCCESS',
+            transid: '26292628111262',
+            channel: 'TIGOPESATZ',
+          },
+          transaction: { order_id: 'sp_paid_tigo', status: 'SUCCESS' },
+        },
+        {
+          status: 'success',
+          data: {
+            order_id: 'sp_paid_halo',
+            payment_status: 'COMPLETED',
+            channel: 'HALOPESATZ',
+            transid: 'HP1',
+          },
+        },
+        {
+          status: 'success',
+          data: {
+            order_id: 'sp_nested',
+            payment_status: 'PENDING',
+            order_status_data: { payment_status: 'SUCCESS', channel: 'MPESATZ', transid: '1' },
+          },
+        },
+      ];
+      for (const payload of paidPayloads) {
+        const { isCompleted, rawStatus } = h.evaluateSonicOrderStatusForApply(payload);
+        assert(isCompleted === true, `expected paid, raw=${rawStatus} payload=${JSON.stringify(payload.data || payload.event)}`);
+        assert(String(rawStatus).toUpperCase() !== 'PENDING', `paid raw status became PENDING`);
+        const facing = h.clientFacingSonicPollStatus(payload);
+        assert(facing === 'COMPLETED', `app status ${facing} for a paid order`);
+        const hook = h.extractSonicWebhookOrderAndPaid(payload);
+        assert(hook.paid === true, 'webhook marked a paid order unpaid');
+        assert(String(hook.raw || '').toUpperCase() !== 'PENDING', `webhook raw became PENDING (${hook.raw})`);
+      }
+    },
+  },
+  {
+    name: 'Unpaid Sonic PIN wait stays PENDING and is not completed',
+    fn: () => {
+      const waiting = {
+        status: 'success',
+        message: 'Order status retrieved successfully',
+        data: { order_id: 'sp_wait', payment_status: 'PENDING', transid: null, channel: null },
+        transaction: { order_id: 'sp_wait', status: 'PENDING' },
+      };
+      const facing = h.clientFacingSonicPollStatus(waiting);
+      assert(facing === 'PENDING', `PIN wait became ${facing}`);
+      const { isCompleted } = h.evaluateSonicOrderStatusForApply(waiting);
+      assert(isCompleted === false, 'PIN wait must not complete');
+      const ack = { status: 'success', message: 'Push USSD sent', data: { order_id: 'sp_ack' } };
+      assert(h.clientFacingSonicPollStatus(ack) === 'PENDING', 'create_order ack must stay pending');
     },
   },
   {
