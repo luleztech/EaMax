@@ -248,19 +248,9 @@ class SettingsApi {
     if (data is Map) return data['channelsPremiumOnly'] == true;
     return false;
   }
-  /// Get the currently active payment provider ('aurax' or 'sonicpesa').
-  /// Defaults to 'aurax' if not configured.
+  /// Checkout always uses SonicPesa (M-Pesa, Airtel Money, Mixx by Yas, HaloPesa).
   Future<String> getPaymentProvider() async {
-    try {
-      final data = await apiRequest('/api/settings/payment-provider');
-      if (data is Map && data.containsKey('paymentProvider')) {
-        final provider = data['paymentProvider'] as String;
-        return provider == 'sonicpesa' ? 'sonicpesa' : 'aurax';
-      }
-    } catch (e) {
-      // If endpoint fails, default to aurax
-    }
-    return 'aurax';
+    return 'sonicpesa';
   }
   Future<List<dynamic>> getCarouselSlides(
     String category, {
@@ -340,6 +330,7 @@ class PaymentsApi {
     required String phone,
     required String email,
     required String name,
+    bool resend = false,
   }) async {
     Object? lastErr;
     for (var attempt = 1; attempt <= 2; attempt++) {
@@ -354,9 +345,10 @@ class PaymentsApi {
             'phone': phone,
             'email': email,
             'name': name,
+            if (resend) 'resend': true,
           },
           enableRetries: false,
-          timeout: const Duration(seconds: 28),
+          timeout: const Duration(seconds: 40),
         );
         return Map<String, dynamic>.from(r as Map);
       } on ApiRateLimitedException catch (e) {
@@ -379,6 +371,7 @@ class PaymentsApi {
     required String phone,
     required String email,
     required String name,
+    bool resend = false,
   }) async {
     final r = await apiRequest(
       '/api/payments/start',
@@ -390,10 +383,11 @@ class PaymentsApi {
         'phone': phone,
         'email': email,
         'name': name,
+        if (resend) 'resend': true,
       },
       // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
       enableRetries: false,
-      timeout: const Duration(seconds: 26),
+      timeout: const Duration(seconds: 40),
     );
     return Map<String, dynamic>.from(r as Map);
   }

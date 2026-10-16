@@ -14,7 +14,7 @@ const {
   fetchUserPremiumSnapshotByUserId,
 } = require('../services/userEntitlements');
 const {
-  getPlanPaymentInfo,
+  resolveCheckoutPlan,
   resolvePremiumInterval,
   getActivePlans,
   intervalForPlan,
@@ -69,8 +69,9 @@ const getSonicPesaRequestHeaders = () => {
     Accept: 'application/json',
   };
   if (SONICPESA_SECRET_KEY) {
+    // Payout docs name this X-API-SECRET. Older dashboard labels are kept too.
+    headers['X-API-SECRET'] = SONICPESA_SECRET_KEY;
     headers['X-SECRET-KEY'] = SONICPESA_SECRET_KEY;
-    // Official PHP SDK / dashboard sometimes label this “secrete key”.
     headers['X-SECRETE-KEY'] = SONICPESA_SECRET_KEY;
   }
   return headers;
@@ -185,7 +186,7 @@ const resolveGatewayForOrderId = async (orderId) => {
 };
 
 const TZ_VALID_PREFIXES = [
-  '061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079',
+  '061', '062', '063', '065', '066', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079',
 ];
 
 /**
@@ -227,7 +228,7 @@ const normalizePhoneToLocal0 = (rawPhone) => {
   if (!isValidFormat || !hasValidPrefix) {
     return {
       error:
-        'Invalid Tanzanian phone number. Use format: 061–063 (Halotel), 065/067/071/077 (Tigo), 068–069/078 (Airtel), 074–076/079 (Vodacom); 9–10 digits after 0.',
+        'Nambari si sahihi. Tumia nambari ya Tanzania: 066/074–076/079 (M-Pesa), 068/069/078 (Airtel), 065/067/071/077 (Mixx), 061–063 (HaloPesa).',
     };
   }
   return { local: normalizedPhone };
@@ -246,16 +247,10 @@ const formatBuyerPhoneLocal = (local0) => {
  * DB `buyer_phone` stays local — only the create_order payload uses 255….
  */
 const formatPhoneForSonicPesaApi = (local0) => {
-  if (String(process.env.SONIC_SEND_LOCAL_PHONE || '').trim() === '1') {
-    return formatBuyerPhoneLocal(local0);
-  }
+  // Official create_order: buyer_phone is 255 + 9 digits, e.g. 255746033524.
   const local = formatBuyerPhoneLocal(local0);
-  let intl = local;
-  if (local.startsWith('0')) intl = `255${local.slice(1)}`;
-  else if (local.startsWith('+255')) intl = local.slice(1);
-  // Sonic docs: 255 + 9 digits (12 chars total)
-  if (intl.startsWith('255') && intl.length > 12) intl = intl.slice(0, 12);
-  return intl;
+  if (!/^0[67]\d{8}$/.test(local)) return '';
+  return `255${local.slice(1)}`;
 };
 
 const isAirtelLocalPhone = (local0) => {
@@ -270,7 +265,7 @@ const isTigoLocalPhone = (local0) => {
 
 const isVodacomLocalPhone = (local0) => {
   const p = String(local0 || '');
-  return p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
+  return p.startsWith('066') || p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079');
 };
 
 const sonicPhoneCandidatesForApi = (normalizedPhone) => {
@@ -325,13 +320,8 @@ const isSonicUssdPushSent = (sonicData) => {
   if (msisdn.length >= 9) return true;
   const channel = String(nest?.channel || sonicData.channel || '').trim();
   if (channel && channel.toLowerCase() !== 'null') return true;
-  // Documented create_order copy, with an order id, means the prompt was queued.
-  if (
-    sonicOrderIdFromPayload(sonicData) &&
-    /order created successfully|payment order created/i.test(msg)
-  ) {
-    return true;
-  }
+  // Official copy is "Payment order created successfully! Push USSD sent to your phone."
+  // "Order created" alone, with no msisdn and no push sentence, did not dispatch USSD.
   return false;
 };
 
@@ -398,8 +388,12 @@ const sonicNetworkLabel = (local0) => {
   return 'Mobile Money';
 };
 
-const sonicCheckoutPrompt = (local0) =>
-  `Ombi la ${sonicNetworkLabel(local0)} limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha — Premium itafunguliwa baada ya malipo kuthibitishwa.`;
+const sonicCheckoutPrompt = (local0, amount) => {
+  const amt = Math.round(Number(amount));
+  const money = Number.isFinite(amt) && amt > 0 ? `Tsh ${amt.toLocaleString('en-US')}` : '';
+  const moneyBit = money ? ` la ${money}` : '';
+  return `Ombi${moneyBit} la ${sonicNetworkLabel(local0)} limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha. Premium itafunguliwa pindi malipo yatakapothibitishwa.`;
+};
 
 const isSonicInvalidMsisdnRejection = (sonicData, httpStatus) => {
   const msg = String(sonicData?.message || sonicData?.error || '');
@@ -441,7 +435,7 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
       return 'Mixx by Yas haikupokea ombi. Hakikisha nambari (065, 067, 071, 077) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
     }
     if (isVodacomLocalPhone(localPhone)) {
-      return 'M-Pesa haikupokea ombi. Hakikisha nambari (074–076, 079) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
+      return 'M-Pesa haikupokea ombi. Hakikisha nambari (066, 074–076, 079) ni sahihi, una salio, na hakuna USSD nyingine wazi, kisha jaribu tena.';
     }
     return 'Hatukuweza kutuma ombi la malipo kwenye simu yako. Hakikisha nambari ni sahihi na mtandao wa pesa unafanya kazi, kisha jaribu tena.';
   }
@@ -492,7 +486,7 @@ const auraxPhoneCandidatesForApi = (normalizedPhone) => {
 const resolveAuraxChannelFromPhone = (local0) => {
   const p = String(local0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
-  if (p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'MPESA';
+  if (p.startsWith('066') || p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'MPESA';
   if (p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGO_PESA';
   if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL_MONEY';
   return 'MPESA';
@@ -1249,8 +1243,8 @@ const tryApplySonicCompletedPayment = async (orderId, meta, { altRefs = [] } = {
 };
 
 const SONIC_CREATE_TIMEOUT_MS = Math.min(
-  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 12000, 8000),
-  20000,
+  Math.max(Number(process.env.SONIC_CREATE_TIMEOUT_MS) || 25000, 15000),
+  30000,
 );
 /** order_status should not block premium unlock behind a slow gateway. */
 const SONIC_POLL_TIMEOUT_MS = Math.min(
@@ -1509,7 +1503,7 @@ const clientFacingSonicPollStatus = (payload) => {
 };
 
 const gatewayFetchJson = async (url, options = {}, timeoutMs = 8000) => {
-  const ms = Math.min(Math.max(Number(timeoutMs) || 8000, 3000), 20000);
+  const ms = Math.min(Math.max(Number(timeoutMs) || 8000, 3000), 35000);
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
   try {
@@ -1643,9 +1637,12 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
     return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo. Jaribu tena; ikiendelea subiri dakika 2–5 kisha ujaribu.';
   }
   if (/denied|declined|rejected|invalid pin|wrong pin|incorrect pin/i.test(msg)) {
-    return 'Muamala haukuidhinishwa kwenye simu (PIN au hatua ya USSD). Jaribu tena ukiangalia maelekezo kwa makini.';
+    return 'Muamala haukuidhinishwa kwenye simu. Ingiza PIN tena, au tuma ombi jipya.';
   }
-  return msg || 'Malipo hayajaweza kuanza. Jaribu tena baada ya muda mfupi.';
+  if (context === 'initiate') {
+    return 'Hatukuweza kutuma ombi kwenye simu. Hakikisha nambari ni sahihi, kisha jaribu tena.';
+  }
+  return 'Malipo hayajaweza kuanza. Jaribu tena baada ya muda mfupi.';
 };
 
 /** Gateway ended without pay — stop app polling; only user cancel gets a soft message. */
@@ -1743,7 +1740,7 @@ const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
   res.json({
     status: 'pending',
     orderId,
-    message: sonicCheckoutPrompt(buyerPhoneLocal),
+    message: sonicCheckoutPrompt(buyerPhoneLocal, row.amount_cents),
     network: sonicNetworkKey(buyerPhoneLocal),
     provider: row.payment_provider || undefined,
     reusedPending: true,
@@ -1860,18 +1857,31 @@ async function handlePaymentStart(req, res, next) {
     const bodySchema = z
       .object({
         externalId: z.string().min(1),
-        bundle: z.string().min(1).max(32).optional(),
+        bundle: z.string().trim().min(1).max(64).optional(),
         promotionId: z.coerce.number().int().positive().optional(),
-        amount: z.number().int().min(1).optional(),
-        phone: z.string().min(9).max(15),
-        email: z.string().email().optional(),
-        name: z.string().optional(),
+        amount: z.preprocess((v) => {
+          if (v == null || v === '') return undefined;
+          const n = Number(String(v).replace(/[, ]/g, ''));
+          return Number.isFinite(n) ? Math.round(n) : v;
+        }, z.number().int().min(1).optional()),
+        phone: z.string().min(9).max(20),
+        email: z.string().max(160).optional(),
+        name: z.string().max(80).optional(),
+        resend: z.boolean().optional(),
       })
       .refine((d) => d.promotionId != null || d.bundle != null, {
         message: 'bundle or promotionId required',
       });
 
-    const data = bodySchema.parse(req.body);
+    let data;
+    try {
+      data = bodySchema.parse(req.body);
+    } catch (parseErr) {
+      console.warn('[Payment] /start rejected body:', parseErr?.message || parseErr);
+      return res.status(400).json({
+        error: 'Hakiki nambari ya simu na kifurushi, kisha jaribu tena.',
+      });
+    }
 
     const phoneNorm = normalizePhoneToLocal0(data.phone);
     if (phoneNorm.error) {
@@ -1895,6 +1905,7 @@ async function handlePaymentStart(req, res, next) {
     const userId = userRes.rows[0].id;
 
     let planKey;
+    let planName;
     let amountToSend;
 
     if (data.promotionId) {
@@ -1937,24 +1948,34 @@ async function handlePaymentStart(req, res, next) {
         return res.status(400).json({ error: 'Ofa haijasanidi vizuri' });
       }
       if (data.amount != null && data.amount !== offerAmount) {
-        return res.status(400).json({
-          error: `Kiasi cha ofa ni Tsh ${offerAmount}.`,
+        console.warn('[Payment] Offer amount on the phone differs — charging the offer price', {
+          promotionId: data.promotionId,
+          clientAmount: data.amount,
+          charge: offerAmount,
         });
       }
       planKey = `offer:${offerDays}`;
+      planName = `Ofa ya siku ${offerDays}`;
       amountToSend = offerAmount;
     } else {
-      const planInfo = await getPlanPaymentInfo(data.bundle);
-      if (!planInfo) {
-        return res.status(400).json({ error: 'Invalid bundle plan' });
-      }
-      if (data.amount != null && data.amount !== planInfo.amount) {
+      const plans = await getActivePlans();
+      const resolved = resolveCheckoutPlan(plans, data.bundle, data.amount);
+      if (!resolved) {
         return res.status(400).json({
-          error: `Amount for ${data.bundle} must be ${planInfo.amount} TZS.`,
+          error: 'Kifurushi hiki hakipo. Chagua tena muda unaotaka kulipia.',
         });
       }
-      planKey = data.bundle;
-      amountToSend = data.amount != null ? data.amount : planInfo.amount;
+      if (data.amount != null && data.amount !== resolved.amount) {
+        console.warn('[Payment] Client amount differs from plan price — charging the plan', {
+          bundle: data.bundle,
+          clientAmount: data.amount,
+          plan: resolved.slug,
+          charge: resolved.amount,
+        });
+      }
+      planKey = resolved.slug;
+      planName = resolved.name;
+      amountToSend = resolved.amount;
     }
 
     const orderId = crypto.randomUUID();
@@ -2026,9 +2047,16 @@ async function handlePaymentStart(req, res, next) {
         const initiateCode = sonicData.resultcode || sonicData.code;
         const sendFailed = isSonicPaymentSendFailure(initiateMsg, initiateCode);
 
-        // One accepted order is the phone prompt. A second MSISDN or Aurax
-        // push on the same tap makes the wallet reject the number.
-        if (sonicOrderId && !sendFailed) {
+        // An order id means Sonic accepted the kifurushi. Always wait for PIN.
+        // A nervous gateway message must not turn a created order into a rejection.
+        if (sonicOrderId) {
+          if (sendFailed) {
+            console.warn('[SonicPesa] Order created with a send-failure message — still waiting for PIN', {
+              initiateMsg,
+              initiateCode,
+              amount: amountToSend,
+            });
+          }
           await query(
             `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -2044,10 +2072,17 @@ async function handlePaymentStart(req, res, next) {
               buyerPhoneLocal,
             ],
           );
+          const pushSent = Boolean(ussdSent) && !sendFailed;
           return res.json({
             status: 'pending',
             orderId: sonicOrderId,
-            message: sonicCheckoutPrompt(normalizedPhone),
+            amount: amountToSend,
+            plan: planKey,
+            planName: planName || planKey,
+            ussdSent: pushSent,
+            message: pushSent
+              ? sonicCheckoutPrompt(normalizedPhone, amountToSend)
+              : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.',
             network: sonicNetworkKey(normalizedPhone),
             provider: PAYMENT_PROVIDERS.SONICPESA,
             activeProvider: PAYMENT_PROVIDERS.SONICPESA,
@@ -2062,14 +2097,13 @@ async function handlePaymentStart(req, res, next) {
           sonicData,
         };
         if (isGatewayAttemptLimitMessage(initiateMsg, initiateCode)) {
-          if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+          if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
           return res.status(400).json({
             error: mapSonicInitiateUserError(
               normalizedPhone,
               initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
               initiateCode,
             ),
-            sonicResponse: sonicData,
           });
         } else if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
           console.warn('[Payment] SonicPesa did not dispatch USSD — falling back to Aurax Pay', {
@@ -2087,7 +2121,6 @@ async function handlePaymentStart(req, res, next) {
               initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
               initiateCode,
             ),
-            sonicResponse: sonicData,
           });
         }
       }
@@ -2106,10 +2139,9 @@ async function handlePaymentStart(req, res, next) {
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
       if (isGatewayAttemptLimitMessage(rawErr, rawCode)) {
-        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+        if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
         return res.status(400).json({
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
-          sonicResponse: sonicData,
         });
       } else if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
         console.warn('[Payment] SonicPesa STK not sent — falling back to Aurax Pay for this payment', {
@@ -2121,7 +2153,6 @@ async function handlePaymentStart(req, res, next) {
       } else {
         return res.status(400).json({
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
-          sonicResponse: sonicData,
         });
       }
       }
@@ -2179,7 +2210,7 @@ async function handlePaymentStart(req, res, next) {
         (auraxData.details ? JSON.stringify(auraxData.details) : '') ||
         'Failed to start payment request';
       if (isGatewayAttemptLimitMessage(rawError, response.status)) {
-        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+        if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
       }
       const auraxMapped = mapPaymentGatewayUserError(rawError, '', { context: 'initiate' });
       if (usedAuraxFallbackFromSonic && sonicFailureForClient) {
@@ -2188,16 +2219,11 @@ async function handlePaymentStart(req, res, next) {
             normalizedPhone,
             sonicFailureForClient.message,
             sonicFailureForClient.code,
-            { auraxAlsoFailed: true },
           ),
-          detail: auraxMapped,
-          sonicResponse: sonicFailureForClient.sonicData,
-          auraxResponse: auraxData,
         });
       }
       return res.status(400).json({
         error: auraxMapped,
-        auraxResponse: auraxData,
       });
     }
 
@@ -2214,8 +2240,7 @@ async function handlePaymentStart(req, res, next) {
     if (!gatewayRef) {
       await rollbackPendingPaymentByRef(orderId, paymentProviderForRow);
       return res.status(400).json({
-        error: 'Aurax Pay did not return a transaction id',
-        auraxResponse: auraxData,
+        error: 'Hatukuweza kutuma ombi kwenye simu. Jaribu tena.',
       });
     }
 
@@ -2664,23 +2689,31 @@ const respondPaymentCompletion = async (orderId, rawPayload, res, options = {}) 
     }
   }
 
-  if (!premiumActive) {
-    // Gateway/DB already confirmed paid — never tell the app this is still a
-    // generic PENDING PIN wait. Clients keep polling while applying:true.
+  const paymentCompleted = payRow?.status === 'completed';
+  // Channels open only after this order is completed AND premium is live.
+  // A PIN prompt, a pending row, or an already-free account must not unlock.
+  if (!paymentCompleted || !premiumActive) {
+    const gatewayPaid = gatewayConfirmedPaid || paymentCompleted;
     return res.json({
-      status: 'COMPLETED',
-      applying: true,
+      status: gatewayPaid ? 'COMPLETED' : 'PENDING',
+      applying: gatewayPaid,
       premiumGranted: false,
-      message: 'Malipo yamethibitishwa — tunasasisha akaunti yako…',
-      userMessage: 'Malipo yamepokelewa — tunafungua channel zote…',
-      raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
-      ...(user ? { user } : {}),
+      paymentVerified: false,
+      message: gatewayPaid
+        ? 'Malipo yamethibitishwa — tunasasisha akaunti yako…'
+        : 'Ingiza PIN kwenye simu yako.',
+      userMessage: gatewayPaid
+        ? 'Malipo yamepokelewa — tunafungua channel zote…'
+        : 'Ingiza PIN kwenye simu yako.',
+      raw: rawPayload || { data: [{ payment_status: gatewayPaid ? 'COMPLETED' : 'PENDING' }] },
+      ...(user && paymentCompleted ? { user } : {}),
     });
   }
 
   return res.json({
     status: 'COMPLETED',
     premiumGranted: true,
+    paymentVerified: true,
     userMessage: 'Malipo yamepokelewa.',
     raw: rawPayload || { data: [{ payment_status: 'COMPLETED' }] },
     user: {

@@ -197,6 +197,7 @@ run('Sonic paid:true flag is paid', () => {
 console.log('\n=== Carrier helpers ===');
 run('Carrier phone classifiers', () => {
   assert(h.isVodacomLocalPhone('0741234567') === true);
+  assert(h.isVodacomLocalPhone('0661234567') === true);
   assert(h.isAirtelLocalPhone('0681234567') === true);
   assert(h.isTigoLocalPhone('0711234567') === true);
   assert(h.isHalotelLocalPhone('0611234567') === true);

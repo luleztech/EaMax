@@ -361,15 +361,19 @@ const StreamingApp = () => {
   };
 
   /**
-   * Called immediately when a payment completes (from polling or PaymentsScreen callback).
-   * Sets isPremium=true instantly for a snappy UI, then does a real server refresh in the
-   * background to confirm and update expiry/points.
+   * Opens channels only when the payment status payload already says this
+   * account is premium. A PIN prompt or an empty user must stay locked.
    */
   const handlePaymentSuccess = useCallback(async (paymentUser) => {
-    console.log('[Payment] Success! Triggering instant premium upgrade...');
-
     const { premium, subEnd } = resolvePremiumFromUserData(paymentUser || {});
-    setIsPremium(premium || true);
+    if (!premium) {
+      try {
+        await refreshUserPoints();
+      } catch (_) {}
+      return false;
+    }
+
+    setIsPremium(true);
     if (subEnd) {
       setSubscriptionEndDate(subEnd);
     }
@@ -388,6 +392,7 @@ const StreamingApp = () => {
     } catch (err) {
       console.error('[Payment] Background server refresh failed:', err?.message || err);
     }
+    return true;
   }, [refreshUserPoints, CONGRATS_STORAGE_KEY]);
 
   return (

@@ -83,7 +83,6 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
 
   final _phoneCtrl = TextEditingController();
   final _phoneFocus = FocusNode();
-  final _formScrollCtrl = ScrollController();
 
   AnimationController? _pulse;
   AnimationController? _wave;
@@ -94,6 +93,8 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
   bool _speaking = false;
   bool _paymentSuccess = false;
   bool _paymentBusy = false;
+  bool _resending = false;
+  bool _promptOnPhone = false;
   String? _formError;
   String? _selectedSlug;
   String _waitingHint = 'Tafadhali subiri kidogo…';
@@ -266,15 +267,21 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       );
 
       final orderId = (result['orderId']?.toString() ?? '').trim();
+      final pushSent = result['reusedPending'] != true && result['ussdSent'] != false;
+      debugPrint(
+        '[Payment] create_order order=${orderId.isEmpty ? 'none' : orderId} ussdSent=${result['ussdSent']} reused=${result['reusedPending']}',
+      );
       if (!mounted || _page != 3) return;
 
       if (orderId.isEmpty) {
         _waitSpin?.stop();
         setState(() {
           _paymentBusy = false;
-          _waitingHint = (result['message']?.toString() ?? '').trim().isNotEmpty
-              ? result['message'].toString()
-              : 'Ombi la malipo limeshindwa. Jaribu tena.';
+          _promptOnPhone = false;
+          final raw = (result['message']?.toString() ?? '').trim();
+          _waitingHint = mapPaymentStartError(
+            Exception(raw.isNotEmpty ? raw : 'Ombi la malipo limeshindwa. Jaribu tena.'),
+          );
         });
         return;
       }
@@ -291,8 +298,12 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
 
       if (!mounted) return;
       setState(() {
+        _paymentBusy = false;
+        _promptOnPhone = pushSent;
         _pendingPlanLabel = pkg.displayName;
-        _waitingHint = TzPaymentConfig.paymentPromptFor(phone);
+        _waitingHint = pushSent
+            ? TzPaymentConfig.paymentPromptFor(phone)
+            : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.';
       });
 
       const maxAttempts = 90;
@@ -311,7 +322,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             pollCount: i + 1,
             response: response,
           )) {
-            if (mounted) {
+            if (mounted && _promptOnPhone) {
               setState(() {
                 _waitingHint = (i + 1) <= 1
                     ? PaymentStatusCopy.requestSent
@@ -320,20 +331,16 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             }
             continue;
           }
-          if (shouldKeepPaymentUnlockPolling(response) || isPaymentSuccessResponse(response)) {
-            if (isPaymentStillApplying(response) || shouldKeepPaymentUnlockPolling(response)) {
-              if (mounted) {
-                setState(() {
-                  _waitingHint = paymentStatusUserMessage(response);
-                });
-              }
+          if (shouldKeepPaymentUnlockPolling(response) && !isPaymentSuccessResponse(response)) {
+            if (mounted && _promptOnPhone) {
+              setState(() {
+                _waitingHint = paymentStatusUserMessage(response);
+              });
             }
-            final userPayload = userPayloadFromPaymentResponse(response) ?? <String, dynamic>{};
-            if (response['premiumGranted'] == true || response['premium_granted'] == true) {
-              userPayload['premiumGranted'] = true;
-              userPayload['isPremium'] = true;
-              userPayload['is_premium'] = true;
-            }
+            continue;
+          }
+          if (isPaymentSuccessResponse(response)) {
+            final userPayload = userPayloadFromPaymentResponse(response);
             var unlocked = false;
             try {
               unlocked = await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;
@@ -341,7 +348,6 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
               debugPrint('[PremiumLockModal] onPaymentSuccess failed: $e');
             }
             if (!unlocked) {
-              // Keep pending order; keep polling until local premium is confirmed.
               if (mounted) {
                 setState(() {
                   _waitingHint = PaymentStatusCopy.applying;
@@ -355,7 +361,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
           }
           final status = paymentStatusFromResponse(response);
           if (isPaymentCancelledStatus(status)) {
-            if (mounted) {
+            if (mounted && _promptOnPhone) {
               setState(() => _waitingHint = PaymentStatusCopy.requestSent);
             }
             continue;
@@ -376,7 +382,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
           continue;
         }
 
-        if (!mounted) return;
+        if (!mounted || !_promptOnPhone) continue;
         setState(() {
           _waitingHint = i < 8
               ? TzPaymentConfig.paymentPromptFor(phone)
@@ -388,8 +394,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       _waitSpin?.stop();
       setState(() {
         _paymentBusy = false;
-        _waitingHint =
-            'Muda wa kusubiri malipo umeisha. Hakikisha umethibitisha PIN kwenye simu, kisha jaribu tena.';
+        _waitingHint = _promptOnPhone
+            ? 'Muda wa kusubiri malipo umeisha. Hakikisha umethibitisha PIN kwenye simu, kisha jaribu tena.'
+            : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.';
       });
     } catch (e) {
       if (!mounted) return;
@@ -500,7 +507,6 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
   @override
   void dispose() {
     _phoneFocus.dispose();
-    _formScrollCtrl.dispose();
     _pulse?.dispose();
     _wave?.dispose();
     _waitSpin?.dispose();
@@ -519,15 +525,17 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     switch (_page) {
       case 0: // intro — compact
         return (available * 0.42).clamp(260.0, 360.0);
-      case 1: // phone — medium, grow with keyboard
-        if (keyboardOpen) return (available * 0.62).clamp(280.0, available);
-        return (available * 0.46).clamp(280.0, 400.0);
+      case 1: // phone — snug to the screen, never taller than the space above the keyboard
+        final screenH = size.height;
+        final snug = screenH < 680 ? 390.0 : screenH < 820 ? 440.0 : 480.0;
+        return math.min(keyboardOpen ? available : snug, available);
       case 2: // pricing — tall so all plans are visible
         final planExtra = (_plans.length * 78.0).clamp(160.0, 360.0);
         final target = 220.0 + planExtra; // hero + list + CTA
         return target.clamp(available * 0.62, available * 0.90);
-      default: // waiting
-        return (available * 0.52).clamp(300.0, 460.0);
+      default: // PIN step — number, kifurushi, network, and resend
+        final snug = size.height < 700 ? available * 0.9 : available * 0.78;
+        return math.min(snug, available);
     }
   }
 
@@ -674,18 +682,131 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     );
   }
 
+  TzMobileNetwork get _detectedNetwork =>
+      TzPaymentConfig.detectNetworkLive(_phoneCtrl.text);
+
   String get _pageLabel {
     if (_paymentSuccess) return 'Imefanikiwa';
+    final net = _detectedNetwork;
+    final netName = net == TzMobileNetwork.unknown
+        ? ''
+        : ' · ${TzPaymentConfig.networkLabel(net)}';
     switch (_page) {
       case 0:
-        return 'Hatua 1 / 4';
+        return 'Hatua 1 / 4 · Maelezo';
       case 1:
-        return 'Hatua 2 / 4';
+        return 'Hatua 2 / 4 · Simu$netName';
       case 2:
-        return 'Hatua 3 / 4';
+        return 'Hatua 3 / 4 · Kifurushi$netName';
       default:
-        return 'Hatua 4 / 4';
+        return 'Hatua 4 / 4 · PIN$netName';
     }
+  }
+
+  Widget _stepTrack() {
+    const steps = ['Maelezo', 'Simu', 'Kifurushi', 'PIN'];
+    return Row(
+      children: List.generate(steps.length, (i) {
+        final done = i < _page || _paymentSuccess;
+        final on = i == _page && !_paymentSuccess;
+        final color = on || done ? _green : const Color(0xFFD6E8F6);
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(right: i == steps.length - 1 ? 0 : 6),
+            child: Column(
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    '${i + 1}  ${steps[i]}',
+                    maxLines: 1,
+                    softWrap: false,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: on ? FontWeight.w800 : FontWeight.w600,
+                      color: on ? _greenDark : _textHint,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _networkChip() {
+    final net = _detectedNetwork;
+    if (net == TzMobileNetwork.unknown) {
+      final started = TzPaymentConfig.liveDigits(_phoneCtrl.text).isNotEmpty;
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: _section,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          started
+              ? 'Bado hatujatambua mtandao. Endelea kuandika nambari.'
+              : 'M-Pesa, Airtel Money, Mixx by Yas, au HaloPesa.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, color: _textSecondary, fontWeight: FontWeight.w600),
+        ),
+      );
+    }
+    final color = switch (net) {
+      TzMobileNetwork.mpesa => const Color(0xFFE60000),
+      TzMobileNetwork.airtel => const Color(0xFFED1C24),
+      TzMobileNetwork.tigo => const Color(0xFF0033A0),
+      TzMobileNetwork.halotel => const Color(0xFF00843D),
+      TzMobileNetwork.unknown => _textHint,
+    };
+    final name = TzPaymentConfig.networkFullName(net);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color),
+                ),
+                Text(
+                  'PIN itaenda kwenye ${TzPaymentConfig.networkLabel(net)}.',
+                  style: TextStyle(fontSize: 11.5, color: _textSecondary, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _dots() {
@@ -759,58 +880,69 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
   Widget _phoneCard() {
     return _CardScaffold(
       hero: _HeroPanel(icon: Icons.phone_rounded, pulse: _pulse!, compact: true, navyMid: _navyMid, navy: _navy),
-      heroHeight: 96,
+      heroHeight: 78,
       navyMid: _navyMid,
       navy: _navy,
-      child: Column(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              controller: _formScrollCtrl,
-              physics: const BouncingScrollPhysics(),
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final short = constraints.maxHeight < 360;
+          final gap = short ? 6.0 : 10.0;
+          return FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: constraints.maxWidth,
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     'Weka nambari ya simu',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: _textPrimary),
+                    style: TextStyle(
+                      fontSize: short ? 15 : 17,
+                      fontWeight: FontWeight.w800,
+                      color: _textPrimary,
+                    ),
                   ),
-                  const SizedBox(height: 10),
+                  SizedBox(height: gap),
+                  _stepTrack(),
+                  SizedBox(height: gap),
                   _audioStrip(),
-                  const SizedBox(height: 16),
+                  SizedBox(height: gap + 2),
                   _phoneField(),
+                  SizedBox(height: gap),
+                  _networkChip(),
                   if (_formError != null) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
                     Text(
                       _formError!,
                       textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 12, color: Colors.redAccent, fontWeight: FontWeight.w600),
                     ),
                   ],
+                  SizedBox(height: gap + 4),
+                  _PrimaryButton(
+                    label: 'Endelea',
+                    icon: Icons.arrow_forward_rounded,
+                    green: _green,
+                    greenDark: _greenDark,
+                    onTap: () {
+                      if (!_validatePhone()) return;
+                      _goTo(2);
+                    },
+                  ),
                 ],
               ),
             ),
-          ),
-          const SizedBox(height: 10),
-          _PrimaryButton(
-            label: 'Endelea',
-            icon: Icons.arrow_forward_rounded,
-            green: _green,
-            greenDark: _greenDark,
-            onTap: () {
-              if (!_validatePhone()) return;
-              _goTo(2);
-            },
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
   Widget _pricesCard() {
     return _CardScaffold(
-      heroHeight: 96,
+      heroHeight: _detectedNetwork == TzMobileNetwork.unknown ? 96 : 118,
       navyMid: _navyMid,
       navy: _navy,
       hero: Padding(
@@ -820,6 +952,13 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('Chagua Kifurushi', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
+            if (_detectedNetwork != TzMobileNetwork.unknown) ...[
+              const SizedBox(height: 4),
+              Text(
+                '${TzPaymentConfig.networkFullName(_detectedNetwork)} · ${TzPaymentConfig.liveDigits(_phoneCtrl.text)}',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white),
+              ),
+            ],
             const SizedBox(height: 8),
             _audioStrip(lite: true),
           ],
@@ -962,7 +1101,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       style: TextStyle(fontSize: 18, color: _textPrimary, fontWeight: FontWeight.w700, letterSpacing: 1.2),
       cursorColor: _navy,
       onChanged: (raw) {
-        if (_formError != null) setState(() => _formError = null);
+        setState(() => _formError = null);
         final digits = raw.replaceAll(RegExp(r'\D'), '');
         var next = digits;
         if (next.isEmpty) {
@@ -1009,6 +1148,104 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     );
   }
 
+  Future<void> _resendPrompt() async {
+    if (_resending || _paymentSuccess || _paymentBusy) return;
+    final phone = TzPaymentConfig.normalizeTzLocalPhone(_phoneCtrl.text.trim());
+    RemoteSubscriptionPlan? plan;
+    for (final item in _plans) {
+      if (item.slug == _selectedSlug) {
+        plan = item;
+        break;
+      }
+    }
+    plan ??= _plans.isEmpty ? null : _plans.first;
+    if (phone == null || plan == null) {
+      setState(() {
+        _promptOnPhone = false;
+        _waitingHint = 'Namba ya simu si sahihi. Rudi nyuma uhakikishe.';
+      });
+      return;
+    }
+    setState(() {
+      _resending = true;
+      _waitingHint = 'Tunatuma ombi la PIN kwenye $phone…';
+    });
+    try {
+      final result = await PaymentPendingSession.resendStk(
+        userRequested: true,
+        phone: phone,
+        bundle: plan.slug,
+        amount: plan.priceTzs,
+      );
+      if (!mounted) return;
+      final net = TzPaymentConfig.networkFullName(TzPaymentConfig.detectNetwork(phone));
+      debugPrint(
+        '[Payment] resend order=${result.orderId ?? 'none'} sent=${result.sent} ussd=${result.ussdSent} reused=${result.reusedPending}',
+      );
+      if (result.sent) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('pendingPaymentOrderId', result.orderId!);
+        setState(() {
+          _promptOnPhone = result.ussdSent != false;
+          _waitingHint = _promptOnPhone
+              ? 'Ombi jipya la $net limetumwa kwa ${result.phone}. Ingiza PIN.'
+              : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.';
+        });
+      } else if (result.reusedPending || result.ussdSent == false) {
+        setState(() {
+          _promptOnPhone = false;
+          _waitingHint = 'PIN haijatumwa. Funga USSD kwenye simu, subiri sekunde 30, kisha gusa Tuma ombi tena.';
+        });
+      } else if (result.skippedTooSoon) {
+        setState(() {
+          _waitingHint = 'Subiri sekunde chache, kisha gusa Tuma ombi tena.';
+        });
+      } else if (result.capped) {
+        setState(() {
+          _waitingHint = 'Umefika kikomo. Funga USSD kwenye simu, subiri dakika moja, kisha jaribu tena.';
+        });
+      } else {
+        setState(() {
+          _promptOnPhone = false;
+          _waitingHint = 'Hatukuweza kutuma ombi tena. Jaribu tena.';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      debugPrint('[Payment] resend failed: $e');
+      setState(() {
+        _promptOnPhone = false;
+        _waitingHint = mapPaymentStartError(e);
+      });
+    } finally {
+      if (mounted) setState(() => _resending = false);
+    }
+  }
+
+  Widget _pinSummaryRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12.5, color: _textHint, fontWeight: FontWeight.w700),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(fontSize: 13.5, color: _textPrimary, fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _waitingCard() {
     return _CardScaffold(
       navyMid: _navyMid,
@@ -1025,44 +1262,74 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       child: Column(
         children: [
           Expanded(
-            child: SingleChildScrollView(
-              physics: const BouncingScrollPhysics(),
-              child: Column(
-                children: [
-                  Text(
-                    _paymentSuccess
-                        ? 'Hongera sasa channeli zote zimefunguliwa'
-                        : 'Tunasubiri uthibitisho',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPrimary),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _paymentSuccess
-                        ? 'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.'
-                        : _pendingPlanLabel == null
-                            ? 'Malipo yako yanashughulikiwa…'
-                            : 'Kifurushi: $_pendingPlanLabel\nTunangoja uthibitisho wa malipo yako.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: _textSecondary, height: 1.4),
-                  ),
-                  const SizedBox(height: 12),
-                  _audioStrip(),
-                  if (!_paymentSuccess) ...[
-                    const SizedBox(height: 12),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: _section, borderRadius: BorderRadius.circular(14)),
-                      child: Text(
-                        _waitingHint,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: _textSecondary),
-                      ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final phone = TzPaymentConfig.normalizeTzLocalPhone(_phoneCtrl.text) ??
+                    TzPaymentConfig.liveDigits(_phoneCtrl.text);
+                final net = _detectedNetwork;
+                final netName = net == TzMobileNetwork.unknown
+                    ? 'Mobile Money'
+                    : TzPaymentConfig.networkFullName(net);
+                final plan = _plans.cast<RemoteSubscriptionPlan?>().firstWhere(
+                      (p) => p?.slug == _selectedSlug,
+                      orElse: () => _plans.isEmpty ? null : _plans.first,
+                    );
+                final bundleName = _pendingPlanLabel ?? plan?.displayName ?? 'Kifurushi';
+                final price = plan == null ? '' : ' · Tsh ${plan.formattedPrice}';
+                return FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.topCenter,
+                  child: SizedBox(
+                    width: constraints.maxWidth,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _stepTrack(),
+                        const SizedBox(height: 12),
+                        Text(
+                          _paymentSuccess
+                              ? 'Hongera sasa channeli zote zimefunguliwa'
+                              : 'Ingiza PIN',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPrimary),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _paymentSuccess
+                              ? 'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.'
+                              : 'Angalia simu yako na ukamilishe malipo.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 13, color: _textSecondary, height: 1.35),
+                        ),
+                        if (!_paymentSuccess) ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: _section,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Column(
+                              children: [
+                                _pinSummaryRow('Nambari', phone.isEmpty ? '—' : phone),
+                                _pinSummaryRow('Kifurushi', '$bundleName$price'),
+                                _pinSummaryRow('Mtandao', netName),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _waitingHint,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12.5, color: _textSecondary, height: 1.35),
+                          ),
+                        ],
+                      ],
                     ),
-                  ],
-                ],
-              ),
+                  ),
+                );
+              },
             ),
           ),
           const SizedBox(height: 10),
@@ -1074,11 +1341,20 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
               greenDark: _greenDark,
               onTap: _close,
             )
-          else
+          else ...[
+            _PrimaryButton(
+              label: _resending ? 'Inatuma…' : 'Tuma ombi tena',
+              icon: Icons.refresh_rounded,
+              green: _green,
+              greenDark: _greenDark,
+              onTap: _resending ? () {} : _resendPrompt,
+            ),
+            const SizedBox(height: 8),
             GestureDetector(
               onTap: _close,
               child: Text('Funga', style: TextStyle(fontSize: 14, color: _navyMid, fontWeight: FontWeight.w800)),
             ),
+          ],
         ],
       ),
     );

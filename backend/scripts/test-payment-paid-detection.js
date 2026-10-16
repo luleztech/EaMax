@@ -740,6 +740,26 @@ const cases = [
     },
   },
   {
+    name: 'Every active kifurushi is charged at its plan price',
+    fn: () => {
+      const { resolveCheckoutPlan } = require('../src/services/subscriptionPlansService');
+      const plans = [
+        { slug: 'week', nameSw: 'Kwa Wiki', priceTzs: 2000, isActive: true },
+        { slug: 'month', nameSw: 'Mwezi', priceTzs: 5000, isActive: true },
+        { slug: 'mwaka', nameSw: 'Mwaka', priceTzs: 10000, isActive: true },
+      ];
+      const week = resolveCheckoutPlan(plans, 'week', 2000);
+      assert(week.amount === 2000 && week.slug === 'week', '2000 week');
+      const month = resolveCheckoutPlan(plans, 'month', 10000);
+      assert(month.amount === 5000 && month.slug === 'month', 'stale amount must not reject month');
+      const ten = resolveCheckoutPlan(plans, 'mwaka', '10000');
+      assert(ten.amount === 10000 && ten.slug === 'mwaka', '10000 plan');
+      const byAmount = resolveCheckoutPlan(plans, 'missing-slug', 10000);
+      assert(byAmount && byAmount.slug === 'mwaka', 'unknown slug falls back to matching price');
+      assert(resolveCheckoutPlan(plans, 'nope', 777) == null, 'unknown price stays unknown');
+    },
+  },
+  {
     name: 'Sonic buyer_name does not send a UUID to the gateway',
     fn: () => {
       const name = h.sonicBuyerNameForApi('a1b2c3d4-e5f6-4789-a012-3456789abcde', 'a1b2c3d4-e5f6-4789-a012-3456789abcde');

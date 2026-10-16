@@ -47,7 +47,7 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
   bool _submittingOffer = false;
 
   static const _tzPrefixes = [
-    '061', '062', '063', '065', '067', '068', '069',
+    '061', '062', '063', '065', '066', '067', '068', '069',
     '071', '074', '075', '076', '077', '078', '079',
   ];
 
@@ -246,13 +246,21 @@ class _PromotionPopupOverlayState extends State<PromotionPopupOverlay>
           promotionId: p.id,
         );
       }
+      if (orderId.isEmpty) {
+        _showSnack(mapPaymentStartError(
+          Exception((result['message']?.toString() ?? '').trim().isNotEmpty
+              ? result['message'].toString()
+              : 'Hatukuweza kutuma ombi kwenye simu. Jaribu tena.'),
+        ));
+        return;
+      }
       if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: const Color(0xFF111827),
           title: const Text(
-            'Ombi limetumwa',
+            'Ingiza PIN',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
           ),
           content: Text(

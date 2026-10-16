@@ -26,7 +26,7 @@ const ACCENT = '#22c55e';
 const ACCENT_DARK = '#16a34a';
 
 /** Tanzanian GSM prefixes — must match backend `payments.js` */
-const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
+const TZ_MOBILE_PREFIXES = ['061', '062', '063', '065', '066', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
 
 function isCancelledPaymentStatus(status) {
   const u = String(status || '').toUpperCase().trim();
@@ -52,7 +52,20 @@ function mapPaymentGatewayErrorToSwahili(message) {
   ) {
     return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo, kisha ujaribu tena.';
   }
-  return m;
+  if (
+    l.includes('amount for') ||
+    l.includes('must be') ||
+    l.includes('invalid bundle') ||
+    l.includes('invalid plan') ||
+    l.includes('failed to start') ||
+    l.includes('sonicresponse')
+  ) {
+    return 'Kifurushi hiki kinapatikana. Jaribu tena — ombi la PIN linatumwa kwenye simu yako.';
+  }
+  if (/nambari|ombi|malipo|simu|salio|jaribu|kifurushi|akaunti|pin/i.test(m) && m.length <= 220) {
+    return m;
+  }
+  return 'Hatukuweza kutuma ombi kwenye simu. Hakikisha nambari ni sahihi, kisha jaribu tena.';
 }
 
 /** Tanzania local only (0…). Rejects non-TZ international; converts pasted +255/255 to 0… */
@@ -204,14 +217,12 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
           let unlocked = false;
           if (onPaymentSuccess) {
             try {
-              await Promise.resolve(onPaymentSuccess(response?.user));
-              unlocked = true;
-              setLastPaymentSuccess(true);
+              const result = await Promise.resolve(onPaymentSuccess(response?.user));
+              unlocked = result !== false;
+              if (unlocked) setLastPaymentSuccess(true);
             } catch (e) {
               console.warn('[Payment] Success callback error:', e);
             }
-          } else {
-            unlocked = true;
           }
 
           if (!unlocked) {
@@ -331,7 +342,7 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
       return;
     }
     const cleanPhone = norm.local;
-    const validPrefixes = ['061', '062', '063', '065', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
+    const validPrefixes = ['061', '062', '063', '065', '066', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079'];
     const isValidFormat = cleanPhone && /^0[0-9]{8,9}$/.test(cleanPhone);
     const hasValidPrefix = cleanPhone && validPrefixes.some(prefix => cleanPhone.startsWith(prefix));
 
@@ -375,25 +386,34 @@ const PaymentsScreen = ({ accentColor = ACCENT, bottomPadding = 0, onPaymentSucc
         name: canonicalUid,
       });
 
-      setPollingOrderId(result.orderId);
-      await AsyncStorage.setItem('pendingPaymentOrderId', result.orderId);
+      const orderId = String(result?.orderId || '').trim();
+      if (!orderId) {
+        showStatusModal(
+          'Jaribu tena',
+          mapPaymentGatewayErrorToSwahili(result?.message) ||
+            'Hatukuweza kutuma ombi kwenye simu. Jaribu tena.',
+          false,
+        );
+        return;
+      }
+      setPollingOrderId(orderId);
+      await AsyncStorage.setItem('pendingPaymentOrderId', orderId);
 
+      const charged = Number(result.amount) || bundle.value;
       showStatusModal(
-        'Ombi limetumwa',
+        'Ingiza PIN',
         result.message ||
-          `Ombi lako la malipo la Tsh.${bundle.price} kwa ${bundle.name} limetumwa kwa nambari ${cleanPhone}. Tafadhali fuata maelekezo utakayopokea kwenye simu yako.`,
+          `Ombi la Tsh ${charged.toLocaleString('en-US')} (${bundle.name}) limefika kwenye simu ${cleanPhone}. Ingiza PIN ili kuthibitisha.`,
         true,
       );
-      setSelectedBundle(null);
-      setPhoneNumber('');
     } catch (error) {
       console.error('Failed to start payment:', error);
       const mapped = mapPaymentGatewayErrorToSwahili(error?.message);
       showStatusModal(
-        'Malipo yameshindikana',
+        'Jaribu tena',
         mapped && mapped.trim()
           ? mapped
-          : 'Imeshindikana kutuma ombi la malipo. Jaribu tena baadae.',
+          : 'Hatukuweza kutuma ombi kwenye simu. Jaribu tena.',
         false,
       );
     } finally {

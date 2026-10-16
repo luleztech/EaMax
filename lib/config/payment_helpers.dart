@@ -98,23 +98,31 @@ bool _userPayloadIsPremium(Map<String, dynamic>? user) {
 /// Never treat gateway `COMPLETED` alone as unlock — entitlements must be live
 /// (`premiumGranted` or an active user premium payload).
 bool isPaymentSuccessResponse(Map<String, dynamic> response) {
-  // A live premium grant wins even if the server also set applying:true.
-  if (response['premiumGranted'] == true || response['premium_granted'] == true) {
-    return true;
+  if (response['paymentVerified'] == false) return false;
+
+  final status = normalizedPaymentStatus(response['status']);
+  // PIN not entered, STK ack, or a refused wallet must never open channels.
+  if (status.isEmpty ||
+      isPaymentPending(status) ||
+      isPaymentTerminalFailure(status) ||
+      isPaymentCancelledStatus(status)) {
+    return false;
   }
 
   final user = userPayloadFromPaymentResponse(response);
-  if (_userPayloadIsPremium(user)) return true;
+  final userPremium = _userPayloadIsPremium(user);
+  if (!userPremium) return false;
 
-  if (isPaymentStillApplying(response)) return false;
-
-  // Backend sometimes returns COMPLETED with user premium but without the flag.
-  final status = normalizedPaymentStatus(response['status']);
-  if ((status == 'COMPLETED' || status == 'PAID' || status == 'SUCCESSFUL') &&
-      _userPayloadIsPremium(user)) {
+  final granted =
+      response['premiumGranted'] == true || response['premium_granted'] == true;
+  if (response['paymentVerified'] == true && granted) return true;
+  if (granted &&
+      (status == 'COMPLETED' || status == 'PAID' || status == 'SUCCESSFUL')) {
     return true;
   }
-
+  if (status == 'COMPLETED' || status == 'PAID' || status == 'SUCCESSFUL') {
+    return true;
+  }
   return false;
 }
 
@@ -351,8 +359,25 @@ String mapPaymentStartError(Object error) {
   if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
     return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
   }
-  if (raw.isNotEmpty && raw.length <= 200) return raw;
-  return 'Hatukuweza kutuma ombi la malipo. Hakikisha nambari sahihi na ujaribu tena.';
+  if (lower.contains('amount for') ||
+      lower.contains('must be') ||
+      lower.contains('invalid bundle') ||
+      lower.contains('invalid plan') ||
+      lower.contains('sonicresponse') ||
+      lower.contains('failed to start')) {
+    return 'Kifurushi hiki kinapatikana. Jaribu tena — ombi la PIN linatumwa kwenye simu yako.';
+  }
+  if (lower.contains('user not found') ||
+      lower.contains('could not resolve user') ||
+      (lower.contains('not found') && lower.contains('user'))) {
+    return 'Akaunti haijasawirishwa. Fungua Wasifu kisha jaribu tena.';
+  }
+  final swahili = RegExp(
+    r'nambari|ombi|malipo|simu|salio|jaribu|kifurushi|akaunti|pin|ofa',
+    caseSensitive: false,
+  );
+  if (swahili.hasMatch(raw) && raw.length <= 220) return raw;
+  return 'Hatukuweza kutuma ombi kwenye simu. Hakikisha nambari ni sahihi, kisha jaribu tena.';
 }
 
 /// Called after payment success or admin grant to unlock channels.

@@ -13,6 +13,8 @@ class PaymentResendResult {
     this.attempt = 0,
     this.skippedTooSoon = false,
     this.capped = false,
+    this.reusedPending = false,
+    this.ussdSent,
   });
 
   final String? orderId;
@@ -20,8 +22,17 @@ class PaymentResendResult {
   final int attempt;
   final bool skippedTooSoon;
   final bool capped;
+  final bool reusedPending;
 
-  bool get sent => orderId != null && orderId!.isNotEmpty;
+  /// Null when the server did not say whether the wallet actually pushed USSD.
+  final bool? ussdSent;
+
+  /// A reused order is the previous attempt, not a new PIN on the phone.
+  bool get sent =>
+      orderId != null &&
+      orderId!.isNotEmpty &&
+      !reusedPending &&
+      ussdSent != false;
 }
 
 /// Persisted STK session so [PaymentStatusCard] can resend prompts while tracking.
@@ -221,30 +232,53 @@ class PaymentPendingSession {
     return DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
   }
 
-  /// One extra wallet prompt to the number the user typed, only after they
-  /// cancel or the prompt expires. A checkout that is still waiting is not
-  /// pushed again — repeating it makes the network reject the number.
+  /// Sends another PIN prompt to the number the user typed.
+  /// Automatic repeats stay off. A tap on “Tuma ombi tena” is allowed a few
+  /// times, with a short pause so the wallet is not flooded.
   static Future<PaymentResendResult> resendStk({
     String? payerName,
     bool userCancelled = false,
+    bool userRequested = false,
+    String? phone,
+    String? bundle,
+    int? amount,
   }) async {
-    final session = await load();
+    var session = await load();
     if (session == null) {
-      return const PaymentResendResult(skippedTooSoon: true);
+      final fallbackPhone = (phone ?? '').trim();
+      final fallbackBundle = (bundle ?? '').trim();
+      final fallbackAmount = amount ?? 0;
+      if (fallbackPhone.isEmpty || fallbackBundle.isEmpty || fallbackAmount <= 0) {
+        return const PaymentResendResult(skippedTooSoon: true);
+      }
+      // The first request never saved an order. Still push this number.
+      session = PaymentPendingSession(
+        orderId: '',
+        phone: fallbackPhone,
+        bundle: fallbackBundle,
+        amount: fallbackAmount,
+      );
     }
     final prefs = await SharedPreferences.getInstance();
     final inFlightAt = prefs.getInt(resendInFlightKey) ?? 0;
+    final inFlightGap = userRequested ? const Duration(seconds: 8) : const Duration(seconds: 40);
     if (inFlightAt > 0 &&
-        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(inFlightAt)) <
-            const Duration(seconds: 40)) {
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(inFlightAt)) < inFlightGap) {
       return PaymentResendResult(phone: session.phone, skippedTooSoon: true);
     }
     final already = prefs.getInt(resendCountKey) ?? 0;
-    if (already >= maxAutoResends) {
+    const maxUserResends = 3;
+    if (userRequested) {
+      if (already >= maxUserResends) {
+        return PaymentResendResult(phone: session.phone, attempt: already, capped: true);
+      }
+    } else if (already >= maxAutoResends) {
       return PaymentResendResult(phone: session.phone, attempt: already, capped: true);
     }
     final age = await sinceLastPrompt();
-    final gap = userCancelled ? cancelResendGap : pendingResendGap;
+    final gap = userRequested
+        ? const Duration(seconds: 4)
+        : (userCancelled ? cancelResendGap : pendingResendGap);
     if (age < gap) {
       return PaymentResendResult(phone: session.phone, attempt: already, skippedTooSoon: true);
     }
@@ -261,6 +295,7 @@ class PaymentPendingSession {
           phone: session.phone,
           email: '$uid@eamax.app',
           name: payerName ?? 'EaMax ${session.phone}',
+          resend: userRequested,
         );
       } else {
         result = await paymentsApi.startPayment(
@@ -270,15 +305,33 @@ class PaymentPendingSession {
           phone: session.phone,
           email: '$uid@eamax.app',
           name: payerName ?? 'EaMax ${session.phone}',
+          resend: userRequested,
         );
       }
       final newOrderId = (result['orderId']?.toString() ?? '').trim();
+      final reusedPending = result['reusedPending'] == true;
+      final ussdSent = result['ussdSent'] is bool ? result['ussdSent'] as bool : null;
       if (newOrderId.isEmpty) {
         await _stampPromptClock(prefs);
-        return PaymentResendResult(phone: session.phone, attempt: already);
+        return PaymentResendResult(
+          phone: session.phone,
+          attempt: already,
+          reusedPending: reusedPending,
+          ussdSent: ussdSent,
+        );
       }
       // Keep earlier order ids so a PIN on a previous prompt still unlocks.
-      await updateOrderId(newOrderId);
+      if (session.orderId.isEmpty) {
+        await save(
+          orderId: newOrderId,
+          phone: session.phone,
+          bundle: session.bundle,
+          amount: session.amount,
+          promotionId: session.promotionId,
+        );
+      } else {
+        await updateOrderId(newOrderId);
+      }
       final attempt = await incrementResendCount();
       await _stampPromptClock(prefs);
       await prefs.setInt(cancelCountKey, 0);
@@ -286,6 +339,8 @@ class PaymentPendingSession {
         orderId: newOrderId,
         phone: session.phone,
         attempt: attempt,
+        reusedPending: reusedPending,
+        ussdSent: ussdSent,
       );
     } catch (error) {
       await _stampPromptClock(prefs);

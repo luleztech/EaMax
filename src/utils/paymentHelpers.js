@@ -52,17 +52,23 @@ export const isPaymentStillApplying = (response = {}) => response.applying === t
  * Never treat gateway COMPLETED alone as unlock — entitlements must be live.
  */
 export const isPaymentSuccessResponse = (response = {}) => {
-  if (response.premiumGranted === true || response.premium_granted === true) {
-    return true;
-  }
+  if (response.paymentVerified === false) return false;
+
+  const status = String(response.status || '').toUpperCase().trim();
+  const pending = !status || [
+    'PENDING', 'PROCESSING', 'INPROGRESS', 'IN_PROGRESS', 'UNKNOWN',
+    'INITIATED', 'WAITING', 'SUCCESS', 'OK',
+  ].includes(status);
+  const failed = [
+    'FAILED', 'CANCELLED', 'CANCELED', 'REJECTED', 'DECLINED', 'EXPIRED',
+    'TIMEOUT', 'ERROR', 'USERCANCELLED', 'USER_CANCELLED', 'VOID',
+  ].includes(status) || /INSUFFICIENT|NO_BALANCE|NO_FUNDS|LOW_BALANCE/.test(status);
+  if (pending || failed) return false;
 
   const user = userPayloadFromPaymentResponse(response);
-  if (user) {
-    const { premium } = resolvePremiumFromUserData(user);
-    if (premium) return true;
-  }
+  const userPremium = !!(user && resolvePremiumFromUserData(user).premium);
+  if (!userPremium) return false;
 
-  if (isPaymentStillApplying(response)) return false;
-
-  return false;
+  const granted = response.premiumGranted === true || response.premium_granted === true;
+  return granted || status === 'COMPLETED' || status === 'PAID' || status === 'SUCCESSFUL';
 };

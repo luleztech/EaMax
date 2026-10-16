@@ -239,17 +239,8 @@ class _PaymentStatusCardState extends State<PaymentStatusCard> {
   }
 
   Future<bool> _tryApplyUnlock(Map<String, dynamic> response) async {
-    final granted =
-        response['premiumGranted'] == true || response['premium_granted'] == true;
-    final userPayload = userPayloadFromPaymentResponse(response) ?? <String, dynamic>{};
-    if (granted) {
-      userPayload['premiumGranted'] = true;
-      userPayload['isPremium'] = true;
-      userPayload['is_premium'] = true;
-    } else if (!shouldKeepPaymentUnlockPolling(response) &&
-        !isPaymentSuccessResponse(response)) {
-      return false;
-    }
+    if (!isPaymentSuccessResponse(response)) return false;
+    final userPayload = userPayloadFromPaymentResponse(response);
     try {
       return await widget.onPaymentSuccess?.call(userPayload: userPayload) ?? false;
     } catch (_) {

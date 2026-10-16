@@ -209,6 +209,40 @@ async function resolvePremiumInterval(planKey) {
   return intervalForPlan(plan);
 }
 
+/**
+ * The kifurushi the user tapped. Slug wins when it is an active plan, so a
+ * stale client amount cannot reject checkout. Amount is used only when the
+ * slug is missing. The returned amount is always the plan price, never a
+ * client-invented figure.
+ */
+function resolveCheckoutPlan(plans, bundle, clientAmount) {
+  const list = Array.isArray(plans) ? plans : [];
+  const slug = String(bundle || '').trim().toLowerCase();
+  const amount = Math.round(Number(clientAmount));
+  const active = list.filter((p) => p && p.isActive !== false && Number(p.priceTzs) > 0);
+  const bySlug = slug
+    ? active.find((p) => String(p.slug || '').toLowerCase() === slug)
+    : null;
+  if (bySlug) {
+    return {
+      slug: bySlug.slug,
+      amount: Math.round(Number(bySlug.priceTzs)),
+      name: bySlug.nameSw || bySlug.nameEn || bySlug.slug,
+    };
+  }
+  if (Number.isFinite(amount) && amount > 0) {
+    const byAmount = active.find((p) => Math.round(Number(p.priceTzs)) === amount);
+    if (byAmount) {
+      return {
+        slug: byAmount.slug,
+        amount: Math.round(Number(byAmount.priceTzs)),
+        name: byAmount.nameSw || byAmount.nameEn || byAmount.slug,
+      };
+    }
+  }
+  return null;
+}
+
 /** Amount + interval for payment start validation. */
 async function getPlanPaymentInfo(slug) {
   const plan = await getPlanBySlug(slug);
@@ -456,6 +490,7 @@ module.exports = {
   getActivePlans,
   getPlanBySlug,
   getPlanPaymentInfo,
+  resolveCheckoutPlan,
   resolvePremiumInterval,
   intervalForPlan,
   listAllPlansAdmin,

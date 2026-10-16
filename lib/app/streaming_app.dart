@@ -603,7 +603,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   Future<bool> _onPaymentSuccess({
     Map<String, dynamic>? userPayload,
-    bool premiumGranted = false,
   }) async {
     var uid = await ensureLocalUserId();
 
@@ -615,25 +614,27 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
             userPayload?['user_id'])
         ?.toString()
         .trim();
+    final serverPremium = userPayload != null &&
+        PremiumSnapshot.fromDynamic(userPayload)?.isPremium == true;
+    final grantFlag = userPayload?['premiumGranted'] == true ||
+        userPayload?['premium_granted'] == true;
     if (paidExternal != null &&
         paidExternal.isNotEmpty &&
         paidExternal != uid &&
-        (paidExternal.startsWith('User-') || premiumGranted)) {
+        (paidExternal.startsWith('User-') || grantFlag || serverPremium)) {
       debugPrint('[Premium] Adopting paid account $paidExternal (was $uid)');
       await adoptUserId(paidExternal);
       uid = paidExternal;
       unawaited(RealtimeService.instance.connect(uid));
     }
 
-    final payloadLooksPremium = () {
-      if (userPayload == null) return false;
-      final snap = PremiumSnapshot.fromDynamic(userPayload);
-      return snap?.isPremium == true;
-    }();
+    if (grantFlag && !serverPremium) {
+      debugPrint('[Premium] Payment flag set but account is not premium yet — confirming with server');
+    }
 
-    // Never apply a non-premium snapshot during the applying window — that
-    // races unlocks and can force channels back to locked.
-    if (userPayload != null && (premiumGranted || payloadLooksPremium || !_premium)) {
+    // Apply only a server snapshot that is already premium. Never invent an
+    // expiry or flip isPremium locally — that opened channels without a debit.
+    if (serverPremium) {
       await _applyUserPremiumData(
         userPayload,
         uid: uid,
@@ -642,39 +643,23 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     }
     await retryPendingRegistrations();
 
-    // If userPayload or explicit flags indicate success, force premium immediately.
-    final isExplicitSuccess = premiumGranted || payloadLooksPremium;
-    if (isExplicitSuccess) {
-      final forced = Map<String, dynamic>.from(userPayload ?? const <String, dynamic>{});
-      forced['isPremium'] = true;
-      forced['is_premium'] = true;
-      // Keep a short future expiry if the payload omitted one — enough for UI unlock
-      // until the next server refresh fills the real date.
-      if ((forced['premiumExpiresAt'] ?? forced['premium_expires_at'] ?? forced['subscriptionEndDate']) == null) {
-        forced['premiumExpiresAt'] =
-            DateTime.now().toUtc().add(const Duration(days: 1)).toIso8601String();
-      }
-      await _applyUserPremiumData(forced, uid: uid, protectExistingPremium: true);
-    } else if (!_premium) {
-      // Applying window without live premium yet — nudge once and let pollers continue.
-      unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
-      return false;
-    }
-
-    // Confirm premium from server in background; never clear a successful local unlock.
     if (!_premium) {
-      for (var i = 0; i < 10; i++) {
-        await Future<void>.delayed(Duration(seconds: i < 4 ? 1 : 2));
-        await _refreshUser(maxAttempts: 3, protectExistingPremium: true);
+      // The payment response can arrive a moment before getUser sees the grant.
+      // Keep asking the server. Stay locked until it says premium.
+      for (var i = 0; i < 8; i++) {
+        await Future<void>.delayed(Duration(seconds: i < 3 ? 1 : 2));
+        await _refreshUser(maxAttempts: 2, protectExistingPremium: false);
         if (_premium) break;
       }
     } else {
       unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
     }
 
+    if (!_premium) return false;
+
     await _homeKey.currentState?.reloadRemoteData();
     if (mounted) setState(() {});
-    return _premium || isExplicitSuccess;
+    return true;
   }
 
   Future<void> _checkPendingPayment() async {
@@ -689,31 +674,14 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     try {
       final res = await PaymentPendingSession.checkBestPaymentStatus();
       if (shouldKeepPaymentUnlockPolling(res)) {
-        final granted =
-            res['premiumGranted'] == true || res['premium_granted'] == true;
-        final userPayload = userPayloadFromPaymentResponse(res);
-        final looksPremium = PremiumSnapshot.fromDynamic(userPayload)?.isPremium == true;
-        if (granted || looksPremium) {
-          final unlocked = await _onPaymentSuccess(
-            userPayload: userPayload,
-            premiumGranted: granted,
-          );
-          if (unlocked) {
-            await PaymentPendingSession.clear();
-          }
-        } else {
-          // Paid at gateway but entitlements not live yet — refresh only; do not
-          // overwrite local premium with a non-premium snapshot.
-          unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: true));
-        }
+        // Money may be confirmed, but premium is not live yet. Do not open channels.
+        unawaited(_refreshUser(maxAttempts: 2, protectExistingPremium: false));
         return;
       }
       if (isPaymentSuccessResponse(res)) {
         final userPayload = userPayloadFromPaymentResponse(res);
         final unlocked = await _onPaymentSuccess(
           userPayload: userPayload,
-          premiumGranted:
-              res['premiumGranted'] == true || res['premium_granted'] == true,
         );
         if (unlocked) {
           await PaymentPendingSession.clear();

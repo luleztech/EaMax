@@ -12,6 +12,7 @@ import '../services/payment_pending_session.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
+import '../utils/tz_payment_config.dart';
 
 const _accentCta = Color(0xFF22C55E);
 const _accentCtaDark = Color(0xFF16A34A);
@@ -20,6 +21,7 @@ const _tzPrefixes = [
   '061',
   '062',
   '063',
+  '066',
   '065',
   '067',
   '068',
@@ -82,6 +84,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
   String _statusMsg = '';
   _PayDialogTone _statusTone = _PayDialogTone.info;
   String? _pendingBundleLabel;
+  String? _pendingAmountLabel;
+  String? _pendingPrompt;
   String? _pollingOrderId;
   Timer? _pollTimer;
   int _notFoundStreak = 0;
@@ -192,8 +196,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         if (shouldKeepPaymentUnlockPolling(res) || isPaymentSuccessResponse(res)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(res),
-            premiumGranted: res['premiumGranted'] == true ||
-                res['premium_granted'] == true,
           );
         } else {
           // A new visit starts at the plan form. An unfinished or failed
@@ -309,21 +311,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
               }
             });
           }
-          final unlocked = await _tryUnlockFromPoll(
-            userPayload: userPayloadFromPaymentResponse(response),
-            premiumGranted: response['premiumGranted'] == true ||
-                response['premium_granted'] == true,
-          );
-          if (unlocked) {
-            await _celebratePaymentUnlocked();
-          }
           return;
         }
         if (isPaymentSuccessResponse(response)) {
           await _markPaymentCompleted(
             userPayload: userPayloadFromPaymentResponse(response),
-            premiumGranted: response['premiumGranted'] == true ||
-                response['premium_granted'] == true,
           );
           return;
         }
@@ -433,6 +425,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       _sessionEndDetail = null;
       _selectedBundle = null;
       _pendingBundleLabel = null;
+      _pendingAmountLabel = null;
+      _pendingPrompt = null;
       _phoneCtrl.clear();
     });
   }
@@ -446,55 +440,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     });
   }
 
-  String _mapPaymentError(Object e) {
-    if (isPaymentAttemptLimitError(e)) return PaymentStatusCopy.requestSent;
-    var raw = e.toString();
-    const exc = 'Exception: ';
-    if (raw.startsWith(exc)) raw = raw.substring(exc.length).trim();
-    final lower = raw.toLowerCase();
-    if (lower.contains('socketexception') ||
-        lower.contains('connection') ||
-        lower.contains('network') ||
-        lower.contains('failed host') ||
-        lower.contains('timed out')) {
-      return 'Hakuna muunganisho thabiti. Washa data ya simu au Wi‑Fi, kisha ujaribu tena.';
+  String _mapPaymentError(Object e) => mapPaymentStartError(e);
+
+  String _formatTzs(int amount) {
+    final s = amount.toString();
+    final buf = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      final pos = s.length - i;
+      buf.write(s[i]);
+      if (pos > 1 && pos % 3 == 1) buf.write(',');
     }
-    if (lower.contains('401') || lower.contains('403')) {
-      return 'Ombi halikuidhinishwa. Fungua tena programu kisha ujaribu.';
-    }
-    if (lower.contains('user not found') ||
-        lower.contains('could not resolve user') ||
-        (lower.contains('not found') && lower.contains('user'))) {
-      return 'Akaunti haijasawirishwa kwenye seva. Fungua Wasifu kisha jaribu tena, au subiri muunganisho utakapokuwa thabiti.';
-    }
-    if (lower.contains('404') ||
-        lower == 'exception: not found' ||
-        (lower.contains('not found') &&
-            !lower.contains('order') &&
-            !lower.contains('user'))) {
-      return 'Huduma ya malipo haipatikani kwa sasa (seva au njia ya malipo). Hakikisha toleo jipya la seva limebandikwa, kisha jaribu tena.';
-    }
-    if (lower.contains('500') || lower.contains('502') || lower.contains('503')) {
-      return 'Seva ya malipo ina tatizo. Jaribu tena baada ya dakika chache.';
-    }
-    // Do not map “insufficient balance” here — `/api/payments/start` errors are chosen on the server
-    // (initiate vs paid). Showing canned salio on the client hid cases where STK was never sent.
-    if (lower.contains('hayajaweza kutumika') ||
-        lower.contains('hayajatumika') ||
-        lower.contains('malipo hayajatumika') ||
-        lower.contains('sonicpesa haikutuma')) {
-      return raw.length < 220
-          ? raw
-          : 'Hatukuweza kutuma ombi la malipo kwenye simu. Hakikisha nambari sahihi na mtandao wa pesa, kisha jaribu tena.';
-    }
-    if (lower.contains('upstream') ||
-        lower.contains('no response from upstream')) {
-      return 'Mtandao wa pesa ulikawia kuthibitisha ombi. Hakikisha una mtandao mzuri wa simu na nambari sahihi ya malipo, kisha ujaribu tena.';
-    }
-    if (raw.length > 200) {
-      return 'Malipo hayajaweza kukamilika. Jaribu tena au wasiliana na msaada.';
-    }
-    return raw;
+    return buf.toString();
   }
 
   String _paymentFailureUserMessage(Object? status) {
@@ -539,26 +495,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     }
   }
 
-  Future<bool> _tryUnlockFromPoll({
-    Map<String, dynamic>? userPayload,
-    bool premiumGranted = false,
-  }) async {
-    try {
-      return await widget.onPaymentSuccess?.call(
-            userPayload: {
-              ...?userPayload,
-              if (premiumGranted) 'premiumGranted': true,
-              if (premiumGranted) 'isPremium': true,
-              if (premiumGranted) 'is_premium': true,
-            },
-          ) ??
-          false;
-    } catch (e) {
-      debugPrint('[PaymentsScreen] unlock during applying failed: $e');
-      return false;
-    }
-  }
-
   Future<void> _celebratePaymentUnlocked() async {
     _pollTimer?.cancel();
     _pollTimer = null;
@@ -576,7 +512,6 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   Future<void> _markPaymentCompleted({
     Map<String, dynamic>? userPayload,
-    bool premiumGranted = false,
   }) async {
     _waitingTimer?.cancel();
     _waitingTimer = null;
@@ -599,12 +534,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     var unlocked = false;
     try {
       unlocked = await widget.onPaymentSuccess?.call(
-            userPayload: {
-              ...?userPayload,
-              if (premiumGranted) 'premiumGranted': true,
-              if (premiumGranted) 'isPremium': true,
-              if (premiumGranted) 'is_premium': true,
-            },
+            userPayload: userPayload,
           ) ??
           false;
     } catch (e) {
@@ -735,6 +665,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       _pollingOrderId = null;
       _notFoundStreak = 0;
       _pendingBundleLabel = null;
+      _pendingAmountLabel = null;
+      _pendingPrompt = null;
       _sessionEndDetail = null;
       _paymentUiPhase = _PaymentUiPhase.none;
     });
@@ -742,8 +674,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
     try {
-      // Always use the unified backend start endpoint.
-      // The backend decides whether to route to Aurax Pay or SonicPesa based on current settings.
+      // SonicPesa sends the prompt for every Tanzanian wallet.
       final result = await paymentsApi.startPayment(
         externalId: canonicalUid,
         bundle: bundle.slug,
@@ -755,11 +686,11 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
       final orderId = (result['orderId']?.toString() ?? '').trim();
       var serverMsg = (result['message']?.toString() ?? '').trim();
-      final usedFallback = result['fallbackFrom']?.toString().trim().isNotEmpty == true;
-      if (usedFallback && serverMsg.isEmpty) {
-        serverMsg =
-            'Ombi limetumwa kupitia Aurax Pay. Angalia simu yako na uingize PIN ya malipo (M-Pesa, Halopesa, Tigopesa, Airtel).';
+      if (serverMsg.isEmpty) {
+        serverMsg = TzPaymentConfig.paymentPromptFor(clean);
       }
+      final charged = int.tryParse('${result['amount']}') ?? bundle.priceTzs;
+      final planName = (result['planName']?.toString() ?? '').trim();
 
       // Start endpoint never means “paid” — only `orderId` + instruction + polling/webhook.
       // (Backend used to return status: success for “prompt sent”; that must not open success UI.)
@@ -769,14 +700,18 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
         await PaymentPendingSession.save(
           orderId: orderId,
           phone: clean,
-          bundle: bundle.slug,
-          amount: bundle.priceTzs,
+          bundle: (result['plan']?.toString() ?? '').trim().isNotEmpty
+              ? result['plan'].toString()
+              : bundle.slug,
+          amount: charged,
         );
         if (!mounted) return;
         setState(() {
           _pollingOrderId = orderId;
           _notFoundStreak = 0;
-          _pendingBundleLabel = bundle.displayName;
+          _pendingBundleLabel = planName.isNotEmpty ? planName : bundle.displayName;
+          _pendingAmountLabel = 'Tsh ${_formatTzs(charged)}';
+          _pendingPrompt = serverMsg;
           _paymentUiPhase = _PaymentUiPhase.instruction;
         });
         // Start status polling immediately — do not wait for “Nimeelewa”.
@@ -803,7 +738,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       if (msg == PaymentStatusCopy.requestSent || msg.toLowerCase().contains('limetumwa')) {
         _showStatus('Angalia simu yako', PaymentStatusCopy.requestSent, _PayDialogTone.info);
       } else {
-        _showStatus('Malipo hayajatumika', msg, _PayDialogTone.error);
+        _showStatus('Jaribu tena', msg, _PayDialogTone.error);
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -1028,7 +963,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                             ],
                           ),
                         ),
-
+                        const SizedBox(height: 12),
+                        _PayNetworkBanner(phone: _phoneCtrl.text),
                       ],
                     ),
                   ),
@@ -1295,6 +1231,8 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
             Positioned.fill(
               child: _PaymentInstructionModal(
                 bundleLabel: _pendingBundleLabel,
+                amountLabel: _pendingAmountLabel,
+                prompt: _pendingPrompt,
                 onContinue: _onInstructionContinue,
               ),
             ),
@@ -1351,7 +1289,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                           ),
                           const SizedBox(height: 20),
                           Text(
-                            'Tunatuma ombi la malipo',
+                            'Tunatuma ombi la PIN',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 17,
@@ -1548,9 +1486,13 @@ class _PaymentInstructionModal extends StatelessWidget {
   const _PaymentInstructionModal({
     required this.bundleLabel,
     required this.onContinue,
+    this.amountLabel,
+    this.prompt,
   });
 
   final String? bundleLabel;
+  final String? amountLabel;
+  final String? prompt;
   final VoidCallback onContinue;
 
   @override
@@ -1604,39 +1546,49 @@ class _PaymentInstructionModal extends StatelessWidget {
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    'Hatua inayofuata — simu yako',
+                    'Ingiza PIN',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 21,
+                      fontSize: 24,
                       fontWeight: FontWeight.w800,
                       color: Colors.white,
                       height: 1.2,
                     ),
                   ),
+                  if (amountLabel != null && amountLabel!.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      amountLabel!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF4ADE80),
+                      ),
+                    ),
+                  ],
                   if (bundleLabel != null && bundleLabel!.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: Text(
-                        'Chaguo: $bundleLabel',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.accentBlue.withValues(alpha: 0.95),
-                        ),
+                    const SizedBox(height: 6),
+                    Text(
+                      bundleLabel!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.accentBlue.withValues(alpha: 0.95),
                       ),
                     ),
                   ],
                   const SizedBox(height: 16),
                   Text(
-                    'Angalia katika simu yako na umalizie hatua zilizobakia kukamilisha zoezi zima. '
-                    'Baada ya uthibitisho, channel zote zitafunguliwa kwenye akaunti yako.',
+                    (prompt != null && prompt!.trim().isNotEmpty)
+                        ? prompt!
+                        : 'Ombi limefika kwenye simu yako. Ingiza PIN ya M-Pesa, Airtel Money, Mixx by Yas, au HaloPesa. Usifunge programu.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 15,
-                      height: 1.55,
-                      color: Colors.white.withValues(alpha: 0.82),
+                      height: 1.5,
+                      color: Colors.white.withValues(alpha: 0.88),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -1659,7 +1611,7 @@ class _PaymentInstructionModal extends StatelessWidget {
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            'Hatujathibitishi bado malipo. Utaona ujumbe wa “Hongera” hapa tu baada ya mfumo kuonyesha malipo yamekamilika.',
+                            'Premium inafunguliwa yenyewe baada ya PIN. Subiri hapa.',
                             style: TextStyle(
                               fontSize: 13,
                               height: 1.45,
@@ -1685,7 +1637,7 @@ class _PaymentInstructionModal extends StatelessWidget {
                       ),
                       onPressed: onContinue,
                       child: const Text(
-                        'Nimeelewa — endelea',
+                        'Nimeingiza PIN',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -2282,6 +2234,46 @@ class _PayGlassPanel extends StatelessWidget {
         ],
       ),
       child: child,
+    );
+  }
+}
+
+class _PayNetworkBanner extends StatelessWidget {
+  const _PayNetworkBanner({required this.phone});
+
+  final String phone;
+
+  @override
+  Widget build(BuildContext context) {
+    final net = TzPaymentConfig.detectNetworkLive(phone);
+    if (net == TzMobileNetwork.unknown) {
+      final started = TzPaymentConfig.liveDigits(phone).isNotEmpty;
+      return Text(
+        started
+            ? 'Bado hatujatambua mtandao. Endelea kuandika nambari.'
+            : 'M-Pesa, Airtel Money, Mixx by Yas, au HaloPesa.',
+        style: const TextStyle(fontSize: 12.5, color: Color(0xFF9CA3AF), fontWeight: FontWeight.w600),
+      );
+    }
+    final color = switch (net) {
+      TzMobileNetwork.mpesa => const Color(0xFFE60000),
+      TzMobileNetwork.airtel => const Color(0xFFED1C24),
+      TzMobileNetwork.tigo => const Color(0xFF7DD3FC),
+      TzMobileNetwork.halotel => const Color(0xFF4ADE80),
+      TzMobileNetwork.unknown => const Color(0xFF9CA3AF),
+    };
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Text(
+        '${TzPaymentConfig.networkFullName(net)} · PIN itaenda kwenye ${TzPaymentConfig.networkLabel(net)}',
+        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: color),
+      ),
     );
   }
 }
