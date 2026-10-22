@@ -171,10 +171,9 @@ bool isPaymentPromptNeedsResend(Object? _) => false;
 /// Wallet or server refused because prompts were sent too close together.
 bool isPaymentAttemptLimitError(Object error) {
   final raw = error.toString().toLowerCase();
-  return raw.contains('too many') ||
-      raw.contains('maombi mengi') ||
-      raw.contains('majari') ||
-      raw.contains('rate limit');
+  return raw.contains('ussd nyingine') ||
+      raw.contains('funga dirisha la ussd') ||
+      raw.contains('attempt limit');
 }
 
 /// Wallet rejected due to low balance.
@@ -332,7 +331,9 @@ abstract final class PaymentStatusCopy {
 
 /// User-facing text when `/api/payments/start` or resend throws.
 String mapPaymentStartError(Object error) {
-  if (isPaymentAttemptLimitError(error)) return PaymentStatusCopy.requestSent;
+  if (isPaymentAttemptLimitError(error)) {
+    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
+  }
   var raw = error.toString().trim();
   const exc = 'Exception: ';
   if (raw.startsWith(exc)) raw = raw.substring(exc.length).trim();

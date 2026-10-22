@@ -2142,25 +2142,14 @@ router.put('/settings/channels-premium-only', async (req, res, next) => {
 // Admin: get active payment provider selection
 router.get('/settings/payment-provider', async (req, res, next) => {
   try {
-    await ensureAppSettingsTable();
     res.set('Cache-Control', 'private, no-store, max-age=0');
-    const result = await query(
-      "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
-    );
-    const raw = result.rows.length > 0 ? result.rows[0].value : 'aurax';
-    const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    const paymentProvider =
-      compact === 'sonicpesa'
-        ? 'sonicpesa'
-        : compact === 'zeno' || compact === 'zenopay'
-          ? 'aurax'
-          : 'aurax';
-    const configured =
-      paymentProvider === 'sonicpesa'
-        ? Boolean(process.env.SONICPESA_API_KEY)
-        : Boolean(process.env.AURAXPAY_API_KEY);
-    console.log('[Admin] Current payment provider (normalized):', paymentProvider, 'raw:', raw);
-    return res.json({ paymentProvider, configured });
+    const configured = Boolean(process.env.SONICPESA_API_KEY);
+    console.log('[Admin] Payment provider locked to SonicPesa. configured:', configured);
+    return res.json({
+      paymentProvider: 'sonicpesa',
+      configured,
+      networks: ['mpesa', 'airtel', 'tigo', 'halopesa'],
+    });
   } catch (err) {
     console.error('[Admin] get payment-provider error:', err?.message);
     return next(err);
@@ -2177,19 +2166,18 @@ router.put('/settings/payment-provider', async (req, res, next) => {
     const { paymentProvider } = bodySchema.parse(req.body);
     console.log('[Admin] Validated payment provider:', paymentProvider);
 
-    if (paymentProvider === 'sonicpesa') {
-      if (!process.env.SONICPESA_API_KEY) {
-        return res.status(400).json({
-          error:
-            'SonicPesa haijasanidi: weka SONICPESA_API_KEY kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
-          paymentProvider,
-          configured: false,
-        });
-      }
-    } else if (!process.env.AURAXPAY_API_KEY) {
+    if (paymentProvider !== 'sonicpesa') {
       return res.status(400).json({
         error:
-          'Aurax Pay haijasanidi: weka AURAXPAY_API_KEY kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
+          'EaMax inatumia SonicPesa pekee kwa M-Pesa, Airtel Money, Mixx by Yas, na HaloPesa.',
+        paymentProvider: 'sonicpesa',
+        configured: Boolean(process.env.SONICPESA_API_KEY),
+      });
+    }
+    if (!process.env.SONICPESA_API_KEY) {
+      return res.status(400).json({
+        error:
+          'SonicPesa haijasanidi: weka SONICPESA_API_KEY kwenye seva kabla ya kuwezesha mtoa huduma huyu.',
         paymentProvider,
         configured: false,
       });

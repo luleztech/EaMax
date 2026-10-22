@@ -638,7 +638,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
       );
       return;
     }
-    await registerUserInDatabase(id: canonicalUid, maxRetries: 3);
+    unawaited(registerUserInDatabase(id: canonicalUid, maxRetries: 1));
     if (mounted) setState(() => _userId = canonicalUid);
 
     // Remote plans can refresh while this screen is open. Do not let a stale

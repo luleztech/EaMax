@@ -7,7 +7,7 @@ const pool = new Pool({
     process.env.PGSSLMODE === 'require'
       ? { rejectUnauthorized: false }
       : undefined,
-  max: Number(process.env.PG_POOL_MAX || 12),
+  max: Number(process.env.PG_POOL_MAX || 20),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
   allowExitOnIdle: true,

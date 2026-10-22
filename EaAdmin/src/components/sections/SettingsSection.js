@@ -20,9 +20,8 @@ const SettingsSection = () => {
   const [channelsPremiumOnly, setChannelsPremiumOnly] = useState(false);
   const [channelsPremiumOnlyLoading, setChannelsPremiumOnlyLoading] = useState(true);
   const [channelsPremiumOnlySaving, setChannelsPremiumOnlySaving] = useState(false);
-  const [paymentProvider, setPaymentProvider] = useState('aurax');
+  const [sonicConfigured, setSonicConfigured] = useState(true);
   const [paymentProviderLoading, setPaymentProviderLoading] = useState(true);
-  const [paymentProviderSaving, setPaymentProviderSaving] = useState(false);
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [statusModalTitle, setStatusModalTitle] = useState('');
   const [statusModalMessage, setStatusModalMessage] = useState('');
@@ -39,12 +38,11 @@ const SettingsSection = () => {
         const [whatsappRes, premiumRes, providerRes] = await Promise.all([
           adminSettingsAPI.getWhatsAppNumber(),
           adminSettingsAPI.getChannelsPremiumOnly().catch(() => ({ channelsPremiumOnly: false })),
-          adminSettingsAPI.getPaymentProvider().catch(() => ({ paymentProvider: 'aurax' })),
+          adminSettingsAPI.getPaymentProvider().catch(() => ({ paymentProvider: 'sonicpesa', configured: false })),
         ]);
         if (whatsappRes.number) setWhatsappNumber(whatsappRes.number);
         setChannelsPremiumOnly(!!premiumRes.channelsPremiumOnly);
-        const loadedProvider = providerRes.paymentProvider || 'aurax';
-        setPaymentProvider(loadedProvider === 'sonicpesa' ? 'sonicpesa' : 'aurax');
+        setSonicConfigured(providerRes.configured !== false);
       } catch (error) {
         console.error('Failed to load settings:', error);
       } finally {
@@ -92,28 +90,6 @@ const SettingsSection = () => {
       showStatusModal('Update failed', 'Could not update access mode. Try again.');
     } finally {
       setChannelsPremiumOnlySaving(false);
-    }
-  };
-
-  const handlePaymentProviderSelect = async (next) => {
-    if (paymentProviderSaving || next === paymentProvider) return;
-    const previous = paymentProvider;
-    setPaymentProvider(next);
-    try {
-      setPaymentProviderSaving(true);
-      await adminSettingsAPI.updatePaymentProvider(next);
-      showStatusModal(
-        'Setting saved',
-        next === 'sonicpesa'
-          ? 'Payment provider switched to SonicPesa.'
-          : 'Payment provider switched to Aurax Pay.',
-      );
-    } catch (error) {
-      console.error('Failed to update payment provider:', error);
-      setPaymentProvider(previous);
-      showStatusModal('Update failed', 'Could not update payment provider. Try again.');
-    } finally {
-      setPaymentProviderSaving(false);
     }
   };
 
@@ -209,45 +185,16 @@ const SettingsSection = () => {
                 <Icon name="credit-card-outline" size={24} color="#22c55e" />
               </View>
               <View style={styles.contactInfo}>
-                <Text style={styles.singleLabel}>Active provider</Text>
+                <Text style={styles.singleLabel}>SonicPesa</Text>
+                <Text style={styles.singleLabelSmall}>
+                  M-Pesa, Airtel Money, Mixx by Yas, and HaloPesa
+                </Text>
+                {!paymentProviderLoading && !sonicConfigured ? (
+                  <Text style={styles.singleLabelSmall}>
+                    SONICPESA_API_KEY is not set on the server.
+                  </Text>
+                ) : null}
               </View>
-              {paymentProviderSaving ? (
-                <ActivityIndicator size="small" color="#22c55e" />
-              ) : null}
-            </View>
-            <View style={styles.providerPickRow}>
-              <TouchableOpacity
-                activeOpacity={0.85}
-                disabled={paymentProviderLoading || paymentProviderSaving}
-                onPress={() => handlePaymentProviderSelect('aurax')}
-                style={[
-                  styles.providerChip,
-                  paymentProvider === 'aurax' && styles.providerChipSelected,
-                ]}>
-                <Text
-                  style={[
-                    styles.providerChipText,
-                    paymentProvider === 'aurax' && styles.providerChipTextSelected,
-                  ]}>
-                  Aurax Pay
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                activeOpacity={0.85}
-                disabled={paymentProviderLoading || paymentProviderSaving}
-                onPress={() => handlePaymentProviderSelect('sonicpesa')}
-                style={[
-                  styles.providerChip,
-                  paymentProvider === 'sonicpesa' && styles.providerChipSelected,
-                ]}>
-                <Text
-                  style={[
-                    styles.providerChipText,
-                    paymentProvider === 'sonicpesa' && styles.providerChipTextSelected,
-                  ]}>
-                  SonicPesa
-                </Text>
-              </TouchableOpacity>
             </View>
           </View>
         </View>

@@ -95,6 +95,8 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
   bool _paymentBusy = false;
   bool _resending = false;
   bool _promptOnPhone = false;
+  bool _canResend = false;
+  Timer? _resendRevealTimer;
   String? _formError;
   String? _selectedSlug;
   String _waitingHint = 'Tafadhali subiri kidogo…';
@@ -184,6 +186,45 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     );
   }
 
+  void _armResendWait() {
+    _resendRevealTimer?.cancel();
+    _canResend = false;
+    _resendRevealTimer = Timer(const Duration(seconds: 10), () {
+      if (!mounted || _paymentSuccess) return;
+      setState(() {
+        _canResend = true;
+        if (_promptOnPhone) {
+          _waitingHint = 'Bado hakuna PIN. Gusa Tuma tena.';
+        }
+      });
+    });
+  }
+
+  void _showResendNow() {
+    _resendRevealTimer?.cancel();
+    _canResend = true;
+  }
+
+  /// M-Pesa refuses another prompt while one is still open. Hold the button
+  /// so extra taps do not pile up as failed requests.
+  void _holdResend() {
+    _resendRevealTimer?.cancel();
+    _canResend = false;
+    _resendRevealTimer = Timer(const Duration(seconds: 30), () {
+      if (!mounted || _paymentSuccess) return;
+      setState(() {
+        _canResend = true;
+        _waitingHint = 'Sasa unaweza kutuma tena.';
+      });
+    });
+  }
+
+  /// This SIM already has a USSD window. A crowded gateway is not this case.
+  bool _phoneUssdBusy(Object error) {
+    final raw = error.toString().toLowerCase();
+    return raw.contains('ussd nyingine') || raw.contains('funga dirisha la ussd');
+  }
+
   Future<void> _stopAudio() async {
     await PaymentVoices.stop();
     if (mounted) setState(() => _speaking = false);
@@ -252,12 +293,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         });
         return;
       }
-      await registerUserInDatabase(id: canonicalUid, maxRetries: 3);
-
-      await PaymentPendingSession.resetForNewCheckout();
-      if (!mounted) return;
-
-      final result = await paymentsApi.startPayment(
+      unawaited(registerUserInDatabase(id: canonicalUid, maxRetries: 1));
+      final resetFuture = PaymentPendingSession.resetForNewCheckout();
+      final resultFuture = _startPrompt(
         externalId: canonicalUid,
         bundle: pkg.slug,
         amount: pkg.priceTzs,
@@ -265,9 +303,13 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         email: '$canonicalUid@eamax.app',
         name: name,
       );
+      await resetFuture;
+      if (!mounted) return;
+      final result = await resultFuture;
 
       final orderId = (result['orderId']?.toString() ?? '').trim();
-      final pushSent = result['reusedPending'] != true && result['ussdSent'] != false;
+      final dispatching = result['dispatching'] == true;
+      final pushSent = dispatching || result['ussdSent'] != false;
       debugPrint(
         '[Payment] create_order order=${orderId.isEmpty ? 'none' : orderId} ussdSent=${result['ussdSent']} reused=${result['reusedPending']}',
       );
@@ -275,13 +317,12 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
 
       if (orderId.isEmpty) {
         _waitSpin?.stop();
+        _showResendNow();
         setState(() {
           _paymentBusy = false;
           _promptOnPhone = false;
-          final raw = (result['message']?.toString() ?? '').trim();
-          _waitingHint = mapPaymentStartError(
-            Exception(raw.isNotEmpty ? raw : 'Ombi la malipo limeshindwa. Jaribu tena.'),
-          );
+          _canResend = true;
+          _waitingHint = 'Ombi halijatumwa kwenye simu. Gusa Tuma tena.';
         });
         return;
       }
@@ -297,13 +338,17 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       );
 
       if (!mounted) return;
+      _showResendNow();
       setState(() {
         _paymentBusy = false;
         _promptOnPhone = pushSent;
+        _canResend = true;
         _pendingPlanLabel = pkg.displayName;
-        _waitingHint = pushSent
-            ? TzPaymentConfig.paymentPromptFor(phone)
-            : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.';
+        _waitingHint = dispatching
+            ? 'Tunatuma ombi. Subiri PIN kwenye simu.'
+            : (pushSent
+                ? 'Imetumwa ombi. Subiri.'
+                : 'Ombi halijatumwa kwenye simu. Gusa Tuma tena.');
       });
 
       const maxAttempts = 90;
@@ -322,19 +367,17 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
             pollCount: i + 1,
             response: response,
           )) {
-            if (mounted && _promptOnPhone) {
+            if (mounted && _promptOnPhone && _canResend) {
               setState(() {
-                _waitingHint = (i + 1) <= 1
-                    ? PaymentStatusCopy.requestSent
-                    : PaymentStatusCopy.checking;
+                _waitingHint = 'Bado hakuna PIN. Gusa Tuma tena.';
               });
             }
             continue;
           }
           if (shouldKeepPaymentUnlockPolling(response) && !isPaymentSuccessResponse(response)) {
-            if (mounted && _promptOnPhone) {
+            if (mounted && _promptOnPhone && _canResend) {
               setState(() {
-                _waitingHint = paymentStatusUserMessage(response);
+                _waitingHint = 'Bado hakuna PIN. Gusa Tuma tena.';
               });
             }
             continue;
@@ -382,11 +425,9 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
           continue;
         }
 
-        if (!mounted || !_promptOnPhone) continue;
+        if (!mounted || !_promptOnPhone || !_canResend) continue;
         setState(() {
-          _waitingHint = i < 8
-              ? TzPaymentConfig.paymentPromptFor(phone)
-              : 'Bado tunasubiri uthibitisho wa ${TzPaymentConfig.networkLabel(TzPaymentConfig.detectNetwork(phone))}…';
+          _waitingHint = 'Bado hakuna PIN. Gusa Tuma tena.';
         });
       }
 
@@ -401,9 +442,20 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     } catch (e) {
       if (!mounted) return;
       _waitSpin?.stop();
+      debugPrint('[Payment] start failed: $e');
+      final blocked = _phoneUssdBusy(e);
+      if (blocked) {
+        _holdResend();
+      } else {
+        _showResendNow();
+      }
       setState(() {
         _paymentBusy = false;
-        _waitingHint = mapPaymentStartError(e);
+        _promptOnPhone = false;
+        _canResend = !blocked;
+        _waitingHint = blocked
+            ? 'Funga dirisha la USSD kwenye simu, kisha tuma tena.'
+            : 'Ombi halijatumwa kwenye simu. Gusa Tuma tena.';
       });
     }
   }
@@ -506,6 +558,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
 
   @override
   void dispose() {
+    _resendRevealTimer?.cancel();
     _phoneFocus.dispose();
     _pulse?.dispose();
     _wave?.dispose();
@@ -533,8 +586,8 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         final planExtra = (_plans.length * 78.0).clamp(160.0, 360.0);
         final target = 220.0 + planExtra; // hero + list + CTA
         return target.clamp(available * 0.62, available * 0.90);
-      default: // PIN step — number, kifurushi, network, and resend
-        final snug = size.height < 700 ? available * 0.9 : available * 0.78;
+      default: // PIN step — hug the summary so it fits without a blank gap
+        final snug = size.height < 640 ? available : 468.0;
         return math.min(snug, available);
     }
   }
@@ -1148,8 +1201,27 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     );
   }
 
+  Future<Map<String, dynamic>> _startPrompt({
+    required String externalId,
+    required String bundle,
+    required int amount,
+    required String phone,
+    required String email,
+    required String name,
+  }) {
+    return paymentsApi.startPayment(
+      externalId: externalId,
+      bundle: bundle,
+      amount: amount,
+      phone: phone,
+      email: email,
+      name: name,
+    );
+  }
+
   Future<void> _resendPrompt() async {
-    if (_resending || _paymentSuccess || _paymentBusy) return;
+    if (_paymentSuccess || _resending || !_canResend) return;
+    _resending = true;
     final phone = TzPaymentConfig.normalizeTzLocalPhone(_phoneCtrl.text.trim());
     RemoteSubscriptionPlan? plan;
     for (final item in _plans) {
@@ -1160,6 +1232,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
     }
     plan ??= _plans.isEmpty ? null : _plans.first;
     if (phone == null || plan == null) {
+      _resending = false;
       setState(() {
         _promptOnPhone = false;
         _waitingHint = 'Namba ya simu si sahihi. Rudi nyuma uhakikishe.';
@@ -1178,23 +1251,35 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
         amount: plan.priceTzs,
       );
       if (!mounted) return;
-      final net = TzPaymentConfig.networkFullName(TzPaymentConfig.detectNetwork(phone));
       debugPrint(
         '[Payment] resend order=${result.orderId ?? 'none'} sent=${result.sent} ussd=${result.ussdSent} reused=${result.reusedPending}',
       );
-      if (result.sent) {
+      if (result.sent && !result.reusedPending) {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('pendingPaymentOrderId', result.orderId!);
+        if (result.orderId != null && result.orderId!.isNotEmpty) {
+          await prefs.setString('pendingPaymentOrderId', result.orderId!);
+        }
+        _showResendNow();
         setState(() {
-          _promptOnPhone = result.ussdSent != false;
-          _waitingHint = _promptOnPhone
-              ? 'Ombi jipya la $net limetumwa kwa ${result.phone}. Ingiza PIN.'
-              : 'PIN haijatumwa kwenye simu. Gusa Tuma ombi tena.';
+          _promptOnPhone = true;
+          _canResend = true;
+          _waitingHint = 'Imetumwa ombi. Subiri.';
         });
-      } else if (result.reusedPending || result.ussdSent == false) {
+      } else if (result.dispatching || (result.reusedPending && result.ussdSent != false)) {
+        _showResendNow();
+        setState(() {
+          _promptOnPhone = true;
+          _canResend = true;
+          _waitingHint = result.dispatching
+              ? 'Tunatuma ombi. Subiri PIN kwenye simu.'
+              : 'Imetumwa ombi. Subiri.';
+        });
+      } else if (result.ussdSent == false) {
+        _showResendNow();
         setState(() {
           _promptOnPhone = false;
-          _waitingHint = 'PIN haijatumwa. Funga USSD kwenye simu, subiri sekunde 30, kisha gusa Tuma ombi tena.';
+          _canResend = true;
+          _waitingHint = 'Ombi halijatumwa kwenye simu. Gusa Tuma tena.';
         });
       } else if (result.skippedTooSoon) {
         setState(() {
@@ -1212,11 +1297,22 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
       }
     } catch (e) {
       if (!mounted) return;
-      debugPrint('[Payment] resend failed: $e');
-      setState(() {
-        _promptOnPhone = false;
-        _waitingHint = mapPaymentStartError(e);
-      });
+      final alreadyOnPhone = _phoneUssdBusy(e);
+      if (alreadyOnPhone) {
+        debugPrint('[Payment] phone already has a USSD window');
+        _holdResend();
+        setState(() {
+          _promptOnPhone = false;
+          _canResend = false;
+          _waitingHint = 'Funga dirisha la USSD kwenye simu, kisha tuma tena.';
+        });
+      } else {
+        debugPrint('[Payment] resend failed: $e');
+        setState(() {
+          _promptOnPhone = false;
+          _waitingHint = mapPaymentStartError(e);
+        });
+      }
     } finally {
       if (mounted) setState(() => _resending = false);
     }
@@ -1224,7 +1320,7 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
 
   Widget _pinSummaryRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1247,115 +1343,117 @@ class _PremiumLockModalState extends State<PremiumLockModal> with TickerProvider
   }
 
   Widget _waitingCard() {
+    final phone = TzPaymentConfig.normalizeTzLocalPhone(_phoneCtrl.text) ??
+        TzPaymentConfig.liveDigits(_phoneCtrl.text);
+    final net = _detectedNetwork;
+    final netName = net == TzMobileNetwork.unknown
+        ? 'Mobile Money'
+        : TzPaymentConfig.networkFullName(net);
+    final plan = _plans.cast<RemoteSubscriptionPlan?>().firstWhere(
+          (p) => p?.slug == _selectedSlug,
+          orElse: () => _plans.isEmpty ? null : _plans.first,
+        );
+    final bundleName = _pendingPlanLabel ?? plan?.displayName ?? 'Kifurushi';
+    final price = plan == null ? '' : ' · Tsh ${plan.formattedPrice}';
+
     return _CardScaffold(
       navyMid: _navyMid,
       navy: _navy,
+      heroHeight: 92,
+      bodyPadding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
       hero: _paymentSuccess
           ? _SuccessTick(controller: _successPop!, green: _green, greenDark: _greenDark)
           : _HeroPanel(
               icon: Icons.hourglass_top_rounded,
               pulse: _waitSpin!,
               spinning: true,
+              compact: true,
               navyMid: _navyMid,
               navy: _navy,
             ),
-      child: Column(
-        children: [
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final phone = TzPaymentConfig.normalizeTzLocalPhone(_phoneCtrl.text) ??
-                    TzPaymentConfig.liveDigits(_phoneCtrl.text);
-                final net = _detectedNetwork;
-                final netName = net == TzMobileNetwork.unknown
-                    ? 'Mobile Money'
-                    : TzPaymentConfig.networkFullName(net);
-                final plan = _plans.cast<RemoteSubscriptionPlan?>().firstWhere(
-                      (p) => p?.slug == _selectedSlug,
-                      orElse: () => _plans.isEmpty ? null : _plans.first,
-                    );
-                final bundleName = _pendingPlanLabel ?? plan?.displayName ?? 'Kifurushi';
-                final price = plan == null ? '' : ' · Tsh ${plan.formattedPrice}';
-                return FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.topCenter,
-                  child: SizedBox(
-                    width: constraints.maxWidth,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _stepTrack(),
-                        const SizedBox(height: 12),
-                        Text(
-                          _paymentSuccess
-                              ? 'Hongera sasa channeli zote zimefunguliwa'
-                              : 'Ingiza PIN',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPrimary),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _paymentSuccess
-                              ? 'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.'
-                              : 'Angalia simu yako na ukamilishe malipo.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 13, color: _textSecondary, height: 1.35),
-                        ),
-                        if (!_paymentSuccess) ...[
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: _section,
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Column(
-                              children: [
-                                _pinSummaryRow('Nambari', phone.isEmpty ? '—' : phone),
-                                _pinSummaryRow('Kifurushi', '$bundleName$price'),
-                                _pinSummaryRow('Mtandao', netName),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _waitingHint,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 12.5, color: _textSecondary, height: 1.35),
-                          ),
-                        ],
-                      ],
-                    ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: constraints.maxWidth,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _stepTrack(),
+                  const SizedBox(height: 8),
+                  Text(
+                    _paymentSuccess
+                        ? 'Hongera sasa channeli zote zimefunguliwa'
+                        : 'Ingiza PIN',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPrimary),
                   ),
-                );
-              },
+                  const SizedBox(height: 4),
+                  Text(
+                    _paymentSuccess
+                        ? 'Malipo yamehakikiwa. Unaweza kufungua na kutazama channel zote sasa.'
+                        : (_promptOnPhone
+                            ? 'Imetumwa ombi. Subiri PIN kwenye simu.'
+                            : 'Ombi halijatumwa kwenye simu hii.'),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: _textSecondary, height: 1.3),
+                  ),
+                  if (!_paymentSuccess) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _section,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        children: [
+                          _pinSummaryRow('Nambari', phone.isEmpty ? '—' : phone),
+                          _pinSummaryRow('Kifurushi', '$bundleName$price'),
+                          _pinSummaryRow('Mtandao', netName),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _waitingHint,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12.5, color: _textSecondary, height: 1.3),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  if (_paymentSuccess)
+                    _PrimaryButton(
+                      label: 'Endelea Kutazama',
+                      icon: Icons.play_arrow_rounded,
+                      green: _green,
+                      greenDark: _greenDark,
+                      onTap: _close,
+                    )
+                  else ...[
+                    _PrimaryButton(
+                      label: _resending
+                          ? 'Inatuma…'
+                          : (_canResend ? 'Tuma tena' : 'Subiri…'),
+                      icon: Icons.refresh_rounded,
+                      green: _green,
+                      greenDark: _greenDark,
+                      onTap: _resendPrompt,
+                    ),
+                    const SizedBox(height: 6),
+                    GestureDetector(
+                      onTap: _close,
+                      child: Text('Funga', style: TextStyle(fontSize: 14, color: _navyMid, fontWeight: FontWeight.w800)),
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          if (_paymentSuccess)
-            _PrimaryButton(
-              label: 'Endelea Kutazama',
-              icon: Icons.play_arrow_rounded,
-              green: _green,
-              greenDark: _greenDark,
-              onTap: _close,
-            )
-          else ...[
-            _PrimaryButton(
-              label: _resending ? 'Inatuma…' : 'Tuma ombi tena',
-              icon: Icons.refresh_rounded,
-              green: _green,
-              greenDark: _greenDark,
-              onTap: _resending ? () {} : _resendPrompt,
-            ),
-            const SizedBox(height: 8),
-            GestureDetector(
-              onTap: _close,
-              child: Text('Funga', style: TextStyle(fontSize: 14, color: _navyMid, fontWeight: FontWeight.w800)),
-            ),
-          ],
-        ],
+          );
+        },
       ),
     );
   }
@@ -1458,11 +1556,13 @@ class _CardScaffold extends StatelessWidget {
     required this.navyMid,
     required this.navy,
     this.heroHeight = 120,
+    this.bodyPadding = const EdgeInsets.fromLTRB(18, 16, 18, 16),
   });
 
   final Widget hero;
   final Widget child;
   final double heroHeight;
+  final EdgeInsets bodyPadding;
   final Color navyMid;
   final Color navy;
 
@@ -1488,7 +1588,7 @@ class _CardScaffold extends StatelessWidget {
           child: ColoredBox(
             color: Colors.white,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+              padding: bodyPadding,
               child: child,
             ),
           ),

@@ -2,6 +2,16 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const { query, pool } = require('../db');
+const {
+  enqueuePaymentGatewayRequest,
+  getPaymentGatewayQueueStats,
+  PaymentGatewayQueueFullError,
+} = require('../services/paymentRequestQueue');
+const {
+  isPhoneUssdBusyMessage,
+  isGatewayBusyFailure,
+  gatewayBusyRetryDelayMs,
+} = require('../services/paymentGatewayPressure');
 const { sendPushNotification } = require('../services/firebase');
 const {
   buildPremiumPayload,
@@ -158,6 +168,66 @@ const rollbackPendingPaymentByRef = async (providerRef, paymentProvider) => {
   );
 };
 
+/**
+ * Atomically reserve one short-lived prompt slot per account + phone. The
+ * database lock is released before the gateway call, so duplicate taps cannot
+ * create duplicate prompts even with more than one backend instance.
+ */
+const reserveSonicPaymentStart = async ({
+  userId,
+  buyerPhone,
+  orderId,
+  plan,
+  amount,
+  replaceRecent = false,
+}) => {
+  const client = await pool.connect();
+  const lockKey = `payment-start:${userId}:${buyerPhone}`;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey]);
+    const existing = await client.query(
+      `SELECT provider_ref, gateway_ref, amount_cents, payment_provider
+         FROM subscription_payments
+        WHERE user_id = $1
+          AND buyer_phone = $2
+          AND status = 'pending'
+          AND (
+            created_at > NOW() - INTERVAL '45 seconds'
+            OR (
+              gateway_ref = '__dispatching__'
+              AND created_at > NOW() - INTERVAL '90 seconds'
+            )
+          )
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId, buyerPhone],
+    );
+    if (existing.rows[0]) {
+      const dispatching = existing.rows[0].gateway_ref === '__dispatching__';
+      // A second tap while Sonic is still being called must wait.
+      // An explicit resend of a prompt that already left is a new order.
+      if (!replaceRecent || dispatching) {
+        await client.query('COMMIT');
+        return { existing: existing.rows[0] };
+      }
+    }
+    await client.query(
+      `INSERT INTO subscription_payments
+         (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
+       VALUES ($1,$2,$3,'TZS','pending',$4,'__dispatching__',$5,$6)`,
+      [userId, plan, amount, orderId, PAYMENT_PROVIDERS.SONICPESA, buyerPhone],
+    );
+    await client.query('COMMIT');
+    return { reserved: true };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 /** Aurax refs: UUID v4 or AXP-XXXXXXXX. Legacy Zeno refs `${user_id}_${epochMs}` route to Aurax. */
 const isLikelyAuraxOrderRef = (orderId) => {
   const s = String(orderId || '').trim();
@@ -275,12 +345,9 @@ const sonicPhoneCandidatesForApi = (normalizedPhone) => {
   return api255 ? [api255] : [];
 };
 
-const isGatewayAttemptLimitMessage = (rawMessage, rawCode) => {
-  const combined = `${rawMessage || ''} ${rawCode || ''}`.toLowerCase();
-  return /too many attempt|too many request|too many prompt|maombi mengi|rate limit|attempt limit/i.test(
-    combined,
-  );
-};
+/** This SIM already has a USSD session. A crowded API is not this case. */
+const isGatewayAttemptLimitMessage = (rawMessage, rawCode) =>
+  isPhoneUssdBusyMessage(rawMessage, rawCode);
 
 const sonicBuyerNameForApi = (rawName, externalId) => {
   const name = String(rawName || '').trim();
@@ -410,9 +477,8 @@ const isSonicInvalidMsisdnRejection = (sonicData, httpStatus) => {
 const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
   const code = String(rawCode ?? '').trim();
   const msg = String(rawMessage || '').trim();
-  const network = sonicNetworkLabel(localPhone);
   if (isGatewayAttemptLimitMessage(msg, code)) {
-    return `Ombi la ${network} limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.`;
+    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
   }
   const combined = `${msg} ${code}`.toLowerCase();
   if (isExplicitGatewayInsufficientReport(msg, combined, code)) {
@@ -569,9 +635,9 @@ const isAuraxInitiateSuccess = (auraxData, httpResponse) => {
 const isRetriableAuraxInitiateFailure = (httpOk, auraxData, httpStatus) => {
   if (httpOk && auraxData?.success === true) return false;
   const combined = `${auraxData?.message || ''} ${auraxData?.error || ''}`.toLowerCase();
-  if (isGatewayAttemptLimitMessage(combined, httpStatus)) return false;
-  if (httpStatus >= 500 || httpStatus === 408) return true;
-  return /timeout|temporarily|unavailable|network|upstream/i.test(combined);
+  if (isPhoneUssdBusyMessage(combined, '')) return false;
+  if (httpStatus === 429 || httpStatus >= 500 || httpStatus === 408) return true;
+  return /timeout|temporarily|unavailable|network|upstream|rate limit|too many request/i.test(combined);
 };
 
 const initiateAuraxPayment = async ({
@@ -1625,7 +1691,7 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
   if (isGatewayAttemptLimitMessage(msg, code)) {
-    return 'Ombi la malipo limetumwa kwenye simu yako. Ingiza PIN ili kuthibitisha.';
+    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
   }
   if (
     /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
@@ -1718,9 +1784,10 @@ const shouldFallbackSonicToAurax = (rawMessage, rawCode) =>
   isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX);
 
 /** The prompt is already on this number. Return that order instead of another push. */
-const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
+const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal, options = {}) => {
+  const excludedRef = String(options.excludeRef || '').trim();
   const recent = await query(
-    `SELECT provider_ref, payment_provider
+    `SELECT provider_ref, payment_provider, amount_cents
        FROM subscription_payments
       WHERE user_id = $1
         AND status = 'pending'
@@ -1730,17 +1797,23 @@ const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal) => {
           OR right(regexp_replace(COALESCE(buyer_phone, ''), '[^0-9]', '', 'g'), 9)
              = right(regexp_replace($2, '[^0-9]', '', 'g'), 9)
         )
+        AND ($3 = '' OR provider_ref <> $3)
       ORDER BY created_at DESC
       LIMIT 1`,
-    [userId, buyerPhoneLocal],
+    [userId, buyerPhoneLocal, excludedRef],
   );
   const row = recent.rows[0];
   const orderId = String(row?.provider_ref || '').trim();
   if (!orderId) return false;
+  const network = sonicNetworkLabel(buyerPhoneLocal);
   res.json({
     status: 'pending',
     orderId,
-    message: sonicCheckoutPrompt(buyerPhoneLocal, row.amount_cents),
+    amount: row.amount_cents,
+    ussdSent: true,
+    message: options.outstanding
+      ? 'Ingiza PIN kwenye simu. Ikiwa hujaiona, subiri kisha tuma tena.'
+      : sonicCheckoutPrompt(buyerPhoneLocal, row.amount_cents),
     network: sonicNetworkKey(buyerPhoneLocal),
     provider: row.payment_provider || undefined,
     reusedPending: true,
@@ -1773,58 +1846,82 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
       currency: 'TZS',
     };
 
-    try {
-      const { response, data: sonicData } = await gatewayFetchJson(
-        `${SONICPESA_API_BASE}/payment/create_order`,
-        {
-          method: 'POST',
-          headers: getSonicPesaRequestHeaders(),
-          body: JSON.stringify(sonicPayload),
-        },
-        SONIC_CREATE_TIMEOUT_MS,
-      );
-      const created = isSonicInitiateSuccess(sonicData, response);
-      const ussdSent = created && isSonicUssdPushSent(sonicData);
-      last = { response, sonicData, phoneLocal, phoneForSonicApi, ussdSent };
-      if (ussdSent) {
-        console.log('[SonicPesa] Push USSD dispatched:', {
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const timeoutMs = attempt === 1 ? 15000 : 10000;
+      try {
+        const { response, data: sonicData } = await gatewayFetchJson(
+          `${SONICPESA_API_BASE}/payment/create_order`,
+          {
+            method: 'POST',
+            headers: getSonicPesaRequestHeaders(),
+            body: JSON.stringify(sonicPayload),
+          },
+          timeoutMs,
+        );
+        const created = isSonicInitiateSuccess(sonicData, response);
+        const ussdSent = created && isSonicUssdPushSent(sonicData);
+        last = { response, sonicData, phoneLocal, phoneForSonicApi, ussdSent };
+        if (ussdSent) {
+          console.log('[SonicPesa] Push USSD dispatched:', {
+            phoneForSonicApi,
+            orderId: sonicData.data?.order_id || sonicData.order_id,
+            elapsedHint: 'fast-path',
+            attempt,
+          });
+          return last;
+        }
+        if (Number(response.status) === 401 || Number(response.status) === 403) {
+          console.warn('[SonicPesa] Auth rejected — not retrying other phone formats');
+          return last;
+        }
+        if (created) {
+          lastCreated = last;
+          // An order id means Sonic accepted this number. Do not push again.
+          break;
+        }
+        const failMsg = sonicData?.message || sonicData?.error;
+        const failCode = sonicData?.resultcode || sonicData?.code;
+        console.warn('[SonicPesa] create_order attempt failed:', {
           phoneForSonicApi,
-          orderId: sonicData.data?.order_id || sonicData.order_id,
-          elapsedHint: 'fast-path',
+          httpStatus: response.status,
+          message: failMsg,
+          attempt,
         });
-        return last;
-      }
-      if (Number(response.status) === 401 || Number(response.status) === 403) {
-        console.warn('[SonicPesa] Auth rejected — not retrying other phone formats');
-        return last;
-      }
-      if (created) {
-        lastCreated = last;
-        // An order id means Sonic accepted this number. Do not push a second format.
+        if (
+          attempt < maxAttempts &&
+          isGatewayBusyFailure(failMsg, failCode, response.status)
+        ) {
+          const waitMs = gatewayBusyRetryDelayMs(attempt);
+          console.warn('[SonicPesa] gateway busy — retrying this user', { attempt, waitMs });
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          continue;
+        }
+        if (
+          phoneLocal &&
+          phoneLocal !== phoneForSonicApi &&
+          !candidates.includes(phoneLocal) &&
+          isSonicInvalidMsisdnRejection(sonicData, response.status)
+        ) {
+          console.warn('[SonicPesa] 255 number rejected — one local-format retry', { phoneForSonicApi });
+          candidates.push(phoneLocal);
+        }
         break;
+      } catch (fetchErr) {
+        last = {
+          response: { ok: false, status: 502 },
+          sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+          phoneLocal,
+          phoneForSonicApi,
+          ussdSent: false,
+        };
+        if (attempt < maxAttempts && isGatewayBusyFailure(last.sonicData.message, '', 502)) {
+          const waitMs = gatewayBusyRetryDelayMs(attempt);
+          console.warn('[SonicPesa] create_order network retry', { attempt, waitMs });
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          continue;
+        }
       }
-      console.warn('[SonicPesa] create_order attempt failed:', {
-        phoneForSonicApi,
-        httpStatus: response.status,
-        message: sonicData?.message || sonicData?.error,
-      });
-      if (
-        phoneLocal &&
-        phoneLocal !== phoneForSonicApi &&
-        !candidates.includes(phoneLocal) &&
-        isSonicInvalidMsisdnRejection(sonicData, response.status)
-      ) {
-        console.warn('[SonicPesa] 255 number rejected — one local-format retry', { phoneForSonicApi });
-        candidates.push(phoneLocal);
-      }
-    } catch (fetchErr) {
-      last = {
-        response: { ok: false, status: 502 },
-        sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
-        phoneLocal,
-        phoneForSonicApi,
-        ussdSent: false,
-      };
     }
   }
   return lastCreated || last;
@@ -1889,8 +1986,10 @@ async function handlePaymentStart(req, res, next) {
     }
     const normalizedPhone = phoneNorm.local;
 
-    // Ensure user row exists (apps sometimes open Pay before /register finishes; Zeno STK can still fire).
-    let userRes = await query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
+    // User lookup and plan list run together so SonicPesa is called on the first round trip.
+    const userLookup = query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
+    const plansLookup = data.promotionId ? null : getActivePlans();
+    let userRes = await userLookup;
     if (userRes.rows.length === 0) {
       await query(
         `INSERT INTO users (external_id) VALUES ($1)
@@ -1958,7 +2057,7 @@ async function handlePaymentStart(req, res, next) {
       planName = `Ofa ya siku ${offerDays}`;
       amountToSend = offerAmount;
     } else {
-      const plans = await getActivePlans();
+      const plans = await plansLookup;
       const resolved = resolveCheckoutPlan(plans, data.bundle, data.amount);
       if (!resolved) {
         return res.status(400).json({
@@ -1979,20 +2078,37 @@ async function handlePaymentStart(req, res, next) {
     }
 
     const orderId = crypto.randomUUID();
+    const buyerPhoneLocal = normalizedPhone;
+    const reservation = await reserveSonicPaymentStart({
+      userId,
+      buyerPhone: buyerPhoneLocal,
+      orderId,
+      plan: planKey,
+      amount: amountToSend,
+      replaceRecent: data.resend === true,
+    });
+    if (reservation.existing) {
+      return res.json({
+        status: 'pending',
+        orderId: String(reservation.existing.provider_ref || ''),
+        amount: Number(reservation.existing.amount_cents) || amountToSend,
+        ussdSent: reservation.existing.gateway_ref !== '__dispatching__',
+        dispatching: reservation.existing.gateway_ref === '__dispatching__',
+        message: `Ombi la ${sonicNetworkLabel(normalizedPhone)} linaandaliwa. Angalia simu yako na uingize PIN likifika.`,
+        network: sonicNetworkKey(normalizedPhone),
+        provider: reservation.existing.payment_provider || PAYMENT_PROVIDERS.SONICPESA,
+        reusedPending: true,
+      });
+    }
     console.log('[Backend] Generated payment orderId:', orderId);
 
-    const selectedProvider = await getSelectedPaymentProvider();
-    const provider = selectedProvider === PAYMENT_PROVIDERS.SONICPESA
-      ? PAYMENT_PROVIDERS.SONICPESA
-      : PAYMENT_PROVIDERS.AURAX;
-    const rawSetting = await getAppSettingValue(PAYMENT_PROVIDER_SETTING_KEY, PAYMENT_PROVIDERS.AURAX);
-    console.log('[Payment] /start app_settings.payment_provider raw:', rawSetting, '→ gateway:', provider);
+    const provider = PAYMENT_PROVIDERS.SONICPESA;
 
-    const buyerPhoneLocal = normalizedPhone;
     let providerResponseMessage = 'Request in progress. You will receive a prompt on your phone.';
 
     const sonicReady = isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.SONICPESA);
     if (!sonicReady) {
+      await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
       return res.status(503).json({
         error: 'SonicPesa haijasanidi kwenye seva. Weka SONICPESA_API_KEY kwenye Railway.',
         activeProvider: PAYMENT_PROVIDERS.SONICPESA,
@@ -2021,12 +2137,26 @@ async function handlePaymentStart(req, res, next) {
         hasSecretKey: Boolean(SONICPESA_SECRET_KEY),
       });
 
-      const { response, sonicData, phoneForSonicApi, ussdSent } = await initiateSonicPayment({
-        normalizedPhone,
-        amountToSend,
-        data,
-        externalId: data.externalId,
-      });
+      let sonicResult;
+      try {
+        sonicResult = await enqueuePaymentGatewayRequest(() => initiateSonicPayment({
+          normalizedPhone,
+          amountToSend,
+          data,
+          externalId: data.externalId,
+        }));
+      } catch (queueError) {
+        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+        if (queueError instanceof PaymentGatewayQueueFullError) {
+          console.warn('[Payment] Gateway queue full', getPaymentGatewayQueueStats());
+          return res.status(503).json({
+            error: 'Ombi linatumwa kwenye simu yako. Subiri kidogo.',
+            retryable: true,
+          });
+        }
+        throw queueError;
+      }
+      const { response, sonicData, phoneForSonicApi, ussdSent } = sonicResult;
       // eslint-disable-next-line no-console
       console.log('[SonicPesa] Response:', {
         status: response.status,
@@ -2057,21 +2187,23 @@ async function handlePaymentStart(req, res, next) {
               amount: amountToSend,
             });
           }
-          await query(
-            `INSERT INTO subscription_payments (user_id, plan, amount_cents, currency, status, provider_ref, gateway_ref, payment_provider, buyer_phone)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          const linked = await query(
+            `UPDATE subscription_payments
+                SET provider_ref = $1,
+                    gateway_ref = $2
+              WHERE provider_ref = $3
+                AND status = 'pending'
+                AND payment_provider = $4`,
             [
-              userId,
-              planKey,
-              amountToSend,
-              'TZS',
-              'pending',
               sonicOrderId,
               sonicReference && sonicReference !== sonicOrderId ? sonicReference : null,
+              orderId,
               PAYMENT_PROVIDERS.SONICPESA,
-              buyerPhoneLocal,
             ],
           );
+          if (linked.rowCount !== 1) {
+            throw new Error('Could not persist the accepted payment request');
+          }
           const pushSent = Boolean(ussdSent) && !sendFailed;
           return res.json({
             status: 'pending',
@@ -2096,8 +2228,19 @@ async function handlePaymentStart(req, res, next) {
           code: initiateCode,
           sonicData,
         };
+        if (isGatewayBusyFailure(initiateMsg, initiateCode, response.status)) {
+          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+          return res.status(503).json({
+            error: 'Ombi linatumwa kwenye simu yako. Subiri kidogo.',
+            retryable: true,
+          });
+        }
         if (isGatewayAttemptLimitMessage(initiateMsg, initiateCode)) {
-          if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+          if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal, { outstanding: true, excludeRef: orderId })) {
+            await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+            return;
+          }
+          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
           return res.status(400).json({
             error: mapSonicInitiateUserError(
               normalizedPhone,
@@ -2115,6 +2258,7 @@ async function handlePaymentStart(req, res, next) {
           paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
           usedAuraxFallbackFromSonic = true;
         } else {
+          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
           return res.status(400).json({
             error: mapSonicInitiateUserError(
               normalizedPhone,
@@ -2138,8 +2282,19 @@ async function handlePaymentStart(req, res, next) {
 
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
+      if (isGatewayBusyFailure(rawErr, rawCode, response.status)) {
+        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+        return res.status(503).json({
+          error: 'Ombi linatumwa kwenye simu yako. Subiri kidogo.',
+          retryable: true,
+        });
+      }
       if (isGatewayAttemptLimitMessage(rawErr, rawCode)) {
-        if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal, { outstanding: true, excludeRef: orderId })) {
+          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+          return;
+        }
+        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
         return res.status(400).json({
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
         });
@@ -2151,6 +2306,7 @@ async function handlePaymentStart(req, res, next) {
         paymentProviderForRow = PAYMENT_PROVIDERS.AURAX;
         usedAuraxFallbackFromSonic = true;
       } else {
+        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
         return res.status(400).json({
           error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
         });
@@ -2209,8 +2365,14 @@ async function handlePaymentStart(req, res, next) {
         auraxData.error ||
         (auraxData.details ? JSON.stringify(auraxData.details) : '') ||
         'Failed to start payment request';
+      if (isGatewayBusyFailure(rawError, '', response.status)) {
+        return res.status(503).json({
+          error: 'Ombi linatumwa kwenye simu yako. Subiri kidogo.',
+          retryable: true,
+        });
+      }
       if (isGatewayAttemptLimitMessage(rawError, response.status)) {
-        if (!data.resend && await replyRecentPendingPrompt(res, userId, buyerPhoneLocal)) return;
+        if (await replyRecentPendingPrompt(res, userId, buyerPhoneLocal, { outstanding: true })) return;
       }
       const auraxMapped = mapPaymentGatewayUserError(rawError, '', { context: 'initiate' });
       if (usedAuraxFallbackFromSonic && sonicFailureForClient) {
@@ -2766,6 +2928,13 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
       const planInterval = await resolvePlanIntervalForPayment(planKey, payRow.amount_cents);
       await repairUserEntitlementsIfNeeded(Number(payRow.user_id), planInterval);
       return respondPaymentCompletion(orderId, { data: [{ payment_status: 'COMPLETED' }] }, res);
+    }
+
+    // The request has a durable local reservation but is still waiting for a
+    // bounded gateway worker. Do not turn client polling into extra gateway
+    // traffic while a burst is being drained.
+    if (dbCheck.rows.length > 0 && dbCheck.rows[0].gateway_ref === '__dispatching__') {
+      return res.json({ status: 'PENDING', dispatching: true });
     }
 
     // Resend-STK orphan: this order is still pending, but a sibling payment already
@@ -3573,6 +3742,7 @@ const reconcilePendingSubscriptionPayments = async () => {
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
+        AND COALESCE(gateway_ref, '') <> '__dispatching__'
         AND created_at > NOW() - INTERVAL '2 days'
         AND created_at < NOW() - INTERVAL '2 seconds'
       ORDER BY created_at DESC

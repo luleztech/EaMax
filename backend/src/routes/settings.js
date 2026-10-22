@@ -100,30 +100,16 @@ router.get('/channels-premium-only', async (req, res, next) => {
   }
 });
 
-// Public: get payment provider in use (aurax or sonicpesa)
+// Public: SonicPesa is the only checkout provider (all TZ mobile-money networks).
 router.get('/payment-provider', async (req, res, next) => {
   try {
-    await ensureAppSettingsTable();
     res.set('Cache-Control', 'private, no-store, max-age=0');
-    const result = await query(
-      "SELECT value FROM app_settings WHERE key = 'payment_provider' LIMIT 1",
-    );
-    const raw = result.rows.length > 0 ? result.rows[0].value : 'aurax';
-    const compact = String(raw).toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    const paymentProvider =
-      compact === 'sonicpesa'
-        ? 'sonicpesa'
-        : compact === 'zeno' || compact === 'zenopay'
-          ? 'aurax'
-          : 'aurax';
-    const auraxConfigured = Boolean(process.env.AURAXPAY_API_KEY);
     const sonicConfigured = Boolean(process.env.SONICPESA_API_KEY);
-    const configured = paymentProvider === 'sonicpesa' ? sonicConfigured : auraxConfigured;
     return res.json({
-      paymentProvider,
-      configured,
-      auraxConfigured,
+      paymentProvider: 'sonicpesa',
+      configured: sonicConfigured,
       sonicConfigured,
+      networks: ['mpesa', 'airtel', 'tigo', 'halopesa'],
     });
   } catch (err) {
     return next(err);

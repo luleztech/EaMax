@@ -14,6 +14,7 @@ class PaymentResendResult {
     this.skippedTooSoon = false,
     this.capped = false,
     this.reusedPending = false,
+    this.dispatching = false,
     this.ussdSent,
   });
 
@@ -23,6 +24,7 @@ class PaymentResendResult {
   final bool skippedTooSoon;
   final bool capped;
   final bool reusedPending;
+  final bool dispatching;
 
   /// Null when the server did not say whether the wallet actually pushed USSD.
   final bool? ussdSent;
@@ -233,8 +235,7 @@ class PaymentPendingSession {
   }
 
   /// Sends another PIN prompt to the number the user typed.
-  /// Automatic repeats stay off. A tap on “Tuma ombi tena” is allowed a few
-  /// times, with a short pause so the wallet is not flooded.
+  /// Automatic repeats stay off. Each tap on “Tuma ombi tena” creates a new order.
   static Future<PaymentResendResult> resendStk({
     String? payerName,
     bool userCancelled = false,
@@ -244,14 +245,24 @@ class PaymentPendingSession {
     int? amount,
   }) async {
     var session = await load();
-    if (session == null) {
-      final fallbackPhone = (phone ?? '').trim();
-      final fallbackBundle = (bundle ?? '').trim();
-      final fallbackAmount = amount ?? 0;
+    final fallbackPhone = (phone ?? '').trim();
+    final fallbackBundle = (bundle ?? '').trim();
+    final fallbackAmount = amount ?? 0;
+    if (userRequested &&
+        fallbackPhone.isNotEmpty &&
+        fallbackBundle.isNotEmpty &&
+        fallbackAmount > 0) {
+      session = PaymentPendingSession(
+        orderId: session?.orderId ?? '',
+        phone: fallbackPhone,
+        bundle: fallbackBundle,
+        amount: fallbackAmount,
+        promotionId: session?.promotionId,
+      );
+    } else if (session == null) {
       if (fallbackPhone.isEmpty || fallbackBundle.isEmpty || fallbackAmount <= 0) {
         return const PaymentResendResult(skippedTooSoon: true);
       }
-      // The first request never saved an order. Still push this number.
       session = PaymentPendingSession(
         orderId: '',
         phone: fallbackPhone,
@@ -260,27 +271,22 @@ class PaymentPendingSession {
       );
     }
     final prefs = await SharedPreferences.getInstance();
+    final already = prefs.getInt(resendCountKey) ?? 0;
     final inFlightAt = prefs.getInt(resendInFlightKey) ?? 0;
-    final inFlightGap = userRequested ? const Duration(seconds: 8) : const Duration(seconds: 40);
     if (inFlightAt > 0 &&
-        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(inFlightAt)) < inFlightGap) {
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(inFlightAt)) <
+            const Duration(seconds: 40)) {
       return PaymentResendResult(phone: session.phone, skippedTooSoon: true);
     }
-    final already = prefs.getInt(resendCountKey) ?? 0;
-    const maxUserResends = 3;
-    if (userRequested) {
-      if (already >= maxUserResends) {
+    if (!userRequested) {
+      if (already >= maxAutoResends) {
         return PaymentResendResult(phone: session.phone, attempt: already, capped: true);
       }
-    } else if (already >= maxAutoResends) {
-      return PaymentResendResult(phone: session.phone, attempt: already, capped: true);
-    }
-    final age = await sinceLastPrompt();
-    final gap = userRequested
-        ? const Duration(seconds: 4)
-        : (userCancelled ? cancelResendGap : pendingResendGap);
-    if (age < gap) {
-      return PaymentResendResult(phone: session.phone, attempt: already, skippedTooSoon: true);
+      final age = await sinceLastPrompt();
+      final gap = userCancelled ? cancelResendGap : pendingResendGap;
+      if (age < gap) {
+        return PaymentResendResult(phone: session.phone, attempt: already, skippedTooSoon: true);
+      }
     }
 
     await prefs.setInt(resendInFlightKey, DateTime.now().millisecondsSinceEpoch);
@@ -310,6 +316,7 @@ class PaymentPendingSession {
       }
       final newOrderId = (result['orderId']?.toString() ?? '').trim();
       final reusedPending = result['reusedPending'] == true;
+      final dispatching = result['dispatching'] == true;
       final ussdSent = result['ussdSent'] is bool ? result['ussdSent'] as bool : null;
       if (newOrderId.isEmpty) {
         await _stampPromptClock(prefs);
@@ -317,6 +324,7 @@ class PaymentPendingSession {
           phone: session.phone,
           attempt: already,
           reusedPending: reusedPending,
+          dispatching: dispatching,
           ussdSent: ussdSent,
         );
       }
@@ -340,6 +348,7 @@ class PaymentPendingSession {
         phone: session.phone,
         attempt: attempt,
         reusedPending: reusedPending,
+        dispatching: dispatching,
         ussdSent: ussdSent,
       );
     } catch (error) {

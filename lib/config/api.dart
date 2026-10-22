@@ -322,6 +322,41 @@ class ScheduleApi {
 }
 
 class PaymentsApi {
+  Future<Map<String, dynamic>> _startWithBusyRetry(
+    Future<Map<String, dynamic>> Function() send,
+  ) async {
+    Object? lastErr;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await send();
+      } catch (e) {
+        lastErr = e;
+        final raw = e.toString().toLowerCase();
+        final phoneBusy = raw.contains('ussd nyingine') || raw.contains('funga dirisha la ussd');
+        final gatewayBusy = !phoneBusy &&
+            (raw.contains('linatumwa') ||
+                raw.contains('subiri kidogo') ||
+                raw.contains('503') ||
+                raw.contains('502') ||
+                raw.contains('504') ||
+                raw.contains('timeout') ||
+                raw.contains('timed out') ||
+                raw.contains('socket') ||
+                raw.contains('connection') ||
+                raw.contains('network'));
+        if (attempt < 2 && (gatewayBusy || e is ApiRateLimitedException)) {
+          final waitMs = e is ApiRateLimitedException
+              ? ((e.retryAfterSeconds ?? 2).clamp(1, 8)) * 1000
+              : 700 * attempt;
+          await _sleep(waitMs);
+          continue;
+        }
+        rethrow;
+      }
+    }
+    throw lastErr ?? Exception('Payment start failed');
+  }
+
   /// Start a payment using the currently active payment provider
   Future<Map<String, dynamic>> startOfferPayment({
     required String externalId,
@@ -331,37 +366,25 @@ class PaymentsApi {
     required String email,
     required String name,
     bool resend = false,
-  }) async {
-    Object? lastErr;
-    for (var attempt = 1; attempt <= 2; attempt++) {
-      try {
-        final r = await apiRequest(
-          '/api/payments/start',
-          method: 'POST',
-          body: {
-            'externalId': externalId,
-            'promotionId': promotionId,
-            'amount': amount,
-            'phone': phone,
-            'email': email,
-            'name': name,
-            if (resend) 'resend': true,
-          },
-          enableRetries: false,
-          timeout: const Duration(seconds: 40),
-        );
-        return Map<String, dynamic>.from(r as Map);
-      } on ApiRateLimitedException catch (e) {
-        lastErr = e;
-        if (attempt < 2) {
-          final waitSec = e.retryAfterSeconds ?? 3;
-          await _sleep((waitSec.clamp(1, 15)) * 1000);
-          continue;
-        }
-        rethrow;
-      }
-    }
-    throw lastErr ?? Exception('Payment start failed');
+  }) {
+    return _startWithBusyRetry(() async {
+      final r = await apiRequest(
+        '/api/payments/start',
+        method: 'POST',
+        body: {
+          'externalId': externalId,
+          'promotionId': promotionId,
+          'amount': amount,
+          'phone': phone,
+          'email': email,
+          'name': name,
+          if (resend) 'resend': true,
+        },
+        enableRetries: false,
+        timeout: const Duration(seconds: 50),
+      );
+      return Map<String, dynamic>.from(r as Map);
+    });
   }
 
   Future<Map<String, dynamic>> startPayment({
@@ -372,24 +395,26 @@ class PaymentsApi {
     required String email,
     required String name,
     bool resend = false,
-  }) async {
-    final r = await apiRequest(
-      '/api/payments/start',
-      method: 'POST',
-      body: {
-        'externalId': externalId,
-        'bundle': bundle,
-        'amount': amount,
-        'phone': phone,
-        'email': email,
-        'name': name,
-        if (resend) 'resend': true,
-      },
-      // Non-idempotent: retries can create multiple orders and break auto-upgrade tracking.
-      enableRetries: false,
-      timeout: const Duration(seconds: 40),
-    );
-    return Map<String, dynamic>.from(r as Map);
+  }) {
+    return _startWithBusyRetry(() async {
+      final r = await apiRequest(
+        '/api/payments/start',
+        method: 'POST',
+        body: {
+          'externalId': externalId,
+          'bundle': bundle,
+          'amount': amount,
+          'phone': phone,
+          'email': email,
+          'name': name,
+          if (resend) 'resend': true,
+        },
+        // The server reserves one prompt per phone, so a retry does not create a second USSD.
+        enableRetries: false,
+        timeout: const Duration(seconds: 50),
+      );
+      return Map<String, dynamic>.from(r as Map);
+    });
   }
 
   /// Legacy name: always uses `/api/payments/start` so the server picks Aurax vs SonicPesa from admin settings.
