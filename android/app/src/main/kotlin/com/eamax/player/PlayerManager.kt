@@ -44,12 +44,18 @@ class PlayerManager(
     private var sessionQueueIndex = 0
     private var handlingError = false
     private var webViewFailoverUsed = false
+    private var sameFormatRetries = 0
+    private var playlistResetReloads = 0
+    private var networkRetries = 0
 
     private enum class ActiveEngine { NONE, EXO, WEBVIEW }
     private var activeEngine = ActiveEngine.NONE
 
     companion object {
         private const val TAG = "PlayerManager"
+        private const val MAX_SAME_FORMAT_RETRIES = 4
+        private const val MAX_PLAYLIST_RESET_RELOADS = 8
+        private const val MAX_NETWORK_RETRIES = 8
     }
 
     fun setInitialQuality(quality: StreamQuality) {
@@ -89,7 +95,7 @@ class PlayerManager(
             return
         }
 
-        val classified = factory.classify(session.mpdUrl)
+        val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
         Log.i(TAG, "route → ExoPlayer format=$classified")
         enqueueFormats(classified)
         startExo(classified)
@@ -98,6 +104,9 @@ class PlayerManager(
 
     private fun enqueueFormats(first: OrizonPlayerFactory.Format) {
         formatQueue.clear()
+        sameFormatRetries = 0
+        val url = currentSession?.mpdUrl.orEmpty()
+        if (factory.lockedFormat(url) != null) return
         val rest = listOf(
             OrizonPlayerFactory.Format.HLS,
             OrizonPlayerFactory.Format.DASH,
@@ -106,7 +115,7 @@ class PlayerManager(
         formatQueue.addAll(rest)
     }
 
-    private fun startExo(format: OrizonPlayerFactory.Format) {
+    private fun startExo(format: OrizonPlayerFactory.Format, soft: Boolean = false) {
         val session = currentSession ?: return
         handlingError = false
         onStateChanged(PlaybackState.BUFFERING)
@@ -122,7 +131,7 @@ class PlayerManager(
                 created.addListener(exoListener)
                 exoPlayer = created
             }
-            if (exo.mediaItemCount > 0) {
+            if (!soft && exo.mediaItemCount > 0) {
                 exo.stop()
                 exo.clearMediaItems()
             }
@@ -139,6 +148,9 @@ class PlayerManager(
             if (playbackState == Player.STATE_BUFFERING) {
                 onStateChanged(PlaybackState.BUFFERING)
             } else if (playbackState == Player.STATE_READY) {
+                sameFormatRetries = 0
+                playlistResetReloads = 0
+                networkRetries = 0
                 onStateChanged(PlaybackState.READY)
             } else if (playbackState == Player.STATE_ENDED) {
                 onStateChanged(PlaybackState.ENDED)
@@ -160,6 +172,27 @@ class PlayerManager(
 
     private fun handlePlaybackError(error: PlaybackException) {
         if (handlingError) return
+        if (factory.isHlsPlaylistReset(error) && playlistResetReloads < MAX_PLAYLIST_RESET_RELOADS) {
+            playlistResetReloads += 1
+            handlingError = true
+            val format = currentSession?.let { factory.lockedFormat(it.mpdUrl) }
+                ?: OrizonPlayerFactory.Format.HLS
+            Log.w(TAG, "Live HLS playlist restarted — reloading ($playlistResetReloads)")
+            mainHandler.post { startExo(format, soft = true) }
+            return
+        }
+        if (isNetworkFailure(error) && networkRetries < MAX_NETWORK_RETRIES) {
+            networkRetries += 1
+            val delayMs = (1_500L * networkRetries).coerceAtMost(10_000L)
+            handlingError = true
+            Log.w(TAG, "No network — retry $networkRetries in ${delayMs}ms")
+            mainHandler.postDelayed({
+                val format = currentSession?.let { factory.lockedFormat(it.mpdUrl) }
+                    ?: OrizonPlayerFactory.Format.HLS
+                startExo(format, soft = true)
+            }, delayMs)
+            return
+        }
         handlingError = true
         Log.e(TAG, "Exo error ${error.errorCode}: ${error.message}")
         val httpAccess = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
@@ -168,19 +201,43 @@ class PlayerManager(
         retryOrFail(httpAccess)
     }
 
-    private fun retryOrFail(httpAccessError: Boolean = false) {
-        if (httpAccessError) formatQueue.clear()
+    private fun isNetworkFailure(error: PlaybackException): Boolean {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+        ) {
+            return true
+        }
+        return generateSequence(error.cause) { it.cause }.any { cause ->
+            cause is java.net.UnknownHostException ||
+                cause is java.net.ConnectException ||
+                cause is java.net.NoRouteToHostException ||
+                cause is java.net.SocketException
+        }
+    }
 
-        formatQueue.removeFirstOrNull()?.let { nextFormat ->
-            Log.w(TAG, "retry format=$nextFormat")
-            mainHandler.post { startExo(nextFormat) }
-            return
+    private fun retryOrFail(httpAccessError: Boolean = false) {
+        val session = currentSession
+        val locked = session?.let { factory.lockedFormat(it.mpdUrl) }
+        if (locked != null) {
+            if (sameFormatRetries < MAX_SAME_FORMAT_RETRIES) {
+                sameFormatRetries += 1
+                Log.w(TAG, "reload format=$locked attempt=$sameFormatRetries")
+                mainHandler.post { startExo(locked) }
+                return
+            }
+            Log.w(TAG, "locked format=$locked exhausted — not switching parser or WebView")
+        } else {
+            if (httpAccessError) formatQueue.clear()
+            formatQueue.removeFirstOrNull()?.let { nextFormat ->
+                Log.w(TAG, "retry format=$nextFormat")
+                mainHandler.post { startExo(nextFormat) }
+                return
+            }
         }
 
         if (tryNextFallbackSession()) return
 
-        val session = currentSession
-        if (!webViewFailoverUsed && session != null && PlayerRuntimeConfig.failoverToWebview) {
+        if (locked == null && !webViewFailoverUsed && session != null && PlayerRuntimeConfig.failoverToWebview) {
             webViewFailoverUsed = true
             Log.w(TAG, "failover → WebView")
             mainHandler.post { startWebViewEngine(session) }
@@ -261,6 +318,7 @@ class PlayerManager(
     }
 
     fun release() {
+        mainHandler.removeCallbacksAndMessages(null)
         exoPlayer?.removeListener(exoListener)
         exoPlayer?.release()
         exoPlayer = null

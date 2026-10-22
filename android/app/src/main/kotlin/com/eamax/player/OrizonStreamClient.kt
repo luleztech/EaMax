@@ -12,9 +12,11 @@ object OrizonStreamClient {
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
-    private const val CONNECT_TIMEOUT_SEC = 15L
-    private const val READ_TIMEOUT_SEC = 15L
-    private const val WRITE_TIMEOUT_SEC = 15L
+    private const val CONNECT_TIMEOUT_SEC = 12L
+    // Live HTTP stays open. A short read timeout closes the socket during a
+    // brief upstream pause and the player restarts — that is a scratch.
+    private const val READ_TIMEOUT_SEC = 45L
+    private const val WRITE_TIMEOUT_SEC = 30L
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()

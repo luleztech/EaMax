@@ -1,6 +1,7 @@
 package com.eamax.player
 
 import android.content.Context
+import android.os.Handler
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -8,9 +9,15 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
@@ -19,12 +26,16 @@ import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import androidx.media3.extractor.ts.TsExtractor
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamSession
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.ArrayList
 
 /**
  * Orizon TV 1.7.1 player factory (`mi1` / DirectPlay).
@@ -57,8 +68,70 @@ class OrizonPlayerFactory(private val context: Context) {
             .setTunnelingEnabled(false)
             .build()
 
-        val renderersFactory = DefaultRenderersFactory(context).apply {
+        val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean,
+            ): AudioSink {
+                val base = DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(false)
+                    .setAudioTrackBufferSizeProvider(SteadyAudioBuffer)
+                    .build()
+                return DiscontinuityTolerantAudioSink(base)
+            }
+
+            override fun buildVideoRenderers(
+                context: Context,
+                extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector,
+                enableDecoderFallback: Boolean,
+                eventHandler: Handler,
+                eventListener: VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long,
+                out: ArrayList<Renderer>,
+            ) {
+                out.add(
+                    object : MediaCodecVideoRenderer(
+                        context,
+                        mediaCodecSelector,
+                        allowedVideoJoiningTimeMs,
+                        enableDecoderFallback,
+                        eventHandler,
+                        eventListener,
+                        MAX_DROPPED_VIDEO_FRAMES_TO_NOTIFY,
+                    ) {
+                        override fun shouldDropBuffersToKeyframe(
+                            earlyUs: Long,
+                            elapsedRealtimeUs: Long,
+                            isLastBuffer: Boolean,
+                        ): Boolean = false
+
+                        override fun shouldDropOutputBuffer(
+                            earlyUs: Long,
+                            elapsedRealtimeUs: Long,
+                            isLastBuffer: Boolean,
+                        ): Boolean {
+                            // A negative earlyUs means the frame is late. HTTP MPEG-TS
+                            // clocks jump; dropping those frames is the visible scratch.
+                            if (earlyUs > -LATE_FRAME_GRACE_US) return false
+                            return super.shouldDropOutputBuffer(earlyUs, elapsedRealtimeUs, isLastBuffer)
+                        }
+
+                        override fun shouldForceRenderOutputBuffer(
+                            earlyUs: Long,
+                            elapsedSinceLastRenderUs: Long,
+                        ): Boolean {
+                            return earlyUs < 0 && elapsedSinceLastRenderUs > 30_000L
+                        }
+                    },
+                )
+            }
+        }.apply {
             setEnableDecoderFallback(true)
+            setEnableAudioTrackPlaybackParams(false)
+            setAllowedVideoJoiningTimeMs(VIDEO_JOIN_MS)
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         }
 
@@ -73,6 +146,8 @@ class OrizonPlayerFactory(private val context: Context) {
             .build()
             .apply {
                 videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+                setForegroundMode(true)
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = true
             }
@@ -142,6 +217,31 @@ class OrizonPlayerFactory(private val context: Context) {
 
     enum class Format { DASH, HLS, PROGRESSIVE, GATEWAY }
 
+    /**
+     * Extension is the format. A `.m3u8` body is `#EXTM3U`, so a later DASH or
+     * progressive attempt parses it as XML or a media file and stops playback.
+     */
+    /** Live bridges often publish a new media sequence. That is a restart, not a broken stream. */
+    fun isHlsPlaylistReset(error: Throwable): Boolean {
+        return generateSequence(error) { it.cause }
+            .any { it.javaClass.simpleName == "PlaylistResetException" }
+    }
+
+    fun lockedFormat(url: String): Format? {
+        val path = url.trim().substringBefore('?').substringBefore('#')
+        return when {
+            path.endsWith(".m3u8", ignoreCase = true) ||
+                path.endsWith(".m3u", ignoreCase = true) -> Format.HLS
+            path.endsWith(".mpd", ignoreCase = true) -> Format.DASH
+            path.endsWith(".mp4", ignoreCase = true) ||
+                path.endsWith(".m4v", ignoreCase = true) ||
+                path.endsWith(".webm", ignoreCase = true) ||
+                path.endsWith(".mkv", ignoreCase = true) ||
+                path.endsWith(".ts", ignoreCase = true) -> Format.PROGRESSIVE
+            else -> null
+        }
+    }
+
     private fun mediaSourceFactory(
         format: Format,
         dataSource: HttpDataSource.Factory,
@@ -154,7 +254,7 @@ class OrizonPlayerFactory(private val context: Context) {
             Format.HLS -> HlsMediaSource.Factory(dataSource)
                 .setAllowChunklessPreparation(true)
                 .setLoadErrorHandlingPolicy(retries)
-            Format.PROGRESSIVE -> ProgressiveMediaSource.Factory(dataSource)
+            Format.PROGRESSIVE -> ProgressiveMediaSource.Factory(dataSource, liveTsExtractors())
                 .setLoadErrorHandlingPolicy(retries)
             Format.GATEWAY -> throw IllegalArgumentException("Gateway URL must use WebView")
         }
@@ -180,7 +280,8 @@ class OrizonPlayerFactory(private val context: Context) {
                     .setTargetOffsetMs(HLS_LIVE_TARGET_OFFSET_MS)
                     .setMinOffsetMs(HLS_LIVE_MIN_OFFSET_MS)
                     .setMaxOffsetMs(HLS_LIVE_MAX_OFFSET_MS)
-                    .setMaxPlaybackSpeed(HLS_LIVE_MAX_PLAYBACK_SPEED)
+                    .setMinPlaybackSpeed(HLS_LIVE_PLAYBACK_SPEED)
+                    .setMaxPlaybackSpeed(HLS_LIVE_PLAYBACK_SPEED)
                     .build(),
             )
         }
@@ -293,10 +394,58 @@ class OrizonPlayerFactory(private val context: Context) {
         private const val BUFFER_FOR_PLAYBACK_MS = 1_800
         private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_500
         private const val BACK_BUFFER_MS = 0
-        private const val HLS_LIVE_TARGET_OFFSET_MS = 8_000L
-        private const val HLS_LIVE_MIN_OFFSET_MS = 3_000L
-        private const val HLS_LIVE_MAX_OFFSET_MS = 35_000L
-        private const val HLS_LIVE_MAX_PLAYBACK_SPEED = 1.04f
-        private const val LOAD_ERROR_RETRY_COUNT = 3
+        private const val MAX_DROPPED_VIDEO_FRAMES_TO_NOTIFY = 50
+        // Stay at the start of the live window. An 8s target made the player jump
+        // the picture forward by about that much once the playlist loaded.
+        private const val HLS_LIVE_TARGET_OFFSET_MS = 30_000L
+        private const val HLS_LIVE_MIN_OFFSET_MS = 0L
+        private const val HLS_LIVE_MAX_OFFSET_MS = 120_000L
+        private const val HLS_LIVE_PLAYBACK_SPEED = 1f
+        private const val LOAD_ERROR_RETRY_COUNT = 6
+        private const val VIDEO_JOIN_MS = 15_000L
+        private const val LATE_FRAME_GRACE_US = 2_500_000L
+
+        /** One program, non-IDR frames allowed — typical of raw HTTP MPEG-TS. */
+        private fun liveTsExtractors(): DefaultExtractorsFactory {
+            return DefaultExtractorsFactory()
+                .setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT)
+                .setTsExtractorFlags(
+                    DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
+                        DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS,
+                )
+                .setTsExtractorTimestampSearchBytes(TsExtractor.TS_PACKET_SIZE * 3_000)
+        }
     }
+}
+
+/** Keeps a short queue of audio so a device stall does not click. */
+@OptIn(UnstableApi::class)
+private object SteadyAudioBuffer : DefaultAudioSink.AudioTrackBufferSizeProvider {
+    override fun getBufferSizeInBytes(
+        minBufferSizeInBytes: Int,
+        encoding: Int,
+        outputMode: Int,
+        pcmFrameSize: Int,
+        sampleRate: Int,
+        bitrate: Int,
+        maxAudioTrackPlaybackSpeed: Double,
+    ): Int {
+        val recommended = DefaultAudioSink.AudioTrackBufferSizeProvider.DEFAULT.getBufferSizeInBytes(
+            minBufferSizeInBytes,
+            encoding,
+            outputMode,
+            pcmFrameSize,
+            sampleRate,
+            bitrate,
+            maxAudioTrackPlaybackSpeed,
+        )
+        val cushion = if (pcmFrameSize > 0 && sampleRate > 0) {
+            (sampleRate.toLong() * pcmFrameSize * CUSHION_MS / 1_000L).toInt()
+        } else {
+            minBufferSizeInBytes
+        }
+        return maxOf(recommended, cushion, minBufferSizeInBytes)
+    }
+
+    private const val CUSHION_MS = 800L
 }

@@ -2,6 +2,8 @@ package com.eamax
 
 import android.content.pm.ActivityInfo
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -39,6 +41,9 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "OrizonPlayer"
+        private const val MAX_SAME_FORMAT_RETRIES = 4
+        private const val MAX_PLAYLIST_RESET_RELOADS = 8
+        private const val MAX_NETWORK_RETRIES = 8
         /** Cycle order shown on the zoom chip. */
         private val ZOOM_MODES = listOf("normal", "fill", "stretched", "contain")
     }
@@ -57,6 +62,10 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private val formatQueue = ArrayDeque<OrizonPlayerFactory.Format>()
     private val fallbackUrls = ArrayDeque<String>()
     private var handlingError = false
+    private var sameFormatRetries = 0
+    private var playlistResetReloads = 0
+    private var networkRetries = 0
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,6 +107,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
         zoomMode = normalizeZoomMode(playbackPreferences.videoZoomMode)
         applyZoomMode(zoomMode, announce = false)
         zoomChip.setOnClickListener { cycleZoom() }
+        playerView.setKeepContentOnPlayerReset(true)
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         playerView.keepScreenOn = true
         playerView.controllerAutoShow = true
@@ -106,8 +116,12 @@ class OrizonPlayerActivity : AppCompatActivity() {
         playerView.setShowFastForwardButton(false)
         playerView.setShowRewindButton(false)
         playerView.setShowSubtitleButton(false)
-        playerView.setErrorMessageProvider { _: PlaybackException ->
-            android.util.Pair(0, getString(R.string.channel_unavailable_message))
+        playerView.setErrorMessageProvider { error: PlaybackException ->
+            if (factory.isHlsPlaylistReset(error)) {
+                android.util.Pair(0, "")
+            } else {
+                android.util.Pair(0, getString(R.string.channel_unavailable_message))
+            }
         }
         // Device back always leaves the player (do not navigate WebView history).
         onBackPressedDispatcher.addCallback(
@@ -119,7 +133,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
             },
         )
 
-        val classified = factory.classify(session.mpdUrl)
+        val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
         Log.i(TAG, "open classified=$classified url=${session.mpdUrl.take(160)}")
         if (classified == OrizonPlayerFactory.Format.GATEWAY) {
             startWebView()
@@ -187,6 +201,9 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun enqueueFormats(first: OrizonPlayerFactory.Format) {
         formatQueue.clear()
+        sameFormatRetries = 0
+        // A known playlist or file stays on that parser. Trying DASH on `#EXTM3U` stops the stream.
+        if (factory.lockedFormat(session.mpdUrl) != null) return
         val rest = listOf(
             OrizonPlayerFactory.Format.HLS,
             OrizonPlayerFactory.Format.DASH,
@@ -195,7 +212,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
         formatQueue.addAll(rest)
     }
 
-    private fun startExo(format: OrizonPlayerFactory.Format) {
+    private fun startExo(format: OrizonPlayerFactory.Format, soft: Boolean = false) {
         handlingError = false
         try {
             val exo = player ?: factory.createPlayer(
@@ -203,6 +220,14 @@ class OrizonPlayerActivity : AppCompatActivity() {
                 playbackPreferences,
             ).also { created ->
                 created.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            sameFormatRetries = 0
+                            playlistResetReloads = 0
+                            networkRetries = 0
+                        }
+                    }
+
                     override fun onPlayerError(error: PlaybackException) {
                         handlePlaybackError(error)
                     }
@@ -212,7 +237,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
             }
             playerView.visibility = View.VISIBLE
             webContainer.visibility = View.GONE
-            if (exo.mediaItemCount > 0) {
+            if (!soft && exo.mediaItemCount > 0) {
                 exo.stop()
                 exo.clearMediaItems()
             }
@@ -266,6 +291,28 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun handlePlaybackError(error: PlaybackException) {
         if (isFinishing || handlingError) return
+        if (factory.isHlsPlaylistReset(error)) {
+            if (playlistResetReloads < MAX_PLAYLIST_RESET_RELOADS) {
+                playlistResetReloads += 1
+                handlingError = true
+                Log.w(TAG, "Live HLS playlist restarted — reloading without leaving the player ($playlistResetReloads)")
+                val format = factory.lockedFormat(session.mpdUrl) ?: OrizonPlayerFactory.Format.HLS
+                startExo(format, soft = true)
+                return
+            }
+        }
+        if (isNetworkFailure(error) && networkRetries < MAX_NETWORK_RETRIES) {
+            networkRetries += 1
+            val delayMs = (1_500L * networkRetries).coerceAtMost(10_000L)
+            handlingError = true
+            Log.w(TAG, "No network — retry $networkRetries in ${delayMs}ms (${error.cause?.message})")
+            mainHandler.postDelayed({
+                if (isFinishing) return@postDelayed
+                val format = factory.lockedFormat(session.mpdUrl) ?: OrizonPlayerFactory.Format.HLS
+                startExo(format, soft = true)
+            }, delayMs)
+            return
+        }
         handlingError = true
         Log.e(
             TAG,
@@ -273,6 +320,20 @@ class OrizonPlayerActivity : AppCompatActivity() {
             error,
         )
         retryOrFail(isHttpAccessError(error))
+    }
+
+    private fun isNetworkFailure(error: PlaybackException): Boolean {
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+        ) {
+            return true
+        }
+        return generateSequence(error.cause) { it.cause }.any { cause ->
+            cause is java.net.UnknownHostException ||
+                cause is java.net.ConnectException ||
+                cause is java.net.NoRouteToHostException ||
+                cause is java.net.SocketException
+        }
     }
 
     private fun isHttpAccessError(error: PlaybackException): Boolean {
@@ -286,21 +347,32 @@ class OrizonPlayerActivity : AppCompatActivity() {
     }
 
     private fun retryOrFail(httpAccessError: Boolean = false) {
-        if (httpAccessError) {
-            formatQueue.clear()
-            Log.w(TAG, "HTTP access error — skip format retries")
-        }
-        val nextFormat = formatQueue.removeFirstOrNull()
-        if (nextFormat != null) {
-            Log.w(TAG, "retry format=$nextFormat")
-            startExo(nextFormat)
-            return
+        val locked = factory.lockedFormat(session.mpdUrl)
+        if (locked != null) {
+            if (sameFormatRetries < MAX_SAME_FORMAT_RETRIES) {
+                sameFormatRetries += 1
+                Log.w(TAG, "reload format=$locked attempt=$sameFormatRetries")
+                startExo(locked)
+                return
+            }
+            Log.w(TAG, "locked format=$locked exhausted — not switching parser or WebView")
+        } else {
+            if (httpAccessError) {
+                formatQueue.clear()
+                Log.w(TAG, "HTTP access error — skip format retries")
+            }
+            val nextFormat = formatQueue.removeFirstOrNull()
+            if (nextFormat != null) {
+                Log.w(TAG, "retry format=$nextFormat")
+                startExo(nextFormat)
+                return
+            }
         }
         val nextUrl = fallbackUrls.removeFirstOrNull()
         if (nextUrl != null) {
             Log.w(TAG, "retry fallback url=${nextUrl.take(160)}")
             session = session.copy(mpdUrl = nextUrl)
-            val classified = factory.classify(nextUrl)
+            val classified = factory.lockedFormat(nextUrl) ?: factory.classify(nextUrl)
             if (classified == OrizonPlayerFactory.Format.GATEWAY) {
                 startWebView()
             } else {
@@ -309,7 +381,8 @@ class OrizonPlayerActivity : AppCompatActivity() {
             }
             return
         }
-        if (webViewEngine == null) {
+        // A raw playlist is not a web page. WebView failover only helps gateway HTML.
+        if (locked == null && webViewEngine == null) {
             startWebView()
             return
         }
@@ -349,6 +422,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         try {
             playerView.player = null
         } catch (_: Exception) {

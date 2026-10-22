@@ -349,11 +349,11 @@ class ExoPlayerEngine(
         if (format == StreamFormat.HLS || format == StreamFormat.DASH) {
             mediaItemBuilder.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(8_000)
-                    .setMinOffsetMs(3_000)
-                    .setMaxOffsetMs(30_000)
-                    .setMinPlaybackSpeed(0.97f)
-                    .setMaxPlaybackSpeed(1.03f)
+                    .setTargetOffsetMs(30_000)
+                    .setMinOffsetMs(0)
+                    .setMaxOffsetMs(120_000)
+                    .setMinPlaybackSpeed(1f)
+                    .setMaxPlaybackSpeed(1f)
                     .build(),
             )
         }
