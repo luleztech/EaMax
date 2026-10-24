@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../config/ads.dart';
 import '../config/api.dart';
 import '../models/remote_config_bundle.dart';
+import '../utils/tz_payment_config.dart';
 import 'native_android_player.dart';
 
 /// Fetches and caches the server-driven config bundle from GET /api/v2/config/bundle.
@@ -118,6 +119,7 @@ class RemoteConfigService {
         final versionChanged = _cached?.configVersion != bundle.configVersion;
         _cached = bundle;
         _cachedAt = DateTime.now();
+        TzPaymentConfig.registerLearnedPrefixes(bundle.paymentConfig.learnedPrefixes);
         if (versionChanged) {
           configVersion.value = bundle.configVersion;
         }

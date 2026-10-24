@@ -94,12 +94,16 @@ class RemotePaymentConfig {
     required this.currency,
     required this.whatsappNumber,
     required this.plans,
+    this.learnedPrefixes = const {},
   });
 
   final String provider;
   final String currency;
   final String? whatsappNumber;
   final List<RemoteSubscriptionPlan> plans;
+
+  /// Phone prefixes learned from payers, e.g. `{"064": "halopesa"}`.
+  final Map<String, String> learnedPrefixes;
 
   factory RemotePaymentConfig.fromJson(Map<String, dynamic> json) {
     final rawPlans = json['plans'];
@@ -114,6 +118,12 @@ class RemotePaymentConfig {
       currency: json['currency']?.toString() ?? 'TZS',
       whatsappNumber: json['whatsappNumber']?.toString(),
       plans: plans,
+      learnedPrefixes: json['learnedPrefixes'] is Map
+          ? {
+              for (final e in (json['learnedPrefixes'] as Map).entries)
+                e.key.toString(): e.value.toString(),
+            }
+          : const {},
     );
   }
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'system_ui.dart';
+
 /// Centralized orientation + immersive mode for home vs full-screen playback.
 class PlayerOrientation {
   PlayerOrientation._();
@@ -20,6 +22,7 @@ class PlayerOrientation {
 
   /// Full-screen player: allow rotation + hide system bars.
   static Future<void> enterFullscreenPlayer() async {
+    AppSystemUi.setFullscreen(true);
     await SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.immersiveSticky,
       overlays: [],
@@ -28,7 +31,8 @@ class PlayerOrientation {
   }
 
   static Future<void> exitFullscreenPlayer() async {
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    AppSystemUi.setFullscreen(false);
+    await AppSystemUi.hideStatusBar();
     await lockHomePortrait();
   }
 }

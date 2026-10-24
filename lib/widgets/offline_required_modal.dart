@@ -149,7 +149,7 @@ class OfflineRequiredModal extends StatelessWidget {
                         child: FilledButton(
                           style: FilledButton.styleFrom(
                             backgroundColor: AppColors.accentBlue,
-                            foregroundColor: Colors.white,
+                            foregroundColor: Tpl.slate950,
                             padding: const EdgeInsets.symmetric(vertical: 16),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),

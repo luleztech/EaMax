@@ -4,15 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../theme/ionicons_compat.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
 
+import '../config/app_version.dart';
 import '../config/payment_helpers.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
-import '../widgets/app_header.dart';
-import '../widgets/payment_status_card.dart';
+import '../widgets/template_ui.dart';
 import '../widgets/whatsapp_support_tile.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -153,15 +152,45 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    final t = context.watch<ThemeController>().colors;
     final bottom = 32.0 + widget.bottomPadding;
-    final letters = (_userId != null && _userId!.length >= 2) ? _userId!.substring(0, 2).toUpperCase() : 'EM';
+    final id = _userId?.trim() ?? '';
+    final letters = id.length >= 2 ? id.substring(0, 2).toUpperCase() : 'EM';
     final isPremium = widget.isPremium;
+    final canEarnPoints = !_subscriptionTimeActive && RemoteConfigService.adsEnabled && widget.onWatchAd != null;
+
+    final rows = <Widget Function(bool last)>[
+      if (RemoteConfigService.paymentsEnabled)
+        (last) => TplSettingRow(
+              icon: TplIconName.card,
+              label: 'Payments & subscriptions',
+              value: isPremium ? 'Premium' : null,
+              last: last,
+              onTap: widget.onOpenPayments,
+            ),
+      if (canEarnPoints)
+        (last) => TplSettingRow(
+              icon: TplIconName.play,
+              label: 'Kusanya Point',
+              value: '+${RemoteConfigService.adRewardPoints}',
+              last: last,
+              onTap: _onKusanyaPoint,
+            ),
+      (last) => WhatsappSupportTile(last: last),
+      (last) => TplSettingRow(
+            icon: TplIconName.user,
+            iconWidget: const Icon(Icons.settings_outlined, size: 20, color: Tpl.lime400),
+            label: 'Settings',
+            value: 'Theme',
+            last: last,
+            onTap: widget.onOpenSettings,
+          ),
+    ];
 
     return ColoredBox(
-      color: t.bg1,
+      color: Tpl.slate950,
       child: RefreshIndicator(
-        color: t.accent,
+        color: Tpl.lime400,
+        backgroundColor: Tpl.slate900,
         onRefresh: () async {
           final id = await ensureLocalUserId();
           if (mounted) setState(() => _userId = id);
@@ -172,135 +201,90 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
           physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.only(bottom: bottom),
           children: [
-            const AppHeader(title: 'Akaunti', subtitle: 'AKAUNTI YAKO', logoLetter: 'E'),
+            const TplPageHeader(eyebrow: 'Akaunti yangu', title: 'Mtumiaji'),
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 24),
-              child: Column(
-                children: [
-                  Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(colors: [t.accent, t.accent2]),
-                      boxShadow: [BoxShadow(color: t.accent.withValues(alpha: 0.4), blurRadius: 20)],
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(letters, style: orbitron(28, weight: FontWeight.w900).copyWith(color: Colors.black)),
-                  ),
-                  const SizedBox(height: 16),
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: _userId != null && _userId!.isNotEmpty ? _copyUserId : null,
-                      borderRadius: BorderRadius.circular(12),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                _userId ?? 'Inapakia...',
-                                style: orbitron(18).copyWith(color: t.text, letterSpacing: 0.6),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (_userId != null && _userId!.isNotEmpty) ...[
-                              const SizedBox(width: 8),
-                              Icon(Ionicons.copy_outline, size: 18, color: t.text2),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: isPremium ? t.gold.withValues(alpha: 0.15) : t.card,
-                      borderRadius: BorderRadius.circular(100),
-                      border: Border.all(color: isPremium ? t.gold.withValues(alpha: 0.4) : t.border),
-                    ),
+              padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+              child: Material(
+                color: Tpl.slate900,
+                borderRadius: BorderRadius.circular(24),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: id.isNotEmpty ? _copyUserId : null,
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
                     child: Row(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(isPremium ? Ionicons.star : Ionicons.person_outline, size: 16, color: isPremium ? t.gold : t.text2),
-                        const SizedBox(width: 8),
-                        Text(
-                          isPremium ? 'Premium User' : 'Free User',
-                          style: rajdhani(14, weight: FontWeight.w600).copyWith(color: isPremium ? t.gold : t.text2),
+                        Container(
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(color: Tpl.lime400, shape: BoxShape.circle),
+                          alignment: Alignment.center,
+                          child: Text(letters, style: manrope(20, weight: FontWeight.w800, color: Tpl.slate950)),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      id.isEmpty ? 'Inapakia…' : id,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: manrope(18, weight: FontWeight.w800, color: Colors.white),
+                                    ),
+                                  ),
+                                  if (id.isNotEmpty) ...[
+                                    const SizedBox(width: 8),
+                                    const Icon(Ionicons.copy_outline, size: 14, color: Tpl.slate500),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                isPremium ? 'Hali: Premium' : 'Hali: Bure',
+                                style: manrope(12, color: isPremium ? Tpl.lime400 : Tpl.slate500),
+                              ),
+                              const SizedBox(height: 4),
+                              Text('${widget.userPoints} points', style: manrope(12, color: Tpl.slate400)),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
+                ),
+              ),
+            ),
+            if (_subscriptionTimeActive) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 32, 16, 12),
+                child: Text('Muda uliobaki', style: manrope(14, weight: FontWeight.w800, color: Colors.white)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: _SubscriptionRemainCard(remain: _remain, subEnd: widget.subscriptionEndDate),
+              ),
+            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 32, 16, 12),
+              child: Text('Settings', style: manrope(14, weight: FontWeight.w800, color: Colors.white)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TplSettingGroup(
+                children: [
+                  for (var i = 0; i < rows.length; i++) rows[i](i == rows.length - 1),
                 ],
               ),
             ),
-            const SizedBox(height: 8),
-            if (RemoteConfigService.paymentsEnabled && !isPremium)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                child: PaymentStatusCard(
-                  isPremium: isPremium,
-                  isActive: widget.isActive,
-                  onPaymentSuccess: widget.onPaymentSuccess,
-                  onRetryPayment: widget.onOpenPayments,
-                ),
-              ),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: WhatsappSupportTile(),
-            ),
-            const SizedBox(height: 10),
-            if (_subscriptionTimeActive)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: _SubscriptionRemainCard(
-                  accent: t.accent,
-                  remain: _remain,
-                  subEnd: widget.subscriptionEndDate,
-                ),
-              )
-            else ...[
-              if (RemoteConfigService.paymentsEnabled)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _MenuTile(
-                    t: t,
-                    g: [t.accent, t.accent2],
-                    icon: Ionicons.key_outline,
-                    title: 'Fungua Channel zote',
-                    subtitle: 'Chagua vifurushi vya Premium',
-                    onTap: widget.onOpenPayments,
-                  ),
-                ),
-              if (RemoteConfigService.paymentsEnabled) const SizedBox(height: 10),
-              if (RemoteConfigService.adsEnabled && widget.onWatchAd != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _MenuTile(
-                    t: t,
-                    g: [t.free, const Color(0xFF34d399)],
-                    icon: Ionicons.play_circle_outline,
-                    title: 'Kusanya Point',
-                    subtitle: 'Tazama tangazo (+${RemoteConfigService.adRewardPoints})',
-                    onTap: _onKusanyaPoint,
-                  ),
-                ),
-            ],
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _MenuTile(
-                t: t,
-                g: [t.accent, t.accent2],
-                icon: Ionicons.settings_outline,
-                title: 'Settings',
-                subtitle: 'Themes, preferences',
-                onTap: widget.onOpenSettings,
-              ),
+            const SizedBox(height: 32),
+            Text(
+              'EaMax for Android • Version $appVersion',
+              textAlign: TextAlign.center,
+              style: manrope(10, color: Tpl.slate700),
             ),
           ],
         ),
@@ -309,178 +293,62 @@ class _ProfileScreenState extends State<ProfileScreen> with WidgetsBindingObserv
   }
 }
 
-class _MenuTile extends StatelessWidget {
-  const _MenuTile({
-    required this.t,
-    required this.g,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.onTap,
-  });
-
-  final AppThemeColors t;
-  final List<Color> g;
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: t.card,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: BorderSide(color: t.border)),
-      clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        onTap: onTap,
-        leading: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), gradient: LinearGradient(colors: g)),
-          alignment: Alignment.center,
-          child: Icon(icon, size: 18, color: Colors.black),
-        ),
-        title: Text(title, style: rajdhani(15, weight: FontWeight.w600).copyWith(color: t.text)),
-        subtitle: Text(subtitle, style: rajdhani(12).copyWith(color: t.text2)),
-        trailing: Text('›', style: TextStyle(color: t.text2, fontSize: 20)),
-      ),
-    );
-  }
-}
-
+/// Countdown laid out like the template's segmented "Player quality" control.
 class _SubscriptionRemainCard extends StatelessWidget {
-  const _SubscriptionRemainCard({
-    required this.accent,
-    required this.remain,
-    required this.subEnd,
-  });
+  const _SubscriptionRemainCard({required this.remain, required this.subEnd});
 
-  final Color accent;
   final Duration remain;
   final DateTime? subEnd;
 
   @override
   Widget build(BuildContext context) {
-    final d = remain.inDays;
-    final h = remain.inHours % 24;
-    final m = remain.inMinutes % 60;
-    final s = remain.inSeconds % 60;
+    final units = [
+      ('${remain.inDays}', 'Siku'),
+      ((remain.inHours % 24).toString().padLeft(2, '0'), 'Masaa'),
+      ((remain.inMinutes % 60).toString().padLeft(2, '0'), 'Dakika'),
+      ((remain.inSeconds % 60).toString().padLeft(2, '0'), 'Sekunde'),
+    ];
     final fmt = subEnd != null ? DateFormat.yMMMMd().format(subEnd!) : '';
 
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFF1E293B),
-            const Color(0xFF0F172A).withValues(alpha: 0.95),
-          ],
-        ),
-        border: Border.all(color: AppColors.gold.withValues(alpha: 0.35)),
-        boxShadow: [
-          BoxShadow(color: AppColors.gold.withValues(alpha: 0.08), blurRadius: 24, spreadRadius: 0),
-          BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 20, offset: const Offset(0, 12)),
-        ],
-      ),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Tpl.slate900, borderRadius: BorderRadius.circular(16)),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.gold.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Icon(Icons.schedule_rounded, size: 22, color: accent),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Muda uliobaki',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    decoration: TextDecoration.none,
+              for (var i = 0; i < units.length; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: i == 0 ? Tpl.lime400 : Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        Text(
+                          units[i].$1,
+                          style: manrope(18, weight: FontWeight.w800, color: i == 0 ? Tpl.slate950 : Colors.white),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          units[i].$2,
+                          style: manrope(10, weight: FontWeight.w700, color: i == 0 ? Tpl.slate950 : Tpl.slate500),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
-          const SizedBox(height: 20),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _CdUnit(accent: accent, v: '$d', l: 'Siku'),
-                _Sep(accent: accent),
-                _CdUnit(accent: accent, v: h.toString().padLeft(2, '0'), l: 'Masaa'),
-                _Sep(accent: accent),
-                _CdUnit(accent: accent, v: m.toString().padLeft(2, '0'), l: 'Dakika'),
-                _Sep(accent: accent),
-                _CdUnit(accent: accent, v: s.toString().padLeft(2, '0'), l: 'Sekunde'),
-              ],
+          if (fmt.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 12, 8, 6),
+              child: Text('Inaisha tarehe: $fmt', style: manrope(12, color: Tpl.slate500)),
             ),
-          ),
-          if (fmt.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-              ),
-              child: Text(
-                'Inaisha tarehe: $fmt',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 14, color: AppColors.muted, decoration: TextDecoration.none),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _Sep extends StatelessWidget {
-  const _Sep({required this.accent});
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Text(':', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: accent, height: 1)),
-    );
-  }
-}
-
-class _CdUnit extends StatelessWidget {
-  const _CdUnit({required this.accent, required this.v, required this.l});
-  final Color accent;
-  final String v;
-  final String l;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Column(
-        children: [
-          Text(v, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: accent, decoration: TextDecoration.none)),
-          const SizedBox(height: 4),
-          Text(l, style: const TextStyle(fontSize: 11, color: AppColors.muted, decoration: TextDecoration.none)),
         ],
       ),
     );

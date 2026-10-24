@@ -1,31 +1,17 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
-TextStyle _noUnderline(TextStyle style) => style.copyWith(
+/// Bundled in `assets/fonts/` so it renders offline and on web.
+const String kAppFontFamily = 'Manrope';
+
+TextStyle _base(double size, {FontWeight weight = FontWeight.w500, double? letterSpacing}) => TextStyle(
+      fontFamily: kAppFontFamily,
+      fontSize: size,
+      fontWeight: weight,
+      letterSpacing: letterSpacing,
       decoration: TextDecoration.none,
       decorationColor: Colors.transparent,
       decorationThickness: 0,
     );
-
-TextStyle _base(double size, {FontWeight weight = FontWeight.w500, double? letterSpacing}) {
-  // On web, runtime Google Fonts fetch often fails (CDN / CanvasKit). Use system UI.
-  if (kIsWeb || !GoogleFonts.config.allowRuntimeFetching) {
-    return _noUnderline(TextStyle(
-      fontSize: size,
-      fontWeight: weight,
-      letterSpacing: letterSpacing,
-      fontFamily: 'Roboto',
-    ));
-  }
-  try {
-    return _noUnderline(
-      GoogleFonts.inter(fontSize: size, fontWeight: weight, letterSpacing: letterSpacing),
-    );
-  } catch (_) {
-    return _noUnderline(TextStyle(fontSize: size, fontWeight: weight, letterSpacing: letterSpacing));
-  }
-}
 
 TextStyle orbitron(double size, {FontWeight weight = FontWeight.w800}) =>
     _base(size, weight: weight, letterSpacing: -0.5);
@@ -35,3 +21,7 @@ TextStyle rajdhani(double size, {FontWeight weight = FontWeight.w500}) =>
 
 TextStyle inter(double size, {FontWeight weight = FontWeight.w500}) =>
     _base(size, weight: weight);
+
+/// Template type scale (Tailwind sizes from the Figma design).
+TextStyle manrope(double size, {FontWeight weight = FontWeight.w500, Color? color, double? height, double? letterSpacing}) =>
+    _base(size, weight: weight, letterSpacing: letterSpacing).copyWith(color: color, height: height);

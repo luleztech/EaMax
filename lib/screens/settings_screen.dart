@@ -130,6 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _themeRow(BuildContext context, ThemeController tc) {
     final t = tc.colors;
     const dots = [
+      _Dot(ThemeKey.lime, [Tpl.slate900, Tpl.lime400]),
       _Dot(ThemeKey.dark, [Color(0xFF1a0508), Color(0xFFe8002d)]),
       _Dot(ThemeKey.neon, [Color(0xFFff00ff), Color(0xFF00ffaa)]),
       _Dot(ThemeKey.gold, [Color(0xFFffd700), Color(0xFFff8c00)]),

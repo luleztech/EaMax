@@ -13,23 +13,19 @@ import '../models/schedule_item.dart';
 import '../player/core/playback_orchestrator.dart';
 import '../player/core/playback_session.dart';
 import '../services/player_playback_service.dart';
+import '../screens/plans_tab.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/home_data_cache.dart';
-import '../services/payment_tracking_controller.dart';
 import '../services/ratiba_reminders.dart';
 import '../services/remote_config_service.dart';
 import '../services/user_id.dart';
 import '../theme/app_theme.dart';
-import '../utils/payment_voices.dart';
 import '../widgets/channel_card.dart';
 import '../widgets/channel_unavailable_modal.dart';
-import '../widgets/home_search_bar.dart';
-import '../widgets/payment_tracking_header.dart';
-import '../widgets/premium_lock_modal.dart';
-
 import '../screens/ratiba_tab.dart';
 import 'home_tabs.dart';
+import 'template_tabs.dart';
 
 class _Genre {
   const _Genre(this.name, this.key, this.iconStr, this.color);
@@ -104,7 +100,8 @@ class CombinedHome extends StatefulWidget {
 class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderStateMixin {
   late final AnimationController _glowCtrl;
 
-  String _homeChannelFilter = 'zote';
+  String _homeCategory = 'all';
+  String _channelsCategory = 'all';
   List<CarouselSlide> _carousel = [];
   List<ChannelUi> _football = [];
   Map<String, List<ChannelUi>> _byCat = {
@@ -130,10 +127,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   final Map<int, ChannelPlaybackBundle> _playbackCache = {};
   final Map<int, DateTime> _playbackCacheTime = {};
 
-  bool _searchOpen = false;
-  String _searchQuery = '';
-  final FocusNode _searchFocus = FocusNode();
-
   @override
   void initState() {
     super.initState();
@@ -143,7 +136,6 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     unawaited(_hydrateFromCache());
     _loadAll();
     getOrCreateUserId();
-    unawaited(PaymentVoices.prepare());
     onRatibaNotificationOpen = _onRatibaNotificationOpen;
     WidgetsBinding.instance.addPostFrameCallback((_) => _enforceTabAvailability());
   }
@@ -174,7 +166,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       }
     }
     if (ch == null) {
-      if (mounted) context.read<AppNav>().setTab(1);
+      if (mounted) context.read<AppNav>().setTab(AppNav.ratiba);
       return;
     }
     unawaited(_openChannel(ch));
@@ -193,10 +185,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
   void _enforceTabAvailability() {
     final nav = context.read<AppNav>();
     final tab = nav.currentTab;
-    if (tab == 1 && !RemoteConfigService.ratibaTabEnabled) {
-      nav.setTab(0);
-    } else if (tab > 2) {
-      nav.setTab(2);
+    if ((tab == AppNav.ratiba && !RemoteConfigService.ratibaTabEnabled) ||
+        (tab == AppNav.plans && !RemoteConfigService.paymentsEnabled)) {
+      nav.setTab(AppNav.home);
     }
   }
 
@@ -244,21 +235,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       onRatibaNotificationOpen = null;
     }
     RemoteConfigService.configVersion.removeListener(_onRemoteConfigChanged);
-    _searchFocus.dispose();
     _glowCtrl.dispose();
     super.dispose();
-  }
-
-  void _toggleSearch() {
-    setState(() {
-      _searchOpen = !_searchOpen;
-      if (!_searchOpen) {
-        _searchQuery = '';
-        _searchFocus.unfocus();
-      } else {
-        Future.microtask(_searchFocus.requestFocus);
-      }
-    });
   }
 
   List<ChannelUi> _allChannels() => [
@@ -274,26 +252,26 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
-  Future<void> _openMalipo() async {
+  void openPaymentsTab() {
     if (!RemoteConfigService.paymentsEnabled) {
       _showFeatureDisabledSnack('Malipo yamezimwa kwa muda. Jaribu tena baadaye.');
       return;
     }
-    if (!mounted) return;
-    // Arm voices before the modal opens so step-0 audio is ready.
-    unawaited(PaymentVoices.prepare());
-    widget.onPaymentsActiveChange(true);
-    await PremiumLockModal.show(
-      context,
-      onPaymentSuccess: widget.onPaymentSuccess,
-    );
-    if (!mounted) return;
-    widget.onPaymentsActiveChange(false);
+    context.read<AppNav>().setTab(AppNav.plans);
   }
 
-  void openPaymentsTab() {
-    unawaited(_openMalipo());
+  void _viewAllChannels(String category) {
+    setState(() => _channelsCategory = category);
+    context.read<AppNav>().setTab(AppNav.channels);
   }
+
+  bool _lockedForViewer(ChannelUi ch) => channelLockedForViewer(
+        ch,
+        isPremium: widget.isPremium,
+        channelsPremiumOnly: widget.channelsPremiumOnly,
+      );
+
+  bool _freeInCatalog(ChannelUi ch) => ch.isFreeForCatalog(widget.channelsPremiumOnly);
 
   Future<void> _loadAll() async {
     if (mounted) setState(() => _channelsLoadFailed = false);
@@ -821,8 +799,12 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       }
       return;
     }
-    // Locked premium / points channel → modern payment modal (voice step 0).
-    await _openMalipo();
+    if (RemoteConfigService.paymentsEnabled && mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('${ch.name} ni Premium. Lipia ili kutazama.')));
+    }
+    openPaymentsTab();
   }
 
   Future<void> _unlockFromModal() async {
@@ -856,92 +838,51 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   @override
   Widget build(BuildContext context) {
-    final t = context.watch<ThemeController>().colors;
-    final tab = widget.externalTabIndex;
-    const bottomPad = 100.0;
+    final tab = AppNav.normalizeTab(widget.externalTabIndex);
+    // Scaffold.extendBody folds the bottom nav height into this inset.
+    final bottomPad = MediaQuery.paddingOf(context).bottom;
+    final channels = _allChannels();
+    final channelsTab = tab == AppNav.home || tab == AppNav.channels;
 
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      widget.onPaymentsActiveChange(tab == 2);
+      widget.onPaymentsActiveChange(tab == AppNav.plans);
     });
-
-    final stackIndex = tab.clamp(0, 2);
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [t.bg2, t.bg1],
-              ),
-            ),
-          ),
-        ),
-        if (!RemoteConfigService.channelsEnabled && tab == 0)
+        const Positioned.fill(child: ColoredBox(color: Tpl.slate950)),
+        if (!RemoteConfigService.channelsEnabled && channelsTab)
           _FeatureDisabledOverlay(
             title: 'Channels hazipatikani',
             message: 'Channels zimezimwa kwa muda na msimamizi.',
           )
         else
-        Column(
-          children: [
-            if (tab == 0 || tab == 1)
-              ListenableBuilder(
-                listenable: PaymentTrackingController.instance,
-                builder: (context, _) {
-                  final track = PaymentTrackingController.instance;
-                  if (tab == 0 && track.showHomeBanner) {
-                    return PaymentTrackingHeader(
-                      title: track.statusLine,
-                      isPolling: track.isPolling,
-                      onRefresh: () {
-                        unawaited(track.onManualRefresh?.call());
-                      },
-                      onClose: track.dismissHomeBanner,
-                    );
-                  }
-                  return HomeHeader(
-                    title: tab == 0 ? 'EaMax' : 'Ratiba',
-                    subtitle: tab == 0 ? 'MPIRA NA TAMTHILIA' : 'MIPANGO YA VIPINDI NA MECHI',
-                    points: widget.userPoints,
-                    onSearch: tab == 0 ? _toggleSearch : null,
-                    onSettings: () {
-                      Navigator.of(context).push<void>(
-                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                      );
-                    },
-                  );
-                },
-              ),
-            if (tab == 0 && _searchOpen)
-              HomeSearchBar(
-                open: _searchOpen,
-                query: _searchQuery,
-                focusNode: _searchFocus,
-                onChanged: (v) => setState(() => _searchQuery = v),
-                onClear: () => setState(() => _searchQuery = ''),
-              ),
-            Expanded(
-              child: IndexedStack(
-                index: stackIndex,
+        Builder(
+          builder: (context) {
+            return Column(
+              children: [
+                Expanded(
+                  child: MediaQuery.removePadding(
+                    context: context,
+                    removeTop: false,
+                    child: IndexedStack(
+                index: tab,
                 children: [
-                  HomeMainTab(
+                  TplHomeTab(
                     initialLoading: _initialLoading,
                     refreshing: _refreshing,
                     channelsLoadFailed: _channelsLoadFailed,
                     carousel: _carousel,
-                    allChannels: _allChannels(),
-                    channelFilter: _homeChannelFilter,
-                    onFilter: (k) => setState(() => _homeChannelFilter = k),
-                    isPremium: widget.isPremium,
-                    channelsPremiumOnly: widget.channelsPremiumOnly,
-                    searchQuery: _searchQuery,
-                    bottomPad: bottomPad,
-                    onChannel: _openChannel,
+                    allChannels: channels,
+                    category: _homeCategory,
+                    onCategory: (k) => setState(() => _homeCategory = k),
+                    onViewAll: _viewAllChannels,
+                    lockedFor: _lockedForViewer,
+                    isFree: _freeInCatalog,
+                    onChannel: (ch) => unawaited(_openChannel(ch)),
                     onRefresh: _onRefresh,
+                    bottomPad: bottomPad,
                     loadingChannelId: _loadingChannelId,
                   ),
                   RatibaTab(
@@ -954,11 +895,11 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                     isPremium: widget.isPremium,
                     channelsPremiumOnly: widget.channelsPremiumOnly,
                     onOpenChannel: (ch) => unawaited(_openChannel(ch)),
-                    onRequirePremium: () => unawaited(_openMalipo()),
+                    onRequirePremium: openPaymentsTab,
                   ),
                   ProfileScreen(
                     bottomPadding: bottomPad,
-                    isActive: tab == 2,
+                    isActive: tab == AppNav.profile,
                     userPoints: widget.userPoints,
                     isPremium: widget.isPremium,
                     subscriptionEndDate: widget.subscriptionEndDate,
@@ -972,10 +913,35 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
                       );
                     },
                   ),
+                  TplChannelsTab(
+                    initialLoading: _initialLoading,
+                    refreshing: _refreshing,
+                    channelsLoadFailed: _channelsLoadFailed,
+                    allChannels: channels,
+                    category: _channelsCategory,
+                    onCategory: (k) => setState(() => _channelsCategory = k),
+                    lockedFor: _lockedForViewer,
+                    isFree: _freeInCatalog,
+                    onChannel: (ch) => unawaited(_openChannel(ch)),
+                    onRefresh: _onRefresh,
+                    bottomPad: bottomPad,
+                    loadingChannelId: _loadingChannelId,
+                  ),
+                  PlansTab(
+                    isPremium: widget.isPremium,
+                    subscriptionEndDate: widget.subscriptionEndDate,
+                    onPaymentSuccess: widget.onPaymentSuccess,
+                    onFinished: () => context.read<AppNav>().setTab(AppNav.home),
+                    bottomPad: bottomPad,
+                    isActive: tab == AppNav.plans,
+                  ),
                 ],
-              ),
-            ),
-          ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
         if (_unlockOpen && _selectedChannel != null)
           UnlockChannelOverlay(
@@ -996,7 +962,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
             },
             onPremium: () {
               setState(() => _unlockOpen = false);
-              _openMalipo();
+              openPaymentsTab();
             },
           ),
         if (_insufficientOpen && _selectedChannel != null)
@@ -1012,7 +978,7 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
             onWatchAd: widget.onWatchAd,
             onPremium: () {
               setState(() => _insufficientOpen = false);
-              _openMalipo();
+              openPaymentsTab();
             },
             onPointsUpdated: () async {
               await _refreshPoints();

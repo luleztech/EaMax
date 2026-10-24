@@ -17,23 +17,20 @@ import 'services/fcm_notifications.dart';
 import 'register_webview_for_web_stub.dart'
     if (dart.library.html) 'register_webview_for_web.dart';
 import 'theme/app_theme.dart';
-import 'utils/payment_voices.dart';
 import 'utils/player_orientation.dart';
+import 'utils/system_ui.dart';
+import 'utils/tz_payment_config.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Avoid CanvasKit font fetch failures when Google Fonts CDN is unreachable.
   GoogleFonts.config.allowRuntimeFetching = !kIsWeb;
-  // Warm payment voices after first frame so config APIs are not starved on web.
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    Future<void>.delayed(const Duration(milliseconds: 800), () {
-      unawaited(PaymentVoices.prepare());
-    });
-  });
   if (!kIsWeb) {
     await PlayerOrientation.lockHomePortrait();
+    await AppSystemUi.init();
   }
   await initAppVersion();
+  unawaited(TzPaymentConfig.loadLearned());
   registerWebViewPlatformForWeb();
   try {
     MediaKit.ensureInitialized();
@@ -74,15 +71,11 @@ class EamaxApp extends StatelessWidget {
             builder: (context, child) {
               return DefaultTextStyle.merge(
                 style: const TextStyle(decoration: TextDecoration.none),
-                child: child ?? const SizedBox.shrink(),
+                child: StatusBarBackdrop(child: child ?? const SizedBox.shrink()),
               );
             },
             home: const AnnotatedRegion<SystemUiOverlayStyle>(
-              value: SystemUiOverlayStyle(
-                statusBarBrightness: Brightness.dark,
-                statusBarIconBrightness: Brightness.light,
-                statusBarColor: Colors.transparent,
-              ),
+              value: AppSystemUi.overlayStyle,
               child: StreamingApp(),
             ),
           );

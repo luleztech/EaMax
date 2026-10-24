@@ -3,7 +3,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api.dart';
 import '../config/payment_helpers.dart';
 import '../services/user_id.dart';
-import 'payment_tracking_controller.dart';
 
 /// Outcome of a real wallet re-push while a checkout is still being checked.
 class PaymentResendResult {
@@ -37,7 +36,7 @@ class PaymentResendResult {
       ussdSent != false;
 }
 
-/// Persisted STK session so [PaymentStatusCard] can resend prompts while tracking.
+/// Persisted STK session so the checkout and the app-wide watcher can follow a payment.
 class PaymentPendingSession {
   PaymentPendingSession({
     required this.orderId,
@@ -98,11 +97,6 @@ class PaymentPendingSession {
     // A new checkout is its own session. Do not keep earlier order ids,
     // or a repeat payment inherits the last attempt's success or failure.
     await prefs.setStringList(relatedOrdersKey, [orderId]);
-    PaymentTrackingController.instance.sync(
-      active: true,
-      polling: true,
-      statusLine: PaymentStatusCopy.requestSent,
-    );
   }
 
   static Future<void> updateOrderId(String orderId) async {
@@ -371,7 +365,6 @@ class PaymentPendingSession {
   /// Drop every cached checkout so the next payment starts at step 1.
   static Future<void> resetForNewCheckout() async {
     await clear();
-    PaymentTrackingController.instance.sync(active: false);
   }
 
   static Future<void> clear() async {
@@ -387,6 +380,5 @@ class PaymentPendingSession {
     await prefs.remove(promptAtKey);
     await prefs.remove(startedAtKey);
     await prefs.remove(cancelCountKey);
-    PaymentTrackingController.instance.sync(active: false);
   }
 }

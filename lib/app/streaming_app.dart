@@ -23,11 +23,11 @@ import '../services/home_data_cache.dart';
 import '../services/update_state.dart';
 import '../services/fcm_notifications.dart';
 import '../utils/premium_snapshot.dart';
+import '../services/payment_checkout.dart';
 import '../services/payment_pending_session.dart';
 import '../services/user_premium_cache.dart';
 import '../services/user_id.dart';
 import '../widgets/ad_reward_modal.dart';
-import '../widgets/notification_permission_modal.dart';
 import '../widgets/offline_required_modal.dart';
 import 'combined_home.dart';
 import 'main_shell.dart';
@@ -58,7 +58,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   bool _offlineModalVisible = false;
   bool _retryingConnection = false;
   bool _splashDone = false;
-  bool _notifPermissionVisible = false;
+  bool _notifPermissionAsked = false;
   bool _maintenanceRetrying = false;
   bool _appConfigChecked = false;
   AppConfig? _appConfig;
@@ -515,25 +515,19 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
     if (mounted) setState(() => _bootstrapReady = true);
   }
 
+  /// Shows the system "Allow EaMax to send you notifications?" prompt directly.
+  /// The prompt itself pauses and resumes the app, so it is asked once per launch;
+  /// otherwise "Don't allow" would bring it straight back.
   Future<void> _maybePromptNotificationPermission() async {
-    if (kIsWeb || !_splashDone || _notifPermissionVisible) return;
+    if (kIsWeb || !_splashDone || _notifPermissionAsked) return;
     if (await isEamaxNotificationPermissionGranted()) {
       await _syncFcmIfAllowed();
       return;
     }
-    if (mounted) setState(() => _notifPermissionVisible = true);
-  }
-
-  Future<void> _onNotifAllow() async {
-    setState(() => _notifPermissionVisible = false);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
+    _notifPermissionAsked = true;
     if (await requestEamaxNotificationPermission()) {
       await _syncFcmIfAllowed();
     }
-  }
-
-  void _onNotifSkip() {
-    setState(() => _notifPermissionVisible = false);
   }
 
   Future<void> _loadPromotions() async {
@@ -587,7 +581,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   void _startPendingPaymentWatcher() {
     _pendingPaymentWatcher?.cancel();
-    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 2), (_) {
+    _pendingPaymentWatcher = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_checkPendingPayment());
     });
   }
@@ -663,7 +657,7 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   }
 
   Future<void> _checkPendingPayment() async {
-    if (_checkingPendingPayment) return;
+    if (_checkingPendingPayment || PaymentCheckout.isRunning) return;
     _checkingPendingPayment = true;
     final prefs = await SharedPreferences.getInstance();
     final pending = prefs.getString('pendingPaymentOrderId')?.trim();
@@ -918,11 +912,6 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
               onRetry: _retryConnectionTap,
             ),
           ),
-        NotificationPermissionModal(
-          visible: _notifPermissionVisible,
-          onAllow: () => unawaited(_onNotifAllow()),
-          onSkip: _onNotifSkip,
-        ),
         if (activePromo != null)
           Positioned.fill(
             child: PromotionPopupOverlay(

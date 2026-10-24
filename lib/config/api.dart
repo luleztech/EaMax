@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../interceptors/app_update_interceptor.dart';
 import '../models/api_exceptions.dart';
 import '../models/channel_playback.dart';
+import '../utils/tz_payment_config.dart';
 import 'app_version.dart';
 
 const String apiBaseUrl = 'https://eamax-production.up.railway.app';
@@ -332,7 +333,9 @@ class PaymentsApi {
       } catch (e) {
         lastErr = e;
         final raw = e.toString().toLowerCase();
-        final phoneBusy = raw.contains('ussd nyingine') || raw.contains('funga dirisha la ussd');
+        final phoneBusy = raw.contains('ussd nyingine') ||
+            raw.contains('funga dirisha la ussd') ||
+            raw.contains('utapokea ujumbe');
         final gatewayBusy = !phoneBusy &&
             (raw.contains('linatumwa') ||
                 raw.contains('subiri kidogo') ||
@@ -396,6 +399,7 @@ class PaymentsApi {
     required String name,
     bool resend = false,
   }) {
+    final network = TzPaymentConfig.networkKeyForPhone(phone);
     return _startWithBusyRetry(() async {
       final r = await apiRequest(
         '/api/payments/start',
@@ -407,6 +411,7 @@ class PaymentsApi {
           'phone': phone,
           'email': email,
           'name': name,
+          'network': ?network,
           if (resend) 'resend': true,
         },
         // The server reserves one prompt per phone, so a retry does not create a second USSD.

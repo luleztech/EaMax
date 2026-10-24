@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
 import '../widgets/pro_shimmer.dart';
 import '../widgets/safe_network_image.dart';
+import '../widgets/template_ui.dart';
 
 /// TV schedule tab — day picker, event artwork, timed live opens, bell reminders.
 class RatibaTab extends StatefulWidget {
@@ -243,21 +244,12 @@ class _RatibaTabState extends State<RatibaTab> {
           physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.only(bottom: widget.bottomPad),
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 8, 18, 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Ratiba', style: orbitron(22, weight: FontWeight.w800).copyWith(color: t.text)),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Mipango ya vipindi na mechi',
-                    style: rajdhani(13, weight: FontWeight.w600).copyWith(color: t.text2),
-                  ),
-                ],
-              ),
+            const TplPageHeader(
+              eyebrow: 'Mechi na vipindi',
+              title: 'Ratiba',
+              subtitle: 'Mipango ya vipindi na mechi',
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 24),
             if (loading)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),

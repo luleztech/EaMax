@@ -173,6 +173,7 @@ bool isPaymentAttemptLimitError(Object error) {
   final raw = error.toString().toLowerCase();
   return raw.contains('ussd nyingine') ||
       raw.contains('funga dirisha la ussd') ||
+      raw.contains('utapokea ujumbe') ||
       raw.contains('attempt limit');
 }
 
@@ -332,7 +333,7 @@ abstract final class PaymentStatusCopy {
 /// User-facing text when `/api/payments/start` or resend throws.
 String mapPaymentStartError(Object error) {
   if (isPaymentAttemptLimitError(error)) {
-    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
+    return 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.';
   }
   var raw = error.toString().trim();
   const exc = 'Exception: ';
