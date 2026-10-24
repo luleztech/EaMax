@@ -2000,7 +2000,28 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
   return lastCreated || last;
 };
 
-const pollSonicOrderStatus = async (orderId, timeoutMs = SONIC_POLL_TIMEOUT_MS) => {
+// Several pollers (checkout, app watcher, older builds) ask about the same order every
+// second or two. One Sonic order_status per order per window keeps our API key from being
+// throttled, which would also slow create_order for every payer.
+const SONIC_STATUS_SHARE_MS = 4000;
+const sonicStatusShared = new Map();
+
+const pollSonicOrderStatus = (orderId, timeoutMs = SONIC_POLL_TIMEOUT_MS) => {
+  const key = String(orderId || '');
+  const now = Date.now();
+  const hit = sonicStatusShared.get(key);
+  if (hit && now - hit.at < SONIC_STATUS_SHARE_MS) return hit.promise;
+  const promise = fetchSonicOrderStatus(orderId, timeoutMs);
+  sonicStatusShared.set(key, { at: now, promise });
+  if (sonicStatusShared.size > 2000) {
+    for (const [k, v] of sonicStatusShared) {
+      if (now - v.at >= SONIC_STATUS_SHARE_MS) sonicStatusShared.delete(k);
+    }
+  }
+  return promise;
+};
+
+const fetchSonicOrderStatus = async (orderId, timeoutMs) => {
   try {
     const { response, data: statusData } = await gatewayFetchJson(
       `${SONICPESA_API_BASE}/payment/order_status`,
