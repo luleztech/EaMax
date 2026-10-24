@@ -508,13 +508,13 @@ try {
         reconcilePendingSubscriptionPayments().catch((err) => {
           console.warn('[Payment] Boot reconcile failed:', err.message || err);
         });
-        // Every 8s — newest pending orders are checked first so a successful
-        // PIN upgrades the account even if the app never polls again.
+        // Every 30s — a safety net behind the webhook and the app's own polling. Faster
+        // runs spent the SonicPesa API key's request budget and throttled create_order.
         setInterval(() => {
           reconcilePendingSubscriptionPayments().catch((err) => {
             console.warn('[Payment] Scheduled reconcile failed:', err.message || err);
           });
-        }, 8 * 1000);
+        }, 30 * 1000);
         setInterval(() => {
           repairCompletedPaymentsMissingPremium().catch((err) => {
             console.warn('[Entitlements] Scheduled repair failed:', err.message || err);

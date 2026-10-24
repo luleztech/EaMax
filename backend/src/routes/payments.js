@@ -1915,6 +1915,7 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
           },
           timeoutMs,
         );
+        noteSonicThrottle(response);
         const created = isSonicInitiateSuccess(sonicData, response);
         const ussdSent = created && isSonicUssdPushSent(sonicData);
         last = { response, sonicData, phoneLocal, phoneForSonicApi, ussdSent };
@@ -1946,12 +1947,10 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
         });
         // Only an explicit "not accepted" (429/503) is safe to retry; anything else may
         // already have reached the phone.
-        if (
-          attempt < maxAttempts &&
-          (Number(response.status) === 429 || Number(response.status) === 503) &&
-          isGatewayBusyFailure(failMsg, failCode, response.status)
-        ) {
-          const waitMs = gatewayBusyRetryDelayMs(attempt);
+        // Sonic's 429 says "Too Many Attempts." — that is our API key being throttled,
+        // not the payer's SIM, so it is retried like any other refusal.
+        if (attempt < maxAttempts && isSonicRefusedBeforeSend(response)) {
+          const waitMs = Math.max(gatewayBusyRetryDelayMs(attempt), Math.min(sonicThrottleRemainingMs(), 4000));
           console.warn('[SonicPesa] gateway busy — retrying this user', { attempt, waitMs });
           await new Promise((resolve) => setTimeout(resolve, waitMs));
           continue;
@@ -2006,9 +2005,29 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
 const SONIC_STATUS_SHARE_MS = 4000;
 const sonicStatusShared = new Map();
 
+// Sonic throttles per API key ("Too Many Attempts.", HTTP 429). Status checks stand down
+// while throttled so the budget is left for create_order, which actually sends the PIN.
+let sonicThrottledUntil = 0;
+
+const noteSonicThrottle = (response) => {
+  if (Number(response?.status) !== 429) return;
+  const retryAfter = Number(response?.headers?.get?.('retry-after'));
+  const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 120) * 1000 : 30000;
+  sonicThrottledUntil = Math.max(sonicThrottledUntil, Date.now() + waitMs);
+  console.warn('[SonicPesa] API key throttled — pausing status checks', { waitMs });
+};
+
+const sonicThrottleRemainingMs = () => Math.max(0, sonicThrottledUntil - Date.now());
+
 const pollSonicOrderStatus = (orderId, timeoutMs = SONIC_POLL_TIMEOUT_MS) => {
   const key = String(orderId || '');
   const now = Date.now();
+  if (now < sonicThrottledUntil) {
+    return Promise.resolve({
+      statusResp: { ok: false, status: 429 },
+      statusData: { status: 'error', message: 'Too Many Attempts.' },
+    });
+  }
   const hit = sonicStatusShared.get(key);
   if (hit && now - hit.at < SONIC_STATUS_SHARE_MS) return hit.promise;
   const promise = fetchSonicOrderStatus(orderId, timeoutMs);
@@ -2032,6 +2051,7 @@ const fetchSonicOrderStatus = async (orderId, timeoutMs) => {
       },
       timeoutMs,
     );
+    noteSonicThrottle(response);
     return { statusResp: response, statusData };
   } catch (fetchErr) {
     return {
@@ -2359,6 +2379,13 @@ async function handlePaymentStart(req, res, next) {
           code: initiateCode,
           sonicData,
         };
+        if (isSonicRefusedBeforeSend(response)) {
+          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+          return res.status(503).json({
+            error: 'Mtandao wa malipo una msongamano. Subiri kidogo, kisha jaribu tena.',
+            retryable: true,
+          });
+        }
         if (isGatewayBusyFailure(initiateMsg, initiateCode, response.status) && !isSonicRefusedBeforeSend(response)) {
           return replyAwaitingPrompt(res, {
             orderId,
@@ -2423,6 +2450,13 @@ async function handlePaymentStart(req, res, next) {
 
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
+      if (isSonicRefusedBeforeSend(response)) {
+        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
+        return res.status(503).json({
+          error: 'Mtandao wa malipo una msongamano. Subiri kidogo, kisha jaribu tena.',
+          retryable: true,
+        });
+      }
       if (isGatewayBusyFailure(rawErr, rawCode, response.status) && !isSonicRefusedBeforeSend(response)) {
         return replyAwaitingPrompt(res, {
           orderId,
@@ -3853,9 +3887,7 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
 
   if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
     if (!SONICPESA_API_KEY) return false;
-    const pollIds = [...new Set(
-      [orderId, String(payRow.gateway_ref || '').trim()].filter(Boolean),
-    )];
+    const pollIds = [orderId];
     for (const pollId of pollIds) {
       const { statusResp, statusData } = await pollSonicOrderStatus(pollId, 4000);
       if (!statusResp.ok) continue;
@@ -3900,6 +3932,9 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
 };
 
 const reconcilePendingSubscriptionPayments = async () => {
+  // Older abandoned prompts are left to the webhook. Polling them used up the Sonic
+  // API key's request budget and got create_order throttled ("Too Many Attempts.").
+  if (sonicThrottleRemainingMs() > 0) return 0;
   // Newest checkouts first. An old backlog of abandoned prompts must not
   // delay the order the user just paid on M-Pesa, Airtel, Mixx, or Halopesa.
   const result = await query(
@@ -3907,10 +3942,10 @@ const reconcilePendingSubscriptionPayments = async () => {
        FROM subscription_payments
       WHERE status = 'pending'
         AND COALESCE(gateway_ref, '') NOT IN ('__dispatching__', '__timeout__')
-        AND created_at > NOW() - INTERVAL '2 days'
-        AND created_at < NOW() - INTERVAL '2 seconds'
+        AND created_at > NOW() - INTERVAL '20 minutes'
+        AND created_at < NOW() - INTERVAL '10 seconds'
       ORDER BY created_at DESC
-      LIMIT 12`,
+      LIMIT 6`,
   );
   if (!result.rows.length) return 0;
 
