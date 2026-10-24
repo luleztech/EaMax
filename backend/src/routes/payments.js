@@ -1845,12 +1845,20 @@ const isSonicRefusedBeforeSend = (response) => {
  * is usually ours). Keep the reservation pending so the paid webhook can settle it by phone +
  * amount, and let the app wait for the PIN instead of firing a duplicate.
  */
-const replyAwaitingPrompt = async (res, { orderId, amount, planKey, planName, phoneLocal }) => {
+const sonicReplyNote = (response, sonicData) => {
+  const msg = String(sonicData?.message || sonicData?.error || '').trim();
+  const code = String(sonicData?.resultcode || sonicData?.code || '').trim();
+  return `http ${Number(response?.status) || 0}${code ? ` code ${code}` : ''}: ${msg || 'no message'}`.slice(0, 300);
+};
+
+const replyAwaitingPrompt = async (res, { orderId, amount, planKey, planName, phoneLocal, note }) => {
+  console.warn('[SonicPesa] Left waiting for webhook', { orderId, note });
   await query(
     `UPDATE subscription_payments
-        SET gateway_ref = '__timeout__'
+        SET gateway_ref = '__timeout__',
+            gateway_note = $3
       WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
-    [orderId, PAYMENT_PROVIDERS.SONICPESA],
+    [orderId, PAYMENT_PROVIDERS.SONICPESA, note || null],
   );
   return res.json({
     status: 'pending',
@@ -2237,9 +2245,10 @@ async function handlePaymentStart(req, res, next) {
         // and let the app wait for the PIN instead of firing a duplicate prompt.
         await query(
           `UPDATE subscription_payments
-              SET gateway_ref = '__timeout__'
+              SET gateway_ref = '__timeout__',
+                  gateway_note = $3
             WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
-          [orderId, PAYMENT_PROVIDERS.SONICPESA],
+          [orderId, PAYMENT_PROVIDERS.SONICPESA, `timeout: ${sonicData?.message || 'no reply'}`.slice(0, 300)],
         );
         return res.json({
           status: 'pending',
@@ -2336,6 +2345,7 @@ async function handlePaymentStart(req, res, next) {
             planKey,
             planName,
             phoneLocal: normalizedPhone,
+            note: sonicReplyNote(response, sonicData),
           });
         }
         if (isGatewayBusyFailure(initiateMsg, initiateCode, response.status)) {
@@ -2356,6 +2366,7 @@ async function handlePaymentStart(req, res, next) {
             planKey,
             planName,
             phoneLocal: normalizedPhone,
+            note: sonicReplyNote(response, sonicData),
           });
         } else if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
           console.warn('[Payment] SonicPesa did not dispatch USSD — falling back to Aurax Pay', {
@@ -2398,6 +2409,7 @@ async function handlePaymentStart(req, res, next) {
           planKey,
           planName,
           phoneLocal: normalizedPhone,
+          note: sonicReplyNote(response, sonicData),
         });
       }
       if (isGatewayBusyFailure(rawErr, rawCode, response.status)) {
@@ -2418,6 +2430,7 @@ async function handlePaymentStart(req, res, next) {
           planKey,
           planName,
           phoneLocal: normalizedPhone,
+          note: sonicReplyNote(response, sonicData),
         });
       } else if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
         console.warn('[Payment] SonicPesa STK not sent — falling back to Aurax Pay for this payment', {
@@ -3060,7 +3073,11 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     // Sonic answered too slowly to give us its order id. The PIN may still be on the
     // phone; the paid webhook settles this row by buyer phone + amount.
     if (dbCheck.rows.length > 0 && dbCheck.rows[0].gateway_ref === '__timeout__') {
-      return res.json({ status: 'PENDING', awaitingWebhook: true });
+      const note = await query(
+        `SELECT gateway_note FROM subscription_payments WHERE provider_ref = $1 LIMIT 1`,
+        [orderId],
+      ).then((r) => r.rows[0]?.gateway_note || null, () => null);
+      return res.json({ status: 'PENDING', awaitingWebhook: true, gatewayNote: note });
     }
 
     // Resend-STK orphan: this order is still pending, but a sibling payment already

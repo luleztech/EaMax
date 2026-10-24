@@ -194,6 +194,13 @@ query(
   }
 });
 
+// What the gateway said when a checkout was left waiting for the webhook (timeout, busy SIM, 5xx)
+query(
+  `ALTER TABLE subscription_payments ADD COLUMN IF NOT EXISTS gateway_note TEXT`
+).catch((err) => {
+  console.warn('Migration gateway_note (non-fatal):', err.message);
+});
+
 // Custom / offer plan slugs need more than VARCHAR(16)
 query(
   `ALTER TABLE subscription_payments ALTER COLUMN plan TYPE VARCHAR(64)`
