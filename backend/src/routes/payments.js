@@ -2019,6 +2019,17 @@ const noteSonicThrottle = (response) => {
 
 const sonicThrottleRemainingMs = () => Math.max(0, sonicThrottledUntil - Date.now());
 
+/**
+ * Sonic only knows its own "sp_…" order ids. A timed-out checkout keeps our UUID as
+ * provider_ref until a webhook links the Sonic id into gateway_ref.
+ */
+const sonicOrderIdsToPoll = (providerRef, gatewayRef) => {
+  const ids = [...new Set([providerRef, gatewayRef].map((v) => String(v || '').trim()).filter(Boolean))];
+  const sonicIds = ids.filter((id) => /^sp_/i.test(id));
+  if (sonicIds.length) return sonicIds;
+  return ids.filter((id) => !id.startsWith('__')).slice(0, 1);
+};
+
 const pollSonicOrderStatus = (orderId, timeoutMs = SONIC_POLL_TIMEOUT_MS) => {
   const key = String(orderId || '');
   const now = Date.now();
@@ -3163,9 +3174,7 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
 
     if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
       ensureSonicPesaConfigured();
-      const sonicPollIds = [...new Set(
-        [orderId, String(dbCheck.rows[0]?.gateway_ref || '').trim()].filter(Boolean),
-      )];
+      const sonicPollIds = sonicOrderIdsToPoll(orderId, dbCheck.rows[0]?.gateway_ref);
       let pendingHit = null;
       let terminalHit = null;
       let httpError = null;
@@ -3685,7 +3694,8 @@ const confirmSonicOrderWithGateway = async (orderId, payload) => {
   const refs = [...new Set([orderId, ...collectSonicOrderRefs(payload)].filter(Boolean))].slice(0, 3);
   if (!refs.length) return null;
   for (const ref of refs) {
-    const { statusResp, statusData } = await pollSonicOrderStatus(ref, 3500);
+    // A paid callback must not be refused by our own status-check pause.
+    const { statusResp, statusData } = await fetchSonicOrderStatus(ref, 3500);
     if (!statusResp.ok) continue;
     const { isCompleted, rawStatus } = evaluateSonicOrderStatusForApply(statusData);
     const nest = pickSonicNestedData(statusData);
@@ -3700,6 +3710,46 @@ const confirmSonicOrderWithGateway = async (orderId, payload) => {
     };
   }
   return null;
+};
+
+/**
+ * A callback we could not confirm yet still tells us which Sonic order belongs to
+ * a timed-out checkout. Store it so status polls and reconcile can confirm it later.
+ * Linking never grants anything; completion still needs Sonic to report the order paid.
+ */
+const linkUnconfirmedSonicOrder = async (orderId, payload) => {
+  const sonicId = String(orderId || '').trim();
+  if (!/^sp_/i.test(sonicId)) return;
+  try {
+    const known = await query(
+      `SELECT 1 FROM subscription_payments WHERE provider_ref = $1 OR gateway_ref = $1 LIMIT 1`,
+      [sonicId],
+    );
+    if (known.rows.length) return;
+    const phones = collectPaymentPhoneHints(payload);
+    if (!phones.length) return;
+    const hinted = await findPendingPaymentByBuyerHints({
+      phones,
+      amount: collectPaymentAmountHint(payload),
+      paymentProvider: PAYMENT_PROVIDERS.SONICPESA,
+    });
+    if (!hinted?.id) return;
+    const linked = await query(
+      `UPDATE subscription_payments
+          SET gateway_ref = $1
+        WHERE id = $2 AND status = 'pending'
+          AND (gateway_ref IS NULL OR gateway_ref IN ('', '__timeout__'))`,
+      [sonicId, hinted.id],
+    );
+    if (linked.rowCount === 1) {
+      console.warn('[SonicPesa] Linked unconfirmed webhook order to pending checkout', {
+        sonicId,
+        provider_ref: hinted.provider_ref,
+      });
+    }
+  } catch (err) {
+    console.warn('[SonicPesa] Could not link unconfirmed webhook order:', err?.message || err);
+  }
 };
 
 // Webhook: https://eamax-production.up.railway.app/api/payments/sonicpesa/webhook
@@ -3747,6 +3797,7 @@ router.post('/sonicpesa/webhook', async (req, res, next) => {
       );
       const confirmed = await confirmSonicOrderWithGateway(orderId, payload);
       if (!confirmed) {
+        await linkUnconfirmedSonicOrder(orderId, payload);
         return res.status(401).json({
           error: secretConfigured ? 'Invalid webhook signature' : 'Webhook verification is not configured',
           retry: true,
@@ -3887,7 +3938,7 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
 
   if (gateway === PAYMENT_PROVIDERS.SONICPESA) {
     if (!SONICPESA_API_KEY) return false;
-    const pollIds = [orderId];
+    const pollIds = sonicOrderIdsToPoll(orderId, payRow.gateway_ref);
     for (const pollId of pollIds) {
       const { statusResp, statusData } = await pollSonicOrderStatus(pollId, 4000);
       if (!statusResp.ok) continue;
@@ -3931,10 +3982,7 @@ const tryCompletePendingPaymentFromGateway = async (payRow) => {
   return false;
 };
 
-const reconcilePendingSubscriptionPayments = async () => {
-  // Older abandoned prompts are left to the webhook. Polling them used up the Sonic
-  // API key's request budget and got create_order throttled ("Too Many Attempts.").
-  if (sonicThrottleRemainingMs() > 0) return 0;
+const reconcileRecentPendingWithGateway = async () => {
   // Newest checkouts first. An old backlog of abandoned prompts must not
   // delay the order the user just paid on M-Pesa, Airtel, Mixx, or Halopesa.
   const result = await query(
@@ -3966,7 +4014,15 @@ const reconcilePendingSubscriptionPayments = async () => {
   if (upgraded > 0) {
     console.log(`[Payment] Background reconcile completed ${upgraded} pending payment(s)`);
   }
+  return upgraded;
+};
 
+const reconcilePendingSubscriptionPayments = async () => {
+  // Older abandoned prompts are left to the webhook. Polling them used up the Sonic
+  // API key's request budget and got create_order throttled ("Too Many Attempts.").
+  const upgraded = sonicThrottleRemainingMs() > 0 ? 0 : await reconcileRecentPendingWithGateway();
+
+  // Runs even while Sonic is throttling us: it only touches our own database.
   try {
     const { repairCompletedPaymentsMissingPremium } = require('../services/userEntitlements');
     await repairCompletedPaymentsMissingPremium();
