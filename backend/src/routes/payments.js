@@ -29,6 +29,13 @@ const {
   getActivePlans,
   intervalForPlan,
 } = require('../services/subscriptionPlansService');
+const {
+  loadVotes: loadLearnedPrefixVotes,
+  learnedNetworkSync,
+  isKnownPrefixSync,
+  normalizeNetworkKey,
+  recordPrefixVote,
+} = require('../services/phonePrefixService');
 
 const PAYMENT_PROVIDER_SETTING_KEY = 'payment_provider';
 const PAYMENT_PROVIDERS = {
@@ -256,14 +263,14 @@ const resolveGatewayForOrderId = async (orderId) => {
 };
 
 const TZ_VALID_PREFIXES = [
-  '061', '062', '063', '065', '066', '067', '068', '069', '071', '074', '075', '076', '077', '078', '079',
+  '061', '062', '063', '065', '066', '067', '068', '069', '070', '071', '074', '075', '076', '077', '078', '079',
 ];
 
 /**
  * Normalize any accepted TZ input to canonical local 0… (9 digits after 0).
  * Rejects non-Tanzania international numbers.
  */
-const normalizePhoneToLocal0 = (rawPhone) => {
+const normalizePhoneToLocal0 = (rawPhone, { allowUnknownPrefix = false } = {}) => {
   let normalizedPhone = String(rawPhone || '').replace(/[\s\-()]/g, '');
   if (normalizedPhone.startsWith('+') && !normalizedPhone.startsWith('+255')) {
     return {
@@ -294,11 +301,14 @@ const normalizePhoneToLocal0 = (rawPhone) => {
     };
   }
   const isValidFormat = /^0[0-9]{8,9}$/.test(normalizedPhone);
-  const hasValidPrefix = TZ_VALID_PREFIXES.some((prefix) => normalizedPhone.startsWith(prefix));
+  const hasValidPrefix =
+    TZ_VALID_PREFIXES.some((prefix) => normalizedPhone.startsWith(prefix)) ||
+    isKnownPrefixSync(normalizedPhone) ||
+    (allowUnknownPrefix && /^0[67]\d{8}$/.test(normalizedPhone));
   if (!isValidFormat || !hasValidPrefix) {
     return {
       error:
-        'Nambari si sahihi. Tumia nambari ya Tanzania: 066/074–076/079 (M-Pesa), 068/069/078 (Airtel), 065/067/071/077 (Mixx), 061–063 (HaloPesa).',
+        'Nambari si sahihi. Tumia nambari ya Tanzania: 066/074–076/079 (M-Pesa), 068/069/078 (Airtel), 065/067/070/071/077 (Mixx), 061–063 (HaloPesa).',
     };
   }
   return { local: normalizedPhone };
@@ -330,7 +340,7 @@ const isAirtelLocalPhone = (local0) => {
 
 const isTigoLocalPhone = (local0) => {
   const p = String(local0 || '');
-  return p.startsWith('065') || p.startsWith('067') || p.startsWith('071') || p.startsWith('077');
+  return p.startsWith('065') || p.startsWith('067') || p.startsWith('070') || p.startsWith('071') || p.startsWith('077');
 };
 
 const isVodacomLocalPhone = (local0) => {
@@ -443,7 +453,7 @@ const sonicNetworkKey = (local0) => {
   if (isAirtelLocalPhone(local0)) return 'airtel';
   if (isTigoLocalPhone(local0)) return 'tigo';
   if (isVodacomLocalPhone(local0)) return 'mpesa';
-  return 'mobile';
+  return learnedNetworkSync(local0) || 'mobile';
 };
 
 const sonicNetworkLabel = (local0) => {
@@ -478,7 +488,7 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
   const code = String(rawCode ?? '').trim();
   const msg = String(rawMessage || '').trim();
   if (isGatewayAttemptLimitMessage(msg, code)) {
-    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
+    return 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.';
   }
   const combined = `${msg} ${code}`.toLowerCase();
   if (isExplicitGatewayInsufficientReport(msg, combined, code)) {
@@ -488,7 +498,7 @@ const mapSonicInitiateUserError = (localPhone, rawMessage, rawCode) => {
     return mapPaymentGatewayUserError(rawMessage, rawCode, { context: 'initiate' });
   }
   if (code === '103' || /ongoing ussd/i.test(msg)) {
-    return 'Simu yako ina USSD nyingine zinazoendelea. Funga dirisha la malipo/USSD kwenye simu, subiri sekunde 30, kisha jaribu tena.';
+    return 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.';
   }
   if (isSonicPaymentSendFailure(rawMessage, rawCode)) {
     if (isHalotelLocalPhone(localPhone)) {
@@ -553,7 +563,7 @@ const resolveAuraxChannelFromPhone = (local0) => {
   const p = String(local0 || '');
   if (p.startsWith('061') || p.startsWith('062') || p.startsWith('063')) return 'HALOPESA';
   if (p.startsWith('066') || p.startsWith('074') || p.startsWith('075') || p.startsWith('076') || p.startsWith('079')) return 'MPESA';
-  if (p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGO_PESA';
+  if (p.startsWith('070') || p.startsWith('071') || p.startsWith('065') || p.startsWith('067') || p.startsWith('077')) return 'TIGO_PESA';
   if (p.startsWith('068') || p.startsWith('069') || p.startsWith('078')) return 'AIRTEL_MONEY';
   return 'MPESA';
 };
@@ -1691,7 +1701,7 @@ const mapPaymentGatewayUserError = (rawMessage, rawCode, options = {}) => {
     return 'Salio la wallet yako si la kutosha kwa kiasi hiki. Ongeza pesa kwenye akaunti yako ya simu (M-Pesa, Halopesa, Tigopesa, Airtel Money, n.k.) kisha ujaribu tena.';
   }
   if (isGatewayAttemptLimitMessage(msg, code)) {
-    return 'Funga dirisha la USSD kwenye simu, subiri sekunde 20, kisha tuma tena.';
+    return 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.';
   }
   if (
     /upstream|no response from upstream|hayajatumika|malipo hayajatumika|timeout|timed out|could not reach|temporarily unavailable|service unavailable/.test(
@@ -1812,13 +1822,49 @@ const replyRecentPendingPrompt = async (res, userId, buyerPhoneLocal, options = 
     amount: row.amount_cents,
     ussdSent: true,
     message: options.outstanding
-      ? 'Ingiza PIN kwenye simu. Ikiwa hujaiona, subiri kisha tuma tena.'
+      ? 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.'
       : sonicCheckoutPrompt(buyerPhoneLocal, row.amount_cents),
     network: sonicNetworkKey(buyerPhoneLocal),
     provider: row.payment_provider || undefined,
     reusedPending: true,
   });
   return true;
+};
+
+/**
+ * 429/503 mean Sonic turned the order away before touching the phone, so a fresh try is safe.
+ * A 502/504 or "timeout" reply can arrive after the USSD was already pushed.
+ */
+const isSonicRefusedBeforeSend = (response) => {
+  const status = Number(response?.status) || 0;
+  return status === 429 || status === 503;
+};
+
+/**
+ * Sonic may already have pushed the prompt (slow reply, or the SIM reports a USSD session that
+ * is usually ours). Keep the reservation pending so the paid webhook can settle it by phone +
+ * amount, and let the app wait for the PIN instead of firing a duplicate.
+ */
+const replyAwaitingPrompt = async (res, { orderId, amount, planKey, planName, phoneLocal }) => {
+  await query(
+    `UPDATE subscription_payments
+        SET gateway_ref = '__timeout__'
+      WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
+    [orderId, PAYMENT_PROVIDERS.SONICPESA],
+  );
+  return res.json({
+    status: 'pending',
+    orderId,
+    amount,
+    plan: planKey,
+    planName: planName || planKey,
+    ussdSent: true,
+    message: 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.',
+    network: sonicNetworkKey(phoneLocal),
+    provider: PAYMENT_PROVIDERS.SONICPESA,
+    activeProvider: PAYMENT_PROVIDERS.SONICPESA,
+    phoneBusy: true,
+  });
 };
 
 const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, externalId }) => {
@@ -1848,7 +1894,9 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
 
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const timeoutMs = attempt === 1 ? 15000 : 10000;
+      // Sonic can take 15–20s to answer while it pushes the USSD. Waiting longer on the
+      // first call beats a second create_order, which the phone rejects as "too many attempts".
+      const timeoutMs = attempt === 1 ? 25000 : 12000;
       try {
         const { response, data: sonicData } = await gatewayFetchJson(
           `${SONICPESA_API_BASE}/payment/create_order`,
@@ -1888,8 +1936,11 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
           message: failMsg,
           attempt,
         });
+        // Only an explicit "not accepted" (429/503) is safe to retry; anything else may
+        // already have reached the phone.
         if (
           attempt < maxAttempts &&
+          (Number(response.status) === 429 || Number(response.status) === 503) &&
           isGatewayBusyFailure(failMsg, failCode, response.status)
         ) {
           const waitMs = gatewayBusyRetryDelayMs(attempt);
@@ -1908,18 +1959,32 @@ const initiateSonicPayment = async ({ normalizedPhone, amountToSend, data, exter
         }
         break;
       } catch (fetchErr) {
+        const errText = String(fetchErr?.message || fetchErr || 'network');
+        const errCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
+        // Connection never opened: nothing reached Sonic, one retry is safe.
+        const neverSent = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(`${errCode} ${errText}`);
         last = {
           response: { ok: false, status: 502 },
-          sonicData: { status: 'error', message: String(fetchErr?.message || fetchErr || 'network') },
+          sonicData: { status: 'error', message: errText },
           phoneLocal,
           phoneForSonicApi,
           ussdSent: false,
+          // Timed out / reset mid-flight: Sonic may already be pushing the USSD.
+          timedOut: !neverSent,
         };
-        if (attempt < maxAttempts && isGatewayBusyFailure(last.sonicData.message, '', 502)) {
+        if (attempt < maxAttempts && neverSent) {
           const waitMs = gatewayBusyRetryDelayMs(attempt);
-          console.warn('[SonicPesa] create_order network retry', { attempt, waitMs });
+          console.warn('[SonicPesa] create_order connect retry', { attempt, waitMs, errCode });
           await new Promise((resolve) => setTimeout(resolve, waitMs));
           continue;
+        }
+        if (last.timedOut) {
+          console.warn('[SonicPesa] create_order timed out — not retrying (prompt may be on the phone)', {
+            phoneForSonicApi,
+            attempt,
+            errText,
+          });
+          return last;
         }
       }
     }
@@ -1965,6 +2030,8 @@ async function handlePaymentStart(req, res, next) {
         email: z.string().max(160).optional(),
         name: z.string().max(80).optional(),
         resend: z.boolean().optional(),
+        // Payer-chosen wallet; lets prefixes outside the built-in table through and teaches them.
+        network: z.string().trim().max(20).optional(),
       })
       .refine((d) => d.promotionId != null || d.bundle != null, {
         message: 'bundle or promotionId required',
@@ -1980,11 +2047,18 @@ async function handlePaymentStart(req, res, next) {
       });
     }
 
-    const phoneNorm = normalizePhoneToLocal0(data.phone);
+    const networkHint = normalizeNetworkKey(data.network);
+    await loadLearnedPrefixVotes();
+    // Any 06x/07x mobile number is sent to the gateway (it routes by MSISDN), so brand-new
+    // ranges work before we know them. A payer-chosen network only teaches the prefix.
+    const phoneNorm = normalizePhoneToLocal0(data.phone, { allowUnknownPrefix: true });
     if (phoneNorm.error) {
       return res.status(400).json({ error: phoneNorm.error });
     }
     const normalizedPhone = phoneNorm.local;
+    if (networkHint && !data.resend && !TZ_VALID_PREFIXES.some((p) => normalizedPhone.startsWith(p))) {
+      recordPrefixVote(normalizedPhone, networkHint);
+    }
 
     // User lookup and plan list run together so SonicPesa is called on the first round trip.
     const userLookup = query('SELECT id FROM users WHERE external_id = $1', [data.externalId]);
@@ -2156,7 +2230,32 @@ async function handlePaymentStart(req, res, next) {
         }
         throw queueError;
       }
-      const { response, sonicData, phoneForSonicApi, ussdSent } = sonicResult;
+      const { response, sonicData, phoneForSonicApi, ussdSent, timedOut } = sonicResult;
+
+      if (timedOut) {
+        // Keep the pending row (buyer phone + amount) so the paid webhook can still match it,
+        // and let the app wait for the PIN instead of firing a duplicate prompt.
+        await query(
+          `UPDATE subscription_payments
+              SET gateway_ref = '__timeout__'
+            WHERE provider_ref = $1 AND status = 'pending' AND payment_provider = $2`,
+          [orderId, PAYMENT_PROVIDERS.SONICPESA],
+        );
+        return res.json({
+          status: 'pending',
+          orderId,
+          amount: amountToSend,
+          plan: planKey,
+          planName: planName || planKey,
+          ussdSent: true,
+          message: 'Utapokea ujumbe kukamilisha malipo kwenye namba uliyoiandika.',
+          network: sonicNetworkKey(normalizedPhone),
+          provider: PAYMENT_PROVIDERS.SONICPESA,
+          activeProvider: PAYMENT_PROVIDERS.SONICPESA,
+          slowGateway: true,
+        });
+      }
+
       // eslint-disable-next-line no-console
       console.log('[SonicPesa] Response:', {
         status: response.status,
@@ -2204,7 +2303,9 @@ async function handlePaymentStart(req, res, next) {
           if (linked.rowCount !== 1) {
             throw new Error('Could not persist the accepted payment request');
           }
-          const pushSent = Boolean(ussdSent) && !sendFailed;
+          // Like uhurumax: an accepted order is a prompt on the way, with or without Sonic's
+          // "Push USSD sent" sentence. Telling the payer otherwise makes them tap again.
+          const pushSent = !sendFailed;
           return res.json({
             status: 'pending',
             orderId: sonicOrderId,
@@ -2228,6 +2329,15 @@ async function handlePaymentStart(req, res, next) {
           code: initiateCode,
           sonicData,
         };
+        if (isGatewayBusyFailure(initiateMsg, initiateCode, response.status) && !isSonicRefusedBeforeSend(response)) {
+          return replyAwaitingPrompt(res, {
+            orderId,
+            amount: amountToSend,
+            planKey,
+            planName,
+            phoneLocal: normalizedPhone,
+          });
+        }
         if (isGatewayBusyFailure(initiateMsg, initiateCode, response.status)) {
           await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
           return res.status(503).json({
@@ -2240,13 +2350,12 @@ async function handlePaymentStart(req, res, next) {
             await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
             return;
           }
-          await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
-          return res.status(400).json({
-            error: mapSonicInitiateUserError(
-              normalizedPhone,
-              initiateMsg || 'Hatukuweza kutuma ombi la malipo kwenye simu yako.',
-              initiateCode,
-            ),
+          return replyAwaitingPrompt(res, {
+            orderId,
+            amount: amountToSend,
+            planKey,
+            planName,
+            phoneLocal: normalizedPhone,
           });
         } else if (isSonicAuraxFallbackAllowed() && isActivePaymentProviderConfigured(PAYMENT_PROVIDERS.AURAX)) {
           console.warn('[Payment] SonicPesa did not dispatch USSD — falling back to Aurax Pay', {
@@ -2282,6 +2391,15 @@ async function handlePaymentStart(req, res, next) {
 
       sonicFailureForClient = { message: rawErr, code: rawCode, sonicData };
 
+      if (isGatewayBusyFailure(rawErr, rawCode, response.status) && !isSonicRefusedBeforeSend(response)) {
+        return replyAwaitingPrompt(res, {
+          orderId,
+          amount: amountToSend,
+          planKey,
+          planName,
+          phoneLocal: normalizedPhone,
+        });
+      }
       if (isGatewayBusyFailure(rawErr, rawCode, response.status)) {
         await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
         return res.status(503).json({
@@ -2294,9 +2412,12 @@ async function handlePaymentStart(req, res, next) {
           await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
           return;
         }
-        await rollbackPendingPaymentByRef(orderId, PAYMENT_PROVIDERS.SONICPESA);
-        return res.status(400).json({
-          error: mapSonicInitiateUserError(normalizedPhone, rawErr, rawCode),
+        return replyAwaitingPrompt(res, {
+          orderId,
+          amount: amountToSend,
+          planKey,
+          planName,
+          phoneLocal: normalizedPhone,
         });
       } else if (shouldFallbackSonicToAurax(rawErr, rawCode)) {
         console.warn('[Payment] SonicPesa STK not sent — falling back to Aurax Pay for this payment', {
@@ -2935,6 +3056,11 @@ const handlePaymentStatusPoll = async (orderId, res, next) => {
     // traffic while a burst is being drained.
     if (dbCheck.rows.length > 0 && dbCheck.rows[0].gateway_ref === '__dispatching__') {
       return res.json({ status: 'PENDING', dispatching: true });
+    }
+    // Sonic answered too slowly to give us its order id. The PIN may still be on the
+    // phone; the paid webhook settles this row by buyer phone + amount.
+    if (dbCheck.rows.length > 0 && dbCheck.rows[0].gateway_ref === '__timeout__') {
+      return res.json({ status: 'PENDING', awaitingWebhook: true });
     }
 
     // Resend-STK orphan: this order is still pending, but a sibling payment already
@@ -3742,7 +3868,7 @@ const reconcilePendingSubscriptionPayments = async () => {
     `SELECT id, provider_ref, gateway_ref, payment_provider, plan, amount_cents, user_id, buyer_phone
        FROM subscription_payments
       WHERE status = 'pending'
-        AND COALESCE(gateway_ref, '') <> '__dispatching__'
+        AND COALESCE(gateway_ref, '') NOT IN ('__dispatching__', '__timeout__')
         AND created_at > NOW() - INTERVAL '2 days'
         AND created_at < NOW() - INTERVAL '2 seconds'
       ORDER BY created_at DESC

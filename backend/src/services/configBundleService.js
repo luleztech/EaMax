@@ -9,6 +9,7 @@ const {
   getFeatureFlagsExtra,
   getAdRewardPoints,
 } = require('./platformSettingsService');
+const { getLearnedPrefixes } = require('./phonePrefixService');
 
 async function getAppSetting(key, fallback = null) {
   try {
@@ -113,6 +114,7 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
     configVersion,
     featureExtra,
     adRewardPoints,
+    learnedPrefixes,
   ] = await Promise.all([
     getActivePlans(),
     getGlobalPlayerConfig(),
@@ -124,6 +126,7 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
     getConfigVersion(),
     getFeatureFlagsExtra(),
     getAdRewardPoints(),
+    getLearnedPrefixes().catch(() => ({})),
   ]);
 
   const appVersion = buildAppVersionBlock(clientVersion, emergency);
@@ -148,6 +151,7 @@ async function buildConfigBundle({ clientVersion = null, platform = 'android' } 
       provider: paymentProvider,
       currency: 'TZS',
       whatsappNumber: whatsapp,
+      learnedPrefixes,
       plans: plans.map((p) => ({
         slug: p.slug,
         nameSw: p.nameSw,
