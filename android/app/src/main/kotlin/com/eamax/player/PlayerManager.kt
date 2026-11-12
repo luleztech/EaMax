@@ -14,6 +14,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.eamax.domain.model.PlayerMode
+import com.eamax.safeUrlForLogs
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamQuality
 import com.eamax.domain.model.StreamSession
@@ -69,7 +70,7 @@ class PlayerManager(
     }
 
     fun initialize(streamSession: StreamSession, fallbacks: List<StreamSession> = emptyList()) {
-        Log.i(TAG, "init session=${streamSession.sessionId} url=${streamSession.mpdUrl.take(120)}")
+        Log.i(TAG, "init session=${streamSession.sessionId} url=${safeUrlForLogs(streamSession.mpdUrl)}")
         if (isInitialized) release()
 
         sessionQueue = listOf(streamSession) + fallbacks.filter { it.mpdUrl.isNotEmpty() }

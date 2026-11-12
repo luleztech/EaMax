@@ -51,6 +51,18 @@
             android:value="2" />
     </application>
     <queries>
+        <!-- Explicit visibility for traffic-capture apps checked by CaptureProtection. -->
+        <package android:name="com.reqable.android" />
+        <package android:name="com.guoshi.httpcanary" />
+        <package android:name="com.guoshi.httpcanary.premium" />
+        <package android:name="com.guoshi.httpcanary.premium.pro" />
+        <package android:name="com.emanuelef.remote_capture" />
+        <package android:name="app.greyshirts.sslcapture" />
+        <package android:name="tech.httptoolkit.android.v1" />
+        <package android:name="com.network.proxy" />
+        <package android:name="com.minhui.networkcapture" />
+        <package android:name="com.minhui.networkcapture.pro" />
+        <package android:name="jp.co.taosoftware.android.packetcapture" />
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>

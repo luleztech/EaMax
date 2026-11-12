@@ -69,6 +69,10 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (CaptureProtection.findEnabledCaptureApps(this).isNotEmpty()) {
+            finish()
+            return
+        }
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         WindowCompat.setDecorFitsSystemWindows(window, false)
         applyImmersiveFullscreen()
@@ -134,7 +138,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
         )
 
         val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
-        Log.i(TAG, "open classified=$classified url=${session.mpdUrl.take(160)}")
+        Log.i(TAG, "open classified=$classified url=${safeUrlForLogs(session.mpdUrl)}")
         if (classified == OrizonPlayerFactory.Format.GATEWAY) {
             startWebView()
         } else {
@@ -250,7 +254,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun startWebView() {
         handlingError = false
-        Log.i(TAG, "failover → WebView url=${session.mpdUrl.take(160)}")
+        Log.i(TAG, "failover → WebView url=${safeUrlForLogs(session.mpdUrl)}")
         try {
             playerView.player = null
             player?.release()
@@ -370,7 +374,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
         }
         val nextUrl = fallbackUrls.removeFirstOrNull()
         if (nextUrl != null) {
-            Log.w(TAG, "retry fallback url=${nextUrl.take(160)}")
+            Log.w(TAG, "retry fallback url=${safeUrlForLogs(nextUrl)}")
             session = session.copy(mpdUrl = nextUrl)
             val classified = factory.lockedFormat(nextUrl) ?: factory.classify(nextUrl)
             if (classified == OrizonPlayerFactory.Format.GATEWAY) {
@@ -411,6 +415,11 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (CaptureProtection.findEnabledCaptureApps(this).isNotEmpty()) {
+            player?.pause()
+            finish()
+            return
+        }
         applyImmersiveFullscreen()
         player?.play()
         webViewEngine?.play()

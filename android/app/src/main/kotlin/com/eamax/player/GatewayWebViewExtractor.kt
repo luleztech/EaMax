@@ -14,6 +14,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.eamax.domain.model.DrmType
+import com.eamax.safeUrlForLogs
 import com.eamax.domain.model.StreamSession
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -167,7 +168,7 @@ object GatewayWebViewExtractor {
                             return emptyJsResponse()
                         }
                         if (u.isNotEmpty() && looksLikeLicense(u)) {
-                            Log.i(TAG, "Intercepted license ${u.take(96)}")
+                            Log.i(TAG, "Intercepted license ${safeUrlForLogs(u)}")
                             capturedLicenseUrl = u
                             val current = intercepted
                             if (current != null && !done.get()) {
@@ -179,7 +180,7 @@ object GatewayWebViewExtractor {
                         }
                         if (u.isNotEmpty() && looksLikeManifest(u) && !u.contains("recaptcha", ignoreCase = true)) {
                             val isHls = u.lowercase().contains(".m3u8")
-                            Log.i(TAG, "Intercepted manifest ${u.take(96)}")
+                            Log.i(TAG, "Intercepted manifest ${safeUrlForLogs(u)}")
                             val manifest = GatewayPlaybackResolver.Resolved(
                                 streamUrl = u,
                                 isHls = isHls,
@@ -350,7 +351,7 @@ object GatewayWebViewExtractor {
                     }
                 }
             }
-            Log.i(TAG, "Loading hidden gateway ${gatewayUrl.take(80)}")
+            Log.i(TAG, "Loading hidden gateway ${safeUrlForLogs(gatewayUrl)}")
             webView?.loadUrl(gatewayUrl, reqHeaders)
         } catch (e: Exception) {
             Log.w(TAG, "Hidden WebView start failed: ${e.message}")

@@ -33,6 +33,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamSession
+import com.eamax.safeUrlForLogs
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.ArrayList
@@ -160,7 +161,7 @@ class OrizonPlayerFactory(private val context: Context) {
         if (format == Format.GATEWAY) {
             throw IllegalArgumentException("Gateway URL must use WebView")
         }
-        Log.i(TAG, "play format=$format url=${url.take(160)}")
+        Log.i(TAG, "play format=$format url=${safeUrlForLogs(url)}")
         val headers = buildHeaders(session)
         val dataSource = OrizonStreamClient.dataSourceFactory(headers)
         val mediaItem = buildMediaItem(session, format, headers)

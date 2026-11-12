@@ -2,6 +2,7 @@ package com.eamax.player
 
 import android.util.Log
 import com.eamax.domain.model.DrmType
+import com.eamax.safeUrlForLogs
 import com.eamax.domain.model.StreamSession
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -85,7 +86,7 @@ object GatewayPlaybackResolver {
         } else if (clearKey.isNotBlank()) {
             drm = DrmType.CLEARKEY
         }
-        Log.i(TAG, "Extracted direct stream from gateway (${gatewayUrl.take(48)}…)")
+        Log.i(TAG, "Extracted direct stream from gateway (${safeUrlForLogs(gatewayUrl)}…)")
         return Resolved(
             streamUrl = extracted.streamUrl,
             licenseUrl = license,

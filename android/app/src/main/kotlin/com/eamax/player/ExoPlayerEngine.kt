@@ -28,6 +28,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import com.eamax.domain.model.StreamSession
+import com.eamax.safeUrlForLogs
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamQuality
 import com.eamax.domain.model.PlaybackState
@@ -234,7 +235,7 @@ class ExoPlayerEngine(
             
             // Let Media3 sniff Content-Type when URL has no extension hint.
             else -> {
-                Log.d(TAG, "Format unknown — using auto-detect factory: ${url.take(80)}")
+                Log.d(TAG, "Format unknown — using auto-detect factory: ${safeUrlForLogs(url)}")
                 StreamFormat.AUTO
             }
         }
@@ -574,7 +575,7 @@ class ExoPlayerEngine(
         return when (streamSession.drmType) {
             DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 -> {
                 Log.d(TAG, "🔑 Creating Widevine DRM session manager")
-                Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
+                Log.d(TAG, "  License URL: ${safeUrlForLogs(streamSession.licenseUrl)}")
                 
                 val timeout = PlayerRuntimeConfig.networkTimeoutMs
                 val drmCallback = HttpMediaDrmCallback(
@@ -608,7 +609,7 @@ class ExoPlayerEngine(
             
             DrmType.PLAYREADY -> {
                 Log.d(TAG, "🔑 Creating PlayReady DRM session manager")
-                Log.d(TAG, "  License URL: ${streamSession.licenseUrl}")
+                Log.d(TAG, "  License URL: ${safeUrlForLogs(streamSession.licenseUrl)}")
                 
                 val timeout = PlayerRuntimeConfig.networkTimeoutMs
                 val drmCallback = HttpMediaDrmCallback(
@@ -668,7 +669,7 @@ class ExoPlayerEngine(
                 put("k", clearKey.k)
             }
             keysArray.put(keyObj)
-            Log.d(TAG, "  Key $index: kid=${clearKey.kid.take(16)}..., k=${clearKey.k.take(16)}...")
+            Log.d(TAG, "  Key $index: configured")
         }
         
         jsonObject.put("keys", keysArray)

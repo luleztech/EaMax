@@ -20,6 +20,7 @@ import 'theme/app_theme.dart';
 import 'utils/player_orientation.dart';
 import 'utils/system_ui.dart';
 import 'utils/tz_payment_config.dart';
+import 'widgets/capture_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,10 +45,22 @@ Future<void> main() async {
   if (!kIsWeb) {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    await MobileAds.instance.initialize();
   }
   final themeController = await ThemeController.load();
   runApp(EamaxApp(themeController: themeController));
+  if (!kIsWeb) {
+    // AdMob init does heavy work on the Android main thread (known ANR source). Run it after the
+    // first frame instead of blocking startup; ad loads queue until the SDK is ready.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(seconds: 2), () async {
+        try {
+          await MobileAds.instance.initialize();
+        } catch (e, st) {
+          debugPrint('MobileAds init failed: $e\n$st');
+        }
+      });
+    });
+  }
 }
 
 class EamaxApp extends StatelessWidget {
@@ -71,7 +84,9 @@ class EamaxApp extends StatelessWidget {
             builder: (context, child) {
               return DefaultTextStyle.merge(
                 style: const TextStyle(decoration: TextDecoration.none),
-                child: StatusBarBackdrop(child: child ?? const SizedBox.shrink()),
+                child: CaptureGate(
+                  child: StatusBarBackdrop(child: child ?? const SizedBox.shrink()),
+                ),
               );
             },
             home: const AnnotatedRegion<SystemUiOverlayStyle>(

@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.eamax.domain.model.PlaybackState
+import com.eamax.safeUrlForLogs
 import com.eamax.domain.model.StreamQuality
 import com.eamax.domain.model.StreamSession
 
@@ -87,7 +88,7 @@ class WebViewEngine(
         val headers = buildLoadHeaders(streamSession, preferredAudioLanguage)
         val isExternalWebPage = shouldUseWebView(url)
 
-        Log.d(TAG, "initialize url=${url.take(60)} audio=$preferredAudioLanguage " +
+        Log.d(TAG, "initialize url=${safeUrlForLogs(url)} audio=$preferredAudioLanguage " +
             "Accept-Language=${headers["Accept-Language"]}")
 
         try {
