@@ -12,6 +12,7 @@ const { requireAppVersion, attachVersionInfo } = require('./middleware/appVersio
 const appConfigRouter = require('./routes/appConfig');
 const usersRouter = require('./routes/users');
 const channelsRouter = require('./routes/channels');
+const playbackRelayRouter = require('./routes/playbackRelay');
 const refreshStreamRouter = require('./routes/refreshStream');
 
 const getRawBody = (req, res, buf, encoding) => {
@@ -63,7 +64,9 @@ app.use(express.json({
   },
 }));
 app.use(express.urlencoded({ extended: false, verify: getRawBody }));
-app.use(morgan('dev'));
+app.use(morgan('dev', {
+  skip: (req) => String(req.originalUrl || '').includes('/api/playback/relay'),
+}));
 
 // ── Attach parsed version info to every request ───────────────────────────
 app.use(attachVersionInfo);
@@ -430,6 +433,7 @@ app.get('/health/db', async (req, res) => {
 // Public API for mobile apps
 app.use('/api/users', usersRouter);
 app.use('/api/channels', channelsRouter);
+app.use('/api/playback', playbackRelayRouter);
 app.use('/api/refreshStream', refreshStreamRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);

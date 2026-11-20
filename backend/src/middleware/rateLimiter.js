@@ -25,8 +25,14 @@ function apiPath(req) {
   ).toLowerCase();
 }
 
+function isPlaybackMediaPath(req) {
+  const path = apiPath(req).split('?')[0];
+  return /\/api\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(path)
+    || path.startsWith('/api/playback/relay');
+}
+
 function shouldSkipRateLimit(req) {
-  return isAdminApiPath(req) || hasValidAdminKey(req);
+  return isAdminApiPath(req) || hasValidAdminKey(req) || isPlaybackMediaPath(req);
 }
 
 function isPaymentStartRoute(req) {
@@ -166,11 +172,26 @@ const authLimiter = rateLimit({
   },
 });
 
+/**
+ * Segment and playlist refreshes for one live channel. Catalog limits are too
+ * low for a player polling HLS every few seconds.
+ */
+const playbackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_PLAYBACK_MAX || 20000),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Maombi mengi ya playback. Jaribu tena baadaye.' },
+  keyGenerator: (req) => `playback:${clientIp(req)}`,
+  skip: (req) => hasValidAdminKey(req),
+});
+
 module.exports = {
   generalLimiter,
   catalogLimiter,
   paymentStartLimiter,
   authLimiter,
   userLimiter,
+  playbackLimiter,
   shouldSkipRateLimit,
 };

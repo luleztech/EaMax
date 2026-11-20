@@ -1,6 +1,12 @@
 const { z } = require('zod');
-const { query } = require('../db');
 const { getChannelPlayback } = require('../services/channelPlaybackService');
+const {
+  isEmbedPlaybackUrl,
+  isPublicHttpUrl,
+  presentPlaybackForPlayer,
+  publicBaseUrl,
+  resolveEmbedPlayback,
+} = require('../services/embedPlaybackService');
 
 const router = require('express').Router();
 
@@ -18,7 +24,10 @@ router.post('/', async (req, res, next) => {
     const body = bodySchema.parse(req.body || {});
 
     if (body.channelId) {
-      const playback = await getChannelPlayback(body.channelId);
+      const playback = await presentPlaybackForPlayer(
+        await getChannelPlayback(body.channelId),
+        publicBaseUrl(req),
+      );
       if (!playback) {
         return res.status(404).json({ error: 'Channel not found' });
       }
@@ -32,10 +41,30 @@ router.post('/', async (req, res, next) => {
         licenseUrl: primary.licenseUrl || null,
         drmType: (primary.drmType || 'NONE').toUpperCase(),
         drmClearKey: primary.drmClearKey || null,
+        headers: primary.headers || {},
       });
     }
 
     const fallback = body.url ? String(body.url).trim() : '';
+    if (fallback && isEmbedPlaybackUrl(fallback) && isPublicHttpUrl(fallback)) {
+      const resolved = await resolveEmbedPlayback(fallback);
+      if (resolved?.streamUrl) {
+        return res.json({
+          url: resolved.streamUrl,
+          streamUrl: resolved.streamUrl,
+          licenseUrl: resolved.licenseUrl || null,
+          drmType: resolved.drmType || 'NONE',
+          drmClearKey: resolved.clearKeyRaw || null,
+          headers: {
+            Referer: resolved.referer,
+            Origin: resolved.origin,
+            ...(resolved.authorization
+              ? { Authorization: `Bearer ${resolved.authorization.replace(/^bearer\s+/i, '')}` }
+              : {}),
+          },
+        });
+      }
+    }
     return res.json({ url: fallback, streamUrl: fallback });
   } catch (err) {
     return next(err);

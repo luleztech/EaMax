@@ -41,6 +41,10 @@ function _isExemptRoute(req) {
   if (p.startsWith('/payments/') && p.includes('/webhook')) {
     return true;
   }
+  // ExoPlayer / AVPlayer fetch media with no app headers. These routes must
+  // stay reachable so an embed can play without an app update.
+  if (/\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(p.split('?')[0])) return true;
+  if (p.split('?')[0].includes('/playback/relay')) return true;
 
   const adminKey = String(req.headers['x-admin-key'] || '').trim();
   if (adminKey && adminKey === process.env.ADMIN_API_KEY) {

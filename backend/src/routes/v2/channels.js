@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { getChannelPlayback } = require('../../services/channelPlaybackService');
+const { presentPlaybackForPlayer, publicBaseUrl } = require('../../services/embedPlaybackService');
 const { getEmergencyControls } = require('../../services/configBundleService');
 
 const router = express.Router();
@@ -30,7 +31,7 @@ router.get('/:id/playback', async (req, res, next) => {
       return res.status(503).json({ error: 'no_streams', message: 'Hakuna stream inayopatikana.' });
     }
 
-    return res.json(playback);
+    return res.json(await presentPlaybackForPlayer(playback, publicBaseUrl(req)));
   } catch (err) {
     if (err.name === 'ZodError') {
       return res.status(400).json({ error: 'Invalid channel id' });

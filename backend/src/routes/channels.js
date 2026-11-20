@@ -2,10 +2,22 @@ const express = require('express');
 const { z } = require('zod');
 const { query } = require('../db');
 const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages');
+const { playbackLimiter } = require('../middleware/rateLimiter');
+const {
+  handleChannelPlay,
+  presentChannelRows,
+  publicBaseUrl,
+} = require('../services/embedPlaybackService');
 
 /* global Buffer */
 
 const router = express.Router();
+
+// Installed players request this URL directly (no app headers). It resolves an
+// embed/gateway page to a real HLS playlist or redirects to the media file.
+router.get('/:id/play.:ext', playbackLimiter, (req, res, next) => {
+  handleChannelPlay(req, res).catch(next);
+});
 
 // Public: list active channels, optionally filter by category
 router.get('/', async (req, res, next) => {
@@ -68,7 +80,7 @@ router.get('/', async (req, res, next) => {
       }
       return out;
     });
-    return res.json(rows);
+    return res.json(await presentChannelRows(rows, publicBaseUrl(req), { deadlineMs: 3500 }));
   } catch (err) {
     return next(err);
   }
@@ -107,7 +119,7 @@ router.get('/:id', async (req, res, next) => {
     const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
     const unlockToFree = !!(row.unlock_to_free === true);
     const audioLanguage = sanitizeChannelAudioLanguage(row.audio_language);
-    return res.json({
+    const [presented] = await presentChannelRows([{
       id: row.id,
       name: row.name,
       category: row.category,
@@ -134,7 +146,8 @@ router.get('/:id', async (req, res, next) => {
       audioLanguage,
       unlock_to_free: unlockToFree,
       unlockToFree,
-    });
+    }], publicBaseUrl(req));
+    return res.json(presented);
   } catch (err) {
     return next(err);
   }
