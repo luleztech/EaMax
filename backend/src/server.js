@@ -58,14 +58,18 @@ app.use(express.json({
   type: (req) => {
     const method = String(req.method || '').toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false;
+    // Widevine license POST is application/octet-stream — leave for relay raw parser.
+    const path = String(req.originalUrl || req.url || '');
+    if (path.includes('/api/playback/relay/license')) return false;
     const ct = String(req.headers['content-type'] || '').toLowerCase();
     if (ct.includes('application/x-www-form-urlencoded') || ct.includes('multipart/')) return false;
+    if (ct.includes('octet-stream')) return false;
     return true;
   },
 }));
 app.use(express.urlencoded({ extended: false, verify: getRawBody }));
 app.use(morgan('dev', {
-  skip: (req) => String(req.originalUrl || '').includes('/api/playback/relay'),
+  skip: (req) => String(req.originalUrl || '').includes('/api/playback/relay'), // media + license
 }));
 
 // ── Attach parsed version info to every request ───────────────────────────
@@ -284,6 +288,20 @@ query(
     console.warn('Migration player_config_global.default_language (non-fatal):', err.message);
   }
 });
+query(
+  `ALTER TABLE player_config_global ADD COLUMN IF NOT EXISTS gateway_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb`
+).catch((err) => {
+  if (err.message && !err.message.includes('does not exist')) {
+    console.warn('Migration player_config_global.gateway_policy_json (non-fatal):', err.message);
+  }
+});
+// Same authorized package marker Washa uses for embed hosts.
+query(
+  `UPDATE player_config_global
+      SET gateway_policy_json = COALESCE(gateway_policy_json, '{}'::jsonb)
+        || '{"appPackageHeader":"com.washatv"}'::jsonb
+    WHERE id = 1`
+).catch(() => {});
 query(
   `UPDATE player_config_global SET default_language = 'sw'
     WHERE default_language IS NULL OR TRIM(default_language) = '' OR default_language NOT IN ('sw','en')`

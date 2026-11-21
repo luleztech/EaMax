@@ -98,6 +98,7 @@ async function resolvePlaybackPolicy(channelRow) {
     regionRules: channelRow?.region_rules_json && typeof channelRow.region_rules_json === 'object'
       ? channelRow.region_rules_json
       : {},
+    gatewayPolicy: global.gatewayPolicy || null,
   };
 }
 

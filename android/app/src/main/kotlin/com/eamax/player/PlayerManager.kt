@@ -85,12 +85,19 @@ class PlayerManager(
         formatQueue.clear()
         webViewFailoverUsed = false
 
-        val useWeb = session.playerMode == PlayerMode.WEB ||
+        val isGateway =
             factory.classify(session.mpdUrl) == OrizonPlayerFactory.Format.GATEWAY ||
-            StreamUrlClassifier.needsWebPlayer(session.mpdUrl)
+                StreamUrlClassifier.needsWebPlayer(session.mpdUrl)
 
-        if (useWeb) {
-            Log.i(TAG, "route → WebView gateway")
+        if (isGateway) {
+            // Prefer resolve → Exo; WebView only if resolve fails.
+            Log.i(TAG, "route → gateway resolve")
+            resolveGatewayThenPlay(session)
+            isInitialized = true
+            return
+        }
+        if (session.playerMode == PlayerMode.WEB) {
+            Log.i(TAG, "route → WebView (admin)")
             startWebViewEngine(session)
             isInitialized = true
             return
@@ -101,6 +108,39 @@ class PlayerManager(
         enqueueFormats(classified)
         startExo(classified)
         isInitialized = true
+    }
+
+    private fun resolveGatewayThenPlay(gatewaySession: StreamSession) {
+        val fallbackUrl = gatewaySession.mpdUrl
+        Thread {
+            val resolved = try {
+                GatewayPlaybackResolver.resolve(gatewaySession)
+            } catch (e: Exception) {
+                Log.w(TAG, "gateway resolve failed: ${e.message}")
+                null
+            }
+            mainHandler.post {
+                if (resolved != null && resolved.streamUrl.isNotBlank()) {
+                    val exoSession = GatewayPlaybackResolver.toStreamSession(gatewaySession, resolved)
+                    currentSession = exoSession
+                    val format = factory.lockedFormat(exoSession.mpdUrl)
+                        ?: factory.classify(exoSession.mpdUrl)
+                    val playFormat =
+                        if (format == OrizonPlayerFactory.Format.GATEWAY) {
+                            if (resolved.isHls) OrizonPlayerFactory.Format.HLS
+                            else OrizonPlayerFactory.Format.DASH
+                        } else {
+                            format
+                        }
+                    Log.i(TAG, "gateway resolved drm=${exoSession.drmType} → Exo format=$playFormat")
+                    enqueueFormats(playFormat)
+                    startExo(playFormat)
+                } else {
+                    Log.w(TAG, "gateway resolve empty → WebView")
+                    startWebViewEngine(gatewaySession.copy(mpdUrl = fallbackUrl))
+                }
+            }
+        }.start()
     }
 
     private fun enqueueFormats(first: OrizonPlayerFactory.Format) {

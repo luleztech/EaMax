@@ -45,7 +45,7 @@ object PlaybackHttpHeaders {
 
         if (isDirectMediaUrl(trimmed)) {
             return linkedMapOf(
-                "User-Agent" to OrizonStreamClient.USER_AGENT,
+                "User-Agent" to PlayerRuntimeConfig.pageUserAgent.ifBlank { OrizonStreamClient.USER_AGENT },
                 "Accept" to "*/*",
                 "Accept-Language" to "en-US,en;q=0.9,sw;q=0.8",
                 "Connection" to "keep-alive",
@@ -61,16 +61,23 @@ object PlaybackHttpHeaders {
         val referer = tokenPair?.first ?: "$cdnOrigin/"
         val origin = tokenPair?.second ?: cdnOrigin
 
-        return linkedMapOf(
+        val headers = linkedMapOf(
             "Referer" to referer,
             "Origin" to origin,
-            "User-Agent" to OrizonStreamClient.USER_AGENT,
+            "User-Agent" to PlayerRuntimeConfig.pageUserAgent.ifBlank { OrizonStreamClient.USER_AGENT },
             "Connection" to "keep-alive",
             "Accept-Language" to "en-US,en;q=0.9,sw;q=0.8",
             "Accept" to
                 "text/html,application/xhtml+xml,application/xml;q=0.9," +
                 "application/dash+xml,application/vnd.apple.mpegurl;q=0.8,*/*;q=0.7",
         )
+        // Admin-managed package marker (Control Center → gateway policy).
+        if (StreamUrlClassifier.shouldUseWebViewForUrl(trimmed) ||
+            trimmed.contains(".php", ignoreCase = true)
+        ) {
+            headers["X-Requested-With"] = PlayerRuntimeConfig.appPackageHeader.ifBlank { "com.washatv" }
+        }
+        return headers
     }
 
     fun merge(sessionHeaders: Map<String, String>, streamUrl: String): LinkedHashMap<String, String> {

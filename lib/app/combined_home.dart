@@ -548,7 +548,16 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
 
   String _extractPlaybackToken(Map<String, dynamic>? channelData) {
     if (channelData == null) return '';
+    // Prefer SokaMax authXmlToken / nv-authorizations over generic tokens.
+    final headers = _extractPlaybackHeaders(channelData);
+    final nv = headers.entries
+        .where((e) => e.key.toLowerCase() == 'nv-authorizations')
+        .map((e) => e.value)
+        .firstOrNull;
+    if (nv != null && nv.trim().isNotEmpty) return nv.trim();
     final raw =
+        channelData['authXmlToken'] ??
+        channelData['auth_xml_token'] ??
         channelData['token'] ??
         channelData['streamToken'] ??
         channelData['stream_token'] ??

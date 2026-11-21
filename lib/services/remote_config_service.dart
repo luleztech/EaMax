@@ -168,6 +168,7 @@ class RemoteConfigService {
         resumePlayback: pc.resumePlayback,
         networkTimeoutMs: pc.networkTimeoutMs,
         reconnectionPolicy: pc.reconnectionPolicy,
+        gatewayPolicy: pc.gatewayPolicy.toJson(),
       );
     } catch (e) {
       debugPrint('[RemoteConfigService] native player config sync: $e');

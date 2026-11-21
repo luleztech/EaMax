@@ -27,14 +27,17 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.eamax.domain.model.PlaybackState
 import com.eamax.domain.model.StreamSession
+import com.eamax.player.GatewayPlaybackResolver
 import com.eamax.player.OrizonPlayerFactory
 import com.eamax.player.PlaybackPreferences
 import com.eamax.player.StreamSessionBuilder
+import com.eamax.player.StreamUrlClassifier
 import com.eamax.player.WebViewEngine
 import org.json.JSONArray
+import java.util.concurrent.Executors
 
 /**
- * Orizon TV landscape player with format retry + WebView failover for gateway pages.
+ * Orizon TV landscape player: gateway resolve → ExoPlayer, WebView only as failover.
  */
 @OptIn(UnstableApi::class)
 class OrizonPlayerActivity : AppCompatActivity() {
@@ -44,8 +47,8 @@ class OrizonPlayerActivity : AppCompatActivity() {
         private const val MAX_SAME_FORMAT_RETRIES = 4
         private const val MAX_PLAYLIST_RESET_RELOADS = 8
         private const val MAX_NETWORK_RETRIES = 8
-        /** Cycle order shown on the zoom chip. */
-        private val ZOOM_MODES = listOf("normal", "fill", "stretched", "contain")
+        /** Cycle: Fit → Contain → Kuza → Jaza. */
+        private val ZOOM_MODES = listOf("fit", "contain", "kuza", "jaza")
     }
 
     private var player: ExoPlayer? = null
@@ -56,8 +59,11 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private lateinit var zoomLabel: TextView
     private lateinit var factory: OrizonPlayerFactory
     private lateinit var session: StreamSession
+    /** Original embed URL kept for WebView failover after gateway resolve. */
+    private var gatewayFallbackUrl: String = ""
     private var playbackPreferences = PlaybackPreferences.current()
-    private var zoomMode: String = "contain"
+    private var zoomMode: String = "fit"
+    private val resolveExecutor = Executors.newSingleThreadExecutor()
 
     private val formatQueue = ArrayDeque<OrizonPlayerFactory.Format>()
     private val fallbackUrls = ArrayDeque<String>()
@@ -139,18 +145,61 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
         val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
         Log.i(TAG, "open classified=$classified url=${safeUrlForLogs(session.mpdUrl)}")
-        if (classified == OrizonPlayerFactory.Format.GATEWAY) {
-            startWebView()
+        if (classified == OrizonPlayerFactory.Format.GATEWAY ||
+            StreamUrlClassifier.needsWebPlayer(session.mpdUrl)
+        ) {
+            resolveGatewayThenPlay()
         } else {
             enqueueFormats(classified)
             startExo(classified)
         }
     }
 
+    /**
+     * Embed/gateway: resolve player.php JSON / HTML → ExoPlayer.
+     * WebView Shaka/EME is last resort only.
+     */
+    private fun resolveGatewayThenPlay() {
+        gatewayFallbackUrl = session.mpdUrl
+        Log.i(TAG, "gateway resolve… url=${safeUrlForLogs(session.mpdUrl)}")
+        resolveExecutor.execute {
+            val resolved = try {
+                GatewayPlaybackResolver.resolve(session)
+            } catch (e: Exception) {
+                Log.w(TAG, "gateway resolve failed: ${e.message}")
+                null
+            }
+            mainHandler.post {
+                if (isFinishing) return@post
+                if (resolved != null && resolved.streamUrl.isNotBlank()) {
+                    session = GatewayPlaybackResolver.toStreamSession(session, resolved)
+                    val format = factory.lockedFormat(session.mpdUrl)
+                        ?: factory.classify(session.mpdUrl)
+                    val playFormat =
+                        if (format == OrizonPlayerFactory.Format.GATEWAY) {
+                            if (resolved.isHls) OrizonPlayerFactory.Format.HLS
+                            else OrizonPlayerFactory.Format.DASH
+                        } else {
+                            format
+                        }
+                    Log.i(
+                        TAG,
+                        "gateway resolved drm=${session.drmType} → ExoPlayer format=$playFormat",
+                    )
+                    enqueueFormats(playFormat)
+                    startExo(playFormat)
+                } else {
+                    Log.w(TAG, "gateway resolve empty → WebView fallback")
+                    startWebView()
+                }
+            }
+        }
+    }
+
     private fun readPlaybackPreferences(extras: Bundle): PlaybackPreferences {
         val dataSaver = extras.getBoolean("dataSaver")
         val defaultQuality = extras.getString("defaultQuality")?.trim().orEmpty().ifEmpty { "480p" }
-        val zoom = extras.getString("videoZoomMode")?.lowercase()?.trim().orEmpty().ifEmpty { "contain" }
+        val zoom = extras.getString("videoZoomMode")?.lowercase()?.trim().orEmpty().ifEmpty { "fit" }
         return PlaybackPreferences(
             dataSaver = dataSaver,
             defaultQuality = defaultQuality,
@@ -160,11 +209,11 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun normalizeZoomMode(raw: String): String {
         return when (raw.lowercase().trim()) {
-            "fill", "cover", "zoom" -> "fill"
-            "stretched", "stretch" -> "stretched"
-            "normal", "fit" -> "normal"
-            "contain" -> "contain"
-            else -> "contain"
+            "kuza", "fill", "cover", "zoom" -> "kuza"
+            "jaza", "stretched", "stretch" -> "jaza"
+            "contain", "fixed_width", "fixed-width" -> "contain"
+            "fit", "normal" -> "fit"
+            else -> "fit"
         }
     }
 
@@ -182,20 +231,20 @@ class OrizonPlayerActivity : AppCompatActivity() {
             defaultQuality = playbackPreferences.defaultQuality,
             videoZoomMode = zoomMode,
         )
-        // Distinct Exo modes: normal≈height-fit, contain=letterbox, fill=crop, stretch=distort.
+        // Fit=letterbox, Contain=width-fit, Kuza=crop/cover, Jaza=stretch/fill.
         playerView.resizeMode = when (zoomMode) {
-            "fill" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            "stretched" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-            "normal" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT
-            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT // contain
+            "contain" -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+            "kuza" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            "jaza" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT // fit
         }
         webViewEngine?.setZoomMode(zoomMode)
         zoomLabel.setText(
             when (zoomMode) {
-                "fill" -> R.string.zoom_fill
-                "stretched" -> R.string.zoom_stretched
-                "normal" -> R.string.zoom_normal
-                else -> R.string.zoom_contain
+                "contain" -> R.string.zoom_contain
+                "kuza" -> R.string.zoom_kuza
+                "jaza" -> R.string.zoom_jaza
+                else -> R.string.zoom_fit
             },
         )
         if (announce) {
@@ -254,7 +303,20 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun startWebView() {
         handlingError = false
-        Log.i(TAG, "failover → WebView url=${safeUrlForLogs(session.mpdUrl)}")
+        // Prefer original embed URL for in-page player; resolved MPD is for Exo only.
+        val webSession = if (gatewayFallbackUrl.isNotBlank() &&
+            session.mpdUrl != gatewayFallbackUrl
+        ) {
+            session.copy(
+                mpdUrl = gatewayFallbackUrl,
+                licenseUrl = "",
+                drmType = com.eamax.domain.model.DrmType.NONE,
+                drmData = com.eamax.domain.model.DrmData(headers = null),
+            )
+        } else {
+            session
+        }
+        Log.i(TAG, "failover → WebView url=${safeUrlForLogs(webSession.mpdUrl)}")
         try {
             playerView.player = null
             player?.release()
@@ -272,7 +334,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
                     showUnavailableAndFinish()
                 },
             )
-            engine.initialize(session)
+            engine.initialize(webSession)
             val web = engine.getWebView()
             if (web != null) {
                 (web.parent as? ViewGroup)?.removeView(web)
@@ -375,18 +437,27 @@ class OrizonPlayerActivity : AppCompatActivity() {
         val nextUrl = fallbackUrls.removeFirstOrNull()
         if (nextUrl != null) {
             Log.w(TAG, "retry fallback url=${safeUrlForLogs(nextUrl)}")
-            session = session.copy(mpdUrl = nextUrl)
+            session = session.copy(
+                mpdUrl = nextUrl,
+                licenseUrl = "",
+                drmType = com.eamax.domain.model.DrmType.NONE,
+            )
             val classified = factory.lockedFormat(nextUrl) ?: factory.classify(nextUrl)
-            if (classified == OrizonPlayerFactory.Format.GATEWAY) {
-                startWebView()
+            if (classified == OrizonPlayerFactory.Format.GATEWAY ||
+                StreamUrlClassifier.needsWebPlayer(nextUrl)
+            ) {
+                gatewayFallbackUrl = nextUrl
+                resolveGatewayThenPlay()
             } else {
                 enqueueFormats(classified)
                 startExo(classified)
             }
             return
         }
-        // A raw playlist is not a web page. WebView failover only helps gateway HTML.
-        if (locked == null && webViewEngine == null) {
+        // WebView failover: after failed Exo on a resolved gateway, or unknown formats.
+        if (webViewEngine == null &&
+            (gatewayFallbackUrl.isNotBlank() || locked == null)
+        ) {
             startWebView()
             return
         }
@@ -432,6 +503,10 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacksAndMessages(null)
+        try {
+            resolveExecutor.shutdownNow()
+        } catch (_: Exception) {
+        }
         try {
             playerView.player = null
         } catch (_: Exception) {

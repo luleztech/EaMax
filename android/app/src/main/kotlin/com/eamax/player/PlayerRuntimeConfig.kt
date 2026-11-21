@@ -4,7 +4,8 @@ import com.eamax.domain.model.StreamQuality
 
 /**
  * Server / Flutter player policy applied via [com.eamax.MainActivity] `updatePlayerConfig`.
- * Used by ExoPlayerEngine for buffer sizes, timeouts, and default quality.
+ * Used by ExoPlayerEngine for buffer sizes, timeouts, default quality, and
+ * admin-managed gateway/embed details (same role as Washa remote player config).
  */
 object PlayerRuntimeConfig {
     var bufferMinMs: Int = 15_000
@@ -15,6 +16,17 @@ object PlayerRuntimeConfig {
     var defaultQuality: StreamQuality = StreamQuality.QUALITY_480P
     var autoPlay: Boolean = true
     var failoverToWebview: Boolean = true
+
+    // Admin-managed gateway / embed policy (from /api/v2/config/bundle).
+    // Same authorized package marker Washa sends to embed hosts.
+    var appPackageHeader: String = "com.washatv"
+    var pageUserAgent: String =
+        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    var mediaUserAgent: String = "ExoPlayer"
+    var warmCookies: Boolean = true
+    var resolveEmbedApi: Boolean = true
+    var licenseAuthHeader: String = "nv-authorizations"
+    var blockedPageMarker: String = "App Haijatambuliwa"
 
     fun applyFromArgs(args: Map<String, Any?>) {
         // Match Washa/Orizon live-TV buffers — low min buffer causes rebuffer scratch on weak networks.
@@ -35,6 +47,30 @@ object PlayerRuntimeConfig {
         }
         (args["autoPlay"] as? Boolean)?.let { autoPlay = it }
         (args["failoverToWebview"] as? Boolean)?.let { failoverToWebview = it }
+
+        @Suppress("UNCHECKED_CAST")
+        val gateway = args["gatewayPolicy"] as? Map<String, Any?>
+        if (gateway != null) applyGatewayPolicy(gateway)
+    }
+
+    fun applyGatewayPolicy(gateway: Map<String, Any?>) {
+        gateway["appPackageHeader"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            appPackageHeader = it
+        }
+        gateway["pageUserAgent"]?.toString()?.trim()?.takeIf { it.length >= 10 }?.let {
+            pageUserAgent = it
+        }
+        gateway["mediaUserAgent"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            mediaUserAgent = it
+        }
+        (gateway["warmCookies"] as? Boolean)?.let { warmCookies = it }
+        (gateway["resolveEmbedApi"] as? Boolean)?.let { resolveEmbedApi = it }
+        gateway["licenseAuthHeader"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            licenseAuthHeader = it
+        }
+        gateway["blockedPageMarker"]?.toString()?.trim()?.takeIf { it.length >= 3 }?.let {
+            blockedPageMarker = it
+        }
     }
 
     fun parseQuality(raw: String?): StreamQuality {

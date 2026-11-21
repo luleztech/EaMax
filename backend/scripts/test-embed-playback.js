@@ -34,6 +34,10 @@ assert.strictEqual(relative.streamUrl, 'https://panel.example.com/hls/playlist.m
 assert.strictEqual(isEmbedPlaybackUrl(media), false);
 assert.strictEqual(isEmbedPlaybackUrl('https://panel.example.com/embed/channel'), true);
 assert.strictEqual(isEmbedPlaybackUrl('https://panel.example.com/live.php'), true);
+assert.strictEqual(
+  isEmbedPlaybackUrl('https://sokamax.live/embed.php?app=187&key=abc'),
+  true,
+);
 assert.strictEqual(isPublicHttpUrl('http://127.0.0.1/embed/x'), false);
 assert.strictEqual(isPublicHttpUrl('http://169.254.169.254/latest'), false);
 assert.strictEqual(extractEmbeddedStream('<a href="http://127.0.0.1/secret.m3u8">x</a>', page), null);

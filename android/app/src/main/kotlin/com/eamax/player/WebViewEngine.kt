@@ -41,7 +41,7 @@ class WebViewEngine(
     private var preferredAudioLanguage = "sw"
     private var lastLoadedAudioLanguage = ""
     private var audioLanguageConfirmed = false
-    private var zoomMode = "contain"
+    private var zoomMode = "fit"
     private var pageLoadGeneration = 0
     private var pageFinishRunnable: Runnable? = null
     private var captchaPollRunnable: Runnable? = null
@@ -63,7 +63,11 @@ class WebViewEngine(
         audioLang: String = preferredAudioLanguage,
     ): Map<String, String> {
         val lang = normalizeAudioLanguage(audioLang)
-        val h = PlaybackBrowserHeaders.buildForUrl(session.mpdUrl, session.headers, lang)
+        // Same as Washa: merge PlaybackHttpHeaders so X-Requested-With is set.
+        val h = PlaybackHttpHeaders.merge(
+            PlaybackBrowserHeaders.buildForUrl(session.mpdUrl, session.headers, lang),
+            session.mpdUrl,
+        )
         if (session.token.isNotBlank() &&
             !h.keys.any { it.equals("Authorization", ignoreCase = true) }
         ) {
@@ -261,6 +265,7 @@ class WebViewEngine(
                     wv,
                     GatewayPlaybackJs.silentRecaptchaBypassScript() + "\n" +
                         GatewayPlaybackJs.playerCaptureHookScript() + "\n" +
+                        GatewayPlaybackJs.emePlayReadyToWidevineScript() + "\n" +
                         GatewayPlaybackJs.widevineL3FallbackScript(),
                     setOf("*"),
                 )
@@ -367,6 +372,7 @@ class WebViewEngine(
     }
 
     private fun injectWidevineL3Fallback() {
+        webView?.evaluateJavascript(GatewayPlaybackJs.emePlayReadyToWidevineScript(), null)
         webView?.evaluateJavascript(GatewayPlaybackJs.widevineL3FallbackScript(), null)
     }
 
@@ -414,18 +420,20 @@ class WebViewEngine(
 
     fun setZoomMode(mode: String) {
         zoomMode = when (mode.lowercase().trim()) {
-            "fill", "cover", "zoom" -> "fill"
-            "stretched", "stretch" -> "stretched"
-            "normal", "fit" -> "normal"
-            else -> "contain"
+            "kuza", "fill", "cover", "zoom" -> "kuza"
+            "jaza", "stretched", "stretch" -> "jaza"
+            "contain", "fixed_width", "fixed-width" -> "contain"
+            "fit", "normal" -> "fit"
+            else -> "fit"
         }
         applyZoomMode()
     }
 
     private fun applyZoomMode() {
+        // Fit/Contain → contain; Kuza → cover; Jaza → fill.
         val fit = when (zoomMode) {
-            "fill" -> "cover"
-            "stretched" -> "fill"
+            "kuza" -> "cover"
+            "jaza" -> "fill"
             else -> "contain"
         }
         webView?.evaluateJavascript(

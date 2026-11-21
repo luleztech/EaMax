@@ -122,6 +122,14 @@ const ControlCenterSection = () => {
     softwareDecodeFallback: true,
     backgroundPlayback: false,
     resumePlayback: true,
+    gatewayPolicy: {
+      appPackageHeader: 'com.washatv',
+      mediaUserAgent: 'ExoPlayer',
+      warmCookies: true,
+      resolveEmbedApi: true,
+      licenseAuthHeader: 'nv-authorizations',
+      blockedPageMarker: 'App Haijatambuliwa',
+    },
   });
 
   const [emergency, setEmergency] = useState({
@@ -146,6 +154,7 @@ const ControlCenterSection = () => {
         adminControlAPI.getEmergencyControls(),
       ]);
       const pc = playerRes?.config || {};
+      const gp = pc.gatewayPolicy || {};
       setPlayerConfig({
         preferredEngine: normalizePlayerEngine(pc.preferredEngine) === 'default'
           ? 'auto'
@@ -159,6 +168,14 @@ const ControlCenterSection = () => {
         softwareDecodeFallback: pc.softwareDecodeFallback !== false,
         backgroundPlayback: pc.backgroundPlayback === true,
         resumePlayback: pc.resumePlayback !== false,
+        gatewayPolicy: {
+          appPackageHeader: gp.appPackageHeader || 'com.washatv',
+          mediaUserAgent: gp.mediaUserAgent || 'ExoPlayer',
+          warmCookies: gp.warmCookies !== false,
+          resolveEmbedApi: gp.resolveEmbedApi !== false,
+          licenseAuthHeader: gp.licenseAuthHeader || 'nv-authorizations',
+          blockedPageMarker: gp.blockedPageMarker || 'App Haijatambuliwa',
+        },
       });
       const ec = emergencyRes?.controls || {};
       setEmergency({
@@ -197,6 +214,14 @@ const ControlCenterSection = () => {
         softwareDecodeFallback: playerConfig.softwareDecodeFallback,
         backgroundPlayback: playerConfig.backgroundPlayback,
         resumePlayback: playerConfig.resumePlayback,
+        gatewayPolicy: {
+          appPackageHeader: playerConfig.gatewayPolicy?.appPackageHeader || 'com.washatv',
+          mediaUserAgent: playerConfig.gatewayPolicy?.mediaUserAgent || 'ExoPlayer',
+          warmCookies: playerConfig.gatewayPolicy?.warmCookies !== false,
+          resolveEmbedApi: playerConfig.gatewayPolicy?.resolveEmbedApi !== false,
+          licenseAuthHeader: playerConfig.gatewayPolicy?.licenseAuthHeader || 'nv-authorizations',
+          blockedPageMarker: playerConfig.gatewayPolicy?.blockedPageMarker || 'App Haijatambuliwa',
+        },
       });
       showStatus('Imefanikiwa', 'Player imehifadhiwa. Watumiaji wataitumia mara moja.');
     } catch (e) {
@@ -377,6 +402,91 @@ const ControlCenterSection = () => {
             onChange={(v) => setPlayerConfig((p) => ({ ...p, failoverToWebview: v }))}
           />
 
+          <Text style={[cardStyles.fieldLabel, { marginTop: 18 }]}>Embed / gateway (remote)</Text>
+          <Text style={styles.hint}>
+            Changes here reach users on next config refresh — no app store update.
+          </Text>
+          <Text style={cardStyles.fieldLabel}>App package header (X-Requested-With)</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={playerConfig.gatewayPolicy?.appPackageHeader || 'com.washatv'}
+            onChangeText={(t) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, appPackageHeader: t },
+              }))
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="com.washatv"
+            placeholderTextColor="#6b7280"
+          />
+          <Text style={cardStyles.fieldLabel}>Media User-Agent</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={playerConfig.gatewayPolicy?.mediaUserAgent || 'ExoPlayer'}
+            onChangeText={(t) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, mediaUserAgent: t },
+              }))
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="ExoPlayer"
+            placeholderTextColor="#6b7280"
+          />
+          <Text style={cardStyles.fieldLabel}>License auth header</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={playerConfig.gatewayPolicy?.licenseAuthHeader || 'nv-authorizations'}
+            onChangeText={(t) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, licenseAuthHeader: t },
+              }))
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="nv-authorizations"
+            placeholderTextColor="#6b7280"
+          />
+          <Text style={cardStyles.fieldLabel}>Blocked-page marker</Text>
+          <TextInput
+            style={cardStyles.input}
+            value={playerConfig.gatewayPolicy?.blockedPageMarker || 'App Haijatambuliwa'}
+            onChangeText={(t) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, blockedPageMarker: t },
+              }))
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="App Haijatambuliwa"
+            placeholderTextColor="#6b7280"
+          />
+          <ToggleRow
+            label="Resolve embed.php via player.php API"
+            value={playerConfig.gatewayPolicy?.resolveEmbedApi !== false}
+            onChange={(v) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, resolveEmbedApi: v },
+              }))
+            }
+          />
+          <ToggleRow
+            label="Warm cookies on embed page first"
+            value={playerConfig.gatewayPolicy?.warmCookies !== false}
+            onChange={(v) =>
+              setPlayerConfig((p) => ({
+                ...p,
+                gatewayPolicy: { ...p.gatewayPolicy, warmCookies: v },
+              }))
+            }
+          />
+
           <TouchableOpacity style={cardStyles.saveBtn} onPress={savePlayer} disabled={savingPlayer}>
             {savingPlayer ? (
               <ActivityIndicator size="small" color="#fff" />
@@ -471,6 +581,12 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
     paddingBottom: 100,
+  },
+  hint: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 10,
   },
   activeBanner: {
     flexDirection: 'row',

@@ -43,7 +43,10 @@ object PlaybackBrowserHeaders {
             if (audioLang == "en") "en-US,en;q=0.9,sw;q=0.8" else "sw-TZ,sw;q=0.9,en;q=0.8",
         )
         h.putIfAbsent("Connection", "keep-alive")
-        h.putIfAbsent("User-Agent", CHROME_MOBILE_UA)
+        h.putIfAbsent(
+            "User-Agent",
+            PlayerRuntimeConfig.pageUserAgent.ifBlank { CHROME_MOBILE_UA },
+        )
         h.putIfAbsent("Sec-Fetch-Dest", "document")
         h.putIfAbsent("Sec-Fetch-Mode", "navigate")
         // same-origin when we already send Referer/Origin — "none" looks like a bot probe.
@@ -59,9 +62,14 @@ object PlaybackBrowserHeaders {
         )
         h.putIfAbsent("sec-ch-ua-mobile", "?1")
         h.putIfAbsent("sec-ch-ua-platform", "\"Android\"")
-        // PHP gateways (sp1.php, etc.) require the app package header.
-        if (trimmed.contains(".php", ignoreCase = true)) {
-            h.putIfAbsent("X-Requested-With", "com.eamax")
+        // Admin-managed package marker (Control Center → gateway policy).
+        if (StreamUrlClassifier.shouldUseWebViewForUrl(trimmed) ||
+            trimmed.contains(".php", ignoreCase = true)
+        ) {
+            h.putIfAbsent(
+                "X-Requested-With",
+                PlayerRuntimeConfig.appPackageHeader.ifBlank { "com.washatv" },
+            )
         }
         return h
     }

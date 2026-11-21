@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -63,7 +64,9 @@ class OrizonPlayerFactory(private val context: Context) {
         val maxVideoHeight = preferences.maxVideoHeight()
         val trackSelector = DefaultTrackSelector(context)
         trackSelector.parameters = trackSelector.buildUponParameters()
-            .setPreferredAudioLanguage(preferredAudioLanguage.ifBlank { "sw" })
+            .setPreferredAudioLanguages(
+                *preferredAudioLanguageAliases(preferredAudioLanguage).toTypedArray(),
+            )
             .setMaxVideoSize(Int.MAX_VALUE, maxVideoHeight)
             .setForceHighestSupportedBitrate(false)
             .setTunnelingEnabled(false)
@@ -136,12 +139,18 @@ class OrizonPlayerFactory(private val context: Context) {
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
         }
 
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         return ExoPlayer.Builder(context)
             .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setHandleAudioBecomingNoisy(true)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build()
@@ -149,6 +158,7 @@ class OrizonPlayerFactory(private val context: Context) {
                 videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
                 videoChangeFrameRateStrategy = C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
                 setForegroundMode(true)
+                volume = 1f
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = true
             }
@@ -300,18 +310,18 @@ class OrizonPlayerFactory(private val context: Context) {
             DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 ->
                 MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
                     .setLicenseUri(session.licenseUrl.takeIf { it.isNotBlank() })
-                    .setLicenseRequestHeaders(headers)
-                    .setMultiSession(false)
+                    .setLicenseRequestHeaders(licenseRequestHeaders(session, headers))
+                    .setMultiSession(true)
                     .build()
             DrmType.PLAYREADY ->
                 MediaItem.DrmConfiguration.Builder(C.PLAYREADY_UUID)
                     .setLicenseUri(session.licenseUrl.takeIf { it.isNotBlank() })
-                    .setLicenseRequestHeaders(headers)
-                    .setMultiSession(false)
+                    .setLicenseRequestHeaders(licenseRequestHeaders(session, headers))
+                    .setMultiSession(true)
                     .build()
             DrmType.CLEARKEY ->
                 MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID)
-                    .setMultiSession(false)
+                    .setMultiSession(true)
                     .build()
             DrmType.NONE ->
                 MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID).build()
@@ -322,34 +332,87 @@ class OrizonPlayerFactory(private val context: Context) {
         session: StreamSession,
         headers: Map<String, String>,
     ): DefaultDrmSessionManager {
+        val licenseHeaders = licenseRequestHeaders(session, headers)
         return when (session.drmType) {
             DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 ->
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(C.WIDEVINE_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setMultiSession(true)
                     .setPlayClearSamplesWithoutKeys(true)
                     .build(
                         HttpMediaDrmCallback(
                             session.licenseUrl,
-                            OrizonStreamClient.dataSourceFactory(headers),
-                        ),
+                            OrizonStreamClient.dataSourceFactory(licenseHeaders),
+                        ).also { cb ->
+                            licenseHeaders.forEach { (k, v) -> cb.setKeyRequestProperty(k, v) }
+                        },
                     )
             DrmType.PLAYREADY ->
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(C.PLAYREADY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setMultiSession(true)
                     .setPlayClearSamplesWithoutKeys(true)
                     .build(
                         HttpMediaDrmCallback(
                             session.licenseUrl,
-                            OrizonStreamClient.dataSourceFactory(headers),
-                        ),
+                            OrizonStreamClient.dataSourceFactory(licenseHeaders),
+                        ).also { cb ->
+                            licenseHeaders.forEach { (k, v) -> cb.setKeyRequestProperty(k, v) }
+                        },
                     )
             DrmType.CLEARKEY ->
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setMultiSession(true)
                     .setPlayClearSamplesWithoutKeys(true)
                     .build(LocalMediaDrmCallback(buildClearKeyJson(session)))
             DrmType.NONE ->
                 throw IllegalArgumentException("No DRM")
+        }
+    }
+
+    /**
+     * Nagra / Widevine license filter (sokamax_setup.pdf):
+     * `authXmlToken` → HTTP header `nv-authorizations` on the license POST.
+     */
+    private fun licenseRequestHeaders(
+        session: StreamSession,
+        mediaHeaders: Map<String, String>,
+    ): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        session.drmData.headers?.let { out.putAll(it) }
+        val licenseAuth = PlayerRuntimeConfig.licenseAuthHeader.ifBlank { "nv-authorizations" }
+        mediaHeaders.forEach { (k, v) ->
+            val lk = k.lowercase()
+            if (lk == licenseAuth.lowercase() || lk == "nv-authorizations" ||
+                lk == "user-agent" || lk == "referer" || lk == "origin"
+            ) {
+                out[k] = v
+            }
+        }
+        val auth = session.token.trim()
+        if (auth.isNotEmpty() &&
+            !out.keys.any {
+                it.equals(licenseAuth, ignoreCase = true) ||
+                    it.equals("nv-authorizations", ignoreCase = true)
+            }
+        ) {
+            out[licenseAuth] = auth
+        }
+        out.putIfAbsent(
+            "User-Agent",
+            PlayerRuntimeConfig.mediaUserAgent.ifBlank { "ExoPlayer" },
+        )
+        return out
+    }
+
+    private fun preferredAudioLanguageAliases(preferred: String): List<String> {
+        val p = preferred.trim().lowercase()
+        return when {
+            p == "en" || p.startsWith("en-") || p == "eng" ->
+                listOf("en", "eng", "en-US", "en-GB", "sw", "swa")
+            else ->
+                listOf("sw", "swa", "sw-TZ", "sw-KE", "en", "eng")
         }
     }
 
@@ -378,11 +441,36 @@ class OrizonPlayerFactory(private val context: Context) {
         val sessionHeaders = LinkedHashMap<String, String>()
         session.drmData.headers?.let { sessionHeaders.putAll(it) }
         sessionHeaders.putAll(session.headers)
-        val headers = PlaybackHttpHeaders.merge(sessionHeaders, session.mpdUrl)
-        if (session.token.isNotEmpty() &&
-            headers.keys.none { it.equals("Authorization", ignoreCase = true) }
-        ) {
-            headers["Authorization"] = "Bearer ${session.token}"
+        // SokaMax / Nagra: prefer resolver headers (User-Agent ExoPlayer, Referer, nv-authorizations).
+        val licenseAuth = PlayerRuntimeConfig.licenseAuthHeader.ifBlank { "nv-authorizations" }
+        val hasNvAuth = sessionHeaders.keys.any {
+            it.equals(licenseAuth, ignoreCase = true) ||
+                it.equals("nv-authorizations", ignoreCase = true)
+        } || (session.token.isNotEmpty() && session.licenseUrl.isNotBlank())
+        val headers = if (hasNvAuth) {
+            // Keep resolver headers intact — do not strip Referer for CDN MPD.
+            LinkedHashMap(sessionHeaders).also { h ->
+                h.putIfAbsent(
+                    "User-Agent",
+                    PlayerRuntimeConfig.mediaUserAgent.ifBlank { "ExoPlayer" },
+                )
+                if (session.token.isNotEmpty() &&
+                    h.keys.none {
+                        it.equals(licenseAuth, ignoreCase = true) ||
+                            it.equals("nv-authorizations", ignoreCase = true)
+                    }
+                ) {
+                    h[licenseAuth] = session.token
+                }
+            }
+        } else {
+            PlaybackHttpHeaders.merge(sessionHeaders, session.mpdUrl).also { h ->
+                if (session.token.isNotEmpty() &&
+                    h.keys.none { it.equals("Authorization", ignoreCase = true) }
+                ) {
+                    h["Authorization"] = "Bearer ${session.token}"
+                }
+            }
         }
         Log.i(TAG, "request headers keys=${headers.keys.sorted()}")
         return headers

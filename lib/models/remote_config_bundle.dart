@@ -226,6 +226,60 @@ class RemoteSubscriptionPlan {
   }
 }
 
+class RemoteGatewayPolicy {
+  const RemoteGatewayPolicy({
+    this.appPackageHeader = 'com.washatv',
+    this.pageUserAgent =
+        'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    this.mediaUserAgent = 'ExoPlayer',
+    this.warmCookies = true,
+    this.resolveEmbedApi = true,
+    this.licenseAuthHeader = 'nv-authorizations',
+    this.blockedPageMarker = 'App Haijatambuliwa',
+  });
+
+  final String appPackageHeader;
+  final String pageUserAgent;
+  final String mediaUserAgent;
+  final bool warmCookies;
+  final bool resolveEmbedApi;
+  final String licenseAuthHeader;
+  final String blockedPageMarker;
+
+  factory RemoteGatewayPolicy.fromJson(Map<String, dynamic>? json) {
+    if (json == null || json.isEmpty) return const RemoteGatewayPolicy();
+    return RemoteGatewayPolicy(
+      appPackageHeader: json['appPackageHeader']?.toString().trim().isNotEmpty == true
+          ? json['appPackageHeader'].toString().trim()
+          : 'com.washatv',
+      pageUserAgent: json['pageUserAgent']?.toString().trim().isNotEmpty == true
+          ? json['pageUserAgent'].toString().trim()
+          : const RemoteGatewayPolicy().pageUserAgent,
+      mediaUserAgent: json['mediaUserAgent']?.toString().trim().isNotEmpty == true
+          ? json['mediaUserAgent'].toString().trim()
+          : 'ExoPlayer',
+      warmCookies: json['warmCookies'] != false,
+      resolveEmbedApi: json['resolveEmbedApi'] != false,
+      licenseAuthHeader: json['licenseAuthHeader']?.toString().trim().isNotEmpty == true
+          ? json['licenseAuthHeader'].toString().trim()
+          : 'nv-authorizations',
+      blockedPageMarker: json['blockedPageMarker']?.toString().trim().isNotEmpty == true
+          ? json['blockedPageMarker'].toString().trim()
+          : 'App Haijatambuliwa',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'appPackageHeader': appPackageHeader,
+        'pageUserAgent': pageUserAgent,
+        'mediaUserAgent': mediaUserAgent,
+        'warmCookies': warmCookies,
+        'resolveEmbedApi': resolveEmbedApi,
+        'licenseAuthHeader': licenseAuthHeader,
+        'blockedPageMarker': blockedPageMarker,
+      };
+}
+
 class RemotePlayerConfig {
   const RemotePlayerConfig({
     required this.preferredEngine,
@@ -247,6 +301,7 @@ class RemotePlayerConfig {
     required this.reconnectionPolicy,
     required this.qualitiesAllowed,
     required this.languagesAllowed,
+    this.gatewayPolicy = const RemoteGatewayPolicy(),
   });
 
   final String preferredEngine;
@@ -268,10 +323,12 @@ class RemotePlayerConfig {
   final String reconnectionPolicy;
   final List<String> qualitiesAllowed;
   final List<String> languagesAllowed;
+  final RemoteGatewayPolicy gatewayPolicy;
 
   factory RemotePlayerConfig.fromJson(Map<String, dynamic> json) {
     final qualities = json['qualitiesAllowed'];
     final languages = json['languagesAllowed'];
+    final gatewayRaw = json['gatewayPolicy'] ?? json['gateway_policy'];
     return RemotePlayerConfig(
       preferredEngine: json['preferredEngine']?.toString() ?? 'auto',
       bufferMinMs: int.tryParse('${json['bufferMinMs']}') ?? 10000,
@@ -296,6 +353,9 @@ class RemotePlayerConfig {
       languagesAllowed: languages is List
           ? languages.map((e) => e.toString()).where((e) => e == 'sw' || e == 'en').toList()
           : const ['sw', 'en'],
+      gatewayPolicy: RemoteGatewayPolicy.fromJson(
+        gatewayRaw is Map ? Map<String, dynamic>.from(gatewayRaw) : null,
+      ),
     );
   }
 

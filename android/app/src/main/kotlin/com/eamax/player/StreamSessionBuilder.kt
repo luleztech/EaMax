@@ -57,20 +57,26 @@ object StreamSessionBuilder {
 
         val playbackEngine = b.getString("playbackEngine")?.trim().orEmpty().lowercase()
         val gatewayPage = isGatewayPage(url)
+        // Embed/gateway pages are not app-level DRM — resolve first, then attach DRM on the MPD.
+        val sessionDrmType = if (gatewayPage) DrmType.NONE else drmType
+        val sessionLicense = if (gatewayPage) "" else licenseUrl
+        val sessionDrmData = if (gatewayPage) DrmData(headers = null) else drmData
+        // Prefer Exo after gateway resolve; WebView is failover only.
         val playerMode = when {
             !gatewayPage -> PlayerMode.EXO
-            playbackEngine == "exo" || playbackEngine == "kotlin" -> PlayerMode.EXO
-            else -> PlayerMode.WEB
+            playbackEngine == "webview" || playbackEngine == "webplayer" || playbackEngine == "shaka" ->
+                PlayerMode.WEB
+            else -> PlayerMode.EXO
         }
 
         return StreamSession(
             mpdUrl = url,
-            licenseUrl = licenseUrl,
+            licenseUrl = sessionLicense,
             token = token,
             expiresAt = expiresAt,
             playerMode = playerMode,
-            drmType = drmType,
-            drmData = drmData,
+            drmType = sessionDrmType,
+            drmData = sessionDrmData,
             trialRemaining = 999_999,
             channelIsPremium = false,
             headers = headers,

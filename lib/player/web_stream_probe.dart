@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
+import '../services/remote_config_service.dart';
 import 'gateway_stream_extractor.dart';
 import 'manifest_url_extractor.dart';
 import 'stream_url_classifier.dart';
@@ -112,15 +115,26 @@ class WebStreamProbe {
     WebPlaybackConfig config,
     Map<String, String> headers,
   ) async {
+    // SokaMax: embed.php?app=&key= → player.php?api=1 before HTML scrape.
+    final api = await _resolveEmbedApi(url, headers);
+    if (api != null) return api;
+
     try {
       final html = await _fetchBody(url, headers, gatewayStyle: true);
+      final fromHtml = await _resolveEmbedApi(url, headers, html: html);
+      if (fromHtml != null) return fromHtml;
+
       final extracted = GatewayStreamExtractor.extract(html) ??
           GatewayStreamExtractor.extractDrmFromHtml(html);
       if (extracted != null && extracted.streamUrl.startsWith('http')) {
         final merged = Map<String, String>.from(headers);
-        if (extracted.authToken.isNotEmpty &&
-            !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
-          merged['Authorization'] = 'Bearer ${extracted.authToken}';
+        // authXmlToken → admin-configured license auth header.
+        if (extracted.authToken.isNotEmpty) {
+          final authHeader = RemoteConfigService
+              .playerConfig.gatewayPolicy.licenseAuthHeader
+              .trim();
+          merged[authHeader.isNotEmpty ? authHeader : 'nv-authorizations'] =
+              extracted.authToken;
         }
         final license = extracted.licenseUrl.isNotEmpty
             ? extracted.licenseUrl
@@ -169,6 +183,196 @@ class WebStreamProbe {
     } catch (_) {}
 
     return _gatewayFallback(url, config, headers);
+  }
+
+  /// Same as Washa [GatewayEmbedResolver]: warm embed page, then
+  /// `player.php?api=1` → mpdPath + licenseUrl + authXmlToken.
+  /// Details (package header, UAs, markers) come from admin gateway policy.
+  static Future<WebStreamProbeResult?> _resolveEmbedApi(
+    String playerUrl,
+    Map<String, String> headers, {
+    String? html,
+  }) async {
+    final policy = RemoteConfigService.playerConfig.gatewayPolicy;
+    if (!policy.resolveEmbedApi) return null;
+
+    final uri = Uri.tryParse(playerUrl);
+    if (uri == null || uri.host.isEmpty) return null;
+    final origin = '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}';
+    final pkg = policy.appPackageHeader.trim().isNotEmpty
+        ? policy.appPackageHeader.trim()
+        : 'com.washatv';
+    final pageUa = policy.pageUserAgent.trim().isNotEmpty
+        ? policy.pageUserAgent.trim()
+        : _browserUa;
+    final mediaUa = policy.mediaUserAgent.trim().isNotEmpty
+        ? policy.mediaUserAgent.trim()
+        : 'ExoPlayer';
+    final licenseAuth = policy.licenseAuthHeader.trim().isNotEmpty
+        ? policy.licenseAuthHeader.trim()
+        : 'nv-authorizations';
+    final blocked = policy.blockedPageMarker.trim().isNotEmpty
+        ? policy.blockedPageMarker.trim()
+        : 'App Haijatambuliwa';
+
+    var pageHtml = html;
+    if (pageHtml == null || pageHtml.isEmpty) {
+      if (policy.warmCookies) {
+        try {
+          final warmHeaders = Map<String, String>.from(headers)
+            ..['User-Agent'] = pageUa
+            ..['X-Requested-With'] = pkg
+            ..['Accept'] =
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            ..['Referer'] = '$origin/';
+          final warm = await http
+              .get(uri, headers: warmHeaders)
+              .timeout(const Duration(seconds: 15));
+          pageHtml = warm.body;
+          if (pageHtml.contains(blocked)) return null;
+        } catch (_) {
+          pageHtml = '';
+        }
+      } else {
+        pageHtml = '';
+      }
+    } else if (pageHtml.contains(blocked)) {
+      return null;
+    }
+
+    final apiUrl = _findEmbedApiUrl(playerUrl, pageHtml ?? '');
+    if (apiUrl == null || apiUrl.isEmpty) return null;
+
+    final hdrs = <String, String>{
+      'User-Agent': pageUa,
+      'Accept': 'application/json',
+      'X-Requested-With': pkg,
+      'Referer': '$origin/',
+      if (headers['Origin'] != null) 'Origin': headers['Origin']!,
+    };
+
+    try {
+      final response = await http
+          .get(Uri.parse(apiUrl), headers: hdrs)
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return null;
+      final body = response.body.trim();
+      if (!body.startsWith('{')) return null;
+      final data = jsonDecode(body);
+      if (data is! Map) return null;
+      final success = data['success'];
+      final hasMpd = '${data['mpdPath'] ?? ''}'.trim().isNotEmpty;
+      if (success == false && !hasMpd) return null;
+      final streamUrl = '${data['mpdPath'] ?? data['streamUrl'] ?? data['url'] ?? ''}'.trim();
+      if (!streamUrl.toLowerCase().startsWith('http')) return null;
+      final licenseUrl = '${data['licenseUrl'] ?? ''}'.trim();
+      final authXmlToken =
+          '${data['authXmlToken'] ?? data['authToken'] ?? ''}'.trim();
+      final drmRaw = '${data['drmType'] ?? ''}'.toLowerCase();
+      final drm = drmRaw.contains('clearkey')
+          ? 'CLEARKEY'
+          : (drmRaw.contains('widevine') || licenseUrl.isNotEmpty)
+              ? 'WIDEVINE'
+              : 'NONE';
+      final playHeaders = <String, String>{
+        'User-Agent': mediaUa,
+        'Referer': '$origin/',
+        'Origin': origin,
+        if (authXmlToken.isNotEmpty) licenseAuth: authXmlToken,
+      };
+      final isHls = streamUrl.toLowerCase().contains('.m3u8');
+      return WebStreamProbeResult(
+        kind: isHls ? WebResolvedKind.hls : WebResolvedKind.dash,
+        playbackUrl: streamUrl,
+        originalUrl: playerUrl,
+        headers: playHeaders,
+        licenseUrl: licenseUrl,
+        authToken: authXmlToken,
+        drmType: drm == 'WIDEVINE' && licenseUrl.isEmpty ? 'NONE' : drm,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? _findEmbedApiUrl(String gatewayUrl, String html) {
+    final inline = RegExp(
+      r'''API_URL\s*=\s*["']([^"']+)["']''',
+      caseSensitive: false,
+    ).firstMatch(html)?.group(1)?.trim();
+    if (inline != null && inline.isNotEmpty) {
+      return _absolutize(gatewayUrl, inline.replaceAll(r'\u0026', '&').replaceAll(r'\/', '/'));
+    }
+
+    final uri = Uri.tryParse(gatewayUrl);
+    if (uri == null) return null;
+    final path = uri.path.toLowerCase();
+    if (path.contains('embed.php') || path.contains('player.php')) {
+      final app = uri.queryParameters['app']?.trim() ?? '';
+      final key = uri.queryParameters['key']?.trim() ?? '';
+      if (app.isNotEmpty && key.isNotEmpty) {
+        final playerPath = uri.path.replaceAll(RegExp(r'embed\.php', caseSensitive: false), 'player.php');
+        return uri.replace(
+          path: playerPath,
+          queryParameters: {
+            'app': app,
+            'key': key,
+            'api': '1',
+            't': '${DateTime.now().millisecondsSinceEpoch}',
+          },
+        ).toString();
+      }
+    }
+
+    final href = RegExp(
+      r'''(?:href|src)=["']([^"']*player\.php\?[^"']+)["']''',
+      caseSensitive: false,
+    ).firstMatch(html)?.group(1)?.trim();
+    if (href != null && href.isNotEmpty) {
+      final abs = _absolutize(gatewayUrl, href);
+      if (abs.contains('api=')) return abs;
+      final parsed = Uri.parse(abs);
+      return parsed.replace(queryParameters: {
+        ...parsed.queryParameters,
+        'api': '1',
+        't': '${DateTime.now().millisecondsSinceEpoch}',
+      }).toString();
+    }
+
+    // Fallback: scrape app/key from HTML when URL has no query.
+    final app = _pickHtmlParam(html, 'app');
+    final key = _pickHtmlParam(html, 'key');
+    if (app.isNotEmpty && key.isNotEmpty && uri.host.isNotEmpty) {
+      final origin = '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}';
+      return '$origin/player.php?app=${Uri.encodeQueryComponent(app)}&key=${Uri.encodeQueryComponent(key)}&api=1';
+    }
+    return null;
+  }
+
+  static String _absolutize(String baseUrl, String maybeRelative) {
+    final t = maybeRelative.trim();
+    if (t.startsWith('http://') || t.startsWith('https://')) return t;
+    final base = Uri.parse(baseUrl);
+    if (t.startsWith('/')) return '${base.scheme}://${base.authority}$t';
+    final parent = base.path.substring(0, base.path.lastIndexOf('/') + 1);
+    return '${base.scheme}://${base.authority}$parent$t';
+  }
+
+  static String _pickHtmlParam(String html, String name) {
+    final patterns = name == 'app'
+        ? [
+            RegExp(r"[?&]app=([^&'\s<>]+)", caseSensitive: false),
+            RegExp(r'''['"]app['"]\s*:\s*['"]?([^'",\s}]+)['"]?''', caseSensitive: false),
+          ]
+        : [
+            RegExp(r"[?&]key=([^&'\s<>]+)", caseSensitive: false),
+            RegExp(r'''['"]key['"]\s*:\s*['"]([^'"]+)['"]''', caseSensitive: false),
+          ];
+    for (final re in patterns) {
+      final v = re.firstMatch(html)?.group(1)?.trim() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    return '';
   }
 
   static WebStreamProbeResult _gatewayFallback(

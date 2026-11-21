@@ -1,7 +1,18 @@
 import './cdn_token_headers.dart';
+import '../services/remote_config_service.dart';
 
 const _chromeMobileUa =
     'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+
+String _pageUserAgent() {
+  final ua = RemoteConfigService.playerConfig.gatewayPolicy.pageUserAgent.trim();
+  return ua.isNotEmpty ? ua : _chromeMobileUa;
+}
+
+String _appPackageHeader() {
+  final pkg = RemoteConfigService.playerConfig.gatewayPolicy.appPackageHeader.trim();
+  return pkg.isNotEmpty ? pkg : 'com.washatv';
+}
 
 /// Direct HLS/DASH/file URLs. Browser page headers (`Origin`, `Sec-Fetch-Dest: document`)
 /// make these servers answer 403. Token CDNs and `.php` gateways still need those headers.
@@ -38,8 +49,8 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
   if (!parsed.hasScheme || !parsed.hasAuthority) return const {};
 
   if (isDirectMediaUrl(u)) {
-    return const {
-      'User-Agent': _chromeMobileUa,
+    return {
+      'User-Agent': _pageUserAgent(),
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9,sw;q=0.8',
       'Connection': 'keep-alive',
@@ -54,7 +65,7 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
   final headers = <String, String>{
     'Referer': referer,
     'Origin': origin,
-    'User-Agent': _chromeMobileUa,
+    'User-Agent': _pageUserAgent(),
     'Connection': 'keep-alive',
     'Accept-Language': 'en-US,en;q=0.9,sw;q=0.8',
     'Accept':
@@ -65,9 +76,16 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
-  // Hostinger PHP gateways reject requests without the app package header.
-  if (u.toLowerCase().contains('.php')) {
-    headers['X-Requested-With'] = 'com.eamax';
+  // Admin-managed package marker (Control Center → gateway policy).
+  final lower = u.toLowerCase();
+  if (lower.contains('.php') ||
+      lower.contains('.html') ||
+      lower.contains('.htm') ||
+      lower.contains('/embed/') ||
+      lower.contains('/gateway/') ||
+      lower.contains('/player/') ||
+      lower.contains('/play/')) {
+    headers['X-Requested-With'] = _appPackageHeader();
   }
   return headers;
 }

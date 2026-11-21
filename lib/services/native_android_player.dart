@@ -75,6 +75,7 @@ class NativeAndroidPlayer {
     required bool resumePlayback,
     required int networkTimeoutMs,
     required String reconnectionPolicy,
+    Map<String, dynamic>? gatewayPolicy,
   }) async {
     if (!supported) return;
     await _channel.invokeMethod<void>('updatePlayerConfig', <String, dynamic>{
@@ -95,6 +96,7 @@ class NativeAndroidPlayer {
       'resumePlayback': resumePlayback,
       'networkTimeoutMs': networkTimeoutMs,
       'reconnectionPolicy': reconnectionPolicy,
+      if (gatewayPolicy != null) 'gatewayPolicy': gatewayPolicy,
     });
   }
 
@@ -116,6 +118,7 @@ class NativeAndroidPlayer {
     'resumePlayback': policy.resumePlayback,
     'networkTimeoutMs': policy.networkTimeoutMs,
     'reconnectionPolicy': policy.reconnectionPolicy,
+    'gatewayPolicy': policy.gatewayPolicy.toJson(),
   };
 
   static String _encodeFallbackStreams(List<PlaybackStream>? streams) {

@@ -6,8 +6,11 @@ const { query } = require('../db');
 const BROWSER_UA =
   'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
-const SUCCESS_TTL_MS = 45 * 1000;
+/** SokaMax setup: cache resolved embeds ~60s (upstream rate-limits player.php). */
+const SUCCESS_TTL_MS = 60 * 1000;
 const FAILURE_TTL_MS = 15 * 1000;
+/** Same authorized package marker Washa sends (host accepts com.washatv). */
+const EMBED_PACKAGE_NAME = process.env.EMBED_PACKAGE_NAME || 'com.washatv';
 const RELAY_TTL_MS = 4 * 60 * 60 * 1000;
 const HTML_MAX_BYTES = 512 * 1024;
 const PLAYLIST_MAX_BYTES = 2 * 1024 * 1024;
@@ -251,19 +254,96 @@ function buildResolved(streamUrl, pageUrl, extra = {}) {
   const licenseUrl = String(extra.licenseUrl || '').trim();
   const clearKeyRaw = String(extra.clearKeyRaw || '').trim();
   const authorization = String(extra.authorization || '').trim();
+  const nvAuthorizations = String(extra.nvAuthorizations || '').trim();
   let drmType = 'NONE';
   if (licenseUrl) drmType = /playready/i.test(licenseUrl) ? 'PLAYREADY' : 'WIDEVINE';
   else if (clearKeyRaw) drmType = 'CLEARKEY';
   return {
     streamUrl,
     kind: kindForUrl(streamUrl),
-    referer: page.referer,
+    referer: extra.referer || page.referer,
     origin: page.origin,
     authorization,
+    /** Nagra / SokaMax: must be sent as HTTP header nv-authorizations on license POST. */
+    nvAuthorizations,
     licenseUrl: isPublicHttpUrl(licenseUrl) ? licenseUrl : '',
     clearKeyRaw,
-    drmType,
+    drmType: extra.drmType || drmType,
   };
+}
+
+/** SokaMax: embed.php?app=&key= → player.php?app=&key=&api=1 (sokamax_setup.pdf). */
+function isEmbedApiPlayer(parsed) {
+  try {
+    const path = String(parsed.pathname || '').toLowerCase();
+    const isEmbed = path.endsWith('/embed.php') || path.endsWith('embed.php');
+    const isPlayer = path.endsWith('/player.php') || path.endsWith('player.php');
+    const app = parsed.searchParams.get('app');
+    const key = parsed.searchParams.get('key');
+    return (isEmbed || isPlayer) && !!app && !!key;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function resolveEmbedApi(playerUrl, parsed) {
+  const app = parsed.searchParams.get('app');
+  const key = parsed.searchParams.get('key');
+  if (!app || !key) return null;
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  const apiUrl = `${origin}/player.php?app=${encodeURIComponent(app)}&key=${encodeURIComponent(key)}&api=1`;
+  const hdrs = {
+    'User-Agent':
+      'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36',
+    Accept: 'application/json',
+    'X-Requested-With': EMBED_PACKAGE_NAME,
+    Referer: `${origin}/`,
+  };
+
+  let lastErr = '';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const { response } = await fetchPublic(apiUrl, { headers: hdrs, timeoutMs: 15000 });
+      const text = await readLimitedText(response, HTML_MAX_BYTES);
+      let data = null;
+      try {
+        data = text.trim().startsWith('{') ? JSON.parse(text) : null;
+      } catch (_) {
+        data = null;
+      }
+      if (response.status !== 200 || !data || !data.success || !data.mpdPath) {
+        lastErr = String((data && (data.error || data.message)) || `HTTP ${response.status}`).slice(0, 120);
+        const retryable =
+          /429|502|rate|limekataliwa/i.test(lastErr) || response.status === 429 || response.status === 502;
+        if (retryable && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        console.error(
+          `[embed] Embed API resolver: no stream in response (HTTP ${response.status}, error=${lastErr})`,
+        );
+        return null;
+      }
+      const streamUrl = String(data.mpdPath).trim();
+      const licenseUrl = String(data.licenseUrl || '').trim();
+      const authXmlToken = String(data.authXmlToken || '').trim();
+      const resolved = buildResolved(streamUrl, playerUrl, {
+        licenseUrl,
+        nvAuthorizations: authXmlToken,
+        drmType: licenseUrl ? 'WIDEVINE' : 'NONE',
+        referer: `${origin}/`,
+      });
+      if (resolved) {
+        console.info(`[embed] ✅ Embed API resolved: ${streamUrl}`);
+      }
+      return resolved;
+    } catch (e) {
+      lastErr = `${e.name || 'Error'}: ${e.message || e}`;
+      console.error(`[embed] Embed API resolver failed: ${lastErr}`);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+  return null;
 }
 
 function extractEmbeddedStream(html, baseUrl) {
@@ -377,12 +457,27 @@ async function resolveEmbedPlayback(pageUrl, depth = 0) {
 }
 
 async function resolveEmbedPlaybackUncached(raw, depth) {
-
   let value = null;
   try {
+    // SokaMax / embed.php?app=&key= → player.php?api=1 (before HTML scrape).
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (_) {
+      parsed = null;
+    }
+    if (parsed && isEmbedApiPlayer(parsed)) {
+      console.info(`[embed] Resolving PHP player: ${raw}`);
+      value = await resolveEmbedApi(raw, parsed);
+      if (value) {
+        cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
+        return value;
+      }
+    }
+
     const headers = upstreamHeaders(raw, pageContext(raw));
     headers.Accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
-    if (/\.php(\?|#|\/|$)/i.test(raw)) headers['X-Requested-With'] = 'com.eamax';
+    if (/\.php(\?|#|\/|$)/i.test(raw)) headers['X-Requested-With'] = EMBED_PACKAGE_NAME;
     const { response, finalUrl } = await fetchPublic(raw, { headers, timeoutMs: 8000 });
     if (response.status < 200 || response.status >= 300) {
       value = null;
@@ -412,11 +507,64 @@ function playExtension(resolved) {
   return extensionForKind(resolved?.kind);
 }
 
+function isOnDeviceEmbedApiUrl(url) {
+  // Same as Washa: embed.php?app=&key= must resolve on the phone so the CDN
+  // token is issued for the viewer's IP. Server-side rewrite breaks Widevine.
+  try {
+    const parsed = new URL(String(url || '').trim());
+    const path = String(parsed.pathname || '').toLowerCase();
+    const app = String(parsed.searchParams.get('app') || '').trim();
+    const key = String(parsed.searchParams.get('key') || '').trim();
+    if (!app || !key) return false;
+    return path.endsWith('/embed.php') || path.endsWith('embed.php')
+      || path.endsWith('/player.php') || path.endsWith('player.php');
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Headers installed apps must send so the host accepts the request (same as Washa). */
+function washaEmbedRequestHeaders(rawUrl) {
+  let origin = '';
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    origin = `${parsed.protocol}//${parsed.host}`;
+  } catch (_) {
+    origin = '';
+  }
+  return {
+    'X-Requested-With': EMBED_PACKAGE_NAME,
+    'User-Agent': BROWSER_UA,
+    ...(origin
+      ? {
+          Referer: `${origin}/`,
+          Origin: origin,
+        }
+      : {}),
+  };
+}
+
+function withWashaEmbedHeaders(target, rawUrl) {
+  const next = { ...target };
+  const headers = {
+    ...(next.headers && typeof next.headers === 'object' ? next.headers : {}),
+    ...washaEmbedRequestHeaders(rawUrl),
+  };
+  next.headers = headers;
+  next.stream_headers = headers;
+  next.streamHeaders = headers;
+  return next;
+}
+
 async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null }) {
   const raw = String(rawUrl || '').trim();
   const id = Number(channelId);
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
+  }
+  // Leave SokaMax-style embeds for the native player (Washa GatewayEmbedResolver).
+  if (isOnDeviceEmbedApiUrl(raw)) {
+    return { url: raw, resolved: null, attachWashaHeaders: true };
   }
   const resolved = await resolveEmbedPlayback(raw);
   if (!resolved?.streamUrl) return { url: raw, resolved: null };
@@ -430,7 +578,7 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
   };
 }
 
-function applyResolvedDrm(target, resolved) {
+function applyResolvedDrm(target, resolved, baseUrl) {
   if (!resolved) return target;
   const next = { ...target };
   if (resolved.clearKeyRaw && !next.drmClearKey && !next.drm_clear_key) {
@@ -440,7 +588,8 @@ function applyResolvedDrm(target, resolved) {
     next.drm_clear_key = resolved.clearKeyRaw;
     next.drm_protected = true;
     next.drmProtected = true;
-  } else if (resolved.licenseUrl && !next.licenseUrl && !next.license_url && (next.drmType === 'NONE' || next.drm_type === 'NONE' || !next.drmType)) {
+  } else if (resolved.drmType && resolved.licenseUrl) {
+    // PDF: do NOT gate on `and not channel.drm_type` — model often defaults WIDEVINE.
     next.licenseUrl = resolved.licenseUrl;
     next.license_url = resolved.licenseUrl;
     next.drmType = resolved.drmType;
@@ -448,18 +597,41 @@ function applyResolvedDrm(target, resolved) {
     next.drm_protected = true;
     next.drmProtected = true;
   }
-  if (resolved.kind !== 'hls') {
-    const headers = {};
-    if (resolved.referer) headers.Referer = resolved.referer;
-    if (resolved.origin) headers.Origin = resolved.origin;
-    if (resolved.authorization) {
-      headers.Authorization = /^bearer\s+/i.test(resolved.authorization)
-        ? resolved.authorization
-        : `Bearer ${resolved.authorization}`;
+  // Keep nv-authorizations (SokaMax/Nagra) — without it Widevine license spins forever.
+  const headers = { ...(next.headers || {}) };
+  if (resolved.referer) headers.Referer = resolved.referer;
+  if (resolved.origin && !headers.Origin) headers.Origin = resolved.origin;
+  headers['User-Agent'] = headers['User-Agent'] || 'ExoPlayer';
+  if (resolved.nvAuthorizations) {
+    headers['nv-authorizations'] = resolved.nvAuthorizations;
+  }
+  if (resolved.authorization && !resolved.nvAuthorizations) {
+    headers.Authorization = /^bearer\s+/i.test(resolved.authorization)
+      ? resolved.authorization
+      : `Bearer ${resolved.authorization}`;
+  }
+  // PDF piece 4: WebView/Shaka license relay (server injects nv-authorizations).
+  if (resolved.licenseUrl && (resolved.drmType || '').toUpperCase().includes('WIDEVINE')) {
+    const relay = licenseRelayUrl(
+      baseUrl || publicBaseUrl(),
+      resolved.licenseUrl,
+      resolved.nvAuthorizations || '',
+    );
+    if (relay) {
+      next.licenseRelayUrl = relay;
+      next.license_relay_url = relay;
+      // Pop nv-authorizations into drm_headers for relay; Exo still gets it in headers.
+      next.drm_headers = {
+        ...(next.drm_headers || {}),
+        'nv-authorizations': resolved.nvAuthorizations || '',
+      };
     }
-    if (Object.keys(headers).length && (!next.headers || !Object.keys(next.headers).length)) {
-      next.headers = headers;
-    }
+  }
+  if (Object.keys(headers).length) {
+    next.headers = headers;
+    console.info(
+      `[embed] 🧩 Applied resolved stream headers: ${Object.keys(headers).sort().join(', ')}`,
+    );
   }
   return next;
 }
@@ -488,12 +660,17 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
   return mapLimit(rows, 8, async (row) => {
     const raw = String(row.streamUrl || row.stream_url || '').trim();
     if (!isEmbedPlaybackUrl(raw)) return row;
+    // Same as Washa: keep embed.php on-device, but inject com.washatv headers
+    // so installed players are accepted without an app update.
+    if (isOnDeviceEmbedApiUrl(raw)) {
+      return withWashaEmbedHeaders(row, raw);
+    }
     let resolved = peekCachedEmbed(raw);
     if (resolved === undefined) {
       const remaining = deadline == null ? 8000 : deadline - Date.now();
       if (remaining < 200) {
         resolveEmbedPlayback(raw).catch(() => {});
-        return row;
+        return withWashaEmbedHeaders(row, raw);
       }
       resolved = await Promise.race([
         resolveEmbedPlayback(raw),
@@ -501,16 +678,16 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       ]);
       if (resolved === undefined) {
         resolveEmbedPlayback(raw).catch(() => {});
-        return row;
+        return withWashaEmbedHeaders(row, raw);
       }
     }
-    if (!resolved?.streamUrl) return row;
+    if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
     let next = {
       ...row,
       stream_url: playerUrlFor(baseUrl, row.id, resolved),
       streamUrl: playerUrlFor(baseUrl, row.id, resolved),
     };
-    next = applyResolvedDrm(next, resolved);
+    next = applyResolvedDrm(next, resolved, baseUrl);
     return next;
   });
 }
@@ -526,7 +703,8 @@ async function presentPlaybackForPlayer(playback, baseUrl) {
       priority: stream.priority,
     });
     let next = { ...stream, url: rewritten.url };
-    if (rewritten.resolved) next = applyResolvedDrm(next, rewritten.resolved);
+    if (rewritten.attachWashaHeaders) next = withWashaEmbedHeaders(next, stream.url);
+    if (rewritten.resolved) next = applyResolvedDrm(next, rewritten.resolved, baseUrl);
     streams.push(next);
   }
   return { ...playback, streams };
@@ -612,8 +790,22 @@ function relayTargetUrl(baseUrl, targetUrl, ctx) {
     r: ctx.referer || '',
     o: ctx.origin || '',
     a: ctx.authorization || '',
+    n: ctx.nvAuthorizations || '',
   });
   return `${baseUrl}/api/playback/relay?e=${encodeURIComponent(token)}`;
+}
+
+/** PDF piece 4: WebView cannot send nv-authorizations cross-origin — relay adds it. */
+function licenseRelayUrl(baseUrl, licenseUrl, nvAuthorizations) {
+  if (!licenseUrl || !isPublicHttpUrl(licenseUrl)) return '';
+  const httpsBase = String(baseUrl || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
+  const token = sealRelay({
+    u: licenseUrl,
+    exp: Date.now() + RELAY_TTL_MS,
+    n: nvAuthorizations || '',
+    kind: 'license',
+  });
+  return `${httpsBase}/api/playback/relay/license?e=${encodeURIComponent(token)}`;
 }
 
 function rewritePlaylist(text, playlistUrl, baseUrl, ctx) {
@@ -702,8 +894,10 @@ async function handleRelay(req, res) {
     referer: payload.r || '',
     origin: payload.o || '',
     authorization: payload.a || '',
+    nvAuthorizations: payload.n || '',
   };
   const headers = upstreamHeaders(payload.u, ctx);
+  if (payload.n) headers['nv-authorizations'] = payload.n;
   if (req.headers.range) headers.Range = req.headers.range;
   let fetched;
   try {
@@ -739,6 +933,66 @@ async function handleRelay(req, res) {
   return Readable.fromWeb(response.body).pipe(res);
 }
 
+/**
+ * PDF 4b: POST license body to Nagra with nv-authorizations server-side.
+ * CORS: Access-Control-Allow-Origin * so WebView Shaka can call it.
+ */
+async function handleLicenseRelay(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  if (String(req.method || '').toUpperCase() === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
+  let payload;
+  try {
+    payload = openRelay(req.query.e);
+  } catch (_) {
+    payload = null;
+  }
+  if (!payload || payload.kind !== 'license') {
+    return res.status(403).json({ error: 'Invalid license token' });
+  }
+  const licenseUrl = payload.u;
+  if (!licenseUrl || !isPublicHttpUrl(licenseUrl)) {
+    return res.status(400).json({ error: 'No license URL for this session' });
+  }
+
+  const headers = { 'Content-Type': 'application/octet-stream' };
+  if (payload.n) headers['nv-authorizations'] = payload.n;
+  console.info(`[embed] RELAY LICENSE | drm=widevine url=${String(licenseUrl).slice(0, 80)}`);
+
+  try {
+    let body = Buffer.alloc(0);
+    if (Buffer.isBuffer(req.body)) {
+      body = req.body;
+    } else if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
+      body = req.rawBody;
+    } else if (typeof req.body === 'string') {
+      body = Buffer.from(req.body);
+    } else if (req.body && typeof req.body === 'object') {
+      body = Buffer.from(JSON.stringify(req.body));
+    }
+    const upstream = await fetch(licenseUrl, {
+      method: 'POST',
+      headers,
+      body,
+      signal: AbortSignal.timeout(15000),
+    });
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.status(upstream.status);
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Expose-Headers', '*');
+    return res.send(buf);
+  } catch (err) {
+    console.warn('[embed] license relay failed:', err.message || err);
+    return res.status(502).json({ error: 'License upstream failed' });
+  }
+}
+
 module.exports = {
   publicBaseUrl,
   isDirectMediaUrl,
@@ -754,7 +1008,9 @@ module.exports = {
   rewritePlaylist,
   sealRelay,
   openRelay,
+  licenseRelayUrl,
   handleChannelPlay,
   handleRelay,
+  handleLicenseRelay,
   xorDecrypt,
 };
