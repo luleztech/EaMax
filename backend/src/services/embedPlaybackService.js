@@ -600,16 +600,14 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
   }
-  // Resolve embed.php → /api/channels/:id/play.mpd (proxied). Skips on-device
-  // gateway resolve that hangs then opens about:blank white screen.
-  const resolved = await resolveEmbedPlayback(raw);
-  if (!resolved?.streamUrl) {
-    // Last resort: keep embed URL + washa headers for apps that can WebView it.
-    if (isOnDeviceEmbedApiUrl(raw)) {
-      return { url: raw, resolved: null, attachWashaHeaders: true };
-    }
-    return { url: raw, resolved: null };
+  // SokaMax embed.php?app=&key=: CDN tokens are bound to the viewer's IP.
+  // Server play.mpd returns 502 (mpd_upstream_failed) → app buffers forever.
+  // Keep the embed URL and inject com.washatv so the phone resolves locally.
+  if (isOnDeviceEmbedApiUrl(raw)) {
+    return { url: raw, resolved: null, attachWashaHeaders: true };
   }
+  const resolved = await resolveEmbedPlayback(raw);
+  if (!resolved?.streamUrl) return { url: raw, resolved: null };
   const ext = playExtension(resolved);
   const params = new URLSearchParams();
   if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
@@ -702,11 +700,15 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
   return mapLimit(rows, 8, async (row) => {
     const raw = String(row.streamUrl || row.stream_url || '').trim();
     if (!isEmbedPlaybackUrl(raw)) return row;
+    // Never rewrite SokaMax embeds to play.mpd — upstream MPD fetch from the
+    // server fails (IP-bound CDN) and the app sits on an endless loading spinner.
+    if (isOnDeviceEmbedApiUrl(raw)) {
+      return withWashaEmbedHeaders(row, raw);
+    }
     let resolved = peekCachedEmbed(raw);
     if (resolved === undefined) {
       const remaining = deadline == null ? 8000 : deadline - Date.now();
       if (remaining < 200) {
-        // Warm cache for the next request; avoid blocking the catalog.
         resolveEmbedPlayback(raw).catch(() => {});
         return withWashaEmbedHeaders(row, raw);
       }
@@ -720,7 +722,6 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       }
     }
     if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
-    // play.mpd is direct DASH for Exo — no gateway WebView / white screen.
     let next = {
       ...row,
       stream_url: playerUrlFor(baseUrl, row.id, resolved),
@@ -890,15 +891,20 @@ async function sendProxiedPlaylist(res, resolved, baseUrl) {
 }
 
 async function sendProxiedMpd(res, resolved, baseUrl) {
-  const headers = upstreamHeaders(resolved.streamUrl, resolved);
-  if (resolved.nvAuthorizations) {
-    headers['nv-authorizations'] = resolved.nvAuthorizations;
-  }
+  // Media UA like Washa/Exo — browser UA + nv-auth on the MPD GET often 403s CDNs.
+  const headers = {
+    ...upstreamHeaders(resolved.streamUrl, resolved),
+    'User-Agent': 'ExoPlayer',
+    Accept: 'application/dash+xml,application/xml,*/*',
+  };
   const { response, finalUrl } = await fetchPublic(resolved.streamUrl, {
     headers,
     timeoutMs: 12000,
   });
   if (response.status < 200 || response.status >= 300) {
+    console.warn(
+      `[embed] mpd upstream HTTP ${response.status} for ${String(resolved.streamUrl).slice(0, 96)}`,
+    );
     return res.status(502).json({ error: 'mpd_upstream_failed' });
   }
   const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
@@ -929,6 +935,10 @@ async function handleChannelPlay(req, res) {
     if (isDirectMediaUrl(source) && isPublicHttpUrl(source)) return res.redirect(302, source);
     return res.status(404).json({ error: 'No playable stream' });
   }
+  // IP-bound SokaMax: do not proxy — clients should play the embed URL instead.
+  if (isOnDeviceEmbedApiUrl(source)) {
+    return res.redirect(302, source);
+  }
   const resolved = await resolveEmbedPlayback(source);
   if (!resolved?.streamUrl) {
     return res.status(503).json({ error: 'embed_unresolved', message: 'Stream haipatikani kwa sasa.' });
@@ -941,8 +951,6 @@ async function handleChannelPlay(req, res) {
       return res.status(502).json({ error: 'playlist_proxy_failed' });
     }
   }
-  // Never 302 to the CDN MPD — token is bound to this server's IP.
-  // Proxy + rewrite BaseURLs through /api/playback/relay so Exo starts instantly.
   if (ext === 'mpd' || resolved.kind === 'dash') {
     try {
       return await sendProxiedMpd(res, resolved, publicBaseUrl(req));
