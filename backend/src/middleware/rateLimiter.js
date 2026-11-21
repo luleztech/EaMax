@@ -28,8 +28,7 @@ function apiPath(req) {
 function isPlaybackMediaPath(req) {
   const path = apiPath(req).split('?')[0];
   return /\/api\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(path)
-    || path.startsWith('/api/playback/relay') // includes /relay/license (no app-signature)
-    || path.startsWith('/api/playback/watch');
+    || path.startsWith('/api/playback/relay'); // includes /relay/license (no app-signature)
 }
 
 function shouldSkipRateLimit(req) {
