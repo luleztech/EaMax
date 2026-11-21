@@ -12,8 +12,13 @@ const DEFAULT_GATEWAY_POLICY = {
   mediaUserAgent: 'ExoPlayer',
   /** Warm embed page + cookies before calling player.php?api=1. */
   warmCookies: true,
-  /** Resolve embed.php?app=&key= via player.php JSON on device. */
-  resolveEmbedApi: true,
+  /**
+   * On-device embed API resolve is disabled by default: the backend now serves
+   * /api/playback/watch (proxied MPD + license) so phones avoid Exo blank/stuck.
+   */
+  resolveEmbedApi: false,
+  /** Prefer WebView / server watch page for SokaMax-style embeds. */
+  preferWebViewForEmbed: true,
   /** Nagra / Widevine license auth header name. */
   licenseAuthHeader: 'nv-authorizations',
   /** HTML marker when the host rejects unauthorized apps. */
@@ -82,6 +87,7 @@ function sanitizeGatewayPolicy(raw) {
   }
   if (src.warmCookies != null) out.warmCookies = !!src.warmCookies;
   if (src.resolveEmbedApi != null) out.resolveEmbedApi = !!src.resolveEmbedApi;
+  if (src.preferWebViewForEmbed != null) out.preferWebViewForEmbed = !!src.preferWebViewForEmbed;
   if (src.licenseAuthHeader != null) {
     const v = String(src.licenseAuthHeader).trim();
     if (/^[A-Za-z][A-Za-z0-9\-]*$/.test(v) && v.length <= 64) out.licenseAuthHeader = v;
