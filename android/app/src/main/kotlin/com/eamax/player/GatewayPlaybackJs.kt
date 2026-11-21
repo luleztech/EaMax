@@ -327,6 +327,104 @@ object GatewayPlaybackJs {
     """.trimIndent()
 
     /**
+     * Last-resort EME hardening for WebView fallback only:
+     * - Remap PlayReady key-system probes → Widevine
+     * - Patch mediaCapabilities.decodingInfo to avoid false "unsupported"
+     * - Force L3 SW_SECURE_CRYPTO robustness
+     *
+     * Do NOT rely on this as the primary path for embeds — prefer Exo resolve.
+     */
+    fun emePlayReadyToWidevineScript(): String = """
+        (function(){
+          if (window.__eamaxEmeRemapInstalled) return true;
+          window.__eamaxEmeRemapInstalled = true;
+          var WV = 'com.widevine.alpha';
+          var PR = 'com.microsoft.playready';
+          function remapKeySystem(ks) {
+            try {
+              var s = String(ks || '').toLowerCase();
+              if (s.indexOf('playready') >= 0 || s === PR) return WV;
+            } catch (e) {}
+            return ks;
+          }
+          try {
+            if (navigator.requestMediaKeySystemAccess) {
+              var orig = navigator.requestMediaKeySystemAccess.bind(navigator);
+              navigator.requestMediaKeySystemAccess = function(keySystem, configs) {
+                var ks = remapKeySystem(keySystem);
+                return orig(ks, configs).catch(function(err) {
+                  if (ks !== WV) return orig(WV, configs);
+                  throw err;
+                });
+              };
+            }
+          } catch (e0) {}
+          try {
+            if (navigator.mediaCapabilities && navigator.mediaCapabilities.decodingInfo) {
+              var origDec = navigator.mediaCapabilities.decodingInfo.bind(navigator.mediaCapabilities);
+              navigator.mediaCapabilities.decodingInfo = function(config) {
+                try {
+                  if (config && config.keySystemConfiguration) {
+                    var ksc = config.keySystemConfiguration;
+                    if (ksc.keySystem) ksc.keySystem = remapKeySystem(ksc.keySystem);
+                    if (!ksc.distinctiveIdentifier) ksc.distinctiveIdentifier = 'not-allowed';
+                    if (!ksc.persistentState) ksc.persistentState = 'not-allowed';
+                    // Prefer software robustness so L3 emulators accept the probe.
+                    if (ksc.video) {
+                      ksc.video.robustness = ksc.video.robustness || 'SW_SECURE_CRYPTO';
+                    }
+                    if (ksc.audio) {
+                      ksc.audio.robustness = ksc.audio.robustness || 'SW_SECURE_CRYPTO';
+                    }
+                  }
+                } catch (e1) {}
+                return origDec(config).then(function(r) {
+                  if (r && r.supported === false && config && config.keySystemConfiguration) {
+                    return {
+                      supported: true,
+                      smooth: true,
+                      powerEfficient: false,
+                      keySystemAccess: r.keySystemAccess || null
+                    };
+                  }
+                  return r;
+                }).catch(function() {
+                  return { supported: true, smooth: true, powerEfficient: false };
+                });
+              };
+            }
+          } catch (e2) {}
+          try {
+            // Shaka often lists PlayReady first — prefer Widevine only.
+            function patchShakaPreferred(pl) {
+              if (!pl || typeof pl.configure !== 'function' || pl.__eamaxEmePatched) return;
+              try {
+                pl.configure({
+                  drm: {
+                    preferredKeySystems: [WV],
+                    advanced: {
+                      'com.widevine.alpha': {
+                        videoRobustness: 'SW_SECURE_CRYPTO',
+                        audioRobustness: 'SW_SECURE_CRYPTO',
+                        persistentStateRequired: false,
+                        distinctiveIdentifierRequired: false
+                      }
+                    }
+                  }
+                });
+                pl.__eamaxEmePatched = true;
+              } catch (e3) {}
+            }
+            var list = window.__eamaxShakas || [];
+            if (window.__eamaxShaka) list = list.concat([window.__eamaxShaka]);
+            for (var i = 0; i < list.length; i++) patchShakaPreferred(list[i]);
+            if (window.player) patchShakaPreferred(window.player);
+          } catch (e4) {}
+          true;
+        })();
+    """.trimIndent()
+
+    /**
      * Force Widevine L3 / software robustness so HDCP-restricted video keys
      * (Shaka error 4012 RESTRICTIONS_CANNOT_BE_MET) can still decode on L3 devices.
      *

@@ -421,7 +421,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
                 startExo(locked)
                 return
             }
-            Log.w(TAG, "locked format=$locked exhausted — not switching parser or WebView")
+            Log.w(TAG, "locked format=$locked exhausted — try WebView if gateway")
         } else {
             if (httpAccessError) {
                 formatQueue.clear()

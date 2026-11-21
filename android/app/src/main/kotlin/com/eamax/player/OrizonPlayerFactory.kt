@@ -334,9 +334,24 @@ class OrizonPlayerFactory(private val context: Context) {
     ): DefaultDrmSessionManager {
         val licenseHeaders = licenseRequestHeaders(session, headers)
         return when (session.drmType) {
-            DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 ->
+            DrmType.WIDEVINE, DrmType.WIDEVINE_L1, DrmType.WIDEVINE_L3 -> {
+                // Prefer L3 on mobile — L1/HDCP keys fail on many devices (Huawei, budget SoCs)
+                // with audio-only or black screen. Explicit L1 stays L1.
+                val forceL3 = session.drmType != DrmType.WIDEVINE_L1
+                val mediaDrmProvider = androidx.media3.exoplayer.drm.ExoMediaDrm.Provider { uuid ->
+                    val drm = FrameworkMediaDrm.newInstance(uuid)
+                    if (forceL3) {
+                        try {
+                            drm.setPropertyString("securityLevel", "L3")
+                            Log.d(TAG, "Forced Widevine securityLevel=L3")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Cannot force L3: ${e.message}")
+                        }
+                    }
+                    drm
+                }
                 DefaultDrmSessionManager.Builder()
-                    .setUuidAndExoMediaDrmProvider(C.WIDEVINE_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setUuidAndExoMediaDrmProvider(C.WIDEVINE_UUID, mediaDrmProvider)
                     .setMultiSession(true)
                     .setPlayClearSamplesWithoutKeys(true)
                     .build(
@@ -347,6 +362,7 @@ class OrizonPlayerFactory(private val context: Context) {
                             licenseHeaders.forEach { (k, v) -> cb.setKeyRequestProperty(k, v) }
                         },
                     )
+            }
             DrmType.PLAYREADY ->
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(C.PLAYREADY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)

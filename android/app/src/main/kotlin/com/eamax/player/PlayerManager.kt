@@ -48,6 +48,8 @@ class PlayerManager(
     private var sameFormatRetries = 0
     private var playlistResetReloads = 0
     private var networkRetries = 0
+    /** Original embed URL kept for WebView failover after gateway resolve (device DRM quirks). */
+    private var gatewayFallbackUrl: String = ""
 
     private enum class ActiveEngine { NONE, EXO, WEBVIEW }
     private var activeEngine = ActiveEngine.NONE
@@ -112,6 +114,7 @@ class PlayerManager(
 
     private fun resolveGatewayThenPlay(gatewaySession: StreamSession) {
         val fallbackUrl = gatewaySession.mpdUrl
+        gatewayFallbackUrl = fallbackUrl
         Thread {
             val resolved = try {
                 GatewayPlaybackResolver.resolve(gatewaySession)
@@ -266,7 +269,7 @@ class PlayerManager(
                 mainHandler.post { startExo(locked) }
                 return
             }
-            Log.w(TAG, "locked format=$locked exhausted — not switching parser or WebView")
+            Log.w(TAG, "locked format=$locked exhausted")
         } else {
             if (httpAccessError) formatQueue.clear()
             formatQueue.removeFirstOrNull()?.let { nextFormat ->
@@ -278,10 +281,23 @@ class PlayerManager(
 
         if (tryNextFallbackSession()) return
 
-        if (locked == null && !webViewFailoverUsed && session != null && PlayerRuntimeConfig.failoverToWebview) {
+        // Some devices fail Widevine on the resolved MPD — fall back to the original embed page.
+        if (!webViewFailoverUsed && session != null && PlayerRuntimeConfig.failoverToWebview) {
             webViewFailoverUsed = true
-            Log.w(TAG, "failover → WebView")
-            mainHandler.post { startWebViewEngine(session) }
+            val webSession = if (gatewayFallbackUrl.isNotBlank() && session.mpdUrl != gatewayFallbackUrl) {
+                session.copy(
+                    mpdUrl = gatewayFallbackUrl,
+                    licenseUrl = "",
+                    token = "",
+                    drmType = com.eamax.domain.model.DrmType.NONE,
+                    drmData = com.eamax.domain.model.DrmData(headers = null),
+                    playerMode = PlayerMode.WEB,
+                )
+            } else {
+                session
+            }
+            Log.w(TAG, "failover → WebView url=${safeUrlForLogs(webSession.mpdUrl)}")
+            mainHandler.post { startWebViewEngine(webSession) }
             return
         }
 

@@ -390,7 +390,7 @@ class ExoPlayerEngine(
                 val builder = MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
                     .setLicenseUri(streamSession.licenseUrl)
                     .setLicenseRequestHeaders(headers)
-                    .setMultiSession(false)  // Single session per playback
+                    .setMultiSession(true)  // Audio + video keys need separate sessions
                     .setForceDefaultLicenseUri(false)
                 
                 if (securityLevel != null) {
@@ -405,7 +405,7 @@ class ExoPlayerEngine(
                 MediaItem.DrmConfiguration.Builder(C.PLAYREADY_UUID)
                     .setLicenseUri(streamSession.licenseUrl)
                     .setLicenseRequestHeaders(headers)
-                    .setMultiSession(false)
+                    .setMultiSession(true)
                     .build()
             }
             
@@ -413,7 +413,7 @@ class ExoPlayerEngine(
                 Log.d(TAG, "🔐 Building ClearKey DRM config")
                 // ClearKey keys are embedded in the session, no license URI needed
                 MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID)
-                    .setMultiSession(false)
+                    .setMultiSession(true)
                     .build()
             }
             
@@ -604,6 +604,8 @@ class ExoPlayerEngine(
                 
                 DefaultDrmSessionManager.Builder()
                     .setUuidAndExoMediaDrmProvider(C.WIDEVINE_UUID, mediaDrmProvider)
+                    .setMultiSession(true)
+                    .setPlayClearSamplesWithoutKeys(true)
                     .build(drmCallback)
             }
             
@@ -625,6 +627,8 @@ class ExoPlayerEngine(
                         C.PLAYREADY_UUID,
                         FrameworkMediaDrm.DEFAULT_PROVIDER
                     )
+                    .setMultiSession(true)
+                    .setPlayClearSamplesWithoutKeys(true)
                     .build(drmCallback)
             }
             
