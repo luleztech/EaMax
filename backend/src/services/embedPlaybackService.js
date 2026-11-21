@@ -6,9 +6,9 @@ const { query } = require('../db');
 const BROWSER_UA =
   'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
-/** SokaMax setup: cache resolved embeds ~60s (upstream rate-limits player.php). */
-const SUCCESS_TTL_MS = 60 * 1000;
-const FAILURE_TTL_MS = 15 * 1000;
+/** SokaMax setup: cache resolved embeds (upstream rate-limits player.php). */
+const SUCCESS_TTL_MS = 120 * 1000;
+const FAILURE_TTL_MS = 12 * 1000;
 /** Same authorized package marker Washa sends (host accepts com.washatv). */
 const EMBED_PACKAGE_NAME = process.env.EMBED_PACKAGE_NAME || 'com.washatv';
 const RELAY_TTL_MS = 4 * 60 * 60 * 1000;
@@ -508,8 +508,9 @@ function playExtension(resolved) {
 }
 
 function isOnDeviceEmbedApiUrl(url) {
-  // Same as Washa: embed.php?app=&key= must resolve on the phone so the CDN
-  // token is issued for the viewer's IP. Server-side rewrite breaks Widevine.
+  // SokaMax embed.php?app=&key= — CDN tokens are IP-bound to whoever called
+  // player.php. We resolve on the server and proxy MPD/segments through
+  // /api/playback/relay so phones never hit the slow gateway→white-screen path.
   try {
     const parsed = new URL(String(url || '').trim());
     const path = String(parsed.pathname || '').toLowerCase();
@@ -521,6 +522,43 @@ function isOnDeviceEmbedApiUrl(url) {
   } catch (_) {
     return false;
   }
+}
+
+/** Rewrite DASH MPD so BaseURL / segment refs go through our IP-matched relay. */
+function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
+  const rewriteAbs = (abs) => {
+    if (!abs || !isPublicHttpUrl(abs)) return abs;
+    if (/\/api\/playback\/relay/i.test(abs)) return abs;
+    if (/\/api\/channels\/\d+\/play\./i.test(abs)) return abs;
+    return relayTargetUrl(baseUrl, abs, ctx);
+  };
+  let out = String(text || '');
+  out = out.replace(/<BaseURL>([^<]*)<\/BaseURL>/gi, (all, ref) => {
+    const abs = resolveAgainst(mpdUrl, String(ref || '').trim());
+    if (!abs || !isPublicHttpUrl(abs)) return all;
+    return `<BaseURL>${rewriteAbs(abs)}</BaseURL>`;
+  });
+  out = out.replace(/\b(media|initialization|sourceURL|url)="([^"]+)"/gi, (all, attr, ref) => {
+    const raw = String(ref || '').trim();
+    // SegmentTemplate placeholders ($Number$ / $Time$) stay relative to BaseURL.
+    if (!raw || raw.includes('$')) return all;
+    if (/^https?:\/\//i.test(raw)) return `${attr}="${rewriteAbs(raw)}"`;
+    const abs = resolveAgainst(mpdUrl, raw);
+    if (!abs || !isPublicHttpUrl(abs)) return all;
+    return `${attr}="${rewriteAbs(abs)}"`;
+  });
+  return out;
+}
+
+function looksLikeMpd(url, contentType, bodyPreview) {
+  const ct = String(contentType || '').toLowerCase();
+  if (ct.includes('dash+xml') || ct.includes('mpd-xml') || ct.includes('application/mpd')) return true;
+  if (/\.mpd(\?|#|$)/i.test(String(url || ''))) return true;
+  const preview = String(bodyPreview || '').trim();
+  return (
+    (preview.startsWith('<?xml') && /<MPD[\s>]/i.test(preview))
+    || preview.startsWith('<MPD')
+  );
 }
 
 /** Headers installed apps must send so the host accepts the request (same as Washa). */
@@ -562,14 +600,16 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
   }
-  // Leave SokaMax-style embeds for the native player (Washa GatewayEmbedResolver).
-  // Do NOT rewrite to /api/playback/watch — installed WebViewEngine only loads
-  // gateway-looking URLs and otherwise opens about:blank (white screen).
-  if (isOnDeviceEmbedApiUrl(raw)) {
-    return { url: raw, resolved: null, attachWashaHeaders: true };
-  }
+  // Resolve embed.php → /api/channels/:id/play.mpd (proxied). Skips on-device
+  // gateway resolve that hangs then opens about:blank white screen.
   const resolved = await resolveEmbedPlayback(raw);
-  if (!resolved?.streamUrl) return { url: raw, resolved: null };
+  if (!resolved?.streamUrl) {
+    // Last resort: keep embed URL + washa headers for apps that can WebView it.
+    if (isOnDeviceEmbedApiUrl(raw)) {
+      return { url: raw, resolved: null, attachWashaHeaders: true };
+    }
+    return { url: raw, resolved: null };
+  }
   const ext = playExtension(resolved);
   const params = new URLSearchParams();
   if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
@@ -662,14 +702,11 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
   return mapLimit(rows, 8, async (row) => {
     const raw = String(row.streamUrl || row.stream_url || '').trim();
     if (!isEmbedPlaybackUrl(raw)) return row;
-    // Same as Washa: keep embed.php on-device, inject com.washatv headers.
-    if (isOnDeviceEmbedApiUrl(raw)) {
-      return withWashaEmbedHeaders(row, raw);
-    }
     let resolved = peekCachedEmbed(raw);
     if (resolved === undefined) {
       const remaining = deadline == null ? 8000 : deadline - Date.now();
       if (remaining < 200) {
+        // Warm cache for the next request; avoid blocking the catalog.
         resolveEmbedPlayback(raw).catch(() => {});
         return withWashaEmbedHeaders(row, raw);
       }
@@ -683,6 +720,7 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       }
     }
     if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
+    // play.mpd is direct DASH for Exo — no gateway WebView / white screen.
     let next = {
       ...row,
       stream_url: playerUrlFor(baseUrl, row.id, resolved),
@@ -851,6 +889,29 @@ async function sendProxiedPlaylist(res, resolved, baseUrl) {
   return res.status(200).send(body);
 }
 
+async function sendProxiedMpd(res, resolved, baseUrl) {
+  const headers = upstreamHeaders(resolved.streamUrl, resolved);
+  if (resolved.nvAuthorizations) {
+    headers['nv-authorizations'] = resolved.nvAuthorizations;
+  }
+  const { response, finalUrl } = await fetchPublic(resolved.streamUrl, {
+    headers,
+    timeoutMs: 12000,
+  });
+  if (response.status < 200 || response.status >= 300) {
+    return res.status(502).json({ error: 'mpd_upstream_failed' });
+  }
+  const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
+  if (!looksLikeMpd(finalUrl || resolved.streamUrl, response.headers.get('content-type'), text)) {
+    return res.status(502).json({ error: 'mpd_invalid' });
+  }
+  const body = rewriteMpdXml(text, finalUrl || resolved.streamUrl, baseUrl, resolved);
+  res.setHeader('Content-Type', 'application/dash+xml');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  return res.status(200).send(body);
+}
+
 async function handleChannelPlay(req, res) {
   const channelId = Number(req.params.id);
   const ext = String(req.params.ext || '').toLowerCase();
@@ -872,15 +933,33 @@ async function handleChannelPlay(req, res) {
   if (!resolved?.streamUrl) {
     return res.status(503).json({ error: 'embed_unresolved', message: 'Stream haipatikani kwa sasa.' });
   }
-  if (resolved.kind === 'hls' && ext === 'm3u8') {
+  if ((resolved.kind === 'hls' || ext === 'm3u8') && ext === 'm3u8') {
     try {
       return await sendProxiedPlaylist(res, resolved, publicBaseUrl(req));
     } catch (err) {
       console.warn('[embed] playlist proxy failed:', err.message || err);
-      return res.redirect(302, resolved.streamUrl);
+      return res.status(502).json({ error: 'playlist_proxy_failed' });
     }
   }
-  return res.redirect(302, resolved.streamUrl);
+  // Never 302 to the CDN MPD — token is bound to this server's IP.
+  // Proxy + rewrite BaseURLs through /api/playback/relay so Exo starts instantly.
+  if (ext === 'mpd' || resolved.kind === 'dash') {
+    try {
+      return await sendProxiedMpd(res, resolved, publicBaseUrl(req));
+    } catch (err) {
+      console.warn('[embed] mpd proxy failed:', err.message || err);
+      return res.status(502).json({ error: 'mpd_proxy_failed' });
+    }
+  }
+  if (ext === 'mp4' && resolved.kind === 'progressive') {
+    return res.redirect(302, relayTargetUrl(publicBaseUrl(req), resolved.streamUrl, resolved));
+  }
+  try {
+    return await sendProxiedMpd(res, resolved, publicBaseUrl(req));
+  } catch (err) {
+    console.warn('[embed] media proxy failed:', err.message || err);
+    return res.status(502).json({ error: 'media_proxy_failed' });
+  }
 }
 
 async function handleRelay(req, res) {
@@ -912,15 +991,25 @@ async function handleRelay(req, res) {
     return res.status(502).json({ error: 'Upstream playback failed' });
   }
   const contentType = response.headers.get('content-type') || '';
+  const base = publicBaseUrl(req);
   if (looksLikePlaylist(finalUrl, contentType, '')) {
     const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
     if (text.replace(/^\uFEFF/, '').trim().startsWith('#EXTM3U')) {
-      const body = rewritePlaylist(text, finalUrl, publicBaseUrl(req), ctx);
+      const body = rewritePlaylist(text, finalUrl, base, ctx);
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).send(body);
     }
     return res.status(502).json({ error: 'Upstream playback failed' });
+  }
+  if (looksLikeMpd(finalUrl || payload.u, contentType, '')) {
+    const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
+    if (looksLikeMpd(finalUrl || payload.u, contentType, text)) {
+      const body = rewriteMpdXml(text, finalUrl || payload.u, base, ctx);
+      res.setHeader('Content-Type', 'application/dash+xml');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).send(body);
+    }
   }
   res.status(response.status);
   if (contentType) res.setHeader('Content-Type', contentType);

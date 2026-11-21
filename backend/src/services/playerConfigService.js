@@ -24,7 +24,7 @@ const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
   bufferMinMs: 10_000,
   bufferMaxMs: 40_000,
-  initialBufferMs: 1800,
+  initialBufferMs: 1200,
   retryMax: 4,
   retryDelayMs: 1200,
   reconnectEnabled: true,

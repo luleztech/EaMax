@@ -80,7 +80,8 @@ router.get('/', async (req, res, next) => {
       }
       return out;
     });
-    return res.json(await presentChannelRows(rows, publicBaseUrl(req), { deadlineMs: 3500 }));
+    // Allow enough time to resolve SokaMax embeds → play.mpd (cached after first hit).
+    return res.json(await presentChannelRows(rows, publicBaseUrl(req), { deadlineMs: 6000 }));
   } catch (err) {
     return next(err);
   }
