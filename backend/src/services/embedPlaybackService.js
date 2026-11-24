@@ -685,13 +685,12 @@ function watchPageUrl(baseUrl, resolved) {
   return `${httpsBase}/api/playback/embed/player.php?e=${encodeURIComponent(token)}`;
 }
 
+/** Hosted WebView player only when Exo cannot take a direct proxied media URL. */
 function needsHostedWebPlayer(resolved) {
   if (!resolved?.streamUrl) return false;
-  const drm = String(resolved.drmType || '').toUpperCase();
-  if (resolved.licenseUrl || resolved.clearKeyRaw) return true;
-  if (drm.includes('WIDEVINE') || drm.includes('PLAYREADY') || drm.includes('CLEARKEY')) return true;
-  if (resolved.kind === 'dash') return true;
-  return false;
+  // DASH/HLS go through play.mpd / play.m3u8 → native Exo (avoids Shaka 6001).
+  if (resolved.kind === 'dash' || resolved.kind === 'hls') return false;
+  return resolved.kind === 'progressive' && !!(resolved.licenseUrl || resolved.clearKeyRaw);
 }
 
 function buildWatchPlayerHtml({ manifestUrl, licenseUrl, clearKey, drm }) {
@@ -731,6 +730,7 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
   var video=document.getElementById('v');
   var spin=document.getElementById('spin');
   var err=document.getElementById('err');
+  var retriedDrm=false;
   function hideSpin(){ spin.style.display='none'; }
   function fail(msg){
     hideSpin();
@@ -743,7 +743,7 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
     err.className='';
     var p=video.play();
     if(p&&p.catch) p.catch(function(){});
-    setTimeout(function(){ try{ video.muted=false; }catch(e){} }, 400);
+    setTimeout(function(){ try{ video.muted=false; }catch(e){} }, 300);
   }
   function parseClearKeys(raw){
     raw=String(raw||'').trim();
@@ -773,40 +773,57 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
     (function t(){
       if(typeof shaka!=='undefined'){ cb(true); return; }
       if(++n>60){ cb(false); return; }
-      setTimeout(t,100);
+      setTimeout(t,80);
     })();
   }
-  if(!manifest){ fail(); return; }
-  waitShaka(function(ok){
-    if(!ok){ fail(); return; }
-    try{ shaka.polyfill.installAll(); }catch(e){}
-    if(!shaka.Player.isBrowserSupported()){ fail(); return; }
-    var player=new shaka.Player(video);
-    var drmCfg={
+  function drmConfig(mode){
+    // Android WebView: empty robustness first avoids Shaka 6001; L3 for HDCP-restricted keys.
+    var rob = mode==='l3'
+      ? ['SW_SECURE_CRYPTO','']
+      : ['','SW_SECURE_CRYPTO'];
+    var cfg={
       preferredKeySystems:['com.widevine.alpha'],
+      defaultAudioRobustnessForWidevine: rob[0],
+      defaultVideoRobustnessForWidevine: rob[0],
       advanced:{'com.widevine.alpha':{
-        videoRobustness:['SW_SECURE_CRYPTO'],
-        audioRobustness:['SW_SECURE_CRYPTO']
+        videoRobustness:rob,
+        audioRobustness:rob,
+        distinctiveIdentifierRequired:false,
+        persistentStateRequired:false
       }},
-      retryParameters:{maxAttempts:4,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
+      retryParameters:{maxAttempts:4,baseDelay:400,backoffFactor:2,fuzzFactor:0.5,timeout:12000}
     };
     if(drmType.indexOf('WIDEVINE')>=0 && license){
-      drmCfg.servers={'com.widevine.alpha':license};
+      cfg.servers={'com.widevine.alpha':license};
     } else if(drmType.indexOf('CLEARKEY')>=0 || clearKey){
       var ckMap=parseClearKeys(clearKey);
-      if(ckMap) drmCfg.clearKeys=ckMap;
+      if(ckMap) cfg.clearKeys=ckMap;
     }
+    return cfg;
+  }
+  function start(mode){
+    var player=new shaka.Player(video);
     player.configure({
       streaming:{
-        bufferingGoal:12,
-        rebufferingGoal:2,
-        bufferBehind:20,
-        retryParameters:{maxAttempts:5,baseDelay:600,timeout:20000}
+        bufferingGoal:8,
+        rebufferingGoal:1.5,
+        bufferBehind:16,
+        retryParameters:{maxAttempts:5,baseDelay:400,timeout:15000}
       },
       abr:{enabled:true,restrictions:{maxHeight:720,maxWidth:1280}},
-      drm:drmCfg
+      drm:drmConfig(mode)
     });
-    player.addEventListener('error', function(){ fail(); });
+    player.addEventListener('error', function(ev){
+      var code=ev&&ev.detail&&ev.detail.code;
+      // 6001 = key-system config unavailable → flip robustness and retry once.
+      if(!retriedDrm && (code===6001 || code===4012)){
+        retriedDrm=true;
+        try{ player.destroy(); }catch(e){}
+        start(mode==='l3'?'soft':'l3');
+        return;
+      }
+      fail(code?('Error '+code):'');
+    });
     video.addEventListener('playing', ready);
     player.load(manifest).then(function(){
       try{
@@ -819,19 +836,39 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
         if(best) player.selectVariantTrack(best,true);
       }catch(e){}
       ready();
-    }).catch(function(){ fail(); });
+    }).catch(function(e){
+      var code=e&&e.code;
+      if(!retriedDrm && (code===6001 || code===4012)){
+        retriedDrm=true;
+        try{ player.destroy(); }catch(err){}
+        start(mode==='l3'?'soft':'l3');
+        return;
+      }
+      fail(code?('Error '+code):'');
+    });
+  }
+  if(!manifest){ fail(); return; }
+  waitShaka(function(ok){
+    if(!ok){ fail(); return; }
+    try{ shaka.polyfill.installAll(); }catch(e){}
+    if(!shaka.Player.isBrowserSupported()){ fail(); return; }
+    start('soft');
   });
 })();
 </script></body></html>`;
 }
 
-async function presentHostedWebPlayer(target, rawUrl, baseUrl, options = {}) {
+/**
+ * Prefer proxied play.mpd / play.m3u8 for Exo (native Widevine).
+ * Hosted Shaka page only when there is no direct media kind.
+ */
+async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
   const remaining = options.deadlineMs == null ? 8000 : options.deadlineMs;
   let resolved = peekCachedEmbed(rawUrl);
   if (resolved === undefined) {
     if (remaining < 200) {
       resolveEmbedPlayback(rawUrl).catch(() => {});
-      return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+      return withWashaEmbedHeaders(target, rawUrl);
     }
     resolved = await Promise.race([
       resolveEmbedPlayback(rawUrl),
@@ -839,27 +876,38 @@ async function presentHostedWebPlayer(target, rawUrl, baseUrl, options = {}) {
     ]);
     if (resolved === undefined) {
       resolveEmbedPlayback(rawUrl).catch(() => {});
-      return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+      return withWashaEmbedHeaders(target, rawUrl);
     }
   }
   if (!resolved?.streamUrl) {
-    return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+    return withWashaEmbedHeaders(target, rawUrl);
   }
   const httpsBase = String(baseUrl || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
-  const pageUrl = watchPageUrl(httpsBase, resolved);
+  if (needsHostedWebPlayer(resolved)) {
+    const pageUrl = watchPageUrl(httpsBase, resolved);
+    let next = {
+      ...target,
+      stream_url: pageUrl,
+      streamUrl: pageUrl,
+      drm_type: resolved.drmType || 'NONE',
+      drmType: resolved.drmType || 'NONE',
+      drm_protected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
+      drmProtected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
+    };
+    next = applyResolvedDrm(next, resolved, httpsBase);
+    next = forceEmbedWebViewEngine(withWashaEmbedHeaders(next, rawUrl));
+    console.info(`[embed] 📺 hosted webplayer → ${pageUrl.slice(0, 110)}`);
+    return next;
+  }
   let next = {
     ...target,
-    stream_url: pageUrl,
-    streamUrl: pageUrl,
-    drm_type: resolved.drmType || 'NONE',
-    drmType: resolved.drmType || 'NONE',
-    drm_protected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
-    drmProtected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
+    stream_url: playerUrlFor(httpsBase, target.id, resolved),
+    streamUrl: playerUrlFor(httpsBase, target.id, resolved),
   };
   next = applyResolvedDrm(next, resolved, httpsBase);
-  next = forceEmbedWebViewEngine(withWashaEmbedHeaders(next, rawUrl));
-  console.info(`[embed] 📺 hosted webplayer → ${pageUrl.slice(0, 110)}`);
-  return next;
+  // Keep auto/exo — native Widevine avoids WebView Shaka 6001.
+  console.info(`[embed] 🎬 proxied ${playExtension(resolved)} → ch=${target.id}`);
+  return withWashaEmbedHeaders(next, rawUrl);
 }
 
 async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null }) {
@@ -868,15 +916,26 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
   }
-  // SokaMax / Widevine embeds: hosted Shaka page (gateway-shaped) + media/license relays.
-  // Works on installed apps without an update; avoids Exo blank DRM / play.mpd 502.
+  // Resolve → proxied play.mpd for Exo (fast). Hosted page only if needed.
   if (isOnDeviceEmbedApiUrl(raw)) {
     const resolved = await resolveEmbedPlayback(raw);
     if (resolved?.streamUrl) {
+      if (needsHostedWebPlayer(resolved)) {
+        return {
+          url: watchPageUrl(baseUrl, resolved),
+          resolved,
+          forceWebView: true,
+          attachWashaHeaders: true,
+          originalEmbedUrl: raw,
+        };
+      }
+      const ext = playExtension(resolved);
+      const params = new URLSearchParams();
+      if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
+      const query = params.toString();
       return {
-        url: watchPageUrl(baseUrl, resolved),
+        url: `${baseUrl}/api/channels/${id}/play.${ext}${query ? `?${query}` : ''}`,
         resolved,
-        forceWebView: true,
         attachWashaHeaders: true,
         originalEmbedUrl: raw,
       };
@@ -987,9 +1046,9 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
     const raw = String(row.streamUrl || row.stream_url || '').trim();
     if (!isEmbedPlaybackUrl(raw)) return row;
     const remaining = deadline == null ? 8000 : Math.max(0, deadline - Date.now());
-    // SokaMax + DRM embeds → hosted webplayer (gateway-shaped URL).
+    // SokaMax / embeds → proxied play.mpd for Exo (native Widevine, no Shaka 6001).
     if (isOnDeviceEmbedApiUrl(raw)) {
-      return presentHostedWebPlayer(row, raw, baseUrl, { deadlineMs: remaining });
+      return presentResolvedEmbed(row, raw, baseUrl, { deadlineMs: remaining });
     }
     let resolved = peekCachedEmbed(raw);
     if (resolved === undefined) {
@@ -1007,16 +1066,7 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       }
     }
     if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
-    if (needsHostedWebPlayer(resolved)) {
-      return presentHostedWebPlayer(row, raw, baseUrl, { deadlineMs: 50 });
-    }
-    let next = {
-      ...row,
-      stream_url: playerUrlFor(baseUrl, row.id, resolved),
-      streamUrl: playerUrlFor(baseUrl, row.id, resolved),
-    };
-    next = applyResolvedDrm(next, resolved, baseUrl);
-    return next;
+    return presentResolvedEmbed(row, raw, baseUrl, { deadlineMs: 50 });
   });
 }
 

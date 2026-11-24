@@ -200,6 +200,19 @@ class WebViewEngine(
                 }
 
                 webChromeClient = object : WebChromeClient() {
+                    override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+                        // Required for Widevine EME in WebView — without this Shaka returns 6001.
+                        try {
+                            request?.grant(request.resources)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "DRM permission grant failed: ${e.message}")
+                            try {
+                                request?.deny()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+
                     override fun onConsoleMessage(
                         consoleMessage: android.webkit.ConsoleMessage?,
                     ): Boolean {
@@ -209,7 +222,11 @@ class WebViewEngine(
                             "[${consoleMessage?.messageLevel()}] $msg",
                         )
                         // Shaka 4012 = RESTRICTIONS_CANNOT_BE_MET (often HDCP / L1-only video).
-                        if (msg.contains("4012") && msg.contains("Shaka", ignoreCase = true)) {
+                        // Shaka 6001 = REQUESTED_KEY_SYSTEM_CONFIG_UNAVAILABLE.
+                        if (
+                            (msg.contains("4012") || msg.contains("6001")) &&
+                            msg.contains("Shaka", ignoreCase = true)
+                        ) {
                             mainHandler.post { handleDrmRestrictedError() }
                         }
                         return true

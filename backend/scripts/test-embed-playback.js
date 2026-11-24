@@ -90,7 +90,16 @@ const resolvedDash = {
   nvAuthorizations: 'token',
   drmType: 'WIDEVINE',
 };
-assert.strictEqual(needsHostedWebPlayer(resolvedDash), true);
+// DASH/HLS prefer Exo play.mpd — hosted Shaka caused WebView error 6001.
+assert.strictEqual(needsHostedWebPlayer(resolvedDash), false);
+assert.strictEqual(
+  needsHostedWebPlayer({
+    ...resolvedDash,
+    kind: 'progressive',
+    streamUrl: 'https://cdn.example.com/clip.mp4',
+  }),
+  true,
+);
 const watch = watchPageUrl('https://api.example.com', resolvedDash);
 assert.ok(watch.includes('/api/playback/embed/player.php?e='));
 assert.ok(watch.includes('.php'), 'hosted player URL must look like a gateway so WebViewEngine loads it');

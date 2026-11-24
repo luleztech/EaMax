@@ -47,7 +47,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     required String drmType,
     required String licenseUrl,
     required String clearKeyRaw,
-    required Map<String, String> headers,
+    required Map<String, String> licenseHeaders,
   }) {
     final clearKeys = WebDrmUtils.parseClearKeys(clearKeyRaw);
     final servers = <String, String>{};
@@ -62,13 +62,14 @@ video::-webkit-media-controls-timeline{display:none!important}
       } else if (licenseUrl.toLowerCase().contains('playready')) {
         servers['com.microsoft.playready'] = licenseUrl;
       } else {
+        // Prefer Widevine (Android WebView has no PlayReady).
         servers['com.widevine.alpha'] = licenseUrl;
       }
     }
     return {
       'clearKeys': clearKeys ?? {},
       'servers': servers,
-      'licenseHeaders': headers,
+      'licenseHeaders': licenseHeaders,
     };
   }
 
@@ -88,14 +89,22 @@ video::-webkit-media-controls-timeline{display:none!important}
     String drmType = 'NONE',
     String licenseUrl = '',
     String clearKeyRaw = '',
+    Map<String, String> licenseHeaders = const {},
   }) {
     final urlJs = _jsString(url);
     final headersJs = _jsString(headers);
+    // License-only headers (nv-authorizations). Prefer relay URL when CORS blocks custom headers.
+    final licHdrs = Map<String, String>.from(licenseHeaders);
+    if (licHdrs.isEmpty) {
+      headers.forEach((k, v) {
+        if (k.toLowerCase() == 'nv-authorizations') licHdrs[k] = v;
+      });
+    }
     final drmJs = _jsString(_drmJs(
       drmType: drmType,
       licenseUrl: licenseUrl,
       clearKeyRaw: clearKeyRaw,
-      headers: headers,
+      licenseHeaders: licHdrs,
     ));
     final maxW = _widthForHeight(maxHeight);
     return '''<!DOCTYPE html>
@@ -127,7 +136,12 @@ video::-webkit-media-controls-timeline{display:none!important}
     var player=new shaka.Player(v);
     player.getNetworkingEngine().registerRequestFilter(function(type,req){
       req.allowCrossSiteCredentials=true;
-      Object.keys(headers||{}).forEach(function(k){ if(headers[k]!=null) req.headers[k]=String(headers[k]); });
+      // Never put nv-authorizations on manifest/segments — CDNs 403; license-only below.
+      Object.keys(headers||{}).forEach(function(k){
+        if(headers[k]==null) return;
+        if(String(k).toLowerCase()==='nv-authorizations') return;
+        req.headers[k]=String(headers[k]);
+      });
       if(type===shaka.net.NetworkingEngine.RequestType.MANIFEST){
         req.headers['Accept']=req.headers['Accept']||'application/dash+xml,application/vnd.apple.mpegurl,*/*';
       }
@@ -137,11 +151,23 @@ video::-webkit-media-controls-timeline{display:none!important}
         });
       }
     });
-    var drmCfg={};
+    // Empty robustness first avoids Android WebView Shaka 6001; SW_SECURE_CRYPTO for L3.
+    var drmCfg={
+      preferredKeySystems:['com.widevine.alpha'],
+      defaultAudioRobustnessForWidevine:'',
+      defaultVideoRobustnessForWidevine:'',
+      advanced:{'com.widevine.alpha':{
+        videoRobustness:['','SW_SECURE_CRYPTO'],
+        audioRobustness:['','SW_SECURE_CRYPTO'],
+        distinctiveIdentifierRequired:false,
+        persistentStateRequired:false
+      }},
+      retryParameters:{maxAttempts:3,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
+    };
     if(drm.clearKeys&&Object.keys(drm.clearKeys).length) drmCfg.clearKeys=drm.clearKeys;
     if(drm.servers&&Object.keys(drm.servers).length) drmCfg.servers=drm.servers;
     player.configure({
-      streaming:{bufferingGoal:20,rebufferingGoal:3,retryParameters:{maxAttempts:5,baseDelay:1000,timeout:30000}},
+      streaming:{bufferingGoal:8,rebufferingGoal:1.5,retryParameters:{maxAttempts:5,baseDelay:600,timeout:20000}},
       drm:drmCfg,
       abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
     });
@@ -174,6 +200,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     String drmType = 'NONE',
     String licenseUrl = '',
     String clearKeyRaw = '',
+    Map<String, String> licenseHeaders = const {},
   }) =>
       shaka(
         url,
@@ -182,6 +209,7 @@ video::-webkit-media-controls-timeline{display:none!important}
         drmType: drmType,
         licenseUrl: licenseUrl,
         clearKeyRaw: clearKeyRaw,
+        licenseHeaders: licenseHeaders,
       );
 
   /// DASH — Shaka Player.
@@ -192,6 +220,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     String drmType = 'NONE',
     String licenseUrl = '',
     String clearKeyRaw = '',
+    Map<String, String> licenseHeaders = const {},
   }) =>
       shaka(
         url,
@@ -200,6 +229,7 @@ video::-webkit-media-controls-timeline{display:none!important}
         drmType: drmType,
         licenseUrl: licenseUrl,
         clearKeyRaw: clearKeyRaw,
+        licenseHeaders: licenseHeaders,
       );
 
   /// Unknown format — Shaka auto-detects HLS vs DASH.
@@ -210,6 +240,7 @@ video::-webkit-media-controls-timeline{display:none!important}
     String drmType = 'NONE',
     String licenseUrl = '',
     String clearKeyRaw = '',
+    Map<String, String> licenseHeaders = const {},
   }) =>
       shaka(
         url,
@@ -218,6 +249,7 @@ video::-webkit-media-controls-timeline{display:none!important}
         drmType: drmType,
         licenseUrl: licenseUrl,
         clearKeyRaw: clearKeyRaw,
+        licenseHeaders: licenseHeaders,
       );
 
   /// Progressive file (mp4, webm) — Shaka or native video.
