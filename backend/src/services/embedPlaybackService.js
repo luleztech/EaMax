@@ -286,19 +286,60 @@ function isEmbedApiPlayer(parsed) {
   }
 }
 
+function collectResponseCookies(response) {
+  try {
+    if (typeof response.headers.getSetCookie === 'function') {
+      const list = response.headers.getSetCookie();
+      if (Array.isArray(list) && list.length) {
+        return list.map((c) => String(c).split(';')[0].trim()).filter(Boolean).join('; ');
+      }
+    }
+  } catch (_) { /* ignore */ }
+  const raw = response.headers.get('set-cookie');
+  if (!raw) return '';
+  return String(raw)
+    .split(/,(?=[^;]+?=)/)
+    .map((c) => c.split(';')[0].trim())
+    .filter(Boolean)
+    .join('; ');
+}
+
 async function resolveEmbedApi(playerUrl, parsed) {
   const app = parsed.searchParams.get('app');
   const key = parsed.searchParams.get('key');
   if (!app || !key) return null;
   const origin = `${parsed.protocol}//${parsed.host}`;
-  const apiUrl = `${origin}/player.php?app=${encodeURIComponent(app)}&key=${encodeURIComponent(key)}&api=1`;
+  const embedUrl = `${origin}/embed.php?app=${encodeURIComponent(app)}&key=${encodeURIComponent(key)}`;
+  const apiUrl =
+    `${origin}/player.php?app=${encodeURIComponent(app)}&key=${encodeURIComponent(key)}`
+    + `&api=1&t=${Date.now()}`;
+
+  // Same as Washa: warm embed.php first so cookies / app gate accept player.php.
+  let cookieHeader = '';
+  try {
+    const warmHeaders = {
+      ...washaEmbedRequestHeaders(embedUrl),
+      Accept: 'text/html,application/xhtml+xml,*/*',
+    };
+    const warm = await fetchPublic(embedUrl, { headers: warmHeaders, timeoutMs: 10000 });
+    cookieHeader = collectResponseCookies(warm.response);
+    const warmHtml = await readLimitedText(warm.response, HTML_MAX_BYTES);
+    if (/App Haijatambuliwa/i.test(warmHtml)) {
+      console.warn('[embed] Embed warm blocked (App Haijatambuliwa)');
+      return null;
+    }
+  } catch (err) {
+    console.warn('[embed] Embed warm failed (continuing):', err.message || err);
+  }
+
   const hdrs = {
-    'User-Agent':
-      'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36',
+    'User-Agent': BROWSER_UA,
     Accept: 'application/json',
     'X-Requested-With': EMBED_PACKAGE_NAME,
-    Referer: `${origin}/`,
+    Referer: `${origin}/embed.php?app=${encodeURIComponent(app)}&key=${encodeURIComponent(key)}`,
+    Origin: origin,
   };
+  if (cookieHeader) hdrs.Cookie = cookieHeader;
 
   let lastErr = '';
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -594,20 +635,265 @@ function withWashaEmbedHeaders(target, rawUrl) {
   return next;
 }
 
+/** Installed apps honor channel playbackEngine=webview / webplayer. */
+function forceEmbedWebViewEngine(target) {
+  const next = { ...target };
+  next.playbackEngine = 'webplayer';
+  next.playback_engine = 'webplayer';
+  next.effectiveEngine = 'webplayer';
+  next.effective_engine = 'webplayer';
+  next.preferredEngine = 'webplayer';
+  if (next.playerConfig && typeof next.playerConfig === 'object') {
+    next.playerConfig = {
+      ...next.playerConfig,
+      preferredEngine: 'webplayer',
+      effectiveEngine: 'webplayer',
+      playbackEngine: 'webplayer',
+      failoverToWebview: true,
+    };
+  }
+  if (next.playbackPolicy && typeof next.playbackPolicy === 'object') {
+    next.playbackPolicy = {
+      ...next.playbackPolicy,
+      preferredEngine: 'webplayer',
+      effectiveEngine: 'webplayer',
+      playbackEngine: 'webplayer',
+      failoverToWebview: true,
+    };
+  }
+  return next;
+}
+
+/**
+ * Gateway-shaped URL so installed WebViewEngine loads it (needs `.php` / `/embed/`).
+ * `/api/playback/watch` previously caused about:blank white screens.
+ */
+function watchPageUrl(baseUrl, resolved) {
+  const httpsBase = String(baseUrl || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
+  const token = sealRelay({
+    u: resolved.streamUrl,
+    exp: Date.now() + RELAY_TTL_MS,
+    r: resolved.referer || '',
+    o: resolved.origin || '',
+    a: resolved.authorization || '',
+    n: resolved.nvAuthorizations || '',
+    license: resolved.licenseUrl || '',
+    clearKey: resolved.clearKeyRaw || '',
+    drm: resolved.drmType || 'NONE',
+    kind: 'watch',
+  });
+  return `${httpsBase}/api/playback/embed/player.php?e=${encodeURIComponent(token)}`;
+}
+
+function needsHostedWebPlayer(resolved) {
+  if (!resolved?.streamUrl) return false;
+  const drm = String(resolved.drmType || '').toUpperCase();
+  if (resolved.licenseUrl || resolved.clearKeyRaw) return true;
+  if (drm.includes('WIDEVINE') || drm.includes('PLAYREADY') || drm.includes('CLEARKEY')) return true;
+  if (resolved.kind === 'dash') return true;
+  return false;
+}
+
+function buildWatchPlayerHtml({ manifestUrl, licenseUrl, clearKey, drm }) {
+  const manifest = JSON.stringify(String(manifestUrl || ''));
+  const license = JSON.stringify(String(licenseUrl || ''));
+  const ck = JSON.stringify(String(clearKey || ''));
+  const drmType = JSON.stringify(String(drm || 'NONE').toUpperCase());
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>EaMax</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{margin:0;height:100%;width:100%;background:#000;overflow:hidden}
+video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+@media (orientation:landscape){video{object-fit:cover}}
+#spin{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  background:#000;color:#666;font:14px system-ui,sans-serif;z-index:2}
+#err{display:none;position:fixed;inset:0;align-items:center;justify-content:center;
+  color:#fff;font:15px/1.5 system-ui,sans-serif;text-align:center;padding:24px;z-index:3}
+#err.show{display:flex}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.js"></script>
+<script id="shaka-script" src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.4/dist/shaka-player.compiled.js"
+  onerror="(function(){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.4/shaka-player.compiled.min.js';document.head.appendChild(s);})();"></script>
+</head><body>
+<div id="spin">Connecting…</div>
+<video id="v" playsinline webkit-playsinline autoplay muted></video>
+<div id="err"></div>
+<script>
+(function(){
+  var manifest=${manifest};
+  var license=${license};
+  var clearKey=${ck};
+  var drmType=${drmType};
+  var video=document.getElementById('v');
+  var spin=document.getElementById('spin');
+  var err=document.getElementById('err');
+  function hideSpin(){ spin.style.display='none'; }
+  function fail(msg){
+    hideSpin();
+    err.textContent=msg||'';
+    err.className='show';
+    try{ parent.postMessage(JSON.stringify({type:'eamax-player-error',fatal:true}),'*'); }catch(e){}
+  }
+  function ready(){
+    hideSpin();
+    err.className='';
+    var p=video.play();
+    if(p&&p.catch) p.catch(function(){});
+    setTimeout(function(){ try{ video.muted=false; }catch(e){} }, 400);
+  }
+  function parseClearKeys(raw){
+    raw=String(raw||'').trim();
+    if(!raw) return null;
+    try{
+      var j=JSON.parse(raw);
+      if(j&&typeof j==='object'){
+        if(j.keys&&Array.isArray(j.keys)){
+          var map={};
+          j.keys.forEach(function(k){
+            if(k&&k.kid&&k.k) map[String(k.kid)]=String(k.k);
+          });
+          return map;
+        }
+        return j;
+      }
+    }catch(e){}
+    var map={};
+    raw.split(/[,;\\s]+/).forEach(function(pair){
+      var p=pair.split(':');
+      if(p.length>=2) map[p[0].trim()]=p.slice(1).join(':').trim();
+    });
+    return Object.keys(map).length?map:null;
+  }
+  function waitShaka(cb){
+    var n=0;
+    (function t(){
+      if(typeof shaka!=='undefined'){ cb(true); return; }
+      if(++n>60){ cb(false); return; }
+      setTimeout(t,100);
+    })();
+  }
+  if(!manifest){ fail(); return; }
+  waitShaka(function(ok){
+    if(!ok){ fail(); return; }
+    try{ shaka.polyfill.installAll(); }catch(e){}
+    if(!shaka.Player.isBrowserSupported()){ fail(); return; }
+    var player=new shaka.Player(video);
+    var drmCfg={
+      preferredKeySystems:['com.widevine.alpha'],
+      advanced:{'com.widevine.alpha':{
+        videoRobustness:['SW_SECURE_CRYPTO'],
+        audioRobustness:['SW_SECURE_CRYPTO']
+      }},
+      retryParameters:{maxAttempts:4,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
+    };
+    if(drmType.indexOf('WIDEVINE')>=0 && license){
+      drmCfg.servers={'com.widevine.alpha':license};
+    } else if(drmType.indexOf('CLEARKEY')>=0 || clearKey){
+      var ckMap=parseClearKeys(clearKey);
+      if(ckMap) drmCfg.clearKeys=ckMap;
+    }
+    player.configure({
+      streaming:{
+        bufferingGoal:12,
+        rebufferingGoal:2,
+        bufferBehind:20,
+        retryParameters:{maxAttempts:5,baseDelay:600,timeout:20000}
+      },
+      abr:{enabled:true,restrictions:{maxHeight:720,maxWidth:1280}},
+      drm:drmCfg
+    });
+    player.addEventListener('error', function(){ fail(); });
+    video.addEventListener('playing', ready);
+    player.load(manifest).then(function(){
+      try{
+        var tracks=player.getVariantTracks()||[];
+        var best=null,bestH=-1;
+        for(var i=0;i<tracks.length;i++){
+          var h=tracks[i].height||0;
+          if(h>0&&h<=720&&h>=bestH){ best=tracks[i]; bestH=h; }
+        }
+        if(best) player.selectVariantTrack(best,true);
+      }catch(e){}
+      ready();
+    }).catch(function(){ fail(); });
+  });
+})();
+</script></body></html>`;
+}
+
+async function presentHostedWebPlayer(target, rawUrl, baseUrl, options = {}) {
+  const remaining = options.deadlineMs == null ? 8000 : options.deadlineMs;
+  let resolved = peekCachedEmbed(rawUrl);
+  if (resolved === undefined) {
+    if (remaining < 200) {
+      resolveEmbedPlayback(rawUrl).catch(() => {});
+      return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+    }
+    resolved = await Promise.race([
+      resolveEmbedPlayback(rawUrl),
+      new Promise((resolve) => setTimeout(() => resolve(undefined), remaining)),
+    ]);
+    if (resolved === undefined) {
+      resolveEmbedPlayback(rawUrl).catch(() => {});
+      return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+    }
+  }
+  if (!resolved?.streamUrl) {
+    return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, rawUrl));
+  }
+  const httpsBase = String(baseUrl || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
+  const pageUrl = watchPageUrl(httpsBase, resolved);
+  let next = {
+    ...target,
+    stream_url: pageUrl,
+    streamUrl: pageUrl,
+    drm_type: resolved.drmType || 'NONE',
+    drmType: resolved.drmType || 'NONE',
+    drm_protected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
+    drmProtected: !!(resolved.licenseUrl || resolved.clearKeyRaw),
+  };
+  next = applyResolvedDrm(next, resolved, httpsBase);
+  next = forceEmbedWebViewEngine(withWashaEmbedHeaders(next, rawUrl));
+  console.info(`[embed] 📺 hosted webplayer → ${pageUrl.slice(0, 110)}`);
+  return next;
+}
+
 async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null }) {
   const raw = String(rawUrl || '').trim();
   const id = Number(channelId);
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
   }
-  // SokaMax embed.php?app=&key=: CDN tokens are bound to the viewer's IP.
-  // Server play.mpd returns 502 (mpd_upstream_failed) → app buffers forever.
-  // Keep the embed URL and inject com.washatv so the phone resolves locally.
+  // SokaMax / Widevine embeds: hosted Shaka page (gateway-shaped) + media/license relays.
+  // Works on installed apps without an update; avoids Exo blank DRM / play.mpd 502.
   if (isOnDeviceEmbedApiUrl(raw)) {
-    return { url: raw, resolved: null, attachWashaHeaders: true };
+    const resolved = await resolveEmbedPlayback(raw);
+    if (resolved?.streamUrl) {
+      return {
+        url: watchPageUrl(baseUrl, resolved),
+        resolved,
+        forceWebView: true,
+        attachWashaHeaders: true,
+        originalEmbedUrl: raw,
+      };
+    }
+    return { url: raw, resolved: null, attachWashaHeaders: true, forceWebView: true };
   }
   const resolved = await resolveEmbedPlayback(raw);
   if (!resolved?.streamUrl) return { url: raw, resolved: null };
+  if (needsHostedWebPlayer(resolved)) {
+    return {
+      url: watchPageUrl(baseUrl, resolved),
+      resolved,
+      forceWebView: true,
+      attachWashaHeaders: true,
+      originalEmbedUrl: raw,
+    };
+  }
   const ext = playExtension(resolved);
   const params = new URLSearchParams();
   if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
@@ -700,14 +986,13 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
   return mapLimit(rows, 8, async (row) => {
     const raw = String(row.streamUrl || row.stream_url || '').trim();
     if (!isEmbedPlaybackUrl(raw)) return row;
-    // Never rewrite SokaMax embeds to play.mpd — upstream MPD fetch from the
-    // server fails (IP-bound CDN) and the app sits on an endless loading spinner.
+    const remaining = deadline == null ? 8000 : Math.max(0, deadline - Date.now());
+    // SokaMax + DRM embeds → hosted webplayer (gateway-shaped URL).
     if (isOnDeviceEmbedApiUrl(raw)) {
-      return withWashaEmbedHeaders(row, raw);
+      return presentHostedWebPlayer(row, raw, baseUrl, { deadlineMs: remaining });
     }
     let resolved = peekCachedEmbed(raw);
     if (resolved === undefined) {
-      const remaining = deadline == null ? 8000 : deadline - Date.now();
       if (remaining < 200) {
         resolveEmbedPlayback(raw).catch(() => {});
         return withWashaEmbedHeaders(row, raw);
@@ -722,6 +1007,9 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       }
     }
     if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
+    if (needsHostedWebPlayer(resolved)) {
+      return presentHostedWebPlayer(row, raw, baseUrl, { deadlineMs: 50 });
+    }
     let next = {
       ...row,
       stream_url: playerUrlFor(baseUrl, row.id, resolved),
@@ -735,6 +1023,7 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
 async function presentPlaybackForPlayer(playback, baseUrl) {
   if (!playback || !Array.isArray(playback.streams)) return playback;
   const streams = [];
+  let forceWeb = false;
   for (const stream of playback.streams) {
     const rewritten = await rewritePlayerUrl({
       channelId: playback.channelId,
@@ -743,11 +1032,18 @@ async function presentPlaybackForPlayer(playback, baseUrl) {
       priority: stream.priority,
     });
     let next = { ...stream, url: rewritten.url };
-    if (rewritten.attachWashaHeaders) next = withWashaEmbedHeaders(next, stream.url);
+    const headerSrc = rewritten.originalEmbedUrl || stream.url;
+    if (rewritten.attachWashaHeaders) next = withWashaEmbedHeaders(next, headerSrc);
     if (rewritten.resolved) next = applyResolvedDrm(next, rewritten.resolved, baseUrl);
+    if (rewritten.forceWebView) {
+      next = forceEmbedWebViewEngine(next);
+      forceWeb = true;
+    }
     streams.push(next);
   }
-  return { ...playback, streams };
+  let out = { ...playback, streams };
+  if (forceWeb) out = forceEmbedWebViewEngine(out);
+  return out;
 }
 
 async function resolveStreamAlias(row) {
@@ -935,8 +1231,21 @@ async function handleChannelPlay(req, res) {
     if (isDirectMediaUrl(source) && isPublicHttpUrl(source)) return res.redirect(302, source);
     return res.status(404).json({ error: 'No playable stream' });
   }
-  // IP-bound SokaMax: do not proxy — clients should play the embed URL instead.
+  const base = publicBaseUrl(req);
+  // Legacy play.mpd bookmarks: resolve + proxy when possible; otherwise send
+  // clients to the hosted webplayer instead of a broken 302→embed HTML body.
   if (isOnDeviceEmbedApiUrl(source)) {
+    const resolvedOnDevice = await resolveEmbedPlayback(source);
+    if (resolvedOnDevice?.streamUrl) {
+      if (ext === 'mpd' || resolvedOnDevice.kind === 'dash') {
+        try {
+          return await sendProxiedMpd(res, resolvedOnDevice, base);
+        } catch (err) {
+          console.warn('[embed] on-device mpd proxy failed, falling back to webplayer:', err.message || err);
+        }
+      }
+      return res.redirect(302, watchPageUrl(base, resolvedOnDevice));
+    }
     return res.redirect(302, source);
   }
   const resolved = await resolveEmbedPlayback(source);
@@ -945,7 +1254,7 @@ async function handleChannelPlay(req, res) {
   }
   if ((resolved.kind === 'hls' || ext === 'm3u8') && ext === 'm3u8') {
     try {
-      return await sendProxiedPlaylist(res, resolved, publicBaseUrl(req));
+      return await sendProxiedPlaylist(res, resolved, base);
     } catch (err) {
       console.warn('[embed] playlist proxy failed:', err.message || err);
       return res.status(502).json({ error: 'playlist_proxy_failed' });
@@ -953,17 +1262,20 @@ async function handleChannelPlay(req, res) {
   }
   if (ext === 'mpd' || resolved.kind === 'dash') {
     try {
-      return await sendProxiedMpd(res, resolved, publicBaseUrl(req));
+      return await sendProxiedMpd(res, resolved, base);
     } catch (err) {
       console.warn('[embed] mpd proxy failed:', err.message || err);
+      if (needsHostedWebPlayer(resolved)) {
+        return res.redirect(302, watchPageUrl(base, resolved));
+      }
       return res.status(502).json({ error: 'mpd_proxy_failed' });
     }
   }
   if (ext === 'mp4' && resolved.kind === 'progressive') {
-    return res.redirect(302, relayTargetUrl(publicBaseUrl(req), resolved.streamUrl, resolved));
+    return res.redirect(302, relayTargetUrl(base, resolved.streamUrl, resolved));
   }
   try {
-    return await sendProxiedMpd(res, resolved, publicBaseUrl(req));
+    return await sendProxiedMpd(res, resolved, base);
   } catch (err) {
     console.warn('[embed] media proxy failed:', err.message || err);
     return res.status(502).json({ error: 'media_proxy_failed' });
@@ -984,8 +1296,11 @@ async function handleRelay(req, res) {
     authorization: payload.a || '',
     nvAuthorizations: payload.n || '',
   };
-  const headers = upstreamHeaders(payload.u, ctx);
-  if (payload.n) headers['nv-authorizations'] = payload.n;
+  // nv-authorizations is license-only (Nagra). Sending it on MPD/segments often 403s CDNs.
+  const headers = {
+    ...upstreamHeaders(payload.u, ctx),
+    'User-Agent': 'ExoPlayer',
+  };
   if (req.headers.range) headers.Range = req.headers.range;
   let fetched;
   try {
@@ -1029,6 +1344,46 @@ async function handleRelay(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   const { Readable } = require('stream');
   return Readable.fromWeb(response.body).pipe(res);
+}
+
+async function handleWatchPage(req, res) {
+  let payload;
+  try {
+    payload = openRelay(req.query.e);
+  } catch (_) {
+    payload = null;
+  }
+  if (!payload || payload.kind !== 'watch' || !payload.u || !isPublicHttpUrl(payload.u)) {
+    res.status(403);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(
+      '<!DOCTYPE html><html><body style="margin:0;background:#000;color:#fff;font:14px system-ui;display:flex;align-items:center;justify-content:center;height:100vh">Stream unavailable</body></html>',
+    );
+  }
+  const base = publicBaseUrl(req);
+  const ctx = {
+    referer: payload.r || '',
+    origin: payload.o || '',
+    authorization: payload.a || '',
+    nvAuthorizations: payload.n || '',
+  };
+  // Manifest goes through relay so CDN tokens match this server's IP.
+  const manifestUrl = relayTargetUrl(base, payload.u, ctx);
+  const licenseUrl = payload.license
+    ? licenseRelayUrl(base, payload.license, payload.n || '')
+    : '';
+  const html = buildWatchPlayerHtml({
+    manifestUrl,
+    licenseUrl,
+    clearKey: payload.clearKey || '',
+    drm: payload.drm || 'NONE',
+  });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  // Allow embedding in the app WebView.
+  res.removeHeader('X-Frame-Options');
+  res.setHeader('Content-Security-Policy', "frame-ancestors *");
+  return res.status(200).send(html);
 }
 
 /**
@@ -1108,8 +1463,11 @@ module.exports = {
   sealRelay,
   openRelay,
   licenseRelayUrl,
+  watchPageUrl,
+  needsHostedWebPlayer,
   handleChannelPlay,
   handleRelay,
+  handleWatchPage,
   handleLicenseRelay,
   xorDecrypt,
 };

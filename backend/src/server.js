@@ -69,7 +69,10 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, verify: getRawBody }));
 app.use(morgan('dev', {
-  skip: (req) => String(req.originalUrl || '').includes('/api/playback/relay'), // media + license
+  skip: (req) => {
+    const u = String(req.originalUrl || '');
+    return u.includes('/api/playback/relay') || u.includes('/api/playback/embed/');
+  },
 }));
 
 // ── Attach parsed version info to every request ───────────────────────────

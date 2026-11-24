@@ -2,10 +2,13 @@ const assert = require('assert');
 const {
   extractEmbeddedStream,
   isEmbedPlaybackUrl,
+  isOnDeviceEmbedApiUrl,
   isPublicHttpUrl,
+  needsHostedWebPlayer,
   openRelay,
   rewritePlaylist,
   sealRelay,
+  watchPageUrl,
 } = require('../src/services/embedPlaybackService');
 
 function xorEncrypt(plain, key) {
@@ -68,6 +71,34 @@ const sealed = sealRelay({
 });
 assert.strictEqual(openRelay(sealed).u, media);
 assert.strictEqual(openRelay(sealRelay({ u: media, exp: Date.now() - 1000, r: '', o: '', a: '' })), null);
+
+assert.strictEqual(
+  isOnDeviceEmbedApiUrl('https://sokamax.live/embed.php?app=187&key=abcdef'),
+  true,
+);
+assert.strictEqual(
+  isOnDeviceEmbedApiUrl('https://nur.mpilalivetv.com/v2/player.php?channel=3'),
+  false,
+);
+
+const resolvedDash = {
+  streamUrl: 'https://cdn.example.com/live/stream.mpd',
+  kind: 'dash',
+  referer: 'https://sokamax.live/',
+  origin: 'https://sokamax.live',
+  licenseUrl: 'https://license.example.com/wv',
+  nvAuthorizations: 'token',
+  drmType: 'WIDEVINE',
+};
+assert.strictEqual(needsHostedWebPlayer(resolvedDash), true);
+const watch = watchPageUrl('https://api.example.com', resolvedDash);
+assert.ok(watch.includes('/api/playback/embed/player.php?e='));
+assert.ok(watch.includes('.php'), 'hosted player URL must look like a gateway so WebViewEngine loads it');
+const watchToken = watch.match(/e=([^&]+)/)[1];
+const watchPayload = openRelay(decodeURIComponent(watchToken));
+assert.strictEqual(watchPayload.kind, 'watch');
+assert.strictEqual(watchPayload.u, resolvedDash.streamUrl);
+assert.strictEqual(watchPayload.license, resolvedDash.licenseUrl);
 
 console.log('embed playback resolver tests passed');
 process.exit(0);
