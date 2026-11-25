@@ -22,41 +22,75 @@
         android:background="@android:color/black"
         android:visibility="gone" />
 
-    <!-- Zoom cycle FAB: Fit → Contain → Kuza → Jaza -->
+    <!-- Quality + zoom chips (bottom-end, above Media3 controls). -->
     <LinearLayout
-        android:id="@+id/zoom_chip"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="72dp"
-        android:background="@drawable/bg_zoom_chip"
-        android:clickable="true"
-        android:focusable="true"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="12dp"
-        android:paddingTop="10dp"
-        android:paddingEnd="14dp"
-        android:paddingBottom="10dp"
-        android:elevation="8dp">
+        android:gravity="end"
+        android:orientation="vertical">
 
-        <ImageView
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:contentDescription="@string/zoom_button"
-            android:src="@drawable/ic_zoom_cycle"
-            android:tint="#FFFFFF" />
-
-        <TextView
-            android:id="@+id/zoom_label"
+        <LinearLayout
+            android:id="@+id/quality_chip"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="@string/zoom_fit"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/bg_zoom_chip"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="10dp"
+            android:elevation="8dp">
+
+            <TextView
+                android:id="@+id/quality_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/player_chip_quality_default"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Zoom cycle: Fit → Contain → Kuza → Jaza -->
+        <LinearLayout
+            android:id="@+id/zoom_chip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_zoom_chip"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="10dp"
+            android:elevation="8dp">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:contentDescription="@string/zoom_button"
+                android:src="@drawable/ic_zoom_cycle"
+                android:tint="#FFFFFF" />
+
+            <TextView
+                android:id="@+id/zoom_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/zoom_fit"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
 </FrameLayout>

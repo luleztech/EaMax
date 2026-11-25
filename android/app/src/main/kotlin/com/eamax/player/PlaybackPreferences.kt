@@ -16,7 +16,7 @@ data class PlaybackPreferences(
             "480p", "480" -> 480
             "720p", "720" -> 720
             "1080p", "1080" -> 1080
-            "auto", "" -> 480
+            "auto", "abr", "" -> Int.MAX_VALUE
             else -> 480
         }
     }
@@ -26,7 +26,7 @@ data class PlaybackPreferences(
 
         fun fromQuality(quality: StreamQuality, dataSaver: Boolean = false): PlaybackPreferences {
             val q = when (quality) {
-                StreamQuality.AUTO -> "480p"
+                StreamQuality.AUTO -> "auto"
                 StreamQuality.QUALITY_240P -> "240p"
                 StreamQuality.QUALITY_360P -> "360p"
                 StreamQuality.QUALITY_480P -> "480p"

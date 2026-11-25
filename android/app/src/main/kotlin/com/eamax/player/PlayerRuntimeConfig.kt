@@ -77,7 +77,7 @@ object PlayerRuntimeConfig {
 
     fun parseQuality(raw: String?): StreamQuality {
         return when (raw?.trim()?.lowercase()) {
-            "auto", "abr", "" -> StreamQuality.QUALITY_480P
+            "auto", "abr", "" -> StreamQuality.AUTO
             "240p", "240" -> StreamQuality.QUALITY_240P
             "360p", "360" -> StreamQuality.QUALITY_360P
             "480p", "480" -> StreamQuality.QUALITY_480P

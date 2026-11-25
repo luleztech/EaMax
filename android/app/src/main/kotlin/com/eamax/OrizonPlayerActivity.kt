@@ -23,13 +23,16 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.eamax.domain.model.PlaybackState
+import com.eamax.domain.model.StreamQuality
 import com.eamax.domain.model.StreamSession
 import com.eamax.player.GatewayPlaybackResolver
 import com.eamax.player.OrizonPlayerFactory
 import com.eamax.player.PlaybackPreferences
+import com.eamax.player.PlayerRuntimeConfig
 import com.eamax.player.StreamSessionBuilder
 import com.eamax.player.StreamUrlClassifier
 import com.eamax.player.WebViewEngine
@@ -57,12 +60,15 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private lateinit var webContainer: FrameLayout
     private lateinit var zoomChip: LinearLayout
     private lateinit var zoomLabel: TextView
+    private lateinit var qualityChip: LinearLayout
+    private lateinit var qualityLabel: TextView
     private lateinit var factory: OrizonPlayerFactory
     private lateinit var session: StreamSession
     /** Original embed URL kept for WebView failover after gateway resolve. */
     private var gatewayFallbackUrl: String = ""
     private var playbackPreferences = PlaybackPreferences.current()
     private var zoomMode: String = "fit"
+    private var selectedQuality: StreamQuality = StreamQuality.QUALITY_480P
     private val resolveExecutor = Executors.newSingleThreadExecutor()
 
     private val formatQueue = ArrayDeque<OrizonPlayerFactory.Format>()
@@ -114,6 +120,11 @@ class OrizonPlayerActivity : AppCompatActivity() {
         webContainer = findViewById(R.id.webview_container)
         zoomChip = findViewById(R.id.zoom_chip)
         zoomLabel = findViewById(R.id.zoom_label)
+        qualityChip = findViewById(R.id.quality_chip)
+        qualityLabel = findViewById(R.id.quality_label)
+        selectedQuality = PlayerRuntimeConfig.parseQuality(playbackPreferences.defaultQuality)
+        refreshQualityChip()
+        qualityChip.setOnClickListener { showQualityDialog() }
         zoomMode = normalizeZoomMode(playbackPreferences.videoZoomMode)
         applyZoomMode(zoomMode, announce = false)
         zoomChip.setOnClickListener { cycleZoom() }
@@ -217,6 +228,69 @@ class OrizonPlayerActivity : AppCompatActivity() {
             "fit", "normal" -> "fit"
             else -> "fit"
         }
+    }
+
+    private fun refreshQualityChip() {
+        if (!::qualityLabel.isInitialized) return
+        qualityLabel.text = getString(R.string.player_chip_quality, selectedQuality.label)
+    }
+
+    private fun showQualityDialog() {
+        if (isFinishing) return
+        val qualities = listOf(
+            StreamQuality.AUTO,
+            StreamQuality.QUALITY_240P,
+            StreamQuality.QUALITY_360P,
+            StreamQuality.QUALITY_480P,
+            StreamQuality.QUALITY_720P,
+            StreamQuality.QUALITY_1080P,
+        )
+        val initial = qualities.indexOf(selectedQuality).let { if (it >= 0) it else 0 }
+        try {
+            AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
+                .setTitle(R.string.pick_quality)
+                .setSingleChoiceItems(
+                    qualities.map { it.label }.toTypedArray(),
+                    initial,
+                ) { d, which ->
+                    val q = qualities.getOrNull(which) ?: return@setSingleChoiceItems
+                    applyQuality(q)
+                    d.dismiss()
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        } catch (e: Exception) {
+            Log.e(TAG, "showQualityDialog", e)
+        }
+    }
+
+    private fun applyQuality(quality: StreamQuality) {
+        selectedQuality = quality
+        playbackPreferences = PlaybackPreferences.fromQuality(
+            quality,
+            dataSaver = playbackPreferences.dataSaver,
+        ).copy(videoZoomMode = zoomMode)
+        PlaybackPreferences.update(
+            dataSaver = playbackPreferences.dataSaver,
+            defaultQuality = playbackPreferences.defaultQuality,
+            videoZoomMode = zoomMode,
+        )
+        refreshQualityChip()
+        val exo = player
+        if (exo != null) {
+            val selector = exo.trackSelector as? DefaultTrackSelector
+            if (selector != null) {
+                val maxH = playbackPreferences.maxVideoHeight()
+                selector.parameters = selector.buildUponParameters()
+                    .clearOverridesOfType(androidx.media3.common.C.TRACK_TYPE_VIDEO)
+                    .setMaxVideoSize(Int.MAX_VALUE, maxH)
+                    .setForceHighestSupportedBitrate(false)
+                    .build()
+            }
+            exo.playWhenReady = true
+        }
+        webViewEngine?.setQuality(quality, fromUser = true)
+        Log.i(TAG, "quality → ${quality.label}")
     }
 
     private fun cycleZoom() {
