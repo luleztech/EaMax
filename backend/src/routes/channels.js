@@ -6,6 +6,7 @@ const { playbackLimiter } = require('../middleware/rateLimiter');
 const {
   handleChannelPlay,
   presentChannelRows,
+  warmEmbedRows,
   publicBaseUrl,
 } = require('../services/embedPlaybackService');
 
@@ -80,8 +81,14 @@ router.get('/', async (req, res, next) => {
       }
       return out;
     });
-    // Allow enough time to resolve SokaMax embeds → play.mpd (cached after first hit).
-    return res.json(await presentChannelRows(rows, publicBaseUrl(req), { deadlineMs: 6000 }));
+    // Resolve embeds → play.mpd + ClearKey/license on the list card so the app
+    // can open the player on tap with zero extra /playback round-trip.
+    const base = publicBaseUrl(req);
+    const presented = await presentChannelRows(rows, base, { deadlineMs: 10000 });
+    res.json(presented);
+    // Warm embeds that timed out so the next home refresh already has ClearKey.
+    warmEmbedRows(rows).catch(() => {});
+    return undefined;
   } catch (err) {
     return next(err);
   }

@@ -1092,6 +1092,19 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
     console.info(`[embed] 📺 hosted webplayer → ${pageUrl.slice(0, 110)}`);
     return next;
   }
+  // Never hand the app a play.mpd/m3u8 without keys/license — tap would open a
+  // black player. Keep the embed URL so native resolves on open, and refresh
+  // cache so the next /api/channels list already has ClearKey attached.
+  const hasDrmMaterial = !!(resolved.clearKeyRaw || resolved.licenseUrl);
+  const kind = String(resolved.kind || '').toLowerCase();
+  const isManifest = kind === 'dash' || kind === 'hls' ||
+    /\.mpd(\?|#|$)/i.test(String(resolved.streamUrl || '')) ||
+    /\.m3u8?(\?|#|$)/i.test(String(resolved.streamUrl || ''));
+  if (isManifest && !hasDrmMaterial) {
+    resolveEmbedPlayback(rawUrl).catch(() => {});
+    console.warn(`[embed] ⏳ skip play.* without keys/license → ch=${target.id}`);
+    return withWashaEmbedHeaders(target, rawUrl);
+  }
   let next = {
     ...target,
     stream_url: playerUrlFor(httpsBase, target.id, resolved),
@@ -1099,7 +1112,10 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
   };
   next = applyResolvedDrm(next, resolved, httpsBase);
   // Keep auto/exo — native Widevine avoids WebView Shaka 6001.
-  console.info(`[embed] 🎬 proxied ${playExtension(resolved)} → ch=${target.id}`);
+  console.info(
+    `[embed] 🎬 proxied ${playExtension(resolved)} → ch=${target.id}` +
+      (resolved.clearKeyRaw ? ' clearkey=1' : resolved.licenseUrl ? ' license=1' : ''),
+  );
   return withWashaEmbedHeaders(next, rawUrl);
 }
 
@@ -1740,6 +1756,29 @@ async function handleLicenseRelay(req, res) {
   }
 }
 
+/** Background resolve so the next channel list already has ClearKey/license. */
+async function warmEmbedRows(rows) {
+  const urls = [];
+  for (const row of rows || []) {
+    const raw = String(row?.streamUrl || row?.stream_url || '').trim();
+    if (raw && isEmbedPlaybackUrl(raw) && peekCachedEmbed(raw) === undefined) {
+      urls.push(raw);
+    }
+  }
+  if (!urls.length) return { warmed: 0 };
+  let warmed = 0;
+  await mapLimit(urls, 4, async (url) => {
+    try {
+      const resolved = await resolveEmbedPlayback(url);
+      if (resolved?.streamUrl) warmed += 1;
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  if (warmed) console.info(`[embed] 🔥 warmed ${warmed}/${urls.length} embed(s)`);
+  return { warmed };
+}
+
 module.exports = {
   publicBaseUrl,
   isDirectMediaUrl,
@@ -1751,6 +1790,7 @@ module.exports = {
   rewritePlayerUrl,
   applyResolvedDrm,
   presentChannelRows,
+  warmEmbedRows,
   presentPlaybackForPlayer,
   loadPublicStreamUrl,
   rewritePlaylist,

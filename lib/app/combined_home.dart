@@ -421,6 +421,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         _channelsLoadFailed = false;
       });
       unawaited(HomeDataCache.saveChannels(rows));
+      // Prefetch ClearKey/license so the next tap opens with zero wait.
+      unawaited(_warmPlaybackCaches());
     } catch (_) {
       if (mounted) {
         setState(() => _channelsLoadFailed = _allChannels().isEmpty);
@@ -693,6 +695,8 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
       if (playback == null || playback.streams.isEmpty) return;
       final stream = playback.primary!;
       final channelData = playback.channelDataForStream(stream);
+      _playbackCache[ch.id] = playback;
+      _playbackCacheTime[ch.id] = DateTime.now();
       _channelDataCache[ch.id] = Map<String, dynamic>.from(channelData);
       _channelDataCacheTime[ch.id] = DateTime.now();
     } catch (_) {
@@ -700,49 +704,61 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
-  /// Proxied/encrypted MPDs need ClearKey — list cards often still carry a
-  /// stale Widevine licenseUrl with no keys, which must not short-circuit.
+  /// True when list/cache still lacks ClearKey/license for a proxied/embed URL.
   bool _needsFreshPlaybackBundle(Map<String, dynamic>? data, String url) {
     final ck = (data?['drmClearKey'] ?? data?['drm_clear_key'] ?? '')
         .toString()
         .trim();
     if (ck.isNotEmpty) return false;
-    final ul = url.toLowerCase();
-    // Always await /playback for proxied DASH / embed gateways — ClearKey
-    // lives only on the playback bundle, not on the catalog license field.
-    if (ul.contains('/api/channels/') && ul.contains('/play.')) return true;
-    if (ul.contains('.php') || ul.contains('/embed')) return true;
     final license =
         (data?['licenseUrl'] ?? data?['license_url'] ?? '').toString().trim();
     if (license.isNotEmpty) return false;
+    final ul = url.toLowerCase();
+    if (ul.contains('/api/channels/') && ul.contains('/play.')) return true;
+    if (ul.contains('.php') || ul.contains('/embed')) return true;
     return false;
   }
 
-  /// Open from list URL when DRM material is already present; otherwise await
-  /// `/playback` so ClearKey (mpilali) lands with the MPD.
+  /// Background: fill ClearKey/license caches while the user browses home.
+  Future<void> _warmPlaybackCaches() async {
+    final channels = _allChannels();
+    for (final ch in channels) {
+      if (!mounted) return;
+      final data = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : ch.apiRow;
+      final url = _channelExternalUrl(ch, data);
+      if (url.isEmpty) continue;
+      if (!_needsFreshPlaybackBundle(data, url)) continue;
+      await _prefetchPlaybackBundle(ch);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+  }
+
+  /// Open the native player immediately — never await /playback on the tap path.
+  /// Catalog (and background warm) should already carry ClearKey/license.
   Future<void> _instantOpenFromList(ChannelUi ch) async {
     final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
     final quickData = cachedData ?? ch.apiRow;
     final quickUrl = _channelExternalUrl(ch, quickData);
     if (quickUrl.isEmpty) return;
 
-    if (_needsFreshPlaybackBundle(quickData, quickUrl)) {
-      final playback = await _resolveChannelPlayback(ch);
-      if (playback != null && playback.streams.isNotEmpty) {
-        final stream = playback.primary!;
-        final channelData = playback.channelDataForStream(stream);
-        _channelDataCache[ch.id] = Map<String, dynamic>.from(channelData);
-        _channelDataCacheTime[ch.id] = DateTime.now();
-        await _openVideoPlayback(
-          url: stream.url,
-          channelName: ch.name,
-          channelId: ch.id,
-          channelData: channelData,
-          playbackBundle: playback,
-          playbackEngineOverride: _playbackEngineFromData(channelData),
-        );
-        return;
-      }
+    // Prefer a warm /playback cache when present (ClearKey already resolved).
+    final warmPlayback = _playbackCache[ch.id];
+    final warmAge = _playbackCacheTime[ch.id];
+    if (warmPlayback != null &&
+        warmPlayback.streams.isNotEmpty &&
+        warmAge != null &&
+        DateTime.now().difference(warmAge) < _channelCacheTtl) {
+      final stream = warmPlayback.primary!;
+      final channelData = warmPlayback.channelDataForStream(stream);
+      await _openVideoPlayback(
+        url: stream.url,
+        channelName: ch.name,
+        channelId: ch.id,
+        channelData: channelData,
+        playbackBundle: warmPlayback,
+        playbackEngineOverride: _playbackEngineFromData(channelData),
+      );
+      return;
     }
 
     final channelData = quickData != null
