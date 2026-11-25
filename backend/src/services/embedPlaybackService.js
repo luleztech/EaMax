@@ -799,13 +799,20 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
 
   // Always force our BaseURL so relative SegmentTemplate ($Time$) hits the relay,
   // not /api/channels/:id/… (that path is version-gated → 426).
-  out = out.replace(/<BaseURL>[^<]*<\/BaseURL>/gi, '');
+  out = out.replace(/<(?:[A-Za-z0-9]+:)?BaseURL>[^<]*<\/(?:[A-Za-z0-9]+:)?BaseURL>/gi, '');
   if (injectedBase) {
-    if (/<Period\b[^>]*>/i.test(out)) {
-      out = out.replace(/<Period\b[^>]*>/i, (m) => `${m}<BaseURL>${injectedBase}</BaseURL>`);
-    } else if (/<MPD\b[^>]*>/i.test(out)) {
-      out = out.replace(/<MPD\b[^>]*>/i, (m) => `${m}<BaseURL>${injectedBase}</BaseURL>`);
+    const baseTag = `<BaseURL>${injectedBase}</BaseURL>`;
+    if (/<([A-Za-z0-9]+:)?Period\b[^>]*>/i.test(out)) {
+      out = out.replace(/<([A-Za-z0-9]+:)?Period\b[^>]*>/i, (m) => `${m}${baseTag}`);
+    } else if (/<([A-Za-z0-9]+:)?MPD\b[^>]*>/i.test(out)) {
+      out = out.replace(/<([A-Za-z0-9]+:)?MPD\b[^>]*>/i, (m) => `${m}${baseTag}`);
+    } else {
+      console.warn('[embed] MPD has no Period/MPD tag to inject BaseURL');
     }
+  } else {
+    console.warn(
+      `[embed] dash BaseURL empty for mpd=${String(mpdUrl || '').slice(0, 96)} — relative segments will 426`,
+    );
   }
 
   // Absolute CDN media/init URLs → relay (phones never hit CDN IP-locked URLs).
@@ -1637,13 +1644,14 @@ async function handleChannelPlay(req, res) {
 
 async function pipeUpstreamMedia(req, res, targetUrl, ctx) {
   // nv-authorizations is license-only (Nagra). Sending it on MPD/segments often 403s CDNs.
+  // Long timeout: AbortSignal.timeout mid-body used to crash Node (unhandled TimeoutError).
   const tryFetch = async (userAgent) => {
     const headers = {
       ...upstreamHeaders(targetUrl, ctx),
       'User-Agent': userAgent,
     };
     if (req.headers.range) headers.Range = req.headers.range;
-    return fetchPublic(targetUrl, { headers, timeoutMs: 25000 });
+    return fetchPublic(targetUrl, { headers, timeoutMs: 120_000 });
   };
   let fetched;
   try {
@@ -1696,7 +1704,78 @@ async function pipeUpstreamMedia(req, res, targetUrl, ctx) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   const { Readable } = require('stream');
-  return Readable.fromWeb(response.body).pipe(res);
+  const nodeStream = Readable.fromWeb(response.body);
+  const fail = (err) => {
+    console.warn('[embed] relay stream error:', err?.message || err);
+    if (!res.headersSent) {
+      try {
+        res.status(502).end();
+      } catch (_) {
+        /* ignore */
+      }
+    } else {
+      try {
+        res.destroy();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  };
+  nodeStream.on('error', fail);
+  res.on('close', () => {
+    try {
+      nodeStream.destroy();
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  return nodeStream.pipe(res);
+}
+
+/**
+ * Fallback when Exo resolves relative DASH segments against /api/channels/:id/
+ * (missing BaseURL) → /api/channels/96/cenc_….mp4 instead of /api/playback/dash/…
+ */
+async function handleChannelRelativeSegment(req, res) {
+  const channelId = Number(req.params.id);
+  const file = String(req.params.segment || '')
+    .replace(/^\/+/, '')
+    .trim();
+  if (!Number.isFinite(channelId) || channelId <= 0) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (
+    !file
+    || file.includes('..')
+    || !/\.(mp4|m4s|m4a|m4v|cmfv|cmfa|aac|ts)(\?|$)/i.test(file)
+  ) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const source = await loadPublicStreamUrl(channelId, null);
+  if (!source || !isEmbedPlaybackUrl(source)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const resolved = await resolveEmbedPlayback(source);
+  if (!resolved?.streamUrl) {
+    return res.status(503).json({ error: 'embed_unresolved' });
+  }
+  const dir = mpdDirectoryUrl(resolved.streamUrl);
+  if (!dir || !isPublicHttpUrl(dir)) {
+    return res.status(502).json({ error: 'segment_base_missing' });
+  }
+  let target;
+  try {
+    target = new URL(file, dir).toString();
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid segment path' });
+  }
+  if (!isPublicHttpUrl(target)) {
+    return res.status(403).json({ error: 'Blocked segment url' });
+  }
+  console.warn(
+    `[embed] relative segment fallback ch=${channelId} file=${file.slice(0, 64)}`,
+  );
+  return pipeUpstreamMedia(req, res, target, resolved);
 }
 
 async function handleRelay(req, res) {
@@ -1900,6 +1979,7 @@ module.exports = {
   rewriteMpdXml,
   rewriteMpdForClearKey,
   handleChannelPlay,
+  handleChannelRelativeSegment,
   handleRelay,
   handleDashSegment,
   handleWatchPage,

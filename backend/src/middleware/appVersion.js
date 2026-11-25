@@ -48,6 +48,14 @@ function _isExemptRoute(req) {
   if (/\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(p) || /\/api\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(full)) {
     return true;
   }
+  // Relative DASH segments wrongly resolved under /api/channels/:id/cenc_….mp4
+  // (missing BaseURL) — Exo never sends X-App-Version.
+  if (
+    /\/channels\/\d+\/[^/]+\.(mp4|m4s|m4a|m4v|cmfv|cmfa|aac|ts)$/i.test(p)
+    || /\/api\/channels\/\d+\/[^/]+\.(mp4|m4s|m4a|m4v|cmfv|cmfa|aac|ts)$/i.test(full)
+  ) {
+    return true;
+  }
   if (
     p.includes('/playback/relay')
     || p.includes('/playback/dash/')

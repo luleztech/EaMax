@@ -5,6 +5,7 @@ const { sanitizeChannelAudioLanguage } = require('../constants/streamLanguages')
 const { playbackLimiter } = require('../middleware/rateLimiter');
 const {
   handleChannelPlay,
+  handleChannelRelativeSegment,
   presentChannelRows,
   warmEmbedRows,
   publicBaseUrl,
@@ -18,6 +19,14 @@ const router = express.Router();
 // embed/gateway page to a real HLS playlist or redirects to the media file.
 router.get('/:id/play.:ext', playbackLimiter, (req, res, next) => {
   handleChannelPlay(req, res).catch(next);
+});
+
+// Fallback: Exo sometimes requests /api/channels/:id/cenc_….mp4 when MPD BaseURL
+// was missing — proxy that segment instead of 426/crash.
+router.get('/:id/:segment', playbackLimiter, (req, res, next) => {
+  const seg = String(req.params.segment || '');
+  if (!/\.(mp4|m4s|m4a|m4v|cmfv|cmfa|aac|ts)$/i.test(seg)) return next('route');
+  handleChannelRelativeSegment(req, res).catch(next);
 });
 
 // Public: list active channels, optionally filter by category
