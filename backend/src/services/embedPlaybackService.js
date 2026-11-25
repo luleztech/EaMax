@@ -1470,6 +1470,10 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
     streamUrl: playerUrlFor(httpsBase, target.id, resolved),
   };
   next = applyResolvedDrm(next, resolved, httpsBase);
+  if (resolved.clearKeyRaw) {
+    // Fire-and-forget: next list/GET must not revive stale WIDEVINE + empty keys.
+    persistChannelClearKey(target.id, resolved).catch(() => {});
+  }
   // Keep auto/exo — native Widevine avoids WebView Shaka 6001.
   // Do NOT attach washa Origin/Referer/X-Requested-With to play.mpd — those
   // confuse some carrier networks and are unused once media is relayed.
@@ -1502,7 +1506,11 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
     const ext = playExtension(resolved);
     const params = new URLSearchParams();
     if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
+    if (resolved.clearKeyRaw) params.set('ck', '1');
     const query = params.toString();
+    if (resolved.clearKeyRaw) {
+      persistChannelClearKey(id, resolved).catch(() => {});
+    }
     return {
       url: `${baseUrl}/api/channels/${id}/play.${ext}${query ? `?${query}` : ''}`,
       resolved,
@@ -1618,7 +1626,35 @@ async function mapLimit(items, limit, fn) {
 }
 
 function playerUrlFor(baseUrl, channelId, resolved) {
-  return `${baseUrl}/api/channels/${channelId}/play.${playExtension(resolved)}`;
+  const ext = playExtension(resolved);
+  // Cache-bust stale clients that still open this URL as WIDEVINE with keys=0.
+  const qs = resolved?.clearKeyRaw ? '?ck=1' : '';
+  return `${baseUrl}/api/channels/${channelId}/play.${ext}${qs}`;
+}
+
+/** Persist ClearKey onto the channel row so list/instant-open never ships WIDEVINE+empty keys. */
+async function persistChannelClearKey(channelId, resolved) {
+  const id = Number(channelId);
+  const ck = String(resolved?.clearKeyRaw || '').trim();
+  if (!Number.isFinite(id) || id <= 0 || !ck) return;
+  try {
+    await query(
+      `UPDATE channels
+          SET drm_type = 'CLEARKEY',
+              drm_clear_key = $2,
+              license_url = NULL,
+              drm_protected = TRUE
+        WHERE id = $1
+          AND (
+            UPPER(COALESCE(drm_type, '')) IS DISTINCT FROM 'CLEARKEY'
+            OR COALESCE(drm_clear_key, '') IS DISTINCT FROM $2
+            OR license_url IS NOT NULL
+          )`,
+      [id, ck],
+    );
+  } catch (err) {
+    console.warn(`[embed] persist ClearKey ch=${id} failed:`, err.message || err);
+  }
 }
 
 async function presentChannelRows(rows, baseUrl, options = {}) {
@@ -2219,20 +2255,35 @@ async function handleLicenseRelay(req, res) {
     return res.status(400).json({ error: 'No license URL for this session' });
   }
 
-  const headers = { 'Content-Type': 'application/octet-stream' };
+  const headers = {
+    'Content-Type': 'application/octet-stream',
+    Accept: '*/*',
+  };
   if (payload.n) headers['nv-authorizations'] = payload.n;
-  console.info(`[embed] RELAY LICENSE | drm=widevine url=${String(licenseUrl).slice(0, 80)}`);
+  // Forward client UA when present — some Nagra edges are picky.
+  const clientUa = String(req.headers['user-agent'] || '').trim();
+  headers['User-Agent'] = clientUa || 'ExoPlayer';
+  console.info(
+    `[embed] RELAY LICENSE | drm=widevine nv=${payload.n ? 1 : 0} url=${String(licenseUrl).slice(0, 80)}`,
+  );
 
   try {
+    // Prefer raw Buffer from express.raw — never UTF-8-decode Widevine challenges.
     let body = Buffer.alloc(0);
     if (Buffer.isBuffer(req.body)) {
       body = req.body;
-    } else if (req.rawBody && Buffer.isBuffer(req.rawBody)) {
-      body = req.rawBody;
-    } else if (typeof req.body === 'string') {
+    } else if (req.body instanceof Uint8Array) {
       body = Buffer.from(req.body);
+    } else if (typeof req.body === 'string' && req.body.length) {
+      body = Buffer.from(req.body, 'binary');
+    } else if (typeof req.rawBody === 'string' && req.rawBody.length) {
+      body = Buffer.from(req.rawBody, 'binary');
     } else if (req.body && typeof req.body === 'object') {
       body = Buffer.from(JSON.stringify(req.body));
+    }
+    if (!body.length) {
+      console.warn('[embed] license relay empty body');
+      return res.status(400).json({ error: 'Empty license challenge' });
     }
     const upstream = await fetch(licenseUrl, {
       method: 'POST',
@@ -2241,6 +2292,11 @@ async function handleLicenseRelay(req, res) {
       signal: AbortSignal.timeout(15000),
     });
     const buf = Buffer.from(await upstream.arrayBuffer());
+    if (upstream.status >= 400) {
+      console.warn(
+        `[embed] license upstream HTTP ${upstream.status} bytes=${buf.length} body=${buf.slice(0, 160).toString('utf8')}`,
+      );
+    }
     res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
     res.setHeader('Access-Control-Allow-Origin', '*');
