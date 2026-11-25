@@ -11,6 +11,13 @@ const SUCCESS_TTL_MS = 120 * 1000;
 const FAILURE_TTL_MS = 12 * 1000;
 /** Same authorized package marker Washa sends (host accepts com.washatv). */
 const EMBED_PACKAGE_NAME = process.env.EMBED_PACKAGE_NAME || 'com.washatv';
+/** Extra package markers tried when hosts gate on X-Requested-With / ?package=. */
+const EMBED_PACKAGE_FALLBACKS = String(
+  process.env.EMBED_PACKAGE_FALLBACKS || 'com.washatv,com.nurhd.tv,com.eamax',
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 const RELAY_TTL_MS = 4 * 60 * 60 * 1000;
 const HTML_MAX_BYTES = 512 * 1024;
 const PLAYLIST_MAX_BYTES = 2 * 1024 * 1024;
@@ -63,8 +70,9 @@ function publicBaseUrl(req) {
 
 function isDirectMediaUrl(url) {
   const raw = String(url || '');
-  // mpilali / similar: manifest.php serves application/dash+xml
+  // mpilali / similar: manifest.php / stream.php serve media playlists
   if (/\/manifest\.php(\?|#|$)/i.test(raw)) return true;
+  if (/\/stream\.php(\?|#|$)/i.test(raw)) return true;
   return /\.(m3u8|m3u|mpd|mp4|m4v|webm|mkv|mov|ts)(\?|#|$)/i.test(raw);
 }
 
@@ -137,6 +145,7 @@ function resolveAgainst(baseUrl, ref) {
 
 function kindForUrl(url) {
   if (/\.mpd(\?|#|$)/i.test(url) || /\/manifest\.php(\?|#|$)/i.test(url)) return 'dash';
+  if (/\/stream\.php(\?|#|$)/i.test(url)) return 'hls';
   if (/\.(mp4|m4v|webm|mkv|mov)(\?|#|$)/i.test(url)) return 'progressive';
   return 'hls';
 }
@@ -181,6 +190,17 @@ function upstreamHeaders(targetUrl, ctx = {}) {
   const origin = token?.origin || ctx.origin;
   if (referer) headers.Referer = referer;
   if (origin) headers.Origin = origin;
+  // Hosts that gate PHP media (stream.php / manifest.php / player) on package.
+  if (/\.php(\?|#|\/|$)/i.test(String(targetUrl || ''))) {
+    let pkg = EMBED_PACKAGE_NAME;
+    try {
+      const fromQuery = new URL(String(targetUrl)).searchParams.get('package');
+      if (fromQuery) pkg = fromQuery;
+    } catch (_) {
+      /* ignore */
+    }
+    headers['X-Requested-With'] = pkg;
+  }
   if (ctx.authorization) {
     const tokenValue = String(ctx.authorization).trim();
     headers.Authorization = /^bearer\s+/i.test(tokenValue) ? tokenValue : `Bearer ${tokenValue}`;
@@ -307,6 +327,22 @@ function isChannelJsonPlayer(parsed) {
   }
 }
 
+function normalizeClearKeyRaw(raw) {
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw.trim();
+  if (typeof raw === 'object') {
+    // Shaka-style { kid: key } map → kid:key;kid2:key2
+    try {
+      return Object.entries(raw)
+        .map(([kid, key]) => `${String(kid).replace(/-/g, '')}:${String(key).replace(/-/g, '')}`)
+        .join(';');
+    } catch (_) {
+      return '';
+    }
+  }
+  return '';
+}
+
 function parseChannelPlayerJson(text, pageUrl) {
   let data = null;
   try {
@@ -327,7 +363,9 @@ function parseChannelPlayerJson(text, pageUrl) {
   } catch (_) {
     return null;
   }
-  const clearKeyRaw = String(data.clear_key || data.clearKey || data.clearkey || '').trim();
+  const clearKeyRaw = normalizeClearKeyRaw(
+    data.clear_key || data.clearKey || data.clearkey || data.clearKeys,
+  );
   const licenseUrl = String(data.license_url || data.licenseUrl || '').trim();
   const nvAuthorizations = String(
     data.authXmlToken || data.auth_xml_token || data.nv_authorizations || '',
@@ -345,26 +383,139 @@ function parseChannelPlayerJson(text, pageUrl) {
   });
 }
 
-async function resolveChannelJsonPlayer(playerUrl, parsed) {
-  const origin = `${parsed.protocol}//${parsed.host}`;
-  const headers = {
-    'User-Agent': BROWSER_UA,
-    Accept: 'application/json,text/plain,*/*',
-    'X-Requested-With': EMBED_PACKAGE_NAME,
-    Referer: `${origin}/`,
-    Origin: origin,
-  };
-  const { response } = await fetchPublic(playerUrl, { headers, timeoutMs: 12000 });
-  if (response.status < 200 || response.status >= 300) {
-    console.warn(`[embed] channel JSON player HTTP ${response.status}`);
+/** nur v1 HTML embeds window.__PLAYBACK_BOOTSTRAP__ + __API_URL__. */
+function extractPlaybackBootstrap(html, pageUrl) {
+  if (!html) return null;
+  const bootMatch = String(html).match(/__PLAYBACK_BOOTSTRAP__\s*=\s*(\{[\s\S]*?\})\s*;/);
+  if (bootMatch) {
+    const resolved = parseChannelPlayerJson(bootMatch[1], pageUrl);
+    if (resolved) return { resolved, apiUrl: null };
+  }
+  const apiMatch = String(html).match(/__API_URL__\s*=\s*["']([^"']+)["']/);
+  if (!apiMatch) return null;
+  try {
+    return { resolved: null, apiUrl: new URL(apiMatch[1], pageUrl).toString() };
+  } catch (_) {
     return null;
   }
-  const text = await readLimitedText(response, HTML_MAX_BYTES);
-  const resolved = parseChannelPlayerJson(text, playerUrl);
-  if (resolved) {
-    console.info(`[embed] ✅ channel JSON player → ${resolved.streamUrl.slice(0, 96)}`);
+}
+
+/** bein / inline players: var streamUrl = "https://…stream.php?…" */
+function extractAssignedStreamUrl(html, pageUrl) {
+  if (!html) return null;
+  const patterns = [
+    /(?:var|let|const)\s+streamUrl\s*=\s*["']([^"']+)["']/i,
+    /streamUrl\s*=\s*["']([^"']+)["']/i,
+    /["']streamUrl["']\s*:\s*["']([^"']+)["']/i,
+  ];
+  for (const re of patterns) {
+    const m = String(html).match(re);
+    if (!m) continue;
+    const raw = String(m[1] || '').replace(/\\\//g, '/').trim();
+    if (!raw) continue;
+    const abs = resolveAgainst(pageUrl, raw);
+    if (abs && isPublicHttpUrl(abs) && isDirectMediaUrl(abs)) {
+      return buildResolved(abs, pageUrl);
+    }
   }
-  return resolved;
+  return null;
+}
+
+function packageCandidates() {
+  const list = [EMBED_PACKAGE_NAME, ...EMBED_PACKAGE_FALLBACKS];
+  return [...new Set(list.filter(Boolean))];
+}
+
+async function resolveChannelJsonPlayer(playerUrl, parsed) {
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  const pkgs = packageCandidates();
+  let lastStatus = 0;
+  for (const pkg of pkgs) {
+    const headers = {
+      'User-Agent': BROWSER_UA,
+      Accept: 'application/json,text/plain,text/html;q=0.8,*/*;q=0.5',
+      'X-Requested-With': pkg,
+      Referer: `${origin}/`,
+      Origin: origin,
+    };
+    let response;
+    let text;
+    try {
+      ({ response } = await fetchPublic(playerUrl, { headers, timeoutMs: 12000 }));
+      lastStatus = response.status;
+      if (response.status < 200 || response.status >= 300) continue;
+      text = await readLimitedText(response, HTML_MAX_BYTES);
+    } catch (err) {
+      console.warn(`[embed] channel JSON player fetch failed (${pkg}):`, err.message || err);
+      continue;
+    }
+
+    // Pure JSON (nur v2)
+    let resolved = parseChannelPlayerJson(text, playerUrl);
+    if (resolved) {
+      console.info(`[embed] ✅ channel JSON player → ${resolved.streamUrl.slice(0, 96)}`);
+      return resolved;
+    }
+
+    // HTML shell with bootstrap / api (nur v1) or streamUrl= (bein)
+    const boot = extractPlaybackBootstrap(text, playerUrl);
+    if (boot?.resolved) {
+      console.info(`[embed] ✅ HTML bootstrap → ${boot.resolved.streamUrl.slice(0, 96)}`);
+      return boot.resolved;
+    }
+    if (boot?.apiUrl) {
+      try {
+        const apiHeaders = {
+          ...headers,
+          Accept: 'application/json,text/plain,*/*',
+          'X-Requested-With': pkg,
+          Referer: playerUrl,
+        };
+        const apiFetch = await fetchPublic(boot.apiUrl, { headers: apiHeaders, timeoutMs: 12000 });
+        if (apiFetch.response.status >= 200 && apiFetch.response.status < 300) {
+          const apiText = await readLimitedText(apiFetch.response, HTML_MAX_BYTES);
+          resolved = parseChannelPlayerJson(apiText, boot.apiUrl);
+          if (resolved) {
+            console.info(`[embed] ✅ HTML __API_URL__ → ${resolved.streamUrl.slice(0, 96)}`);
+            return resolved;
+          }
+        }
+      } catch (err) {
+        console.warn('[embed] bootstrap API failed:', err.message || err);
+      }
+    }
+
+    resolved = extractAssignedStreamUrl(text, playerUrl);
+    if (resolved) {
+      console.info(`[embed] ✅ HTML streamUrl assign → ${resolved.streamUrl.slice(0, 96)}`);
+      return resolved;
+    }
+
+    // Try sibling v2 JSON when v1 HTML has no usable bootstrap (same channel id).
+    try {
+      const path = String(parsed.pathname || '');
+      if (/\/v1\//i.test(path)) {
+        const v2Url = new URL(playerUrl);
+        v2Url.pathname = path.replace(/\/v1\//i, '/v2/');
+        const v2 = await fetchPublic(v2Url.toString(), {
+          headers: { ...headers, Accept: 'application/json,text/plain,*/*' },
+          timeoutMs: 10000,
+        });
+        if (v2.response.status >= 200 && v2.response.status < 300) {
+          const v2Text = await readLimitedText(v2.response, HTML_MAX_BYTES);
+          resolved = parseChannelPlayerJson(v2Text, v2Url.toString());
+          if (resolved) {
+            console.info(`[embed] ✅ v1→v2 fallback → ${resolved.streamUrl.slice(0, 96)}`);
+            return resolved;
+          }
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  if (lastStatus) console.warn(`[embed] channel JSON player HTTP ${lastStatus}`);
+  return null;
 }
 
 function collectResponseCookies(response) {
@@ -512,6 +663,10 @@ function extractEmbeddedStream(html, baseUrl) {
       if (resolved) return resolved;
     }
   }
+  const boot = extractPlaybackBootstrap(html, baseUrl);
+  if (boot?.resolved) return boot.resolved;
+  const assigned = extractAssignedStreamUrl(html, baseUrl);
+  if (assigned) return assigned;
   const manifest = extractManifestUrl(html, baseUrl);
   if (manifest) return buildResolved(manifest, baseUrl);
   return null;
@@ -605,16 +760,46 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       }
     }
 
-    const headers = upstreamHeaders(raw, pageContext(raw));
-    headers.Accept = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
-    if (/\.php(\?|#|\/|$)/i.test(raw)) headers['X-Requested-With'] = EMBED_PACKAGE_NAME;
-    const { response, finalUrl } = await fetchPublic(raw, { headers, timeoutMs: 8000 });
-    if (response.status < 200 || response.status >= 300) {
-      value = null;
-    } else {
+    // Always send an authorized package marker on .php / embed pages.
+    const pkgs = /\.php(\?|#|\/|$)/i.test(raw) ? packageCandidates() : [EMBED_PACKAGE_NAME];
+    for (const pkg of pkgs) {
+      const headers = {
+        ...upstreamHeaders(raw, pageContext(raw)),
+        Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+        'X-Requested-With': pkg,
+      };
+      let response;
+      let finalUrl;
+      try {
+        ({ response, finalUrl } = await fetchPublic(raw, { headers, timeoutMs: 8000 }));
+      } catch (_) {
+        continue;
+      }
+      if (response.status < 200 || response.status >= 300) continue;
       const html = await readLimitedText(response, HTML_MAX_BYTES);
       value = parseChannelPlayerJson(html, finalUrl || raw)
         || extractEmbeddedStream(html, finalUrl || raw);
+      if (!value) {
+        const boot = extractPlaybackBootstrap(html, finalUrl || raw);
+        if (boot?.apiUrl) {
+          try {
+            const apiFetch = await fetchPublic(boot.apiUrl, {
+              headers: {
+                ...headers,
+                Accept: 'application/json,text/plain,*/*',
+                Referer: finalUrl || raw,
+              },
+              timeoutMs: 10000,
+            });
+            if (apiFetch.response.status >= 200 && apiFetch.response.status < 300) {
+              const apiText = await readLimitedText(apiFetch.response, HTML_MAX_BYTES);
+              value = parseChannelPlayerJson(apiText, boot.apiUrl);
+            }
+          } catch (_) {
+            /* ignore */
+          }
+        }
+      }
       if (!value && depth < 1) {
         const iframe = extractIframeSrc(html, finalUrl || raw);
         if (iframe && iframe !== raw) {
@@ -622,6 +807,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
           else if (isEmbedPlaybackUrl(iframe)) value = await resolveEmbedPlayback(iframe, depth + 1);
         }
       }
+      if (value) break;
     }
   } catch (err) {
     console.warn('[embed] resolve failed:', err.message || err);
@@ -1177,50 +1363,40 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
   if (!raw || !Number.isFinite(id) || id <= 0 || !isEmbedPlaybackUrl(raw)) {
     return { url: raw, resolved: null };
   }
-  // Resolve → proxied play.mpd for Exo (fast). Hosted page only if needed.
-  if (isOnDeviceEmbedApiUrl(raw)) {
-    const resolved = await resolveEmbedPlayback(raw);
-    if (resolved?.streamUrl) {
-      if (needsHostedWebPlayer(resolved)) {
-        return {
-          url: watchPageUrl(baseUrl, resolved),
-          resolved,
-          forceWebView: true,
-          attachWashaHeaders: true,
-          originalEmbedUrl: raw,
-        };
-      }
-      const ext = playExtension(resolved);
-      const params = new URLSearchParams();
-      if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
-      const query = params.toString();
+  // Resolve on server for every embed shape (SokaMax, mpilali JSON/HTML, bein…).
+  // Phones only ever get play.* or hosted player — never raw third-party URLs.
+  const resolved = await resolveEmbedPlayback(raw);
+  if (resolved?.streamUrl) {
+    if (needsHostedWebPlayer(resolved)) {
       return {
-        url: `${baseUrl}/api/channels/${id}/play.${ext}${query ? `?${query}` : ''}`,
+        url: watchPageUrl(baseUrl, resolved),
         resolved,
+        forceWebView: true,
         attachWashaHeaders: true,
         originalEmbedUrl: raw,
       };
     }
-    return { url: raw, resolved: null, attachWashaHeaders: true, forceWebView: true };
-  }
-  const resolved = await resolveEmbedPlayback(raw);
-  if (!resolved?.streamUrl) return { url: raw, resolved: null };
-  if (needsHostedWebPlayer(resolved)) {
+    const ext = playExtension(resolved);
+    const params = new URLSearchParams();
+    if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
+    const query = params.toString();
     return {
-      url: watchPageUrl(baseUrl, resolved),
+      url: `${baseUrl}/api/channels/${id}/play.${ext}${query ? `?${query}` : ''}`,
       resolved,
-      forceWebView: true,
-      attachWashaHeaders: true,
+      // Never put washa Origin/Referer/X-Requested-With on proxied play.* —
+      // Exo would leak them and break Wi‑Fi/cellular + ClearKey.
+      attachWashaHeaders: false,
       originalEmbedUrl: raw,
     };
   }
-  const ext = playExtension(resolved);
-  const params = new URLSearchParams();
-  if (priority != null && Number.isFinite(Number(priority))) params.set('p', String(Number(priority)));
-  const query = params.toString();
+  // Unresolved: keep embed URL so a later warm can fix it; attach package headers
+  // only for on-device last-resort (old clients). Prefer webplayer when possible.
   return {
-    url: `${baseUrl}/api/channels/${id}/play.${ext}${query ? `?${query}` : ''}`,
-    resolved,
+    url: raw,
+    resolved: null,
+    attachWashaHeaders: true,
+    forceWebView: isOnDeviceEmbedApiUrl(raw),
+    originalEmbedUrl: raw,
   };
 }
 
@@ -1266,7 +1442,8 @@ function applyResolvedDrm(target, resolved, baseUrl) {
     }
   }
 
-  const playUrl = String(next.streamUrl || next.stream_url || '');
+  // /playback uses `url`; channel list uses streamUrl — clean both.
+  const playUrl = String(next.url || next.streamUrl || next.stream_url || '');
   if (isProxiedPlayUrl(playUrl)) {
     // Device ↔ EaMax only. CDN Referer/Origin stay on the server relay so the
     // same stream works on Wi‑Fi and cellular (no ISP/CDN header quirks).
@@ -1274,14 +1451,17 @@ function applyResolvedDrm(target, resolved, baseUrl) {
     next.headers = clean;
     next.stream_headers = clean;
     next.streamHeaders = clean;
+    if (next.url && !next.streamUrl) next.streamUrl = next.url;
+    if (next.url && !next.stream_url) next.stream_url = next.url;
     return next;
   }
 
   // Embed / gateway pages still need washa-like headers for on-device resolve.
   const headers = { ...(next.headers || {}) };
+  headers['X-Requested-With'] = headers['X-Requested-With'] || EMBED_PACKAGE_NAME;
   if (resolved.referer) headers.Referer = resolved.referer;
   if (resolved.origin && !headers.Origin) headers.Origin = resolved.origin;
-  headers['User-Agent'] = headers['User-Agent'] || 'ExoPlayer';
+  headers['User-Agent'] = headers['User-Agent'] || BROWSER_UA;
   // nv-authorizations is license-only — never put it on media GETs (CDN 403).
   if (resolved.authorization && !resolved.nvAuthorizations) {
     headers.Authorization = /^bearer\s+/i.test(resolved.authorization)
@@ -1362,8 +1542,17 @@ async function presentPlaybackForPlayer(playback, baseUrl) {
     });
     let next = { ...stream, url: rewritten.url };
     const headerSrc = rewritten.originalEmbedUrl || stream.url;
-    if (rewritten.attachWashaHeaders) next = withWashaEmbedHeaders(next, headerSrc);
+    // Order matters: DRM + clean headers for play.* must win over washa attach.
+    if (rewritten.attachWashaHeaders && !isProxiedPlayUrl(rewritten.url)) {
+      next = withWashaEmbedHeaders(next, headerSrc);
+    }
     if (rewritten.resolved) next = applyResolvedDrm(next, rewritten.resolved, baseUrl);
+    else if (isProxiedPlayUrl(rewritten.url)) {
+      const clean = headersForProxiedAppPlayback();
+      next.headers = clean;
+      next.stream_headers = clean;
+      next.streamHeaders = clean;
+    }
     if (rewritten.forceWebView) {
       next = forceEmbedWebViewEngine(next);
       forceWeb = true;
