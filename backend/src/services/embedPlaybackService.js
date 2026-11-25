@@ -565,23 +565,67 @@ function isOnDeviceEmbedApiUrl(url) {
   }
 }
 
+/** Directory of an MPD URL — relative SegmentTemplate paths resolve against this. */
+function mpdDirectoryUrl(mpdUrl) {
+  try {
+    const u = new URL(String(mpdUrl || '').trim());
+    u.hash = '';
+    u.search = '';
+    const path = u.pathname || '/';
+    u.pathname = path.endsWith('/') ? path : path.replace(/[^/]+$/, '');
+    if (!u.pathname.endsWith('/')) u.pathname += '/';
+    return u.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * BaseURL Exo resolves relative $Time$ / $Number$ segments against.
+ * Path form: /api/playback/dash/<token>/AzamSport1-…-init.mp4
+ * (query-token relays cannot append relative paths).
+ */
+function dashBaseRelayUrl(apiBase, mpdUrl, ctx) {
+  const dir = mpdDirectoryUrl(mpdUrl);
+  if (!dir || !isPublicHttpUrl(dir)) return '';
+  const httpsBase = String(apiBase || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
+  const token = sealRelay({
+    u: dir,
+    exp: Date.now() + RELAY_TTL_MS,
+    r: ctx.referer || '',
+    o: ctx.origin || '',
+    a: ctx.authorization || '',
+    n: ctx.nvAuthorizations || '',
+    kind: 'dashbase',
+  });
+  return `${httpsBase}/api/playback/dash/${encodeURIComponent(token)}/`;
+}
+
 /** Rewrite DASH MPD so BaseURL / segment refs go through our IP-matched relay. */
 function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
   const rewriteAbs = (abs) => {
     if (!abs || !isPublicHttpUrl(abs)) return abs;
-    if (/\/api\/playback\/relay/i.test(abs)) return abs;
+    if (/\/api\/playback\/(relay|dash)\//i.test(abs)) return abs;
     if (/\/api\/channels\/\d+\/play\./i.test(abs)) return abs;
     return relayTargetUrl(baseUrl, abs, ctx);
   };
   let out = String(text || '');
-  out = out.replace(/<BaseURL>([^<]*)<\/BaseURL>/gi, (all, ref) => {
-    const abs = resolveAgainst(mpdUrl, String(ref || '').trim());
-    if (!abs || !isPublicHttpUrl(abs)) return all;
-    return `<BaseURL>${rewriteAbs(abs)}</BaseURL>`;
-  });
+  const injectedBase = dashBaseRelayUrl(baseUrl, mpdUrl, ctx);
+
+  // Always force our BaseURL so relative SegmentTemplate ($Time$) hits the relay,
+  // not /api/channels/:id/… (that path is version-gated → 426).
+  out = out.replace(/<BaseURL>[^<]*<\/BaseURL>/gi, '');
+  if (injectedBase) {
+    if (/<Period\b[^>]*>/i.test(out)) {
+      out = out.replace(/<Period\b[^>]*>/i, (m) => `${m}<BaseURL>${injectedBase}</BaseURL>`);
+    } else if (/<MPD\b[^>]*>/i.test(out)) {
+      out = out.replace(/<MPD\b[^>]*>/i, (m) => `${m}<BaseURL>${injectedBase}</BaseURL>`);
+    }
+  }
+
   out = out.replace(/\b(media|initialization|sourceURL|url)="([^"]+)"/gi, (all, attr, ref) => {
     const raw = String(ref || '').trim();
-    // SegmentTemplate placeholders ($Number$ / $Time$) stay relative to BaseURL.
+    // Keep template placeholders relative — they resolve against injected BaseURL.
     if (!raw || raw.includes('$')) return all;
     if (/^https?:\/\//i.test(raw)) return `${attr}="${rewriteAbs(raw)}"`;
     const abs = resolveAgainst(mpdUrl, raw);
@@ -1332,29 +1376,16 @@ async function handleChannelPlay(req, res) {
   }
 }
 
-async function handleRelay(req, res) {
-  let payload;
-  try {
-    payload = openRelay(req.query.e);
-  } catch (_) {
-    payload = null;
-  }
-  if (!payload) return res.status(403).json({ error: 'Invalid playback token' });
-  const ctx = {
-    referer: payload.r || '',
-    origin: payload.o || '',
-    authorization: payload.a || '',
-    nvAuthorizations: payload.n || '',
-  };
+async function pipeUpstreamMedia(req, res, targetUrl, ctx) {
   // nv-authorizations is license-only (Nagra). Sending it on MPD/segments often 403s CDNs.
   const headers = {
-    ...upstreamHeaders(payload.u, ctx),
+    ...upstreamHeaders(targetUrl, ctx),
     'User-Agent': 'ExoPlayer',
   };
   if (req.headers.range) headers.Range = req.headers.range;
   let fetched;
   try {
-    fetched = await fetchPublic(payload.u, { headers, timeoutMs: 15000 });
+    fetched = await fetchPublic(targetUrl, { headers, timeoutMs: 15000 });
   } catch (err) {
     console.warn('[embed] relay failed:', err.message || err);
     return res.status(502).json({ error: 'Upstream playback failed' });
@@ -1375,12 +1406,13 @@ async function handleRelay(req, res) {
     }
     return res.status(502).json({ error: 'Upstream playback failed' });
   }
-  if (looksLikeMpd(finalUrl || payload.u, contentType, '')) {
+  if (looksLikeMpd(finalUrl || targetUrl, contentType, '')) {
     const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
-    if (looksLikeMpd(finalUrl || payload.u, contentType, text)) {
-      const body = rewriteMpdXml(text, finalUrl || payload.u, base, ctx);
+    if (looksLikeMpd(finalUrl || targetUrl, contentType, text)) {
+      const body = rewriteMpdXml(text, finalUrl || targetUrl, base, ctx);
       res.setHeader('Content-Type', 'application/dash+xml');
       res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       return res.status(200).send(body);
     }
   }
@@ -1392,8 +1424,64 @@ async function handleRelay(req, res) {
   if (contentLength) res.setHeader('Content-Length', contentLength);
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   const { Readable } = require('stream');
   return Readable.fromWeb(response.body).pipe(res);
+}
+
+async function handleRelay(req, res) {
+  let payload;
+  try {
+    payload = openRelay(req.query.e);
+  } catch (_) {
+    payload = null;
+  }
+  if (!payload) return res.status(403).json({ error: 'Invalid playback token' });
+  const ctx = {
+    referer: payload.r || '',
+    origin: payload.o || '',
+    authorization: payload.a || '',
+    nvAuthorizations: payload.n || '',
+  };
+  return pipeUpstreamMedia(req, res, payload.u, ctx);
+}
+
+/**
+ * Relative DASH segments: /api/playback/dash/<token>/AzamSport1-…-init.mp4
+ * Token seals the CDN directory from the original MPD.
+ */
+async function handleDashSegment(req, res) {
+  let payload;
+  try {
+    payload = openRelay(decodeURIComponent(String(req.params.token || '')));
+  } catch (_) {
+    payload = null;
+  }
+  if (!payload || (payload.kind && payload.kind !== 'dashbase') || !payload.u) {
+    return res.status(403).json({ error: 'Invalid dash token' });
+  }
+  const rel = String(req.params[0] || req.params.file || '')
+    .replace(/^\/+/, '')
+    .trim();
+  if (!rel || rel.includes('..')) {
+    return res.status(400).json({ error: 'Invalid segment path' });
+  }
+  let target;
+  try {
+    target = new URL(rel, payload.u).toString();
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid segment path' });
+  }
+  if (!isPublicHttpUrl(target)) {
+    return res.status(403).json({ error: 'Blocked segment url' });
+  }
+  const ctx = {
+    referer: payload.r || '',
+    origin: payload.o || '',
+    authorization: payload.a || '',
+    nvAuthorizations: payload.n || '',
+  };
+  return pipeUpstreamMedia(req, res, target, ctx);
 }
 
 async function handleWatchPage(req, res) {
@@ -1515,8 +1603,10 @@ module.exports = {
   licenseRelayUrl,
   watchPageUrl,
   needsHostedWebPlayer,
+  rewriteMpdXml,
   handleChannelPlay,
   handleRelay,
+  handleDashSegment,
   handleWatchPage,
   handleLicenseRelay,
   xorDecrypt,

@@ -4,6 +4,7 @@ const {
   handleRelay,
   handleLicenseRelay,
   handleWatchPage,
+  handleDashSegment,
 } = require('../services/embedPlaybackService');
 
 const router = express.Router();
@@ -11,6 +12,13 @@ const router = express.Router();
 // Media segment / playlist relay (Exo + HLS proxy + hosted webplayer).
 router.get('/relay', playbackLimiter, (req, res, next) => {
   handleRelay(req, res).catch(next);
+});
+
+// Relative DASH SegmentTemplate ($Time$ / $Number$) — MPD BaseURL points here.
+// Filenames are a single path segment (no slash), e.g. AzamSport1-1-…-init.mp4
+router.get('/dash/:token/:file', playbackLimiter, (req, res, next) => {
+  req.params[0] = req.params.file;
+  handleDashSegment(req, res).catch(next);
 });
 
 // PDF 4b: Widevine license relay — injects nv-authorizations server-side for WebView/Shaka.

@@ -29,23 +29,35 @@ function compareSemver(a, b) {
 // Routes that should never be version-checked (admin panel, webhooks, provider callbacks).
 // req.path here is relative to the /api/ prefix, e.g. "/admin/...", "/payments/aurax/webhook"
 function _isExemptRoute(req) {
-  const p = req.path || '';
+  // Mounted at /api/ so req.path is "/channels/…" — also check originalUrl.
+  const p = String(req.path || '').split('?')[0];
+  const full = String(req.originalUrl || req.url || '').split('?')[0];
   if (p.startsWith('/admin') || p.startsWith('/dashboard') || p.startsWith('/partner')) {
     return true;
   }
   // Remote config bootstrap — must work even on outdated builds.
-  if (p.startsWith('/v2/config')) {
+  if (p.startsWith('/v2/config') || full.includes('/api/v2/config')) {
     return true;
   }
   // Mobile-money webhooks never send X-App-Version — must not be blocked when enforcement is on.
-  if (p.startsWith('/payments/') && p.includes('/webhook')) {
+  if ((p.startsWith('/payments/') || full.includes('/api/payments/')) && full.includes('/webhook')) {
     return true;
   }
   // ExoPlayer / AVPlayer / WebView fetch media with no app headers. These routes must
   // stay reachable so an embed can play without an app update.
-  if (/\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(p.split('?')[0])) return true;
-  if (p.split('?')[0].includes('/playback/relay')) return true;
-  if (p.split('?')[0].includes('/playback/embed/')) return true;
+  if (/\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(p) || /\/api\/channels\/\d+\/play\.(m3u8|mpd|mp4)$/.test(full)) {
+    return true;
+  }
+  if (
+    p.includes('/playback/relay')
+    || p.includes('/playback/dash/')
+    || p.includes('/playback/embed/')
+    || full.includes('/api/playback/relay')
+    || full.includes('/api/playback/dash/')
+    || full.includes('/api/playback/embed/')
+  ) {
+    return true;
+  }
 
   const adminKey = String(req.headers['x-admin-key'] || '').trim();
   if (adminKey && adminKey === process.env.ADMIN_API_KEY) {

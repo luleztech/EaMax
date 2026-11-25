@@ -44,12 +44,24 @@ object PlaybackHttpHeaders {
         if (uri.scheme.isNullOrBlank() || uri.host.isNullOrBlank()) return emptyMap()
 
         if (isDirectMediaUrl(trimmed)) {
-            return linkedMapOf(
+            val headers = linkedMapOf(
                 "User-Agent" to PlayerRuntimeConfig.pageUserAgent.ifBlank { OrizonStreamClient.USER_AGENT },
                 "Accept" to "*/*",
                 "Accept-Language" to "en-US,en;q=0.9,sw;q=0.8",
                 "Connection" to "keep-alive",
             )
+            // Bare-IP IPTV panels often 403 without a matching Referer.
+            val host = uri.host.orEmpty()
+            if (host.matches(Regex("""^\d{1,3}(?:\.\d{1,3}){3}$"""))) {
+                val port = when (uri.port) {
+                    -1, 80, 443 -> ""
+                    else -> ":${uri.port}"
+                }
+                val origin = "${uri.scheme}://$host$port"
+                headers["Referer"] = "$origin/"
+                headers["Origin"] = origin
+            }
+            return headers
         }
 
         val port = when (uri.port) {
@@ -91,7 +103,9 @@ object PlaybackHttpHeaders {
             val drop = merged.keys.filter { it.lowercase() in BROWSER_ONLY_HEADERS }
             drop.forEach { merged.remove(it) }
             val host = runCatching { Uri.parse(streamUrl.trim()).host }.getOrNull()?.lowercase().orEmpty()
-            if (host.isNotEmpty()) {
+            val isBareIp = host.matches(Regex("""^\d{1,3}(?:\.\d{1,3}){3}$"""))
+            // Keep Referer/Origin for bare-IP IPTV (they 403 without it). Strip for named CDNs.
+            if (host.isNotEmpty() && !isBareIp) {
                 val originKey = merged.keys.firstOrNull { it.equals("Origin", ignoreCase = true) }
                 val refererKey = merged.keys.firstOrNull { it.equals("Referer", ignoreCase = true) }
                 if (originKey != null && merged[originKey].orEmpty().lowercase().contains(host)) {

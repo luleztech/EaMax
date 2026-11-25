@@ -6,6 +6,7 @@ const {
   isPublicHttpUrl,
   needsHostedWebPlayer,
   openRelay,
+  rewriteMpdXml,
   rewritePlaylist,
   sealRelay,
   watchPageUrl,
@@ -108,6 +109,20 @@ const watchPayload = openRelay(decodeURIComponent(watchToken));
 assert.strictEqual(watchPayload.kind, 'watch');
 assert.strictEqual(watchPayload.u, resolvedDash.streamUrl);
 assert.strictEqual(watchPayload.license, resolvedDash.licenseUrl);
+
+const mpd = `<?xml version="1.0"?><MPD><Period id="1"><SegmentTemplate initialization="clip-\$RepresentationID\$-init.mp4" media="clip-\$RepresentationID\$-\$Time\$.mp4"/></Period></MPD>`;
+const rewrittenMpd = rewriteMpdXml(
+  mpd,
+  'https://cdn.example.com/live/stream.mpd',
+  'https://api.example.com',
+  { referer: 'https://sokamax.live/', origin: 'https://sokamax.live' },
+);
+assert.ok(rewrittenMpd.includes('<BaseURL>https://api.example.com/api/playback/dash/'), 'MPD must inject dash BaseURL');
+assert.ok(rewrittenMpd.includes('initialization="clip-$RepresentationID$-init.mp4"'), 'template paths stay relative');
+const dashToken = rewrittenMpd.match(/\/api\/playback\/dash\/([^/"<]+)\//)[1];
+const dashPayload = openRelay(decodeURIComponent(dashToken));
+assert.strictEqual(dashPayload.kind, 'dashbase');
+assert.ok(String(dashPayload.u).endsWith('/live/'));
 
 console.log('embed playback resolver tests passed');
 process.exit(0);

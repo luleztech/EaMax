@@ -49,12 +49,20 @@ Map<String, String> playbackHttpHeaders(String rawUrl) {
   if (!parsed.hasScheme || !parsed.hasAuthority) return const {};
 
   if (isDirectMediaUrl(u)) {
-    return {
+    final headers = <String, String>{
       'User-Agent': _pageUserAgent(),
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9,sw;q=0.8',
       'Connection': 'keep-alive',
     };
+    // Bare-IP IPTV panels often 403 without a matching Referer.
+    final host = parsed.host;
+    if (RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host)) {
+      final origin = '${parsed.scheme}://${parsed.authority}';
+      headers['Referer'] = '$origin/';
+      headers['Origin'] = origin;
+    }
+    return headers;
   }
 
   final cdnOrigin = '${parsed.scheme}://${parsed.authority}';
@@ -106,7 +114,9 @@ Map<String, String> mergePlaybackHeaders(
   if (isDirectMediaUrl(streamUrl)) {
     merged.removeWhere((key, _) => _browserOnlyHeader(key));
     final host = Uri.tryParse(streamUrl.trim())?.host.toLowerCase() ?? '';
-    if (host.isNotEmpty) {
+    final isBareIp = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host);
+    // Keep Referer/Origin for bare-IP IPTV (they 403 without it).
+    if (host.isNotEmpty && !isBareIp) {
       final origin = merged['Origin'] ?? merged['origin'];
       final referer = merged['Referer'] ?? merged['referer'];
       if (origin != null && origin.toLowerCase().contains(host)) {
