@@ -34,10 +34,17 @@ object StreamSessionBuilder {
 
         val headers = parseHeaders(headersJson)
 
-        // Backend sometimes ships keys without drmType — infer ClearKey when keys exist for manifests.
-        if (drmType == DrmType.NONE && clearKeyHex.isNotEmpty()) {
+        // mpilali / ClearKey: catalog often still says WIDEVINE with empty license while
+        // drmClearKey is present (or only keys are present). Prefer ClearKey over demoting to NONE.
+        val parsedClearKeys = parseClearKeysFromHex(clearKeyHex)
+        if (parsedClearKeys.isNotEmpty()) {
             val ul = url.lowercase()
-            if (ul.contains(".mpd") || ul.contains(".m3u8") || ul.contains(".m3u")) {
+            if (ul.contains(".mpd") ||
+                ul.contains(".m3u8") ||
+                ul.contains(".m3u") ||
+                ul.contains("manifest.php") ||
+                ul.contains("/api/channels/")
+            ) {
                 drmType = DrmType.CLEARKEY
             }
         }
@@ -46,12 +53,12 @@ object StreamSessionBuilder {
         if (drmType != DrmType.NONE && drmType != DrmType.CLEARKEY && licenseUrl.isEmpty()) {
             drmType = DrmType.NONE
         }
-        if (drmType == DrmType.CLEARKEY && parseClearKeysFromHex(clearKeyHex).isEmpty()) {
+        if (drmType == DrmType.CLEARKEY && parsedClearKeys.isEmpty()) {
             drmType = DrmType.NONE
         }
 
         val drmData = when (drmType) {
-            DrmType.CLEARKEY -> DrmData(keys = parseClearKeysFromHex(clearKeyHex), headers = null)
+            DrmType.CLEARKEY -> DrmData(keys = parsedClearKeys, headers = null)
             else -> DrmData(headers = null)
         }
 

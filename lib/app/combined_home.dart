@@ -616,11 +616,19 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     if (d.isEmpty) d = 'NONE';
     var u = d.toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
     if (u == 'CLEAR_KEY') u = 'CLEARKEY';
-    if (u != 'NONE') return u;
     final ul = playbackUrl.toLowerCase();
-    if (clearPayload.isNotEmpty && (ul.contains('.mpd') || ul.contains('.m3u8') || ul.contains('.m3u'))) {
+    final license = '${channelData?['licenseUrl'] ?? channelData?['license_url'] ?? ''}'.trim();
+    final looksManifest = ul.contains('.mpd') ||
+        ul.contains('.m3u8') ||
+        ul.contains('.m3u') ||
+        ul.contains('manifest.php') ||
+        ul.contains('/api/channels/');
+    // mpilali ClearKey streams are often tagged WIDEVINE in admin with no license URL.
+    if (clearPayload.isNotEmpty && looksManifest && (u == 'NONE' || (u.contains('WIDEVINE') && license.isEmpty()))) {
       return 'CLEARKEY';
     }
+    if (u != 'NONE') return u;
+    if (clearPayload.isNotEmpty && looksManifest) return 'CLEARKEY';
     return 'NONE';
   }
 
@@ -696,12 +704,47 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
-  /// One-tap open: use URL already on the channel card — no network wait.
+  /// Proxied/encrypted MPDs need ClearKey or a license — list cards often lack both.
+  bool _needsFreshPlaybackBundle(Map<String, dynamic>? data, String url) {
+    final ck = (data?['drmClearKey'] ?? data?['drm_clear_key'] ?? '')
+        .toString()
+        .trim();
+    if (ck.isNotEmpty) return false;
+    final license =
+        (data?['licenseUrl'] ?? data?['license_url'] ?? '').toString().trim();
+    if (license.isNotEmpty) return false;
+    final ul = url.toLowerCase();
+    if (ul.contains('.php') || ul.contains('/embed')) return true;
+    if (ul.contains('/api/channels/') && ul.contains('/play.')) return true;
+    return false;
+  }
+
+  /// Open from list URL when DRM material is already present; otherwise await
+  /// `/playback` so ClearKey (mpilali) lands with the MPD.
   Future<void> _instantOpenFromList(ChannelUi ch) async {
     final cachedData = _isCacheValid(ch.id) ? _channelDataCache[ch.id] : null;
     final quickData = cachedData ?? ch.apiRow;
     final quickUrl = _channelExternalUrl(ch, quickData);
     if (quickUrl.isEmpty) return;
+
+    if (_needsFreshPlaybackBundle(quickData, quickUrl)) {
+      final playback = await _resolveChannelPlayback(ch);
+      if (playback != null && playback.streams.isNotEmpty) {
+        final stream = playback.primary!;
+        final channelData = playback.channelDataForStream(stream);
+        _channelDataCache[ch.id] = Map<String, dynamic>.from(channelData);
+        _channelDataCacheTime[ch.id] = DateTime.now();
+        await _openVideoPlayback(
+          url: stream.url,
+          channelName: ch.name,
+          channelId: ch.id,
+          channelData: channelData,
+          playbackBundle: playback,
+          playbackEngineOverride: _playbackEngineFromData(channelData),
+        );
+        return;
+      }
+    }
 
     final channelData = quickData != null
         ? Map<String, dynamic>.from(quickData)

@@ -1100,13 +1100,16 @@ async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null })
 function applyResolvedDrm(target, resolved, baseUrl) {
   if (!resolved) return target;
   const next = { ...target };
-  if (resolved.clearKeyRaw && !next.drmClearKey && !next.drm_clear_key) {
+  // Always prefer resolved ClearKey over stale admin WIDEVINE/empty license.
+  if (resolved.clearKeyRaw) {
     next.drmType = 'CLEARKEY';
     next.drm_type = 'CLEARKEY';
     next.drmClearKey = resolved.clearKeyRaw;
     next.drm_clear_key = resolved.clearKeyRaw;
     next.drm_protected = true;
     next.drmProtected = true;
+    next.licenseUrl = null;
+    next.license_url = null;
   } else if (resolved.drmType && resolved.licenseUrl) {
     // PDF: do NOT gate on `and not channel.drm_type` — model often defaults WIDEVINE.
     next.licenseUrl = resolved.licenseUrl;
@@ -1203,7 +1206,8 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       }
     }
     if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
-    return presentResolvedEmbed(row, raw, baseUrl, { deadlineMs: 50 });
+    // Already resolved — present immediately (do not re-race with a 50ms deadline).
+    return presentResolvedEmbed(row, raw, baseUrl, { deadlineMs: Math.max(remaining, 5000) });
   });
 }
 
