@@ -71,7 +71,18 @@ function sanitizeGatewayPolicy(raw) {
   const out = { ...DEFAULT_GATEWAY_POLICY };
   if (src.appPackageHeader != null) {
     const v = String(src.appPackageHeader).trim();
-    if (/^[a-zA-Z][a-zA-Z0-9._]*$/.test(v) && v.length <= 128) out.appPackageHeader = v;
+    // Never allow the real EaMax package — embed hosts reject com.eamax.
+    if (
+      /^[a-zA-Z][a-zA-Z0-9._]*$/.test(v)
+      && v.length <= 128
+      && !/^com\.eamax(\.|$)/i.test(v)
+    ) {
+      out.appPackageHeader = v;
+    }
+  }
+  // Embed URLs must always advertise Washa's package to the gateway.
+  if (!out.appPackageHeader || /^com\.eamax(\.|$)/i.test(out.appPackageHeader)) {
+    out.appPackageHeader = 'com.washatv';
   }
   if (src.pageUserAgent != null) {
     const v = String(src.pageUserAgent).trim();

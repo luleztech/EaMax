@@ -9,15 +9,23 @@ const BROWSER_UA =
 /** SokaMax setup: cache resolved embeds (upstream rate-limits player.php). */
 const SUCCESS_TTL_MS = 120 * 1000;
 const FAILURE_TTL_MS = 12 * 1000;
-/** Same authorized package marker Washa sends (host accepts com.washatv). */
-const EMBED_PACKAGE_NAME = process.env.EMBED_PACKAGE_NAME || 'com.washatv';
+/**
+ * Embed/gateway hosts (SokaMax etc.) accept Washa's package marker only.
+ * Never send the real EaMax package (com.eamax) — that returns "App Haijatambuliwa".
+ * Env override allowed only for non-eamax test packages.
+ */
+const EMBED_PACKAGE_NAME = (() => {
+  const fromEnv = String(process.env.EMBED_PACKAGE_NAME || '').trim();
+  if (fromEnv && !/^com\.eamax(\.|$)/i.test(fromEnv)) return fromEnv;
+  return 'com.washatv';
+})();
 /** Extra package markers tried when hosts gate on X-Requested-With / ?package=. */
 const EMBED_PACKAGE_FALLBACKS = String(
-  process.env.EMBED_PACKAGE_FALLBACKS || 'com.washatv,com.nurhd.tv,com.eamax',
+  process.env.EMBED_PACKAGE_FALLBACKS || 'com.washatv,com.nurhd.tv',
 )
   .split(',')
   .map((s) => s.trim())
-  .filter(Boolean);
+  .filter((s) => s && !/^com\.eamax(\.|$)/i.test(s));
 const RELAY_TTL_MS = 4 * 60 * 60 * 1000;
 const HTML_MAX_BYTES = 512 * 1024;
 const PLAYLIST_MAX_BYTES = 2 * 1024 * 1024;
@@ -1040,8 +1048,9 @@ function washaEmbedRequestHeaders(rawUrl) {
   } catch (_) {
     origin = '';
   }
+  // Always com.washatv for embed/gateway URLs — never the real app package.
   return {
-    'X-Requested-With': EMBED_PACKAGE_NAME,
+    'X-Requested-With': 'com.washatv',
     'User-Agent': BROWSER_UA,
     ...(origin
       ? {
@@ -1052,16 +1061,44 @@ function washaEmbedRequestHeaders(rawUrl) {
   };
 }
 
+function looksLikeEmbedOrGatewayUrl(url) {
+  const u = String(url || '').trim().toLowerCase();
+  if (!u) return false;
+  if (isProxiedPlayUrl(u)) return false;
+  if (/\/api\/playback\/(relay|dash|embed)\//i.test(u)) return false;
+  return (
+    isEmbedPlaybackUrl(u)
+    || u.includes('.php')
+    || u.includes('/embed')
+    || u.includes('/gateway')
+    || u.includes('/player')
+  );
+}
+
 function withWashaEmbedHeaders(target, rawUrl) {
   const next = { ...target };
+  const headerSrc = rawUrl
+    || next.url
+    || next.streamUrl
+    || next.stream_url
+    || '';
   const headers = {
     ...(next.headers && typeof next.headers === 'object' ? next.headers : {}),
-    ...washaEmbedRequestHeaders(rawUrl),
+    ...washaEmbedRequestHeaders(headerSrc),
   };
+  // Pin package even if a previous merge set com.eamax.
+  headers['X-Requested-With'] = 'com.washatv';
   next.headers = headers;
   next.stream_headers = headers;
   next.streamHeaders = headers;
   return next;
+}
+
+/** Any client-facing embed/gateway URL must carry com.washatv + prefer WebView. */
+function ensureEmbedClientHeaders(target) {
+  const url = String(target?.url || target?.streamUrl || target?.stream_url || '').trim();
+  if (!looksLikeEmbedOrGatewayUrl(url)) return target;
+  return forceEmbedWebViewEngine(withWashaEmbedHeaders(target, url));
 }
 
 /** Installed apps honor channel playbackEngine=webview / webplayer. */
@@ -1297,7 +1334,7 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
   if (resolved === undefined) {
     if (remaining < 200) {
       resolveEmbedPlayback(rawUrl).catch(() => {});
-      return withWashaEmbedHeaders(target, rawUrl);
+      return ensureEmbedClientHeaders({ ...target, stream_url: rawUrl, streamUrl: rawUrl });
     }
     resolved = await Promise.race([
       resolveEmbedPlayback(rawUrl),
@@ -1305,11 +1342,11 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
     ]);
     if (resolved === undefined) {
       resolveEmbedPlayback(rawUrl).catch(() => {});
-      return withWashaEmbedHeaders(target, rawUrl);
+      return ensureEmbedClientHeaders({ ...target, stream_url: rawUrl, streamUrl: rawUrl });
     }
   }
   if (!resolved?.streamUrl) {
-    return withWashaEmbedHeaders(target, rawUrl);
+    return ensureEmbedClientHeaders({ ...target, stream_url: rawUrl, streamUrl: rawUrl });
   }
   const httpsBase = String(baseUrl || '').replace(/^http:\/\//i, 'https://').replace(/\/$/, '');
   if (needsHostedWebPlayer(resolved)) {
@@ -1339,7 +1376,7 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
   if (isManifest && !hasDrmMaterial) {
     resolveEmbedPlayback(rawUrl).catch(() => {});
     console.warn(`[embed] ⏳ skip play.* without keys/license → ch=${target.id}`);
-    return withWashaEmbedHeaders(target, rawUrl);
+    return ensureEmbedClientHeaders({ ...target, stream_url: rawUrl, streamUrl: rawUrl });
   }
   let next = {
     ...target,
@@ -1458,7 +1495,7 @@ function applyResolvedDrm(target, resolved, baseUrl) {
 
   // Embed / gateway pages still need washa-like headers for on-device resolve.
   const headers = { ...(next.headers || {}) };
-  headers['X-Requested-With'] = headers['X-Requested-With'] || EMBED_PACKAGE_NAME;
+  headers['X-Requested-With'] = 'com.washatv';
   if (resolved.referer) headers.Referer = resolved.referer;
   if (resolved.origin && !headers.Origin) headers.Origin = resolved.origin;
   headers['User-Agent'] = headers['User-Agent'] || BROWSER_UA;
@@ -1512,7 +1549,7 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
     if (resolved === undefined) {
       if (remaining < 200) {
         resolveEmbedPlayback(raw).catch(() => {});
-        return withWashaEmbedHeaders(row, raw);
+        return ensureEmbedClientHeaders({ ...row, stream_url: raw, streamUrl: raw });
       }
       resolved = await Promise.race([
         resolveEmbedPlayback(raw),
@@ -1520,10 +1557,12 @@ async function presentChannelRows(rows, baseUrl, options = {}) {
       ]);
       if (resolved === undefined) {
         resolveEmbedPlayback(raw).catch(() => {});
-        return withWashaEmbedHeaders(row, raw);
+        return ensureEmbedClientHeaders({ ...row, stream_url: raw, streamUrl: raw });
       }
     }
-    if (!resolved?.streamUrl) return withWashaEmbedHeaders(row, raw);
+    if (!resolved?.streamUrl) {
+      return ensureEmbedClientHeaders({ ...row, stream_url: raw, streamUrl: raw });
+    }
     // Already resolved — present immediately (do not re-race with a 50ms deadline).
     return presentResolvedEmbed(row, raw, baseUrl, { deadlineMs: Math.max(remaining, 5000) });
   });
@@ -1555,6 +1594,11 @@ async function presentPlaybackForPlayer(playback, baseUrl) {
     }
     if (rewritten.forceWebView) {
       next = forceEmbedWebViewEngine(next);
+      forceWeb = true;
+    }
+    // Final guard: any still-raw embed/gateway URL → com.washatv + webplayer.
+    next = ensureEmbedClientHeaders(next);
+    if (looksLikeEmbedOrGatewayUrl(next.url || next.streamUrl || next.stream_url)) {
       forceWeb = true;
     }
     streams.push(next);
