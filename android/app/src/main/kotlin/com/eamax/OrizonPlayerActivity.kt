@@ -118,7 +118,9 @@ class OrizonPlayerActivity : AppCompatActivity() {
         applyZoomMode(zoomMode, announce = false)
         zoomChip.setOnClickListener { cycleZoom() }
         playerView.setKeepContentOnPlayerReset(true)
-        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+        // Always show spinner while preparing — WHEN_PLAYING stays black if
+        // DRM/keys never reach STATE_BUFFERING (emulator ClearKey hang).
+        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
         playerView.keepScreenOn = true
         playerView.controllerAutoShow = true
         playerView.setShowPreviousButton(false)

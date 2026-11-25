@@ -8,11 +8,11 @@ import com.eamax.domain.model.StreamQuality
  * admin-managed gateway/embed details (same role as Washa remote player config).
  */
 object PlayerRuntimeConfig {
-    var bufferMinMs: Int = 15_000
-    var bufferMaxMs: Int = 50_000
-    var bufferForPlaybackMs: Int = 2_500
-    var bufferForPlaybackAfterRebufferMs: Int = 5_000
-    var networkTimeoutMs: Int = 10_000
+    var bufferMinMs: Int = 20_000
+    var bufferMaxMs: Int = 60_000
+    var bufferForPlaybackMs: Int = 3_500
+    var bufferForPlaybackAfterRebufferMs: Int = 7_000
+    var networkTimeoutMs: Int = 15_000
     var defaultQuality: StreamQuality = StreamQuality.QUALITY_480P
     var autoPlay: Boolean = true
     var failoverToWebview: Boolean = true
@@ -29,18 +29,20 @@ object PlayerRuntimeConfig {
     var blockedPageMarker: String = "App Haijatambuliwa"
 
     fun applyFromArgs(args: Map<String, Any?>) {
-        // Match Washa/Orizon live-TV buffers — low min buffer causes rebuffer scratch on weak networks.
-        (args["bufferMinMs"] as? Number)?.toInt()?.takeIf { it in 500..60_000 }?.let {
-            bufferMinMs = it.coerceAtLeast(12_000)
+        // Live-TV floors — low mins cause rebuffer scratch (play↔pause) on DRM DASH.
+        (args["bufferMinMs"] as? Number)?.toInt()?.takeIf { it in 500..90_000 }?.let {
+            bufferMinMs = it.coerceAtLeast(18_000)
         }
-        (args["bufferMaxMs"] as? Number)?.toInt()?.takeIf { it in 2_000..120_000 }?.let {
-            bufferMaxMs = it.coerceAtLeast(bufferMinMs + 5_000)
+        (args["bufferMaxMs"] as? Number)?.toInt()?.takeIf { it in 2_000..180_000 }?.let {
+            bufferMaxMs = it.coerceAtLeast(bufferMinMs + 10_000)
         }
-        (args["initialBufferMs"] as? Number)?.toInt()?.takeIf { it in 200..10_000 }?.let {
-            bufferForPlaybackMs = it.coerceIn(2_000, 4_000)
+        (args["initialBufferMs"] as? Number)?.toInt()?.takeIf { it in 200..12_000 }?.let {
+            bufferForPlaybackMs = it.coerceIn(3_000, 6_000)
+            bufferForPlaybackAfterRebufferMs =
+                (bufferForPlaybackMs * 2).coerceIn(6_000, 12_000)
         }
         (args["networkTimeoutMs"] as? Number)?.toInt()?.takeIf { it in 3_000..60_000 }?.let {
-            networkTimeoutMs = it
+            networkTimeoutMs = it.coerceAtLeast(12_000)
         }
         args["defaultQuality"]?.toString()?.let { parseQuality(it) }?.let {
             defaultQuality = it

@@ -22,7 +22,7 @@
         android:background="@android:color/black"
         android:visibility="gone" />
 
-    <!-- Zoom cycle: Normal → Fill → Stretched → Contain -->
+    <!-- Zoom cycle FAB: Fit → Contain → Kuza → Jaza -->
     <LinearLayout
         android:id="@+id/zoom_chip"
         android:layout_width="wrap_content"
@@ -53,7 +53,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:text="@string/zoom_contain"
+            android:text="@string/zoom_fit"
             android:textColor="#FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold" />

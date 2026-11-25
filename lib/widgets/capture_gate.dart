@@ -52,7 +52,6 @@ class _CaptureGateState extends State<CaptureGate> with WidgetsBindingObserver {
   static const _recheckEvery = Duration(seconds: 20);
 
   List<CaptureThreat> _threats = const [];
-  bool _checked = false;
   bool _checking = false;
   Timer? _timer;
 
@@ -60,7 +59,10 @@ class _CaptureGateState extends State<CaptureGate> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _check();
+    // Defer first security scan until after the first frame so the UI can paint.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(milliseconds: 800), _check);
+    });
     _timer = Timer.periodic(_recheckEvery, (_) => _check());
   }
 
@@ -82,14 +84,10 @@ class _CaptureGateState extends State<CaptureGate> with WidgetsBindingObserver {
     try {
       final threats = await findCaptureThreats();
       if (!mounted) return;
-      final changed = !_checked ||
-          threats.length != _threats.length ||
+      final changed = threats.length != _threats.length ||
           threats.any((t) => !_threats.any((o) => o.id == t.id));
       if (changed) {
-        setState(() {
-          _threats = threats;
-          _checked = true;
-        });
+        setState(() => _threats = threats);
       }
     } finally {
       _checking = false;
@@ -98,7 +96,6 @@ class _CaptureGateState extends State<CaptureGate> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (!_checked) return const ColoredBox(color: Colors.black);
     if (_threats.isNotEmpty) {
       return CaptureGuardScreen(
         threats: _threats,

@@ -209,8 +209,8 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
 
   Future<void> _refreshUserForUi() async {
     try {
-      final uid = await ensureLocalUserId();
-      await registerUserInDatabase(id: uid, maxRetries: 2);
+      final uid = await ensureLocalUserId(registerInDatabase: false);
+      unawaited(ensureUserRegisteredOnce(uid));
       final userData = await userApi
           .getUser(uid)
           .timeout(const Duration(seconds: 8));
@@ -489,30 +489,33 @@ class _StreamingAppState extends State<StreamingApp> with WidgetsBindingObserver
   }
 
   Future<void> _finishBootstrap() async {
-    final uid = await ensureLocalUserId();
-    await registerUserInDatabase(id: uid, maxRetries: 5);
-    unawaited(retryPendingRegistrations());
+    // One identity path — avoid parallel register/getOrCreate storms that ANR the UI.
+    final uid = await ensureLocalUserId(registerInDatabase: false);
+    unawaited(ensureUserRegisteredOnce(uid));
     await _hydratePremiumFromCache();
-    unawaited(getOrCreateUserId());
-    await refreshChannelsPremiumOnlySetting();
-    await _prefetchHomeCatalog();
-    await _refreshUser();
-    await _loadPromotions();
-    await setupFcmLocalNotifications();
-    await _checkPendingPayment();
-    _startPendingPaymentWatcher();
-    _startPremiumRefreshWatcher();
-    _registrationRetryTimer?.cancel();
-    _registrationRetryTimer = Timer.periodic(const Duration(minutes: 2), (_) {
-      unawaited(retryPendingRegistrations());
-    });
-    _configRefreshTimer?.cancel();
-    _configRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
-      unawaited(_fetchAppConfig(forceRefresh: true));
-      unawaited(_fetchRemoteConfig(forceRefresh: true));
-    });
-    unawaited(_setupRealtime(uid));
     if (mounted) setState(() => _bootstrapReady = true);
+
+    // Heavy work after first UI is ready.
+    unawaited(() async {
+      await refreshChannelsPremiumOnlySetting();
+      await _prefetchHomeCatalog();
+      await _refreshUser(protectExistingPremium: true);
+      await _loadPromotions();
+      await setupFcmLocalNotifications();
+      await _checkPendingPayment();
+      _startPendingPaymentWatcher();
+      _startPremiumRefreshWatcher();
+      _registrationRetryTimer?.cancel();
+      _registrationRetryTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+        unawaited(retryPendingRegistrations());
+      });
+      _configRefreshTimer?.cancel();
+      _configRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+        unawaited(_fetchAppConfig(forceRefresh: true));
+        unawaited(_fetchRemoteConfig(forceRefresh: true));
+      });
+      await _setupRealtime(uid);
+    }());
   }
 
   /// Shows the system "Allow EaMax to send you notifications?" prompt directly.

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.webkit.WebView
 import com.eamax.player.GatewayWebPlayerFactory
 import com.eamax.player.PlayerRuntimeConfig
@@ -18,7 +19,8 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val NATIVE_PLAYER_REQUEST = 48291
-        private const val WEBVIEW_WARMUP_DELAY_MS = 4_000L
+        // After first UI settles; creating WebView loads Chromium on the main thread.
+        private const val WEBVIEW_WARMUP_DELAY_MS = 12_000L
     }
 
     private var nativeOpenResult: MethodChannel.Result? = null
@@ -205,6 +207,10 @@ class MainActivity : FlutterActivity() {
                         intent.putExtra("clearKeyHex", mergedClearKey)
                         intent.putExtra("headersJson", args["headersJson"]?.toString().orEmpty())
                         intent.putExtra(
+                            "playbackEngine",
+                            args["playbackEngine"]?.toString().orEmpty(),
+                        )
+                        intent.putExtra(
                             "audioLanguage",
                             args["audioLanguage"]?.toString().orEmpty().ifEmpty { "sw" },
                         )
@@ -216,7 +222,12 @@ class MainActivity : FlutterActivity() {
                             "defaultQuality",
                             args["defaultQuality"]?.toString().orEmpty().ifEmpty { "480p" },
                         )
-                        intent.putExtra("videoZoomMode", "contain")
+                        intent.putExtra("videoZoomMode", "fit")
+                        Log.i(
+                            "EaMaxNative",
+                            "open drm=${args["drmType"]} clearKeyLen=${mergedClearKey.length} " +
+                                "engine=${args["playbackEngine"]} url=${args["url"]}",
+                        )
                         nativeOpenResult = result
                         @Suppress("DEPRECATION")
                         startActivityForResult(intent, NATIVE_PLAYER_REQUEST)

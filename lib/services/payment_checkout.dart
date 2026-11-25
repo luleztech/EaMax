@@ -21,8 +21,6 @@ class PaymentCheckout extends ChangeNotifier {
     required this.onPaymentSuccess,
   });
 
-  static const prefsPhoneKey = 'eamax_pay_phone_v1';
-
   static PaymentCheckout? _current;
 
   /// While a checkout is sending or waiting it is the only status poller; app-wide
@@ -116,7 +114,6 @@ class PaymentCheckout extends ChangeNotifier {
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('pendingPaymentOrderId', orderId);
-      await prefs.setString(prefsPhoneKey, phone);
       await PaymentPendingSession.save(
         orderId: orderId,
         phone: phone,

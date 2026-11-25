@@ -617,20 +617,14 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     var u = d.toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
     if (u == 'CLEAR_KEY') u = 'CLEARKEY';
     final ul = playbackUrl.toLowerCase();
-    final license = '${channelData?['licenseUrl'] ?? channelData?['license_url'] ?? ''}'.trim();
     final looksManifest = ul.contains('.mpd') ||
         ul.contains('.m3u8') ||
         ul.contains('.m3u') ||
         ul.contains('manifest.php') ||
         ul.contains('/api/channels/');
-    // mpilali ClearKey streams are often tagged WIDEVINE in admin with no license URL.
-    if (clearPayload.isNotEmpty &&
-        looksManifest &&
-        (u == 'NONE' || (u.contains('WIDEVINE') && license.isEmpty))) {
-      return 'CLEARKEY';
-    }
-    if (u != 'NONE') return u;
+    // Keys win over a stale WIDEVINE catalog tag (proxied play.mpd is ClearKey).
     if (clearPayload.isNotEmpty && looksManifest) return 'CLEARKEY';
+    if (u != 'NONE') return u;
     return 'NONE';
   }
 
@@ -706,18 +700,21 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
     }
   }
 
-  /// Proxied/encrypted MPDs need ClearKey or a license — list cards often lack both.
+  /// Proxied/encrypted MPDs need ClearKey — list cards often still carry a
+  /// stale Widevine licenseUrl with no keys, which must not short-circuit.
   bool _needsFreshPlaybackBundle(Map<String, dynamic>? data, String url) {
     final ck = (data?['drmClearKey'] ?? data?['drm_clear_key'] ?? '')
         .toString()
         .trim();
     if (ck.isNotEmpty) return false;
+    final ul = url.toLowerCase();
+    // Always await /playback for proxied DASH / embed gateways — ClearKey
+    // lives only on the playback bundle, not on the catalog license field.
+    if (ul.contains('/api/channels/') && ul.contains('/play.')) return true;
+    if (ul.contains('.php') || ul.contains('/embed')) return true;
     final license =
         (data?['licenseUrl'] ?? data?['license_url'] ?? '').toString().trim();
     if (license.isNotEmpty) return false;
-    final ul = url.toLowerCase();
-    if (ul.contains('.php') || ul.contains('/embed')) return true;
-    if (ul.contains('/api/channels/') && ul.contains('/play.')) return true;
     return false;
   }
 

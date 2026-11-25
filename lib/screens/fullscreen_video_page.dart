@@ -184,10 +184,28 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
   }
 
   String _htmlForProbeResult(WebStreamProbeResult result) {
-    final headers = result.headers;
+    // Manifest headers (no nv-authorizations — that belongs on the license only).
+    final headers = Map<String, String>.from(result.headers)
+      ..removeWhere((k, _) => k.toLowerCase() == 'nv-authorizations');
+    final licenseHeaders = <String, String>{};
+    final nv = result.headers.entries
+        .where((e) => e.key.toLowerCase() == 'nv-authorizations')
+        .map((e) => e.value)
+        .firstOrNull;
+    final auth = (nv != null && nv.isNotEmpty)
+        ? nv
+        : (result.authToken.isNotEmpty ? result.authToken : '');
+    if (auth.isNotEmpty) {
+      licenseHeaders['nv-authorizations'] = auth;
+    }
+    // Prefer backend license relay when present (WebView CORS cannot set nv-auth).
+    final widgetLicense = (widget.licenseUrl ?? '').trim();
+    final licenseUrl = widgetLicense.contains('/playback/relay/license')
+        ? widgetLicense
+        : (result.licenseUrl.isNotEmpty ? result.licenseUrl : widgetLicense);
     final drm = (
       drmType: result.drmType,
-      licenseUrl: result.licenseUrl,
+      licenseUrl: licenseUrl,
       clearKeyRaw: result.clearKeyRaw,
     );
     switch (result.kind) {
@@ -200,6 +218,7 @@ class _FullscreenVideoPageState extends State<FullscreenVideoPage> with WidgetsB
           drmType: drm.drmType,
           licenseUrl: drm.licenseUrl,
           clearKeyRaw: drm.clearKeyRaw,
+          licenseHeaders: licenseHeaders,
         );
       case WebResolvedKind.progressive:
         return WebPlayerHtml.progressive(result.playbackUrl);

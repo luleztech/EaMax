@@ -72,13 +72,12 @@ class PlayerEngine {
   }
 
   /// Maps every admin engine to an in-app player — never VLC/MX / system "Open with".
+  /// Gateway/embed pages stay on native Exo (`auto`/`kotlin`/`exo`); Android resolves
+  /// `player.php?api=1` then plays DASH/HLS. WebView is only an explicit/admin fallback.
   static String resolveInAppEngine(String engine, {required bool gatewayPage}) {
     final e = normalize(engine);
     if (e == vlc || e == mx) {
       return gatewayPage ? webview : auto;
-    }
-    if (gatewayPage && (e == exo || e == auto || e == kotlin)) {
-      return webview;
     }
     return e;
   }

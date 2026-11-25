@@ -56,7 +56,10 @@ class PaymentPendingSession {
   static const relatedOrdersKey = 'pendingPaymentRelatedOrderIds';
   static const bundleKey = 'pendingPaymentBundle';
   static const amountKey = 'pendingPaymentAmount';
-  static const phoneKey = 'eamax_pay_phone_v1';
+  static const phoneKey = 'pendingPaymentPhone';
+
+  /// Older builds kept the last paying number here to pre-fill checkout.
+  static const legacyPhoneHistoryKey = 'eamax_pay_phone_v1';
   static const promotionIdKey = 'pendingPaymentPromotionId';
   static const resendCountKey = 'paymentStkResendCount';
   static const resendAnchorKey = 'paymentStkResendAnchorOrder';
@@ -370,6 +373,8 @@ class PaymentPendingSession {
   static Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(orderKey);
+    await prefs.remove(phoneKey);
+    await prefs.remove(legacyPhoneHistoryKey);
     await prefs.remove(relatedOrdersKey);
     await prefs.remove(bundleKey);
     await prefs.remove(amountKey);

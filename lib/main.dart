@@ -33,15 +33,6 @@ Future<void> main() async {
   await initAppVersion();
   unawaited(TzPaymentConfig.loadLearned());
   registerWebViewPlatformForWeb();
-  try {
-    MediaKit.ensureInitialized();
-  } catch (e, st) {
-    if (kIsWeb) {
-      debugPrint('MediaKit.ensureInitialized failed on web: $e\n$st');
-    } else {
-      rethrow;
-    }
-  }
   if (!kIsWeb) {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
@@ -49,10 +40,17 @@ Future<void> main() async {
   final themeController = await ThemeController.load();
   runApp(EamaxApp(themeController: themeController));
   if (!kIsWeb) {
-    // AdMob init does heavy work on the Android main thread (known ANR source). Run it after the
-    // first frame instead of blocking startup; ad loads queue until the SDK is ready.
+    // Heavy SDKs after first frame — init on main at launch caused ANRs / “not responding”.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future<void>.delayed(const Duration(seconds: 2), () async {
+      Future<void>.delayed(const Duration(milliseconds: 1500), () {
+        try {
+          MediaKit.ensureInitialized();
+        } catch (e, st) {
+          debugPrint('MediaKit.ensureInitialized failed: $e\n$st');
+        }
+      });
+      // AdMob init does heavy work on the Android main thread (known ANR source).
+      Future<void>.delayed(const Duration(seconds: 3), () async {
         try {
           await MobileAds.instance.initialize();
         } catch (e, st) {
@@ -60,6 +58,12 @@ Future<void> main() async {
         }
       });
     });
+  } else {
+    try {
+      MediaKit.ensureInitialized();
+    } catch (e, st) {
+      debugPrint('MediaKit.ensureInitialized failed on web: $e\n$st');
+    }
   }
 }
 

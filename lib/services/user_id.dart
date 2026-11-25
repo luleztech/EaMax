@@ -165,18 +165,36 @@ Future<bool> _verifyUserExists(String id) async {
   }
 }
 
-/// Registers local user in DB (POST only). Safe to call repeatedly — server upserts.
+String? _registerInFlightId;
+Future<bool>? _registerInFlight;
+
+/// Registers local user in DB (POST only). Concurrent calls for the same id share one request.
 Future<bool> registerUserInDatabase({String? id, int maxRetries = 4}) async {
   final uid = (id ?? await getLocalUserId())?.trim();
   if (uid == null || uid.isEmpty) return false;
-  debugPrint('[UserRegistration] Registering $uid in database...');
-  final success = await _registerWithRetry(uid, maxRetries: maxRetries);
-  if (success) {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_registrationRetryKey);
-    debugPrint('[UserRegistration] $uid saved to database');
+  if (_registerInFlightId == uid && _registerInFlight != null) {
+    return _registerInFlight!;
   }
-  return success;
+  _registerInFlightId = uid;
+  final future = () async {
+    debugPrint('[UserRegistration] Registering $uid in database...');
+    final success = await _registerWithRetry(uid, maxRetries: maxRetries);
+    if (success) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_registrationRetryKey);
+      debugPrint('[UserRegistration] $uid saved to database');
+    }
+    return success;
+  }();
+  _registerInFlight = future;
+  try {
+    return await future;
+  } finally {
+    if (_registerInFlightId == uid) {
+      _registerInFlightId = null;
+      _registerInFlight = null;
+    }
+  }
 }
 
 /// Background retry for pending registrations.

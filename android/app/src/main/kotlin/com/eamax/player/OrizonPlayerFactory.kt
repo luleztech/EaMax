@@ -30,7 +30,9 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.extractor.ts.TsExtractor
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamSession
@@ -50,25 +52,36 @@ class OrizonPlayerFactory(private val context: Context) {
         preferredAudioLanguage: String = "sw",
         preferences: PlaybackPreferences = PlaybackPreferences.current(),
     ): ExoPlayer {
+        // Live TV: keep a deep cushion so DRM/network hiccups never flash BUFFERING
+        // (feels like play→pause→play). Floor remote policy to safe live minima.
+        val minBuf = PlayerRuntimeConfig.bufferMinMs.coerceAtLeast(LIVE_MIN_BUFFER_MS)
+        val maxBuf = PlayerRuntimeConfig.bufferMaxMs.coerceAtLeast(minBuf + 10_000)
+        val forPlayback = PlayerRuntimeConfig.bufferForPlaybackMs.coerceIn(3_000, 6_000)
+        val afterRebuffer = PlayerRuntimeConfig.bufferForPlaybackAfterRebufferMs
+            .coerceAtLeast(forPlayback + 2_000)
+            .coerceAtMost(maxBuf)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                PlayerRuntimeConfig.bufferMinMs,
-                PlayerRuntimeConfig.bufferMaxMs,
-                PlayerRuntimeConfig.bufferForPlaybackMs,
-                PlayerRuntimeConfig.bufferForPlaybackAfterRebufferMs,
-            )
+            .setBufferDurationsMs(minBuf, maxBuf, forPlayback, afterRebuffer)
             .setPrioritizeTimeOverSizeThresholds(true)
             .setBackBuffer(BACK_BUFFER_MS, false)
             .build()
 
         val maxVideoHeight = preferences.maxVideoHeight()
-        val trackSelector = DefaultTrackSelector(context)
+        // Slow ABR upswitches — rapid quality flips look like scratches on Azam/live DASH.
+        val abrFactory = AdaptiveTrackSelection.Factory(
+            /* minDurationForQualityIncreaseMs= */ 15_000,
+            /* maxDurationForQualityDecreaseMs= */ 8_000,
+            /* minDurationToRetainAfterDiscardMs= */ 12_000,
+            /* bandwidthFraction= */ 0.7f,
+        )
+        val trackSelector = DefaultTrackSelector(context, abrFactory)
         trackSelector.parameters = trackSelector.buildUponParameters()
             .setPreferredAudioLanguages(
                 *preferredAudioLanguageAliases(preferredAudioLanguage).toTypedArray(),
             )
             .setMaxVideoSize(Int.MAX_VALUE, maxVideoHeight)
             .setForceHighestSupportedBitrate(false)
+            .setAllowVideoMixedMimeTypeAdaptiveness(true)
             .setTunnelingEnabled(false)
             .build()
 
@@ -144,13 +157,20 @@ class OrizonPlayerFactory(private val context: Context) {
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
+        val bandwidthMeter = DefaultBandwidthMeter.Builder(context)
+            .setInitialBitrateEstimate(1_500_000L)
+            .build()
+
         return ExoPlayer.Builder(context)
             .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
+            .setBandwidthMeter(bandwidthMeter)
             .setWakeMode(C.WAKE_MODE_LOCAL)
-            .setHandleAudioBecomingNoisy(true)
-            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+            .setHandleAudioBecomingNoisy(false)
+            // Fullscreen live TV: never pause for transient audio-focus flaps
+            // (notifications / emulator focus) — that reads as play/pause stutter.
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ false)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build()
@@ -271,7 +291,7 @@ class OrizonPlayerFactory(private val context: Context) {
         val retries = DefaultLoadErrorHandlingPolicy(LOAD_ERROR_RETRY_COUNT)
         return when (format) {
             Format.DASH -> DashMediaSource.Factory(dataSource)
-                .setFallbackTargetLiveOffsetMs(30_000)
+                .setFallbackTargetLiveOffsetMs(LIVE_TARGET_OFFSET_MS)
                 .setLoadErrorHandlingPolicy(retries)
             Format.HLS -> HlsMediaSource.Factory(dataSource)
                 .setAllowChunklessPreparation(true)
@@ -296,14 +316,16 @@ class OrizonPlayerFactory(private val context: Context) {
                     Format.PROGRESSIVE, Format.GATEWAY -> null
                 },
             )
-        if (format == Format.HLS) {
+        // Live DASH (Azam) and HLS: sit ~30s behind the edge and lock 1.0x so
+        // Exo never speed-ramps / rebuffers chasing live (play↔pause feel).
+        if (format == Format.HLS || format == Format.DASH) {
             builder.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(HLS_LIVE_TARGET_OFFSET_MS)
-                    .setMinOffsetMs(HLS_LIVE_MIN_OFFSET_MS)
-                    .setMaxOffsetMs(HLS_LIVE_MAX_OFFSET_MS)
-                    .setMinPlaybackSpeed(HLS_LIVE_PLAYBACK_SPEED)
-                    .setMaxPlaybackSpeed(HLS_LIVE_PLAYBACK_SPEED)
+                    .setTargetOffsetMs(LIVE_TARGET_OFFSET_MS)
+                    .setMinOffsetMs(LIVE_MIN_OFFSET_MS)
+                    .setMaxOffsetMs(LIVE_MAX_OFFSET_MS)
+                    .setMinPlaybackSpeed(LIVE_PLAYBACK_SPEED)
+                    .setMaxPlaybackSpeed(LIVE_PLAYBACK_SPEED)
                     .build(),
             )
         }
@@ -523,19 +545,16 @@ class OrizonPlayerFactory(private val context: Context) {
 
     companion object {
         private const val TAG = "OrizonPlayerFactory"
-        private const val MIN_BUFFER_MS = 10_000
-        private const val MAX_BUFFER_MS = 40_000
-        private const val BUFFER_FOR_PLAYBACK_MS = 1_800
-        private const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 3_500
         private const val BACK_BUFFER_MS = 0
+        private const val LIVE_MIN_BUFFER_MS = 20_000
         private const val MAX_DROPPED_VIDEO_FRAMES_TO_NOTIFY = 50
-        // Stay at the start of the live window. An 8s target made the player jump
-        // the picture forward by about that much once the playlist loaded.
-        private const val HLS_LIVE_TARGET_OFFSET_MS = 30_000L
-        private const val HLS_LIVE_MIN_OFFSET_MS = 0L
-        private const val HLS_LIVE_MAX_OFFSET_MS = 120_000L
-        private const val HLS_LIVE_PLAYBACK_SPEED = 1f
-        private const val LOAD_ERROR_RETRY_COUNT = 6
+        // Sit inside the live window — not on the tip. Chasing the edge causes
+        // constant rebuffer / speed correction (play-pause-play).
+        private const val LIVE_TARGET_OFFSET_MS = 35_000L
+        private const val LIVE_MIN_OFFSET_MS = 20_000L
+        private const val LIVE_MAX_OFFSET_MS = 90_000L
+        private const val LIVE_PLAYBACK_SPEED = 1f
+        private const val LOAD_ERROR_RETRY_COUNT = 8
         private const val VIDEO_JOIN_MS = 15_000L
         private const val LATE_FRAME_GRACE_US = 2_500_000L
 
@@ -581,5 +600,7 @@ private object SteadyAudioBuffer : DefaultAudioSink.AudioTrackBufferSizeProvider
         return maxOf(recommended, cushion, minBufferSizeInBytes)
     }
 
-    private const val CUSHION_MS = 800L
+    // ~2.5s of PCM so a short decoder/network stall never underruns the AudioTrack
+    // (log: "disabled due to previous underrun" → audible scratch / pause).
+    private const val CUSHION_MS = 2_500L
 }

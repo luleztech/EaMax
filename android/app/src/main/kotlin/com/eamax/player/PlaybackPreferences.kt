@@ -6,7 +6,7 @@ import com.eamax.domain.model.StreamQuality
 data class PlaybackPreferences(
     val dataSaver: Boolean = false,
     val defaultQuality: String = "480p",
-    val videoZoomMode: String = "zoom",
+    val videoZoomMode: String = "fit",
 ) {
     fun maxVideoHeight(): Int {
         if (dataSaver) return 480

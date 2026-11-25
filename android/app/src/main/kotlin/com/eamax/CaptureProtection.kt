@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
+import android.os.Looper
 import java.security.KeyStore
 
 /**
@@ -90,14 +91,18 @@ internal object CaptureProtection {
     @Volatile private var caCachedResult = false
 
     /**
-     * Enumerating AndroidCAStore loads every trusted certificate (slow on low-end devices), so it
-     * must never run repeatedly on the main thread: the result is cached and can be pre-warmed
-     * from a background thread via [warmUp].
+     * Enumerating AndroidCAStore loads every trusted certificate (slow on low-end / emulator),
+     * and is a common ANR source. Never run it on the main thread — use cache + [warmUp].
      */
     private fun hasUserInstalledCertificates(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         val now = android.os.SystemClock.elapsedRealtime()
         if (caCheckedAtMs != 0L && now - caCheckedAtMs < CA_CACHE_TTL_MS) return caCachedResult
+        // Main thread: return last known value and warm cache off-thread (avoids ANR).
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Thread({ warmUp() }, "eamax-ca-warmup").start()
+            return caCachedResult
+        }
         val result = try {
             val store = KeyStore.getInstance("AndroidCAStore")
             store.load(null)
@@ -112,6 +117,12 @@ internal object CaptureProtection {
 
     /** Call from a background thread so later main-thread checks hit the cache. */
     fun warmUp() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Thread({ warmUp() }, "eamax-ca-warmup").start()
+            return
+        }
+        // Force a fresh CA scan on this worker thread.
+        caCheckedAtMs = 0L
         hasUserInstalledCertificates()
     }
 }

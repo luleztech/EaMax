@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/payment_helpers.dart';
 import '../models/remote_config_bundle.dart';
 import '../services/payment_checkout.dart';
+import '../services/payment_pending_session.dart';
 import '../services/remote_config_service.dart';
 import '../theme/app_theme.dart';
 import '../theme/app_typography.dart';
@@ -105,7 +106,7 @@ class _PlansTabState extends State<PlansTab> with WidgetsBindingObserver {
       if (_phoneFocus.hasFocus) _scheduleReveal();
     });
     TzPaymentConfig.learnedVersion.addListener(_onLearnedChanged);
-    unawaited(_restorePhone());
+    unawaited(_forgetSavedPhone());
   }
 
   @override
@@ -186,12 +187,10 @@ class _PlansTabState extends State<PlansTab> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  Future<void> _restorePhone() async {
+  Future<void> _forgetSavedPhone() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final phone = prefs.getString(PaymentCheckout.prefsPhoneKey)?.trim() ?? '';
-      if (!mounted || phone.isEmpty || _phoneCtrl.text.isNotEmpty) return;
-      setState(() => _phoneCtrl.text = TzPaymentConfig.liveDigits(phone));
+      await prefs.remove(PaymentPendingSession.legacyPhoneHistoryKey);
     } catch (_) {}
   }
 
@@ -272,6 +271,7 @@ class _PlansTabState extends State<PlansTab> with WidgetsBindingObserver {
       if (finished) {
         _selectedSlug = null;
         _provider = null;
+        _phoneCtrl.clear();
       }
     });
     if (finished) widget.onFinished();
