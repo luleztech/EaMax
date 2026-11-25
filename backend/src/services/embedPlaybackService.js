@@ -1039,7 +1039,9 @@ function applyResolvedDrm(target, resolved, baseUrl) {
       ? resolved.authorization
       : `Bearer ${resolved.authorization}`;
   }
-  // PDF piece 4: WebView/Shaka license relay (server injects nv-authorizations).
+  // Widevine: Exo + WebView both use the license relay. Direct Nagra POSTs from
+  // the app often 400 when Origin/Referer/X-Requested-With leak onto the license
+  // request; the relay sends only Content-Type + nv-authorizations.
   if (resolved.licenseUrl && (resolved.drmType || '').toUpperCase().includes('WIDEVINE')) {
     const relay = licenseRelayUrl(
       baseUrl || publicBaseUrl(),
@@ -1047,9 +1049,10 @@ function applyResolvedDrm(target, resolved, baseUrl) {
       resolved.nvAuthorizations || '',
     );
     if (relay) {
+      next.licenseUrl = relay;
+      next.license_url = relay;
       next.licenseRelayUrl = relay;
       next.license_relay_url = relay;
-      // Pop nv-authorizations into drm_headers for relay; Exo still gets it in headers.
       next.drm_headers = {
         ...(next.drm_headers || {}),
         'nv-authorizations': resolved.nvAuthorizations || '',

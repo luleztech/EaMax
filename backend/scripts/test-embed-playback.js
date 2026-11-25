@@ -1,5 +1,6 @@
 const assert = require('assert');
 const {
+  applyResolvedDrm,
   extractEmbeddedStream,
   isEmbedPlaybackUrl,
   isOnDeviceEmbedApiUrl,
@@ -109,6 +110,13 @@ const watchPayload = openRelay(decodeURIComponent(watchToken));
 assert.strictEqual(watchPayload.kind, 'watch');
 assert.strictEqual(watchPayload.u, resolvedDash.streamUrl);
 assert.strictEqual(watchPayload.license, resolvedDash.licenseUrl);
+
+const presented = applyResolvedDrm({}, resolvedDash, 'https://api.example.com');
+assert.ok(
+  String(presented.licenseUrl || '').includes('/api/playback/relay/license'),
+  'Widevine licenseUrl must be the server relay (avoids Nagra 400 from client headers)',
+);
+assert.strictEqual(presented.licenseUrl, presented.licenseRelayUrl);
 
 const mpd = `<?xml version="1.0"?><MPD><Period id="1"><SegmentTemplate initialization="clip-\$RepresentationID\$-init.mp4" media="clip-\$RepresentationID\$-\$Time\$.mp4"/></Period></MPD>`;
 const rewrittenMpd = rewriteMpdXml(

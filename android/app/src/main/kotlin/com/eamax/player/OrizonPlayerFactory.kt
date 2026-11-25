@@ -390,22 +390,33 @@ class OrizonPlayerFactory(private val context: Context) {
     /**
      * Nagra / Widevine license filter (sokamax_setup.pdf):
      * `authXmlToken` → HTTP header `nv-authorizations` on the license POST.
+     * Do NOT forward Origin/Referer/Accept — Nagra returns HTTP 400 on extras.
+     * License relay URLs only need the sealed token in the query string.
      */
     private fun licenseRequestHeaders(
         session: StreamSession,
         mediaHeaders: Map<String, String>,
     ): Map<String, String> {
         val out = LinkedHashMap<String, String>()
-        session.drmData.headers?.let { out.putAll(it) }
         val licenseAuth = PlayerRuntimeConfig.licenseAuthHeader.ifBlank { "nv-authorizations" }
-        mediaHeaders.forEach { (k, v) ->
-            val lk = k.lowercase()
-            if (lk == licenseAuth.lowercase() || lk == "nv-authorizations" ||
-                lk == "user-agent" || lk == "referer" || lk == "origin"
-            ) {
-                out[k] = v
+        val licenseHost = runCatching {
+            android.net.Uri.parse(session.licenseUrl).host?.lowercase().orEmpty()
+        }.getOrDefault("")
+        val viaOurRelay = licenseHost.contains("railway.app") ||
+            licenseHost.contains("eamax") ||
+            session.licenseUrl.contains("/api/playback/relay/license", ignoreCase = true)
+
+        fun putAuth(from: Map<String, String>?) {
+            from?.forEach { (k, v) ->
+                val lk = k.lowercase()
+                if (lk == licenseAuth.lowercase() || lk == "nv-authorizations") {
+                    out[k] = v
+                }
             }
         }
+        putAuth(session.drmData.headers)
+        putAuth(mediaHeaders)
+
         val auth = session.token.trim()
         if (auth.isNotEmpty() &&
             !out.keys.any {
@@ -414,6 +425,13 @@ class OrizonPlayerFactory(private val context: Context) {
             }
         ) {
             out[licenseAuth] = auth
+        }
+        // Relay already injects nv-authorizations; strip client copy to avoid dup/mismatch.
+        if (viaOurRelay) {
+            out.keys.filter {
+                it.equals(licenseAuth, ignoreCase = true) ||
+                    it.equals("nv-authorizations", ignoreCase = true)
+            }.toList().forEach { out.remove(it) }
         }
         out.putIfAbsent(
             "User-Agent",

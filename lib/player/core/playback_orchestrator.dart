@@ -76,19 +76,36 @@ class PlaybackOrchestrator {
     engine = PlayerEngine.resolveInAppEngine(engine, gatewayPage: gatewayPage);
 
     final ck = extractClearKey(channelData);
-    final drm = normalizeDrm(channelData, ck, url);
-    final license = channelData['licenseUrl'] ?? channelData['license_url'];
+    // Embed/gateway: no app-level DRM — native resolves player.php then attaches Widevine.
+    final drm = gatewayPage ? 'NONE' : normalizeDrm(channelData, ck, url);
+    final licenseRelay = (channelData['licenseRelayUrl'] ??
+            channelData['license_relay_url'] ??
+            '')
+        .toString()
+        .trim();
+    final realLicense = gatewayPage
+        ? ''
+        : '${channelData['licenseUrl'] ?? channelData['license_url'] ?? ''}'.trim();
+    // Prefer license relay for Exo and WebView — server injects nv-authorizations
+    // and avoids Nagra 400 from leaked Origin/Referer on the license POST.
+    final licenseForExo =
+        licenseRelay.isNotEmpty ? licenseRelay : realLicense;
+    final licenseForWeb =
+        licenseRelay.isNotEmpty ? licenseRelay : realLicense;
     final token = extractToken(channelData);
     final playbackHeaders = extractHeaders(channelData);
     final audioLanguage = _resolveAudioLanguage(channelData, policy);
     final merged = mergePlaybackHeaders(url, playbackHeaders);
+    final hasNvAuth =
+        merged.keys.any((k) => k.toLowerCase() == 'nv-authorizations');
+    // SokaMax authXmlToken is nv-authorizations, not Authorization Bearer.
     if (token.isNotEmpty &&
+        !hasNvAuth &&
         !merged.keys.any((k) => k.toLowerCase() == 'authorization')) {
       merged['Authorization'] = 'Bearer $token';
     }
 
-    // Android playback uses the Orizon native player for every stream type;
-    // it handles direct media and gateway pages with native WebView failover.
+    // Android: Orizon native player — gateway resolve → ExoPlayer, WebView last.
     if (NativeAndroidPlayer.supported) {
       // Apply server-driven settings before the native activity builds ExoPlayer.
       await _syncNativePolicy(policy);
@@ -96,10 +113,16 @@ class PlaybackOrchestrator {
         url: url,
         channelId: session.channelId,
         channelName: session.channelName,
-        licenseUrl: license != null ? '$license' : '',
-        token: token,
+        licenseUrl: licenseForExo,
+        token: hasNvAuth
+            ? (merged.entries
+                    .firstWhere(
+                      (e) => e.key.toLowerCase() == 'nv-authorizations',
+                    )
+                    .value)
+            : token,
         drmType: drm,
-        clearKeyHex: ck,
+        clearKeyHex: gatewayPage ? '' : ck,
         headers: merged.isEmpty ? null : merged,
         fallbackStreams: session.fallbackStreams.isEmpty
             ? null
@@ -130,8 +153,8 @@ class PlaybackOrchestrator {
           channelId: session.channelId,
           httpHeaders: merged.isEmpty ? null : merged,
           drmType: drm,
-          licenseUrl: license != null ? '$license' : '',
-          clearKeyRaw: ck,
+          licenseUrl: licenseForWeb,
+          clearKeyRaw: gatewayPage ? '' : ck,
           playbackToken: token,
           playbackMode: effectiveFlutterMode,
           audioLanguage: audioLanguage,
