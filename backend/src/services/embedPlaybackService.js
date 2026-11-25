@@ -748,6 +748,40 @@ function rewriteMpdForClearKey(text) {
   return out;
 }
 
+/**
+ * Drop 1080p+ video Representations so weak phones / mobile data start on a
+ * playable rung. Wi‑Fi still gets 720p; ABR can climb within the remaining set.
+ */
+function capMpdVideoHeight(text, maxHeight = 720) {
+  let out = String(text || '');
+  if (!out || !Number.isFinite(maxHeight) || maxHeight < 240) return out;
+  // Self-closing or paired Representation with height above the cap.
+  out = out.replace(
+    /<Representation\b([^>]*?)\bheight=["'](\d+)["']([^>]*?)(\/>|>[\s\S]*?<\/Representation>)/gi,
+    (all, pre, height, post, tail) => {
+      const h = Number(height);
+      if (!Number.isFinite(h) || h <= maxHeight) return all;
+      // Only strip video-like reps (has width or codecs avc/hev/vp9).
+      const attrs = `${pre} ${post}`;
+      if (!/\bwidth=["']/i.test(attrs) && !/\bcodecs=["'][^"']*(avc|hev|hvc|vp9|av01)/i.test(attrs)) {
+        return all;
+      }
+      return '';
+    },
+  );
+  return out;
+}
+
+/** App only talks to EaMax for proxied play.* — never leak embed Origin/Referer. */
+function headersForProxiedAppPlayback() {
+  return { 'User-Agent': 'ExoPlayer' };
+}
+
+function isProxiedPlayUrl(url) {
+  const u = String(url || '');
+  return /\/api\/channels\/\d+\/play\./i.test(u);
+}
+
 function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
   const rewriteAbs = (abs) => {
     if (!abs || !isPublicHttpUrl(abs)) return abs;
@@ -759,6 +793,8 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
   if (ctx && ctx.clearKeyRaw) {
     out = rewriteMpdForClearKey(out);
   }
+  // Mobile + low-end devices: keep ≤720p so Azam/etc. don't stall on 1080 first.
+  out = capMpdVideoHeight(out, 720);
   const injectedBase = dashBaseRelayUrl(baseUrl, mpdUrl, ctx);
 
   // Always force our BaseURL so relative SegmentTemplate ($Time$) hits the relay,
@@ -772,6 +808,7 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
     }
   }
 
+  // Absolute CDN media/init URLs → relay (phones never hit CDN IP-locked URLs).
   out = out.replace(/\b(media|initialization|sourceURL|url)="([^"]+)"/gi, (all, attr, ref) => {
     const raw = String(ref || '').trim();
     // Keep template placeholders relative — they resolve against injected BaseURL.
@@ -780,6 +817,12 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
     const abs = resolveAgainst(mpdUrl, raw);
     if (!abs || !isPublicHttpUrl(abs)) return all;
     return `${attr}="${rewriteAbs(abs)}"`;
+  });
+  // Catch leftover absolute http(s) in SegmentTimeline / Location etc.
+  out = out.replace(/>(https?:\/\/[^<]+)</gi, (all, abs) => {
+    if (!isPublicHttpUrl(abs)) return all;
+    if (/\/api\/playback\/(relay|dash)\//i.test(abs)) return all;
+    return `>${rewriteAbs(abs)}<`;
   });
   return out;
 }
@@ -1112,11 +1155,13 @@ async function presentResolvedEmbed(target, rawUrl, baseUrl, options = {}) {
   };
   next = applyResolvedDrm(next, resolved, httpsBase);
   // Keep auto/exo — native Widevine avoids WebView Shaka 6001.
+  // Do NOT attach washa Origin/Referer/X-Requested-With to play.mpd — those
+  // confuse some carrier networks and are unused once media is relayed.
   console.info(
     `[embed] 🎬 proxied ${playExtension(resolved)} → ch=${target.id}` +
       (resolved.clearKeyRaw ? ' clearkey=1' : resolved.licenseUrl ? ' license=1' : ''),
   );
-  return withWashaEmbedHeaders(next, rawUrl);
+  return next;
 }
 
 async function rewritePlayerUrl({ channelId, rawUrl, baseUrl, priority = null }) {
@@ -1194,22 +1239,8 @@ function applyResolvedDrm(target, resolved, baseUrl) {
     next.drm_protected = true;
     next.drmProtected = true;
   }
-  // Keep nv-authorizations (SokaMax/Nagra) — without it Widevine license spins forever.
-  const headers = { ...(next.headers || {}) };
-  if (resolved.referer) headers.Referer = resolved.referer;
-  if (resolved.origin && !headers.Origin) headers.Origin = resolved.origin;
-  headers['User-Agent'] = headers['User-Agent'] || 'ExoPlayer';
-  if (resolved.nvAuthorizations) {
-    headers['nv-authorizations'] = resolved.nvAuthorizations;
-  }
-  if (resolved.authorization && !resolved.nvAuthorizations) {
-    headers.Authorization = /^bearer\s+/i.test(resolved.authorization)
-      ? resolved.authorization
-      : `Bearer ${resolved.authorization}`;
-  }
-  // Widevine: Exo + WebView both use the license relay. Direct Nagra POSTs from
-  // the app often 400 when Origin/Referer/X-Requested-With leak onto the license
-  // request; the relay sends only Content-Type + nv-authorizations.
+  // Widevine: always use license relay — direct Nagra POSTs from phones 400 when
+  // Origin/Referer/X-Requested-With leak (Wi‑Fi and mobile data alike).
   if (resolved.licenseUrl && (resolved.drmType || '').toUpperCase().includes('WIDEVINE')) {
     const relay = licenseRelayUrl(
       baseUrl || publicBaseUrl(),
@@ -1227,8 +1258,33 @@ function applyResolvedDrm(target, resolved, baseUrl) {
       };
     }
   }
+
+  const playUrl = String(next.streamUrl || next.stream_url || '');
+  if (isProxiedPlayUrl(playUrl)) {
+    // Device ↔ EaMax only. CDN Referer/Origin stay on the server relay so the
+    // same stream works on Wi‑Fi and cellular (no ISP/CDN header quirks).
+    const clean = headersForProxiedAppPlayback();
+    next.headers = clean;
+    next.stream_headers = clean;
+    next.streamHeaders = clean;
+    return next;
+  }
+
+  // Embed / gateway pages still need washa-like headers for on-device resolve.
+  const headers = { ...(next.headers || {}) };
+  if (resolved.referer) headers.Referer = resolved.referer;
+  if (resolved.origin && !headers.Origin) headers.Origin = resolved.origin;
+  headers['User-Agent'] = headers['User-Agent'] || 'ExoPlayer';
+  // nv-authorizations is license-only — never put it on media GETs (CDN 403).
+  if (resolved.authorization && !resolved.nvAuthorizations) {
+    headers.Authorization = /^bearer\s+/i.test(resolved.authorization)
+      ? resolved.authorization
+      : `Bearer ${resolved.authorization}`;
+  }
   if (Object.keys(headers).length) {
     next.headers = headers;
+    next.stream_headers = headers;
+    next.streamHeaders = headers;
     console.info(
       `[embed] 🧩 Applied resolved stream headers: ${Object.keys(headers).sort().join(', ')}`,
     );
@@ -1452,23 +1508,54 @@ async function sendProxiedPlaylist(res, resolved, baseUrl) {
   return res.status(200).send(body);
 }
 
+async function fetchUpstreamMpd(resolved) {
+  const attempts = [
+    {
+      ...upstreamHeaders(resolved.streamUrl, resolved),
+      'User-Agent': 'ExoPlayer',
+      Accept: 'application/dash+xml,application/xml,*/*',
+    },
+    // Some CDN edges accept browser UA when ExoPlayer is blocked (device/ISP variance).
+    {
+      ...upstreamHeaders(resolved.streamUrl, resolved),
+      'User-Agent': BROWSER_UA,
+      Accept: 'application/dash+xml,application/xml,*/*',
+    },
+  ];
+  let lastErr = null;
+  for (const headers of attempts) {
+    try {
+      const fetched = await fetchPublic(resolved.streamUrl, {
+        headers,
+        timeoutMs: 18000,
+      });
+      if (fetched.response.status >= 200 && fetched.response.status < 300) {
+        return fetched;
+      }
+      lastErr = new Error(`HTTP ${fetched.response.status}`);
+      console.warn(
+        `[embed] mpd upstream HTTP ${fetched.response.status} ua=${String(headers['User-Agent']).slice(0, 24)}`,
+      );
+    } catch (err) {
+      lastErr = err;
+      console.warn('[embed] mpd fetch error:', err.message || err);
+    }
+  }
+  throw lastErr || new Error('mpd_upstream_failed');
+}
+
 async function sendProxiedMpd(res, resolved, baseUrl) {
-  // Media UA like Washa/Exo — browser UA + nv-auth on the MPD GET often 403s CDNs.
-  const headers = {
-    ...upstreamHeaders(resolved.streamUrl, resolved),
-    'User-Agent': 'ExoPlayer',
-    Accept: 'application/dash+xml,application/xml,*/*',
-  };
-  const { response, finalUrl } = await fetchPublic(resolved.streamUrl, {
-    headers,
-    timeoutMs: 12000,
-  });
-  if (response.status < 200 || response.status >= 300) {
+  let fetched;
+  try {
+    fetched = await fetchUpstreamMpd(resolved);
+  } catch (err) {
     console.warn(
-      `[embed] mpd upstream HTTP ${response.status} for ${String(resolved.streamUrl).slice(0, 96)}`,
+      `[embed] mpd upstream failed for ${String(resolved.streamUrl).slice(0, 96)}:`,
+      err.message || err,
     );
     return res.status(502).json({ error: 'mpd_upstream_failed' });
   }
+  const { response, finalUrl } = fetched;
   const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
   if (!looksLikeMpd(finalUrl || resolved.streamUrl, response.headers.get('content-type'), text)) {
     return res.status(502).json({ error: 'mpd_invalid' });
@@ -1550,17 +1637,28 @@ async function handleChannelPlay(req, res) {
 
 async function pipeUpstreamMedia(req, res, targetUrl, ctx) {
   // nv-authorizations is license-only (Nagra). Sending it on MPD/segments often 403s CDNs.
-  const headers = {
-    ...upstreamHeaders(targetUrl, ctx),
-    'User-Agent': 'ExoPlayer',
+  const tryFetch = async (userAgent) => {
+    const headers = {
+      ...upstreamHeaders(targetUrl, ctx),
+      'User-Agent': userAgent,
+    };
+    if (req.headers.range) headers.Range = req.headers.range;
+    return fetchPublic(targetUrl, { headers, timeoutMs: 25000 });
   };
-  if (req.headers.range) headers.Range = req.headers.range;
   let fetched;
   try {
-    fetched = await fetchPublic(targetUrl, { headers, timeoutMs: 15000 });
+    fetched = await tryFetch('ExoPlayer');
+    if (fetched.response.status >= 400) {
+      console.warn(`[embed] relay HTTP ${fetched.response.status} — retry browser UA`);
+      fetched = await tryFetch(BROWSER_UA);
+    }
   } catch (err) {
-    console.warn('[embed] relay failed:', err.message || err);
-    return res.status(502).json({ error: 'Upstream playback failed' });
+    try {
+      fetched = await tryFetch(BROWSER_UA);
+    } catch (err2) {
+      console.warn('[embed] relay failed:', err2.message || err.message || err2);
+      return res.status(502).json({ error: 'Upstream playback failed' });
+    }
   }
   const { response, finalUrl } = fetched;
   if (response.status >= 400 || !response.body) {

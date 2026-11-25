@@ -22,11 +22,12 @@ const DEFAULT_GATEWAY_POLICY = {
 
 const DEFAULT_PLAYER_CONFIG = {
   preferredEngine: 'auto',
-  bufferMinMs: 10_000,
-  bufferMaxMs: 40_000,
-  initialBufferMs: 1200,
-  retryMax: 4,
-  retryDelayMs: 1200,
+  // Deeper buffers so mobile data / flaky Wi‑Fi don't play↔pause (existing apps).
+  bufferMinMs: 18_000,
+  bufferMaxMs: 55_000,
+  initialBufferMs: 3000,
+  retryMax: 6,
+  retryDelayMs: 1500,
   reconnectEnabled: true,
   autoPlay: true,
   defaultQuality: '480p',
@@ -36,7 +37,7 @@ const DEFAULT_PLAYER_CONFIG = {
   softwareDecodeFallback: true,
   backgroundPlayback: false,
   resumePlayback: true,
-  networkTimeoutMs: 15000,
+  networkTimeoutMs: 20000,
   reconnectionPolicy: 'balanced',
   qualitiesAllowed: ['auto', '240p', '360p', '480p', '720p', '1080p'],
   languagesAllowed: ['sw', 'en'],
@@ -95,13 +96,17 @@ function sanitizeGatewayPolicy(raw) {
 
 function mapRow(row) {
   if (!row) return { ...DEFAULT_PLAYER_CONFIG, gatewayPolicy: { ...DEFAULT_GATEWAY_POLICY } };
+  // Floor soft values so old DB rows still protect mobile-data / weak Wi‑Fi clients.
+  const bufferMinMs = Math.max(Number(row.buffer_min_ms) || 18_000, 15_000);
+  const bufferMaxMs = Math.max(Number(row.buffer_max_ms) || 55_000, bufferMinMs + 10_000);
+  const initialBufferMs = Math.max(Number(row.initial_buffer_ms) || 3_000, 2_500);
   return {
     preferredEngine: sanitizeGlobalPlaybackEngine(row.preferred_engine),
-    bufferMinMs: Number(row.buffer_min_ms) || 10_000,
-    bufferMaxMs: Number(row.buffer_max_ms) || 40_000,
-    initialBufferMs: Number(row.initial_buffer_ms) || 1800,
-    retryMax: Number(row.retry_max) || 4,
-    retryDelayMs: Number(row.retry_delay_ms) || 1200,
+    bufferMinMs,
+    bufferMaxMs,
+    initialBufferMs,
+    retryMax: Math.max(Number(row.retry_max) || 6, 4),
+    retryDelayMs: Math.max(Number(row.retry_delay_ms) || 1500, 1000),
     reconnectEnabled: row.reconnect_enabled !== false,
     autoPlay: row.auto_play !== false,
     defaultQuality: row.default_quality || '480p',
@@ -111,7 +116,7 @@ function mapRow(row) {
     softwareDecodeFallback: row.software_decode_fallback !== false,
     backgroundPlayback: row.background_playback === true,
     resumePlayback: row.resume_playback !== false,
-    networkTimeoutMs: Number(row.network_timeout_ms) || 15000,
+    networkTimeoutMs: Math.max(Number(row.network_timeout_ms) || 20_000, 15_000),
     reconnectionPolicy: ['aggressive', 'balanced', 'conservative'].includes(
       String(row.reconnection_policy || '').toLowerCase(),
     ) ? String(row.reconnection_policy).toLowerCase() : 'balanced',
