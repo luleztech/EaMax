@@ -692,6 +692,62 @@ function dashBaseRelayUrl(apiBase, mpdUrl, ctx) {
 }
 
 /** Rewrite DASH MPD so BaseURL / segment refs go through our IP-matched relay. */
+/** ClearKey system ID (W3C / DASH-IF). */
+const CLEARKEY_SCHEME =
+  'urn:uuid:1077efec-c0b2-4d02-ace3-3c1e52e2fb4b';
+/** Widevine / PlayReady / WisePlay — strip when we have local ClearKey material. */
+const NON_CLEARKEY_DRM_SCHEMES = [
+  'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed',
+  'urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95',
+  'urn:uuid:adb41c24-2dbf-4a6d-958b-4457c0d27b95',
+];
+
+/**
+ * mpilali ClearKey streams ship Widevine/PlayReady ContentProtection only.
+ * Exo ClearKey DRM never binds unless the MPD advertises the ClearKey UUID.
+ */
+function rewriteMpdForClearKey(text) {
+  let out = String(text || '');
+  if (!out) return out;
+  // Drop remote DRM systems (self-closing or paired tags, with optional namespace prefix).
+  for (const scheme of NON_CLEARKEY_DRM_SCHEMES) {
+    const esc = scheme.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(
+      new RegExp(
+        `<([A-Za-z0-9:]+)?ContentProtection\\b[^>]*schemeIdUri=["']${esc}["'][^>]*(?:\\/>|>[\\s\\S]*?<\\/\\1?ContentProtection>)`,
+        'gi',
+      ),
+      '',
+    );
+  }
+  if (new RegExp(CLEARKEY_SCHEME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(out)) {
+    return out;
+  }
+  const clearKeyTag =
+    `<ContentProtection schemeIdUri="${CLEARKEY_SCHEME}" value="ClearKey1.0"/>`;
+  // Prefer inserting next to existing cenc mp4protection so default_KID stays paired.
+  if (/schemeIdUri=["']urn:mpeg:dash:mp4protection:2011["']/i.test(out)) {
+    out = out.replace(
+      /(<[^>]*ContentProtection\b[^>]*schemeIdUri=["']urn:mpeg:dash:mp4protection:2011["'][^>]*\/>)/i,
+      `$1${clearKeyTag}`,
+    );
+    if (new RegExp(CLEARKEY_SCHEME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(out)) {
+      return out;
+    }
+    out = out.replace(
+      /(<[^>]*ContentProtection\b[^>]*schemeIdUri=["']urn:mpeg:dash:mp4protection:2011["'][^>]*>[\s\S]*?<\/[^>]*ContentProtection>)/i,
+      `$1${clearKeyTag}`,
+    );
+  }
+  if (!new RegExp(CLEARKEY_SCHEME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(out)) {
+    out = out.replace(
+      /(<AdaptationSet\b[^>]*>)/i,
+      `$1${clearKeyTag}`,
+    );
+  }
+  return out;
+}
+
 function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
   const rewriteAbs = (abs) => {
     if (!abs || !isPublicHttpUrl(abs)) return abs;
@@ -700,6 +756,9 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
     return relayTargetUrl(baseUrl, abs, ctx);
   };
   let out = String(text || '');
+  if (ctx && ctx.clearKeyRaw) {
+    out = rewriteMpdForClearKey(out);
+  }
   const injectedBase = dashBaseRelayUrl(baseUrl, mpdUrl, ctx);
 
   // Always force our BaseURL so relative SegmentTemplate ($Time$) hits the relay,
@@ -1701,6 +1760,7 @@ module.exports = {
   watchPageUrl,
   needsHostedWebPlayer,
   rewriteMpdXml,
+  rewriteMpdForClearKey,
   handleChannelPlay,
   handleRelay,
   handleDashSegment,

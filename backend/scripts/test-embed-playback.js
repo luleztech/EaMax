@@ -128,6 +128,21 @@ assert.strictEqual(
   false,
 );
 
+const wvMpd = `<?xml version="1.0"?><MPD><Period><AdaptationSet>
+<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc" cenc:default_KID="2f12d7b8-89de-381a-9fb5-326ca3aa166d"/>
+<ContentProtection schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"><cenc:pssh>AAA</cenc:pssh></ContentProtection>
+<ContentProtection schemeIdUri="urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95" value="Microsoft PlayReady"><mspr:pro>x</mspr:pro></ContentProtection>
+</AdaptationSet></Period></MPD>`;
+const ckMpd = rewriteMpdXml(
+  wvMpd,
+  'https://nur.mpilalivetv.com/v2/manifest.php?ch=X',
+  'https://api.example.com',
+  { clearKeyRaw: '2f12d7b889de381a9fb5326ca3aa166d:51c2d733a54306fdf89acd4c9d4f6005' },
+);
+assert.ok(/1077efec-c0b2-4d02-ace3-3c1e52e2fb4b/i.test(ckMpd), 'ClearKey UUID must be injected');
+assert.ok(!/edef8ba9-79d6-4ace-a3c8-27dcd51d21ed/i.test(ckMpd), 'Widevine UUID must be stripped');
+assert.ok(!/9a04f079-9840-4286-ab92-e65be0885f95/i.test(ckMpd), 'PlayReady UUID must be stripped');
+
 const mpd = `<?xml version="1.0"?><MPD><Period id="1"><SegmentTemplate initialization="clip-\$RepresentationID\$-init.mp4" media="clip-\$RepresentationID\$-\$Time\$.mp4"/></Period></MPD>`;
 const rewrittenMpd = rewriteMpdXml(
   mpd,

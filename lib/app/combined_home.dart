@@ -624,7 +624,9 @@ class CombinedHomeState extends State<CombinedHome> with SingleTickerProviderSta
         ul.contains('manifest.php') ||
         ul.contains('/api/channels/');
     // mpilali ClearKey streams are often tagged WIDEVINE in admin with no license URL.
-    if (clearPayload.isNotEmpty && looksManifest && (u == 'NONE' || (u.contains('WIDEVINE') && license.isEmpty()))) {
+    if (clearPayload.isNotEmpty &&
+        looksManifest &&
+        (u == 'NONE' || (u.contains('WIDEVINE') && license.isEmpty))) {
       return 'CLEARKEY';
     }
     if (u != 'NONE') return u;

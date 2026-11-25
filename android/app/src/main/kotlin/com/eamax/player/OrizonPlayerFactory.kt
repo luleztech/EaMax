@@ -171,7 +171,11 @@ class OrizonPlayerFactory(private val context: Context) {
         if (format == Format.GATEWAY) {
             throw IllegalArgumentException("Gateway URL must use WebView")
         }
-        Log.i(TAG, "play format=$format url=${safeUrlForLogs(url)}")
+        Log.i(
+            TAG,
+            "play format=$format drm=${session.drmType} " +
+                "keys=${session.drmData.keys?.size ?: 0} url=${safeUrlForLogs(url)}",
+        )
         val headers = buildHeaders(session)
         val dataSource = OrizonStreamClient.dataSourceFactory(headers)
         val mediaItem = buildMediaItem(session, format, headers)
@@ -180,6 +184,9 @@ class OrizonPlayerFactory(private val context: Context) {
             try {
                 val drm = createDrmSessionManager(session, headers)
                 factory.setDrmSessionManagerProvider { drm }
+                if (session.drmType == DrmType.CLEARKEY) {
+                    Log.i(TAG, "ClearKey LocalMediaDrmCallback ready keys=${session.drmData.keys?.size ?: 0}")
+                }
             } catch (e: Exception) {
                 if (format != Format.HLS) throw e
                 Log.w(TAG, "DRM manager skipped for HLS: ${e.message}")
