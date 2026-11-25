@@ -726,6 +726,63 @@ function peekCachedEmbed(raw) {
   return cached.value;
 }
 
+/**
+ * Widevine Azam on some Android devices shows a black picture while the clock
+ * still runs (secure decoder). Prefer nur/mpilali ClearKey for the same AzamSportN.
+ */
+function azamSportNumberFromUrl(url) {
+  const raw = String(url || '');
+  const m =
+    raw.match(/AzamSports?(\d+)/i)
+    || raw.match(/\/eds\/AzamSports?(\d+)\//i)
+    || raw.match(/[?&](?:ch|channel)=AzamSports?(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+
+async function fetchNurClearKeyForAzam(sportNum) {
+  if (!Number.isFinite(sportNum) || sportNum <= 0) return null;
+  const bases = String(
+    process.env.NUR_CLEARKEY_BASES
+      || 'https://nur.mpilalivetv.com/v2/player.php,https://nur.mpilalivetv.com/v1/player.php',
+  )
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const base of bases) {
+    let playerUrl;
+    try {
+      const u = new URL(base);
+      u.searchParams.set('channel', String(sportNum));
+      playerUrl = u.toString();
+    } catch (_) {
+      continue;
+    }
+    try {
+      const parsed = new URL(playerUrl);
+      const resolved = await resolveChannelJsonPlayer(playerUrl, parsed);
+      if (resolved?.clearKeyRaw && resolved.streamUrl) {
+        console.info(
+          `[embed] 🔑 AzamSport${sportNum} Widevine→ClearKey via ${parsed.host}${parsed.pathname}`,
+        );
+        return resolved;
+      }
+    } catch (err) {
+      console.warn('[embed] ClearKey upgrade failed:', err.message || err);
+    }
+  }
+  return null;
+}
+
+async function preferClearKeyOverWidevine(resolved) {
+  if (!resolved?.streamUrl) return resolved;
+  if (resolved.clearKeyRaw) return resolved;
+  const sportNum = azamSportNumberFromUrl(resolved.streamUrl);
+  if (!sportNum) return resolved;
+  // Azam Widevine → black picture + ticking clock on many devices; swap to ClearKey.
+  const ck = await fetchNurClearKeyForAzam(sportNum);
+  return ck || resolved;
+}
+
 async function resolveEmbedPlayback(pageUrl, depth = 0) {
   const raw = String(pageUrl || '').trim();
   if (!isEmbedPlaybackUrl(raw) || !isPublicHttpUrl(raw)) return null;
@@ -755,6 +812,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       console.info(`[embed] Resolving PHP player: ${raw}`);
       value = await resolveEmbedApi(raw, parsed);
       if (value) {
+        value = await preferClearKeyOverWidevine(value);
         cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
         return value;
       }
@@ -763,6 +821,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       console.info(`[embed] Resolving channel JSON player: ${raw}`);
       value = await resolveChannelJsonPlayer(raw, parsed);
       if (value) {
+        value = await preferClearKeyOverWidevine(value);
         cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
         return value;
       }
@@ -817,6 +876,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       }
       if (value) break;
     }
+    if (value) value = await preferClearKeyOverWidevine(value);
   } catch (err) {
     console.warn('[embed] resolve failed:', err.message || err);
     value = null;
@@ -943,8 +1003,8 @@ function rewriteMpdForClearKey(text) {
 }
 
 /**
- * Drop 1080p+ video Representations so weak phones / mobile data start on a
- * playable rung. Wi‑Fi still gets 720p; ABR can climb within the remaining set.
+ * Drop high video Representations so weak phones / mobile data start on a
+ * playable rung. ClearKey can keep 720p; Widevine caps lower (blank-screen devices).
  */
 function capMpdVideoHeight(text, maxHeight = 720) {
   let out = String(text || '');
@@ -963,6 +1023,27 @@ function capMpdVideoHeight(text, maxHeight = 720) {
       return '';
     },
   );
+  return out;
+}
+
+/** Keep Widevine CP only — PlayReady/WisePlay confuse some Exo builds → black video. */
+function simplifyWidevineMpd(text) {
+  let out = String(text || '');
+  if (!out) return out;
+  const strip = [
+    'urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95', // PlayReady
+    'urn:uuid:adb41c24-2dbf-4a6d-958b-4457c0d27b95', // WisePlay
+  ];
+  for (const scheme of strip) {
+    const esc = scheme.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(
+      new RegExp(
+        `<([A-Za-z0-9:]+)?ContentProtection\\b[^>]*schemeIdUri=["']${esc}["'][^>]*(?:\\/>|>[\\s\\S]*?<\\/\\1?ContentProtection>)`,
+        'gi',
+      ),
+      '',
+    );
+  }
   return out;
 }
 
@@ -986,9 +1067,14 @@ function rewriteMpdXml(text, mpdUrl, baseUrl, ctx) {
   let out = String(text || '');
   if (ctx && ctx.clearKeyRaw) {
     out = rewriteMpdForClearKey(out);
+  } else if (ctx && ctx.licenseUrl) {
+    // Widevine path: drop PlayReady/WisePlay so Exo doesn't pick a broken DRM → blank video.
+    out = simplifyWidevineMpd(out);
   }
-  // Mobile + low-end devices: keep ≤720p so Azam/etc. don't stall on 1080 first.
-  out = capMpdVideoHeight(out, 720);
+  // ClearKey: ≤720p. Widevine: ≤480p — blank-screen devices often fail secure HD decode
+  // while the timeline still advances (audio-only / black picture).
+  const maxH = ctx && ctx.clearKeyRaw ? 720 : 480;
+  out = capMpdVideoHeight(out, maxH);
   const injectedBase = dashBaseRelayUrl(baseUrl, mpdUrl, ctx);
 
   // Always force our BaseURL so relative SegmentTemplate ($Time$) hits the relay,
@@ -2197,6 +2283,7 @@ module.exports = {
   isPublicHttpUrl,
   extractEmbeddedStream,
   resolveEmbedPlayback,
+  preferClearKeyOverWidevine,
   rewritePlayerUrl,
   applyResolvedDrm,
   presentChannelRows,
