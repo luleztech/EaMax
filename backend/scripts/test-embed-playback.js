@@ -2,6 +2,7 @@ const assert = require('assert');
 const {
   applyResolvedDrm,
   extractEmbeddedStream,
+  isDirectMediaUrl,
   isEmbedPlaybackUrl,
   isOnDeviceEmbedApiUrl,
   isPublicHttpUrl,
@@ -117,6 +118,15 @@ assert.ok(
   'Widevine licenseUrl must be the server relay (avoids Nagra 400 from client headers)',
 );
 assert.strictEqual(presented.licenseUrl, presented.licenseRelayUrl);
+
+assert.strictEqual(
+  isDirectMediaUrl('https://nur.mpilalivetv.com/v2/manifest.php?ch=AzamSport3'),
+  true,
+);
+assert.strictEqual(
+  isOnDeviceEmbedApiUrl('https://nur.mpilalivetv.com/v2/player.php?channel=3'),
+  false,
+);
 
 const mpd = `<?xml version="1.0"?><MPD><Period id="1"><SegmentTemplate initialization="clip-\$RepresentationID\$-init.mp4" media="clip-\$RepresentationID\$-\$Time\$.mp4"/></Period></MPD>`;
 const rewrittenMpd = rewriteMpdXml(

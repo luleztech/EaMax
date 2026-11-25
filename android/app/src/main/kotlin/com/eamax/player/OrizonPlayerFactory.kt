@@ -193,7 +193,11 @@ class OrizonPlayerFactory(private val context: Context) {
     fun classify(url: String): Format {
         val trimmed = url.trim()
         val noQuery = trimmed.substringBefore('?').substringBefore('#')
-        if (noQuery.endsWith(".mpd", ignoreCase = true)) return Format.DASH
+        if (noQuery.endsWith(".mpd", ignoreCase = true) ||
+            noQuery.endsWith("manifest.php", ignoreCase = true)
+        ) {
+            return Format.DASH
+        }
         if (noQuery.endsWith(".m3u8", ignoreCase = true) ||
             noQuery.endsWith(".m3u", ignoreCase = true)
         ) {

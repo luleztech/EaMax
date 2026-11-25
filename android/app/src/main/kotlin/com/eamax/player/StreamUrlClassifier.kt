@@ -11,6 +11,7 @@ object StreamUrlClassifier {
     private val obviousM3u8 = Regex("""\.m3u8?(\?|#|$)""", RegexOption.IGNORE_CASE)
     private val m3u8Query = Regex("""[?&](format|type)=m3u8?(\b|&|$)""", RegexOption.IGNORE_CASE)
     private val obviousMpd = Regex("""\.mpd(\?|#|$)""", RegexOption.IGNORE_CASE)
+    private val manifestPhp = Regex("""/manifest\.php(\?|#|$)""", RegexOption.IGNORE_CASE)
     private val obviousProgressive =
         Regex("""\.(mp4|m4v|webm|mkv|mov|ts)(\?|#|$)""", RegexOption.IGNORE_CASE)
     private val gatewayScript = Regex("""\.(php|asp|aspx|cgi|jsp|html?)(\?|#|/|$)""", RegexOption.IGNORE_CASE)
@@ -39,6 +40,8 @@ object StreamUrlClassifier {
         if (hasObviousM3u8(trimmed) || hasObviousMpd(trimmed) || hasObviousProgressive(trimmed)) {
             return false
         }
+        // mpilali manifest.php serves DASH XML — treat as media, not gateway.
+        if (manifestPhp.containsMatchIn(trimmed)) return false
         if (isLikelyIptvLiveUrl(trimmed)) return false
         val u = trimmed.lowercase()
         if (gatewayScript.containsMatchIn(trimmed)) return true
@@ -59,6 +62,7 @@ object StreamUrlClassifier {
         if (trimmed.isEmpty()) return Format.UNKNOWN
         val u = trimmed.lowercase()
         if (hasObviousMpd(trimmed) ||
+            manifestPhp.containsMatchIn(trimmed) ||
             (u.contains("dash") && !hasObviousM3u8(trimmed)) ||
             u.contains("/manifest") && !hasObviousM3u8(trimmed) ||
             u.contains("/relay/stream") ||

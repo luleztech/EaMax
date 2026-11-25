@@ -62,7 +62,10 @@ function publicBaseUrl(req) {
 }
 
 function isDirectMediaUrl(url) {
-  return /\.(m3u8|m3u|mpd|mp4|m4v|webm|mkv|mov|ts)(\?|#|$)/i.test(String(url || ''));
+  const raw = String(url || '');
+  // mpilali / similar: manifest.php serves application/dash+xml
+  if (/\/manifest\.php(\?|#|$)/i.test(raw)) return true;
+  return /\.(m3u8|m3u|mpd|mp4|m4v|webm|mkv|mov|ts)(\?|#|$)/i.test(raw);
 }
 
 function isEmbedPlaybackUrl(url) {
@@ -133,7 +136,7 @@ function resolveAgainst(baseUrl, ref) {
 }
 
 function kindForUrl(url) {
-  if (/\.mpd(\?|#|$)/i.test(url)) return 'dash';
+  if (/\.mpd(\?|#|$)/i.test(url) || /\/manifest\.php(\?|#|$)/i.test(url)) return 'dash';
   if (/\.(mp4|m4v|webm|mkv|mov)(\?|#|$)/i.test(url)) return 'progressive';
   return 'hls';
 }
@@ -284,6 +287,84 @@ function isEmbedApiPlayer(parsed) {
   } catch (_) {
     return false;
   }
+}
+
+/** mpilali / similar: player.php?channel=N (or watch.php) → JSON with stream_url + clear_key. */
+function isChannelJsonPlayer(parsed) {
+  try {
+    const path = String(parsed.pathname || '').toLowerCase();
+    const isPlayer = path.endsWith('/player.php') || path.endsWith('player.php')
+      || path.endsWith('/watch.php') || path.endsWith('watch.php');
+    if (!isPlayer) return false;
+    if (parsed.searchParams.get('app') && parsed.searchParams.get('key')) return false;
+    return !!(
+      parsed.searchParams.get('channel')
+      || parsed.searchParams.get('ch')
+      || parsed.searchParams.get('id')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function parseChannelPlayerJson(text, pageUrl) {
+  let data = null;
+  try {
+    const trimmed = String(text || '').trim();
+    if (!trimmed.startsWith('{')) return null;
+    data = JSON.parse(trimmed);
+  } catch (_) {
+    return null;
+  }
+  if (!data || data.success === false) return null;
+  const streamRaw = String(
+    data.stream_url || data.streamUrl || data.mpdPath || data.manifestUrl || data.url || '',
+  ).trim();
+  if (!streamRaw) return null;
+  let streamUrl = streamRaw;
+  try {
+    streamUrl = new URL(streamRaw, pageUrl).toString();
+  } catch (_) {
+    return null;
+  }
+  const clearKeyRaw = String(data.clear_key || data.clearKey || data.clearkey || '').trim();
+  const licenseUrl = String(data.license_url || data.licenseUrl || '').trim();
+  const nvAuthorizations = String(
+    data.authXmlToken || data.auth_xml_token || data.nv_authorizations || '',
+  ).trim();
+  const drmHint = String(data.drm_type || data.drmType || '').trim().toUpperCase();
+  let drmType = 'NONE';
+  if (clearKeyRaw || drmHint.includes('CLEAR')) drmType = 'CLEARKEY';
+  else if (licenseUrl || drmHint.includes('WIDEVINE')) drmType = 'WIDEVINE';
+  else if (drmHint.includes('PLAYREADY')) drmType = 'PLAYREADY';
+  return buildResolved(streamUrl, pageUrl, {
+    clearKeyRaw,
+    licenseUrl,
+    nvAuthorizations,
+    drmType,
+  });
+}
+
+async function resolveChannelJsonPlayer(playerUrl, parsed) {
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  const headers = {
+    'User-Agent': BROWSER_UA,
+    Accept: 'application/json,text/plain,*/*',
+    'X-Requested-With': EMBED_PACKAGE_NAME,
+    Referer: `${origin}/`,
+    Origin: origin,
+  };
+  const { response } = await fetchPublic(playerUrl, { headers, timeoutMs: 12000 });
+  if (response.status < 200 || response.status >= 300) {
+    console.warn(`[embed] channel JSON player HTTP ${response.status}`);
+    return null;
+  }
+  const text = await readLimitedText(response, HTML_MAX_BYTES);
+  const resolved = parseChannelPlayerJson(text, playerUrl);
+  if (resolved) {
+    console.info(`[embed] ✅ channel JSON player → ${resolved.streamUrl.slice(0, 96)}`);
+  }
+  return resolved;
 }
 
 function collectResponseCookies(response) {
@@ -515,16 +596,25 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
         return value;
       }
     }
+    if (parsed && isChannelJsonPlayer(parsed)) {
+      console.info(`[embed] Resolving channel JSON player: ${raw}`);
+      value = await resolveChannelJsonPlayer(raw, parsed);
+      if (value) {
+        cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
+        return value;
+      }
+    }
 
     const headers = upstreamHeaders(raw, pageContext(raw));
-    headers.Accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+    headers.Accept = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
     if (/\.php(\?|#|\/|$)/i.test(raw)) headers['X-Requested-With'] = EMBED_PACKAGE_NAME;
     const { response, finalUrl } = await fetchPublic(raw, { headers, timeoutMs: 8000 });
     if (response.status < 200 || response.status >= 300) {
       value = null;
     } else {
       const html = await readLimitedText(response, HTML_MAX_BYTES);
-      value = extractEmbeddedStream(html, finalUrl || raw);
+      value = parseChannelPlayerJson(html, finalUrl || raw)
+        || extractEmbeddedStream(html, finalUrl || raw);
       if (!value && depth < 1) {
         const iframe = extractIframeSrc(html, finalUrl || raw);
         if (iframe && iframe !== raw) {

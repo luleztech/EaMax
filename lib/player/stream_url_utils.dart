@@ -31,6 +31,10 @@ bool isGatewayUrl(String url) {
   if (_hasObviousM3u8(url) || _hasObviousMpd(url) || _hasObviousProgressive(url)) {
     return false;
   }
+  // mpilali manifest.php serves DASH — not a gateway page.
+  if (RegExp(r'/manifest\.php(\?|#|$)', caseSensitive: false).hasMatch(url)) {
+    return false;
+  }
   final u = url.toLowerCase();
   if (RegExp(r'\.(php|asp|aspx|cgi|jsp|html?)(\?|$|#)', caseSensitive: false).hasMatch(url)) {
     return true;
@@ -46,6 +50,7 @@ StreamFormat detectStreamFormat(String url) {
   if (url.isEmpty) return StreamFormat.unknown;
   final u = url.toLowerCase();
   if (RegExp(r'\.mpd(\?|#|$)').hasMatch(u) ||
+      RegExp(r'/manifest\.php(\?|#|$)').hasMatch(u) ||
       u.contains('dash') ||
       u.contains('/manifest') ||
       u.contains('/relay/stream') ||

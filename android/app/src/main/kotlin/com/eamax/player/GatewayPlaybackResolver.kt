@@ -199,6 +199,8 @@ object GatewayPlaybackResolver {
             Log.w(TAG, "gateway blocked app recognition url=${safeUrlForLogs(gatewayUrl)}")
             return null
         }
+        // mpilali: player.php?channel=N returns JSON immediately (stream_url + clear_key).
+        parseApiJson(pageHtml, gatewayUrl)?.let { return it }
 
         val apiUrl = findApiUrl(gatewayUrl, pageHtml) ?: return null
         Log.i(TAG, "api=${safeUrlForLogs(apiUrl)}")
@@ -244,24 +246,40 @@ object GatewayPlaybackResolver {
 
     private fun parseApiJson(body: String, gatewayUrl: String): Resolved? {
         return try {
-            val json = JSONObject(body)
-            if (json.optBoolean("success", true).not() && !json.has("mpdPath")) {
+            val trimmed = body.trim()
+            if (!trimmed.startsWith("{")) return null
+            val json = JSONObject(trimmed)
+            if (json.optBoolean("success", true).not() &&
+                !json.has("mpdPath") &&
+                !json.has("stream_url") &&
+                !json.has("streamUrl")
+            ) {
                 Log.w(TAG, "api error=${json.optString("error")}")
                 return null
             }
             val mpd = json.optString("mpdPath").trim()
+                .ifEmpty { json.optString("stream_url").trim() }
                 .ifEmpty { json.optString("streamUrl").trim() }
+                .ifEmpty { json.optString("manifestUrl").trim() }
                 .ifEmpty { json.optString("url").trim() }
             if (mpd.isEmpty() || !mpd.startsWith("http")) {
                 Log.w(TAG, "api missing stream url")
                 return null
             }
             val license = json.optString("licenseUrl").trim()
+                .ifEmpty { json.optString("license_url").trim() }
             val auth = json.optString("authXmlToken").trim()
                 .ifEmpty { json.optString("authToken").trim() }
-            val drmRaw = json.optString("drmType", "none").trim().lowercase()
+            val clearKey = json.optString("clear_key").trim()
+                .ifEmpty { json.optString("clearKey").trim() }
+            val drmRaw = json.optString("drmType").trim()
+                .ifEmpty { json.optString("drm_type").trim() }
+                .ifEmpty { "none" }
+                .lowercase()
             val drm = when {
-                drmRaw.contains("clearkey") || drmRaw.contains("clear_key") -> DrmType.CLEARKEY
+                clearKey.isNotEmpty() ||
+                    drmRaw.contains("clearkey") ||
+                    drmRaw.contains("clear_key") -> DrmType.CLEARKEY
                 drmRaw.contains("widevine") || license.isNotEmpty() -> DrmType.WIDEVINE
                 else -> DrmType.NONE
             }
@@ -274,14 +292,19 @@ object GatewayPlaybackResolver {
             if (auth.isNotEmpty()) {
                 playHeaders[licenseAuthHeader()] = auth
             }
-            Log.i(TAG, "Embed API resolved: ${safeUrlForLogs(mpd)}")
+            Log.i(TAG, "Embed API resolved: ${safeUrlForLogs(mpd)} drm=$drm")
             Resolved(
                 streamUrl = mpd,
                 licenseUrl = license,
                 authToken = auth,
+                clearKeyRaw = clearKey,
                 isHls = mpd.contains(".m3u8", ignoreCase = true),
                 headers = playHeaders,
-                drmType = if (drm == DrmType.WIDEVINE && license.isEmpty()) DrmType.NONE else drm,
+                drmType = when {
+                    drm == DrmType.CLEARKEY && clearKey.isEmpty() -> DrmType.NONE
+                    drm == DrmType.WIDEVINE && license.isEmpty() -> DrmType.NONE
+                    else -> drm
+                },
                 referer = referer,
                 origin = origin,
             )
@@ -302,7 +325,14 @@ object GatewayPlaybackResolver {
 
         val base = Uri.parse(gatewayUrl)
         val path = base.path.orEmpty().lowercase()
-        if (path.contains("embed.php") || path.contains("player.php")) {
+        if (path.contains("embed.php") || path.contains("player.php") || path.contains("watch.php")) {
+            val channel = base.getQueryParameter("channel").orEmpty()
+                .ifEmpty { base.getQueryParameter("ch").orEmpty() }
+                .ifEmpty { base.getQueryParameter("id").orEmpty() }
+            if (channel.isNotEmpty()) {
+                // mpilali-style: the player URL itself is the JSON API.
+                return gatewayUrl
+            }
             val app = base.getQueryParameter("app").orEmpty()
             val key = base.getQueryParameter("key").orEmpty()
             if (app.isNotEmpty() && key.isNotEmpty()) {
