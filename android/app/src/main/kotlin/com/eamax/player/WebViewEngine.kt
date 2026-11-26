@@ -259,7 +259,9 @@ class WebViewEngine(
                 wv.loadUrl(url, headers)
                 onPlaybackStateChanged(PlaybackState.BUFFERING)
             } else {
-                wv.loadUrl("about:blank")
+                // Bare MPD/HLS must not land in WebView — surface error so PlayerManager retries Exo.
+                Log.e(TAG, "WebView refused non-gateway URL ${safeUrlForLogs(url)}")
+                onError("WebView requires gateway URL")
             }
         } catch (e: Exception) {
             onError("Failed to initialize WebView: ${e.message}")
@@ -398,7 +400,7 @@ class WebViewEngine(
     private fun handleDrmRestrictedError() {
         if (drm4012Handled) return
         drm4012Handled = true
-        Log.w(QUALITY_TAG, "Shaka 4012 DRM restricted — clearing app restrictions + L3")
+        Log.w(QUALITY_TAG, "Shaka 6001/4012 — soft↔L3 flip + reload player")
         injectWidevineL3Fallback()
         webView?.evaluateJavascript(
             "try{window.__eamaxHandleDrm4012&&window.__eamaxHandleDrm4012();}catch(e){}",
@@ -406,8 +408,32 @@ class WebViewEngine(
         )
         postDelayed({
             injectWidevineL3Fallback()
+            // Ask in-page Shaka to reload after robustness flip (hosted + gateway).
+            webView?.evaluateJavascript(
+                """
+                (function(){
+                  try{
+                    var list=window.__eamaxShakas||[];
+                    if(window.__eamaxShaka) list=list.concat([window.__eamaxShaka]);
+                    if(window.player) list=list.concat([window.player]);
+                    for(var i=0;i<list.length;i++){
+                      var pl=list[i];
+                      if(!pl||typeof pl.getAssetUri!=='function') continue;
+                      var u=pl.getAssetUri();
+                      if(u&&typeof pl.load==='function'){
+                        try{ pl.load(u); }catch(e){}
+                      }
+                    }
+                  }catch(e){}
+                  true;
+                })();
+                """.trimIndent(),
+                null,
+            )
             play()
         }, 500)
+        // Allow a second recovery if the first flip still 6001s.
+        postDelayed({ drm4012Handled = false }, 8_000)
     }
 
     /** Keep forcing play until the video is actually running (no user gesture needed). */

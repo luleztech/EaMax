@@ -34,6 +34,7 @@ import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import com.eamax.domain.model.DrmData
 import com.eamax.domain.model.DrmType
 import com.eamax.domain.model.StreamSession
 import com.eamax.safeUrlForLogs
@@ -191,21 +192,35 @@ class OrizonPlayerFactory(private val context: Context) {
         if (format == Format.GATEWAY) {
             throw IllegalArgumentException("Gateway URL must use WebView")
         }
+        // Keys on the session always win — stale WIDEVINE + ClearKey material → Exo 6001/6004.
+        val playSession = if (
+            !session.drmData.keys.isNullOrEmpty() &&
+            session.drmType != DrmType.CLEARKEY
+        ) {
+            Log.i(TAG, "play: force CLEARKEY over ${session.drmType}")
+            session.copy(
+                drmType = DrmType.CLEARKEY,
+                licenseUrl = "",
+                drmData = DrmData(keys = session.drmData.keys, headers = null),
+            )
+        } else {
+            session
+        }
         Log.i(
             TAG,
-            "play format=$format drm=${session.drmType} " +
-                "keys=${session.drmData.keys?.size ?: 0} url=${safeUrlForLogs(url)}",
+            "play format=$format drm=${playSession.drmType} " +
+                "keys=${playSession.drmData.keys?.size ?: 0} url=${safeUrlForLogs(url)}",
         )
-        val headers = buildHeaders(session)
+        val headers = buildHeaders(playSession)
         val dataSource = OrizonStreamClient.dataSourceFactory(headers)
-        val mediaItem = buildMediaItem(session, format, headers)
+        val mediaItem = buildMediaItem(playSession, format, headers)
         val factory = mediaSourceFactory(format, dataSource)
-        if (session.drmType != DrmType.NONE) {
+        if (playSession.drmType != DrmType.NONE) {
             try {
-                val drm = createDrmSessionManager(session, headers)
+                val drm = createDrmSessionManager(playSession, headers)
                 factory.setDrmSessionManagerProvider { drm }
-                if (session.drmType == DrmType.CLEARKEY) {
-                    Log.i(TAG, "ClearKey LocalMediaDrmCallback ready keys=${session.drmData.keys?.size ?: 0}")
+                if (playSession.drmType == DrmType.CLEARKEY) {
+                    Log.i(TAG, "ClearKey LocalMediaDrmCallback ready keys=${playSession.drmData.keys?.size ?: 0}")
                 }
             } catch (e: Exception) {
                 if (format != Format.HLS) throw e

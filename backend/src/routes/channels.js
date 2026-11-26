@@ -58,8 +58,11 @@ router.get('/', async (req, res, next) => {
     const result = await query(sql, params);
     const rows = (result.rows || []).map((row) => {
       const pts = row.points_required != null ? Number(row.points_required) : 0;
-      const drmType = (row.drm_type || 'NONE').toUpperCase();
-      const isClearKey = drmType === 'CLEARKEY';
+      const storedKey = row.drm_clear_key != null ? String(row.drm_clear_key).trim() : '';
+      // Keys in DB always mean CLEARKEY — never ship stale WIDEVINE (Exo/Shaka 6001).
+      let drmType = (row.drm_type || 'NONE').toUpperCase();
+      if (storedKey) drmType = 'CLEARKEY';
+      const isClearKey = drmType === 'CLEARKEY' && !!storedKey;
       const unlockToFree = !!(row.unlock_to_free === true || row.unlockToFree === true);
       const playbackEngine = row.playback_engine || null;
       const audioLanguage = sanitizeChannelAudioLanguage(row.audio_language);
@@ -69,8 +72,8 @@ router.get('/', async (req, res, next) => {
         streamUrl: row.resolved_stream_url ?? row.stream_url,
         stream_alias: row.stream_alias ?? null,
         streamAlias: row.stream_alias ?? null,
-        license_url: row.license_url ?? null,
-        licenseUrl: row.license_url ?? null,
+        license_url: isClearKey ? null : (row.license_url ?? null),
+        licenseUrl: isClearKey ? null : (row.license_url ?? null),
         points_required: pts,
         pointsRequired: Number.isNaN(pts) ? 0 : pts,
         drm_type: drmType,
@@ -85,8 +88,9 @@ router.get('/', async (req, res, next) => {
       if (!isClearKey) {
         out.drm_clear_key = null;
         out.drmClearKey = null;
-      } else if (row.drm_clear_key != null) {
-        out.drmClearKey = String(row.drm_clear_key).trim();
+      } else {
+        out.drm_clear_key = storedKey;
+        out.drmClearKey = storedKey;
       }
       return out;
     });
@@ -131,9 +135,10 @@ router.get('/:id', async (req, res, next) => {
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Channel not found' });
     const row = result.rows[0];
     const pts = row.points_required != null ? Number(row.points_required) : 0;
-    const drmType = (row.drm_type || 'NONE').toUpperCase();
-    const isClearKey = drmType === 'CLEARKEY';
-    const clearKey = isClearKey && row.drm_clear_key ? String(row.drm_clear_key).trim() : null;
+    const storedKey = row.drm_clear_key != null ? String(row.drm_clear_key).trim() : '';
+    let drmType = (row.drm_type || 'NONE').toUpperCase();
+    if (storedKey) drmType = 'CLEARKEY';
+    const clearKey = storedKey || null;
     const unlockToFree = !!(row.unlock_to_free === true);
     const audioLanguage = sanitizeChannelAudioLanguage(row.audio_language);
     const [presented] = await presentChannelRows([{
@@ -155,8 +160,8 @@ router.get('/:id', async (req, res, next) => {
       drmType,
       drm_clear_key: clearKey,
       drmClearKey: clearKey,
-      license_url: row.license_url ?? null,
-      licenseUrl: row.license_url ?? null,
+      license_url: clearKey ? null : (row.license_url ?? null),
+      licenseUrl: clearKey ? null : (row.license_url ?? null),
       playback_engine: row.playback_engine || null,
       playbackEngine: row.playback_engine || null,
       audio_language: audioLanguage,

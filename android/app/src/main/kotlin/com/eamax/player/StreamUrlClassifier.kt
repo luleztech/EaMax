@@ -44,6 +44,8 @@ object StreamUrlClassifier {
         if (manifestPhp.containsMatchIn(trimmed)) return false
         if (isLikelyIptvLiveUrl(trimmed)) return false
         val u = trimmed.lowercase()
+        // Hosted EaMax Shaka page (player.php?e=…) — always WebView, never Exo.
+        if (u.contains("/api/playback/embed/player")) return true
         if (gatewayScript.containsMatchIn(trimmed)) return true
         return u.contains("/embed/") ||
             u.contains("/gateway/") ||

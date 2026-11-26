@@ -369,12 +369,13 @@ object GatewayPlaybackJs {
                     if (ksc.keySystem) ksc.keySystem = remapKeySystem(ksc.keySystem);
                     if (!ksc.distinctiveIdentifier) ksc.distinctiveIdentifier = 'not-allowed';
                     if (!ksc.persistentState) ksc.persistentState = 'not-allowed';
-                    // Prefer software robustness so L3 emulators accept the probe.
-                    if (ksc.video) {
-                      ksc.video.robustness = ksc.video.robustness || 'SW_SECURE_CRYPTO';
+                    // Empty robustness first — SW_SECURE_CRYPTO alone causes Shaka 6001
+                    // on many Android WebViews; L3 inject adds SW as a second candidate.
+                    if (ksc.video && ksc.video.robustness === undefined) {
+                      ksc.video.robustness = '';
                     }
-                    if (ksc.audio) {
-                      ksc.audio.robustness = ksc.audio.robustness || 'SW_SECURE_CRYPTO';
+                    if (ksc.audio && ksc.audio.robustness === undefined) {
+                      ksc.audio.robustness = '';
                     }
                   }
                 } catch (e1) {}
@@ -402,10 +403,12 @@ object GatewayPlaybackJs {
                 pl.configure({
                   drm: {
                     preferredKeySystems: [WV],
+                    defaultAudioRobustnessForWidevine: '',
+                    defaultVideoRobustnessForWidevine: '',
                     advanced: {
                       'com.widevine.alpha': {
-                        videoRobustness: 'SW_SECURE_CRYPTO',
-                        audioRobustness: 'SW_SECURE_CRYPTO',
+                        videoRobustness: ['', 'SW_SECURE_CRYPTO'],
+                        audioRobustness: ['', 'SW_SECURE_CRYPTO'],
                         persistentStateRequired: false,
                         distinctiveIdentifierRequired: false
                       }
@@ -435,13 +438,19 @@ object GatewayPlaybackJs {
         (function(){
           if (window.__eamaxDrmL3Installed) return true;
           window.__eamaxDrmL3Installed = true;
-          function softDrmConfig() {
+          function softDrmConfig(preferL3) {
+            var rob = preferL3
+              ? ['SW_SECURE_CRYPTO', '']
+              : ['', 'SW_SECURE_CRYPTO'];
             return {
               drm: {
+                preferredKeySystems: ['com.widevine.alpha'],
+                defaultAudioRobustnessForWidevine: rob[0],
+                defaultVideoRobustnessForWidevine: rob[0],
                 advanced: {
                   'com.widevine.alpha': {
-                    videoRobustness: 'SW_SECURE_CRYPTO',
-                    audioRobustness: 'SW_SECURE_CRYPTO',
+                    videoRobustness: rob,
+                    audioRobustness: rob,
                     persistentStateRequired: false,
                     distinctiveIdentifierRequired: false
                   }
@@ -460,7 +469,8 @@ object GatewayPlaybackJs {
                   minBandwidth: 0, maxBandwidth: Infinity
                 }
               });
-              pl.configure(softDrmConfig());
+              // Empty first (6001), then L3 (4012).
+              pl.configure(softDrmConfig(!!window.__eamaxPreferL3Drm));
               return true;
             } catch (e) { return false; }
           }
@@ -472,10 +482,15 @@ object GatewayPlaybackJs {
                 if (config && config.drm && config.drm.advanced &&
                     config.drm.advanced['com.widevine.alpha']) {
                   var adv = config.drm.advanced['com.widevine.alpha'];
-                  adv.videoRobustness = 'SW_SECURE_CRYPTO';
-                  adv.audioRobustness = 'SW_SECURE_CRYPTO';
+                  var rob = window.__eamaxPreferL3Drm
+                    ? ['SW_SECURE_CRYPTO', '']
+                    : ['', 'SW_SECURE_CRYPTO'];
+                  adv.videoRobustness = rob;
+                  adv.audioRobustness = rob;
                   adv.persistentStateRequired = false;
                   adv.distinctiveIdentifierRequired = false;
+                  config.drm.defaultAudioRobustnessForWidevine = rob[0];
+                  config.drm.defaultVideoRobustnessForWidevine = rob[0];
                 }
                 // Never keep a restrictive maxHeight from our earlier mistaken inject.
                 if (config && config.restrictions && config.restrictions.maxHeight === 540) {
@@ -511,6 +526,8 @@ object GatewayPlaybackJs {
             }, 200);
           }
           window.__eamaxHandleDrm4012 = function() {
+            // Flip soft ↔ L3 so 6001/4012 recover without reloading the page.
+            window.__eamaxPreferL3Drm = !window.__eamaxPreferL3Drm;
             applyAll();
             try {
               // Prefer lowest video variant without locking ABR forever at a dead height.
@@ -519,6 +536,11 @@ object GatewayPlaybackJs {
               for (var i = 0; i < list.length; i++) {
                 var pl = list[i];
                 if (!pl || typeof pl.getVariantTracks !== 'function') continue;
+                try {
+                  if (typeof pl.configure === 'function') {
+                    pl.configure(softDrmConfig(!!window.__eamaxPreferL3Drm));
+                  }
+                } catch (eCfg) {}
                 var tracks = (pl.getVariantTracks() || []).filter(function(t) {
                   return t && (!t.type || t.type === 'variant') && t.height > 0;
                 }).sort(function(a, b) { return (a.height || 0) - (b.height || 0); });

@@ -1282,11 +1282,14 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
   var video=document.getElementById('v');
   var spin=document.getElementById('spin');
   var err=document.getElementById('err');
-  var retriedDrm=false;
+  var drmStep=0;
+  var activePlayer=null;
+  // soft → l3 → empty-only → clearkey (when keys exist). Covers intermittent 6001.
+  var drmModes=['soft','l3','empty','clearkey'];
   function hideSpin(){ spin.style.display='none'; }
-  function fail(msg){
+  function fail(){
     hideSpin();
-    err.textContent=msg||'';
+    err.textContent='';
     err.className='show';
     try{ parent.postMessage(JSON.stringify({type:'eamax-player-error',fatal:true}),'*'); }catch(e){}
   }
@@ -1308,9 +1311,9 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
           j.keys.forEach(function(k){
             if(k&&k.kid&&k.k) map[String(k.kid)]=String(k.k);
           });
-          return map;
+          return Object.keys(map).length?map:null;
         }
-        return j;
+        return Object.keys(j).length?j:null;
       }
     }catch(e){}
     var map={};
@@ -1320,6 +1323,9 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
     });
     return Object.keys(map).length?map:null;
   }
+  var ckMap=parseClearKeys(clearKey);
+  // ClearKey first whenever keys exist — WebView Widevine is the intermittent 6001 path.
+  var startWithClearKey=!!ckMap;
   function waitShaka(cb){
     var n=0;
     (function t(){
@@ -1328,15 +1334,25 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
       setTimeout(t,80);
     })();
   }
+  function robustnessFor(mode){
+    if(mode==='l3') return ['SW_SECURE_CRYPTO',''];
+    if(mode==='empty') return [''];
+    return ['','SW_SECURE_CRYPTO'];
+  }
   function drmConfig(mode){
-    // Android WebView: empty robustness first avoids Shaka 6001; L3 for HDCP-restricted keys.
-    var rob = mode==='l3'
-      ? ['SW_SECURE_CRYPTO','']
-      : ['','SW_SECURE_CRYPTO'];
+    if(mode==='clearkey'){
+      if(!ckMap) return null;
+      return {
+        preferredKeySystems:['org.w3.clearkey'],
+        clearKeys:ckMap,
+        retryParameters:{maxAttempts:4,baseDelay:400,backoffFactor:2,fuzzFactor:0.5,timeout:12000}
+      };
+    }
+    var rob=robustnessFor(mode);
     var cfg={
       preferredKeySystems:['com.widevine.alpha'],
-      defaultAudioRobustnessForWidevine: rob[0],
-      defaultVideoRobustnessForWidevine: rob[0],
+      defaultAudioRobustnessForWidevine:rob[0]||'',
+      defaultVideoRobustnessForWidevine:rob[0]||'',
       advanced:{'com.widevine.alpha':{
         videoRobustness:rob,
         audioRobustness:rob,
@@ -1345,16 +1361,44 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
       }},
       retryParameters:{maxAttempts:4,baseDelay:400,backoffFactor:2,fuzzFactor:0.5,timeout:12000}
     };
-    if(drmType.indexOf('WIDEVINE')>=0 && license){
-      cfg.servers={'com.widevine.alpha':license};
-    } else if(drmType.indexOf('CLEARKEY')>=0 || clearKey){
-      var ckMap=parseClearKeys(clearKey);
-      if(ckMap) cfg.clearKeys=ckMap;
-    }
+    if(license) cfg.servers={'com.widevine.alpha':license};
     return cfg;
   }
+  function nextDrmMode(from){
+    // After ClearKey failure, try Widevine soft if a license exists.
+    if(from==='clearkey') return license?'soft':null;
+    var i=drmModes.indexOf(from);
+    for(var n=i+1;n<drmModes.length;n++){
+      if(drmModes[n]==='clearkey' && !ckMap) continue;
+      if(drmModes[n]!=='clearkey' && !license && ckMap) continue;
+      return drmModes[n];
+    }
+    return null;
+  }
+  function destroyPlayer(){
+    try{ if(activePlayer) activePlayer.destroy(); }catch(e){}
+    activePlayer=null;
+  }
+  function onDrmFail(code, mode){
+    var next=nextDrmMode(mode);
+    if(next && (code===6001 || code===4012 || code===6007 || !code)){
+      drmStep++;
+      destroyPlayer();
+      start(next);
+      return true;
+    }
+    return false;
+  }
   function start(mode){
+    var cfg=drmConfig(mode);
+    if(!cfg){
+      var next=nextDrmMode(mode);
+      if(next){ start(next); return; }
+      fail();
+      return;
+    }
     var player=new shaka.Player(video);
+    activePlayer=player;
     player.configure({
       streaming:{
         bufferingGoal:8,
@@ -1363,18 +1407,12 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
         retryParameters:{maxAttempts:5,baseDelay:400,timeout:15000}
       },
       abr:{enabled:true,restrictions:{maxHeight:720,maxWidth:1280}},
-      drm:drmConfig(mode)
+      drm:cfg
     });
     player.addEventListener('error', function(ev){
       var code=ev&&ev.detail&&ev.detail.code;
-      // 6001 = key-system config unavailable → flip robustness and retry once.
-      if(!retriedDrm && (code===6001 || code===4012)){
-        retriedDrm=true;
-        try{ player.destroy(); }catch(e){}
-        start(mode==='l3'?'soft':'l3');
-        return;
-      }
-      fail(code?('Error '+code):'');
+      if(onDrmFail(code, mode)) return;
+      fail();
     });
     video.addEventListener('playing', ready);
     player.load(manifest).then(function(){
@@ -1390,13 +1428,8 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
       ready();
     }).catch(function(e){
       var code=e&&e.code;
-      if(!retriedDrm && (code===6001 || code===4012)){
-        retriedDrm=true;
-        try{ player.destroy(); }catch(err){}
-        start(mode==='l3'?'soft':'l3');
-        return;
-      }
-      fail(code?('Error '+code):'');
+      if(onDrmFail(code, mode)) return;
+      fail();
     });
   }
   if(!manifest){ fail(); return; }
@@ -1404,7 +1437,7 @@ video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
     if(!ok){ fail(); return; }
     try{ shaka.polyfill.installAll(); }catch(e){}
     if(!shaka.Player.isBrowserSupported()){ fail(); return; }
-    start('soft');
+    start(startWithClearKey?'clearkey':'soft');
   });
 })();
 </script></body></html>`;

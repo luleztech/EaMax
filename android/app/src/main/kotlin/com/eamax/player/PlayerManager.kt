@@ -45,6 +45,8 @@ class PlayerManager(
     private var sessionQueueIndex = 0
     private var handlingError = false
     private var webViewFailoverUsed = false
+    private var clearKeyDemoteUsed = false
+    private var drmSoftRetries = 0
     private var sameFormatRetries = 0
     private var playlistResetReloads = 0
     private var networkRetries = 0
@@ -59,6 +61,10 @@ class PlayerManager(
         private const val MAX_SAME_FORMAT_RETRIES = 4
         private const val MAX_PLAYLIST_RESET_RELOADS = 8
         private const val MAX_NETWORK_RETRIES = 8
+        private const val MAX_DRM_SOFT_RETRIES = 2
+        // Media3: ERROR_CODE_DRM_UNSPECIFIED=6000 … SYSTEM_ERROR≈6006; 6001=SCHEME_UNSUPPORTED
+        private const val DRM_ERROR_MIN = 6000
+        private const val DRM_ERROR_MAX = 6008
     }
 
     fun setInitialQuality(quality: StreamQuality) {
@@ -78,14 +84,18 @@ class PlayerManager(
         sessionQueue = listOf(streamSession) + fallbacks.filter { it.mpdUrl.isNotEmpty() }
         sessionQueueIndex = 0
         webViewFailoverUsed = false
+        clearKeyDemoteUsed = false
+        drmSoftRetries = 0
         startSession(sessionQueue.first())
     }
 
     private fun startSession(session: StreamSession) {
-        currentSession = session
+        currentSession = preferClearKeySession(session)
         handlingError = false
         formatQueue.clear()
         webViewFailoverUsed = false
+        clearKeyDemoteUsed = false
+        drmSoftRetries = 0
 
         val isGateway =
             factory.classify(session.mpdUrl) == OrizonPlayerFactory.Format.GATEWAY ||
@@ -135,7 +145,9 @@ class PlayerManager(
                         } else {
                             format
                         }
-                    Log.i(TAG, "gateway resolved drm=${exoSession.drmType} → Exo format=$playFormat")
+                    val exoReady = preferClearKeySession(exoSession)
+                    currentSession = exoReady
+                    Log.i(TAG, "gateway resolved drm=${exoReady.drmType} → Exo format=$playFormat")
                     enqueueFormats(playFormat)
                     startExo(playFormat)
                 } else {
@@ -144,6 +156,33 @@ class PlayerManager(
                 }
             }
         }.start()
+    }
+
+    /** Prefer ClearKey whenever keys are present — avoids Exo 6001/6004 on broken Widevine. */
+    private fun preferClearKeySession(session: StreamSession): StreamSession {
+        val keys = session.drmData.keys
+        if (keys.isNullOrEmpty()) return session
+        if (session.drmType == com.eamax.domain.model.DrmType.CLEARKEY) return session
+        Log.i(TAG, "DRM demote → CLEARKEY (keys=${keys.size}, was=${session.drmType})")
+        return session.copy(
+            drmType = com.eamax.domain.model.DrmType.CLEARKEY,
+            licenseUrl = "",
+            drmData = com.eamax.domain.model.DrmData(keys = keys, headers = null),
+        )
+    }
+
+    private fun isDrmFailure(error: PlaybackException): Boolean {
+        if (error.errorCode in DRM_ERROR_MIN..DRM_ERROR_MAX) return true
+        val msg = buildString {
+            append(error.message.orEmpty())
+            append(' ')
+            append(error.cause?.message.orEmpty())
+        }.lowercase()
+        return msg.contains("drm") ||
+            msg.contains("mediadrm") ||
+            msg.contains("clearkey") ||
+            msg.contains("widevine") ||
+            msg.contains("crypto")
     }
 
     private fun enqueueFormats(first: OrizonPlayerFactory.Format) {
@@ -195,6 +234,7 @@ class PlayerManager(
                 sameFormatRetries = 0
                 playlistResetReloads = 0
                 networkRetries = 0
+                drmSoftRetries = 0
                 onStateChanged(PlaybackState.READY)
             } else if (playbackState == Player.STATE_ENDED) {
                 onStateChanged(PlaybackState.ENDED)
@@ -239,10 +279,49 @@ class PlayerManager(
         }
         handlingError = true
         Log.e(TAG, "Exo error ${error.errorCode}: ${error.message}")
+
+        // Exo 6001 = DRM_SCHEME_UNSUPPORTED — recover with ClearKey / soft reload before UI error.
+        if (isDrmFailure(error) && tryRecoverDrm(error)) return
+
         val httpAccess = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
             (error.cause?.message?.contains("403", ignoreCase = true) == true) ||
             (error.cause?.message?.contains("401", ignoreCase = true) == true)
         retryOrFail(httpAccess)
+    }
+
+    private fun tryRecoverDrm(error: PlaybackException): Boolean {
+        val session = currentSession ?: return false
+        val keys = session.drmData.keys
+        val format = factory.lockedFormat(session.mpdUrl)
+            ?: factory.classify(session.mpdUrl)
+
+        // Widevine/PlayReady → ClearKey when keys are already on the session.
+        if (!clearKeyDemoteUsed &&
+            !keys.isNullOrEmpty() &&
+            session.drmType != com.eamax.domain.model.DrmType.CLEARKEY &&
+            session.drmType != com.eamax.domain.model.DrmType.NONE
+        ) {
+            clearKeyDemoteUsed = true
+            currentSession = preferClearKeySession(session)
+            Log.w(TAG, "DRM ${error.errorCode} → ClearKey remount")
+            mainHandler.post { startExo(format) }
+            return true
+        }
+
+        // Soft ClearKey / L3 remount (MediaDrm sometimes flakes on first open).
+        if (drmSoftRetries < MAX_DRM_SOFT_RETRIES &&
+            session.drmType != com.eamax.domain.model.DrmType.NONE
+        ) {
+            drmSoftRetries += 1
+            Log.w(TAG, "DRM ${error.errorCode} soft retry $drmSoftRetries")
+            mainHandler.post {
+                exoPlayer?.release()
+                exoPlayer = null
+                startExo(format)
+            }
+            return true
+        }
+        return false
     }
 
     private fun isNetworkFailure(error: PlaybackException): Boolean {
@@ -282,23 +361,27 @@ class PlayerManager(
         if (tryNextFallbackSession()) return
 
         // Some devices fail Widevine on the resolved MPD — fall back to the original embed page.
+        // Never hand WebView a bare .mpd/.m3u8 (it would load about:blank).
         if (!webViewFailoverUsed && session != null && PlayerRuntimeConfig.failoverToWebview) {
-            webViewFailoverUsed = true
-            val webSession = if (gatewayFallbackUrl.isNotBlank() && session.mpdUrl != gatewayFallbackUrl) {
-                session.copy(
-                    mpdUrl = gatewayFallbackUrl,
+            val embed = gatewayFallbackUrl.trim()
+            val canEmbed = embed.isNotBlank() &&
+                session.mpdUrl != embed &&
+                StreamUrlClassifier.needsWebPlayer(embed)
+            if (canEmbed) {
+                webViewFailoverUsed = true
+                val webSession = session.copy(
+                    mpdUrl = embed,
                     licenseUrl = "",
                     token = "",
                     drmType = com.eamax.domain.model.DrmType.NONE,
                     drmData = com.eamax.domain.model.DrmData(headers = null),
                     playerMode = PlayerMode.WEB,
                 )
-            } else {
-                session
+                Log.w(TAG, "failover → WebView url=${safeUrlForLogs(webSession.mpdUrl)}")
+                mainHandler.post { startWebViewEngine(webSession) }
+                return
             }
-            Log.w(TAG, "failover → WebView url=${safeUrlForLogs(webSession.mpdUrl)}")
-            mainHandler.post { startWebViewEngine(webSession) }
-            return
+            Log.w(TAG, "skip WebView failover — no gateway embed for ${safeUrlForLogs(session.mpdUrl)}")
         }
 
         onError("Playback failed")

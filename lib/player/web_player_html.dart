@@ -50,9 +50,12 @@ video::-webkit-media-controls-timeline{display:none!important}
     required Map<String, String> licenseHeaders,
   }) {
     final clearKeys = WebDrmUtils.parseClearKeys(clearKeyRaw);
+    final hasClearKeys = clearKeys != null && clearKeys.isNotEmpty;
     final servers = <String, String>{};
-    if (licenseUrl.isNotEmpty) {
-      final dt = drmType.toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
+    final dt = drmType.toUpperCase().replaceAll(RegExp(r'[\s\-]+'), '_');
+    // ClearKey keys alone are enough — do not also attach Widevine servers
+    // (Shaka then probes WV first → intermittent Android WebView 6001).
+    if (!hasClearKeys && licenseUrl.isNotEmpty) {
       if (dt == 'PLAYREADY') {
         servers['com.microsoft.playready'] = licenseUrl;
       } else if (dt.startsWith('WIDEVINE')) {
@@ -62,14 +65,19 @@ video::-webkit-media-controls-timeline{display:none!important}
       } else if (licenseUrl.toLowerCase().contains('playready')) {
         servers['com.microsoft.playready'] = licenseUrl;
       } else {
-        // Prefer Widevine (Android WebView has no PlayReady).
         servers['com.widevine.alpha'] = licenseUrl;
       }
+    } else if (hasClearKeys &&
+        licenseUrl.isNotEmpty &&
+        (dt == 'CLEARKEY' || dt == 'CLEAR_KEY')) {
+      servers['org.w3.clearkey'] = licenseUrl;
     }
     return {
       'clearKeys': clearKeys ?? {},
       'servers': servers,
       'licenseHeaders': licenseHeaders,
+      'preferClearKey': hasClearKeys,
+      'widevineLicense': (!hasClearKeys && licenseUrl.isNotEmpty) ? licenseUrl : '',
     };
   }
 
@@ -130,13 +138,60 @@ video::-webkit-media-controls-timeline{display:none!important}
   }
   function ready(){ spin.style.display='none'; err.className=''; v.play().catch(function(){}); }
   function waitShaka(cb){ var n=0;(function t(){ if(typeof shaka!=='undefined'){ cb(true); return; } if(++n>50){ cb(false); return; } setTimeout(t,120); })(); }
-  waitShaka(function(ok){
-    if(!ok){ fail(true); return; }
-    shaka.polyfill.installAll();
+  var drmModes=['clearkey','soft','l3','empty'];
+  var drmIdx=0;
+  var active=null;
+  function rob(mode){
+    if(mode==='l3') return ['SW_SECURE_CRYPTO',''];
+    if(mode==='empty') return [''];
+    return ['','SW_SECURE_CRYPTO'];
+  }
+  function buildDrm(mode){
+    var hasCk=drm.clearKeys&&Object.keys(drm.clearKeys).length;
+    if(mode==='clearkey'){
+      if(!hasCk) return null;
+      return {
+        preferredKeySystems:['org.w3.clearkey'],
+        clearKeys:drm.clearKeys,
+        retryParameters:{maxAttempts:3,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
+      };
+    }
+    var r=rob(mode);
+    var cfg={
+      preferredKeySystems:['com.widevine.alpha'],
+      defaultAudioRobustnessForWidevine:r[0]||'',
+      defaultVideoRobustnessForWidevine:r[0]||'',
+      advanced:{'com.widevine.alpha':{
+        videoRobustness:r,audioRobustness:r,
+        distinctiveIdentifierRequired:false,persistentStateRequired:false
+      }},
+      retryParameters:{maxAttempts:3,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
+    };
+    if(drm.servers&&Object.keys(drm.servers).length) cfg.servers=drm.servers;
+    return cfg;
+  }
+  function nextMode(){
+    while(++drmIdx<drmModes.length){
+      var m=drmModes[drmIdx];
+      if(m==='clearkey'&&!(drm.clearKeys&&Object.keys(drm.clearKeys).length)) continue;
+      if(m!=='clearkey'&&!(drm.servers&&Object.keys(drm.servers).length)) continue;
+      return m;
+    }
+    return null;
+  }
+  function destroy(){ try{ if(active) active.destroy(); }catch(e){} active=null; }
+  function start(mode){
+    var drmCfg=buildDrm(mode);
+    if(!drmCfg){
+      var n=nextMode();
+      if(n){ start(n); return; }
+      // No DRM needed (clear stream).
+      drmCfg={};
+    }
     var player=new shaka.Player(v);
+    active=player;
     player.getNetworkingEngine().registerRequestFilter(function(type,req){
       req.allowCrossSiteCredentials=true;
-      // Never put nv-authorizations on manifest/segments — CDNs 403; license-only below.
       Object.keys(headers||{}).forEach(function(k){
         if(headers[k]==null) return;
         if(String(k).toLowerCase()==='nv-authorizations') return;
@@ -151,27 +206,21 @@ video::-webkit-media-controls-timeline{display:none!important}
         });
       }
     });
-    // Empty robustness first avoids Android WebView Shaka 6001; SW_SECURE_CRYPTO for L3.
-    var drmCfg={
-      preferredKeySystems:['com.widevine.alpha'],
-      defaultAudioRobustnessForWidevine:'',
-      defaultVideoRobustnessForWidevine:'',
-      advanced:{'com.widevine.alpha':{
-        videoRobustness:['','SW_SECURE_CRYPTO'],
-        audioRobustness:['','SW_SECURE_CRYPTO'],
-        distinctiveIdentifierRequired:false,
-        persistentStateRequired:false
-      }},
-      retryParameters:{maxAttempts:3,baseDelay:600,backoffFactor:2,fuzzFactor:0.5,timeout:15000}
-    };
-    if(drm.clearKeys&&Object.keys(drm.clearKeys).length) drmCfg.clearKeys=drm.clearKeys;
-    if(drm.servers&&Object.keys(drm.servers).length) drmCfg.servers=drm.servers;
     player.configure({
       streaming:{bufferingGoal:8,rebufferingGoal:1.5,retryParameters:{maxAttempts:5,baseDelay:600,timeout:20000}},
       drm:drmCfg,
       abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
     });
-    player.addEventListener('error',function(){ fail(true); });
+    function retryOrFail(code){
+      if(code===6001||code===4012||code===6007){
+        var n=nextMode();
+        if(n){ destroy(); start(n); return; }
+      }
+      fail(true);
+    }
+    player.addEventListener('error',function(ev){
+      retryOrFail(ev&&ev.detail&&ev.detail.code);
+    });
     v.addEventListener('playing', ready);
     player.load(url).then(function(){
       try{
@@ -186,7 +235,39 @@ video::-webkit-media-controls-timeline{display:none!important}
         }
       }catch(e){}
       ready();
-    }).catch(function(){ fail(true); });
+    }).catch(function(e){ retryOrFail(e&&e.code); });
+  }
+  waitShaka(function(ok){
+    if(!ok){ fail(true); return; }
+    shaka.polyfill.installAll();
+    var hasCk=drm.clearKeys&&Object.keys(drm.clearKeys).length;
+    var hasSrv=drm.servers&&Object.keys(drm.servers).length;
+    if(!hasCk&&!hasSrv){
+      // Clear / progressive — do not probe Widevine (that alone can 6001).
+      drmIdx=drmModes.length;
+      var player=new shaka.Player(v);
+      active=player;
+      player.getNetworkingEngine().registerRequestFilter(function(type,req){
+        req.allowCrossSiteCredentials=true;
+        Object.keys(headers||{}).forEach(function(k){
+          if(headers[k]==null) return;
+          if(String(k).toLowerCase()==='nv-authorizations') return;
+          req.headers[k]=String(headers[k]);
+        });
+      });
+      player.configure({
+        streaming:{bufferingGoal:8,rebufferingGoal:1.5,retryParameters:{maxAttempts:5,baseDelay:600,timeout:20000}},
+        abr:{enabled:true,restrictions:{maxHeight:maxH,maxWidth:maxW}}
+      });
+      player.addEventListener('error',function(){ fail(true); });
+      v.addEventListener('playing', ready);
+      player.load(url).then(ready).catch(function(){ fail(true); });
+      return;
+    }
+    var first=hasCk?'clearkey':'soft';
+    drmIdx=drmModes.indexOf(first);
+    if(drmIdx<0) drmIdx=0;
+    start(first);
   });
 })();
 </script></body></html>''';
