@@ -480,11 +480,12 @@ const ensureChannelSortOrderColumn = async () => {
 };
 
 const buildChannelSections = (rows) => {
-  const sorted = [...rows].sort(
-    (a, b) =>
-      (Number(a.sort_order) || Number(a.id)) - (Number(b.sort_order) || Number(b.id)) ||
-      Number(a.id) - Number(b.id),
-  );
+  // sort_order 0 is a valid (first) position – only fall back to id when it is missing.
+  const orderOf = (r) => {
+    const v = r.sort_order;
+    return v === null || v === undefined || Number.isNaN(Number(v)) ? Number(r.id) : Number(v);
+  };
+  const sorted = [...rows].sort((a, b) => orderOf(a) - orderOf(b) || Number(a.id) - Number(b.id));
   const free = [];
   const cats = {};
   CHANNEL_SECTION_KEYS.forEach((k) => {
@@ -1738,7 +1739,11 @@ router.post('/notifications', async (req, res, next) => {
         type: 'notification',
       };
 
-      const usersWithToken = await countUsersWithFcmToken().catch(() => 0);
+      // Never let a slow COUNT delay the admin response (broadcast runs in background anyway).
+      const usersWithToken = await Promise.race([
+        countUsersWithFcmToken().catch(() => 0),
+        new Promise((resolve) => setTimeout(() => resolve(0), 800)),
+      ]);
 
       await query(
         `UPDATE notifications

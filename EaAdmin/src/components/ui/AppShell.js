@@ -1,26 +1,16 @@
-import React, { useMemo, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  useWindowDimensions,
-  Modal,
-  Pressable,
-  ScrollView,
-} from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import colors from '../../theme/colors';
 
-const DESKTOP_BREAKPOINT = 1024;
-
+/**
+ * Flat app shell: top bar, content, bottom tabs.
+ * `tabs` are pinned in the bottom bar; `moreItems` live in the "More" sheet.
+ */
 const AppShell = ({
-  navItems,
-  navGroups,
-  primaryNavItems,
-  menuNavItems,
+  tabs,
+  moreItems,
   activeTab,
   onSelectTab,
   title,
@@ -28,444 +18,163 @@ const AppShell = ({
   onOpenNotifications,
   children,
 }) => {
-  const { width } = useWindowDimensions();
-  const isDesktop = width >= DESKTOP_BREAKPOINT;
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreActive = (moreItems || []).some((i) => i.id === activeTab);
 
-  const desktopGroups = useMemo(() => {
-    if (navGroups?.length) return navGroups;
-    return [{ label: null, items: navItems || [...(primaryNavItems || []), ...(menuNavItems || [])] }];
-  }, [navGroups, navItems, primaryNavItems, menuNavItems]);
-
-  const mobilePrimary = primaryNavItems || [];
-  const mobileMenu = menuNavItems || [];
-
-  const selectTab = (tabId) => {
-    onSelectTab(tabId);
-    setMenuOpen(false);
+  const select = (id) => {
+    setMoreOpen(false);
+    onSelectTab(id);
   };
 
-  const renderNavButton = (item) => {
-    const focused = item.id === activeTab;
-    return (
-      <TouchableOpacity
-        key={item.id}
-        style={[styles.sidebarItem, focused && styles.sidebarItemActive]}
-        onPress={() => selectTab(item.id)}
-        activeOpacity={0.85}>
-        <View style={[styles.navIconWrap, focused && styles.navIconWrapActive]}>
-          <Icon name={item.icon} size={18} color={focused ? colors.primary : colors.textSecondary} />
-        </View>
-        <Text style={[styles.sidebarText, focused && styles.sidebarTextActive]} numberOfLines={1}>
-          {item.label}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
-
-  const renderSidebar = () => (
-    <View style={styles.sidebar}>
-      <View style={styles.brandBlock}>
-        <LinearGradient
-          colors={['#14b8a6', '#6366f1']}
-          style={styles.brandIcon}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}>
-          <Icon name="shield-crown-outline" size={20} color="#fff" />
-        </LinearGradient>
+  return (
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <View style={styles.topBar}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.brandTitle}>EaAdmin</Text>
-          <Text style={styles.brandSub}>Control studio</Text>
-        </View>
-      </View>
-
-      <ScrollView style={styles.navList} showsVerticalScrollIndicator={false}>
-        {desktopGroups.map((group) => (
-          <View key={group.label || 'main'} style={styles.navGroup}>
-            {group.label ? <Text style={styles.navGroupLabel}>{group.label}</Text> : null}
-            {group.items.map((item) => renderNavButton(item))}
-          </View>
-        ))}
-      </ScrollView>
-    </View>
-  );
-
-  const renderMenuDrawer = () => (
-    <Modal
-      visible={menuOpen}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setMenuOpen(false)}>
-      <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
-        <Pressable style={styles.menuPanel} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.menuHeader}>
-            <View>
-              <Text style={styles.menuKicker}>EaAdmin</Text>
-              <Text style={styles.menuTitle}>More tools</Text>
-            </View>
-            <TouchableOpacity onPress={() => setMenuOpen(false)} hitSlop={12}>
-              <Icon name="close" size={22} color={colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-          <ScrollView showsVerticalScrollIndicator={false}>
-            {desktopGroups.map((group) => (
-              <View key={`m-${group.label || 'main'}`} style={styles.drawerGroup}>
-                {group.label ? <Text style={styles.navGroupLabel}>{group.label}</Text> : null}
-                {group.items.map((item) => {
-                  const focused = item.id === activeTab;
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={[styles.menuItem, focused && styles.menuItemActive]}
-                      onPress={() => selectTab(item.id)}>
-                      <View style={[styles.navIconWrap, focused && styles.navIconWrapActive]}>
-                        <Icon
-                          name={item.icon}
-                          size={18}
-                          color={focused ? colors.primary : colors.textSecondary}
-                        />
-                      </View>
-                      <Text style={[styles.menuItemText, focused && styles.menuItemTextActive]}>
-                        {item.label}
-                      </Text>
-                      {focused ? <Icon name="chevron-right" size={18} color={colors.primary} /> : null}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-
-  const renderTopBar = () => (
-    <View style={styles.topBar}>
-      <View style={styles.topBarLeft}>
-        {!isDesktop ? (
-          <TouchableOpacity
-            style={styles.menuButton}
-            onPress={() => setMenuOpen(true)}
-            hitSlop={8}>
-            <Icon name="menu" size={22} color={colors.textPrimary} />
-          </TouchableOpacity>
-        ) : null}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.pageTitle} numberOfLines={1}>
+          <Text style={styles.title} numberOfLines={1}>
             {title}
           </Text>
           {subtitle ? (
-            <Text style={styles.pageSubtitle} numberOfLines={1}>
+            <Text style={styles.subtitle} numberOfLines={1}>
               {subtitle}
             </Text>
           ) : null}
         </View>
+        <TouchableOpacity style={styles.sendBtn} onPress={onOpenNotifications} activeOpacity={0.8}>
+          <Icon name="bell-ring-outline" size={18} color={colors.onAccent} />
+          <Text style={styles.sendBtnText}>Notify all</Text>
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity style={styles.topAction} onPress={onOpenNotifications}>
-        <Icon name="bell-outline" size={20} color={colors.primary} />
-      </TouchableOpacity>
-    </View>
-  );
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <LinearGradient
-        colors={['#05070d', '#07111c', '#05070d']}
-        style={StyleSheet.absoluteFill}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      />
+      <View style={styles.body}>{children}</View>
 
-      {isDesktop ? (
-        <View style={styles.desktopLayout}>
-          {renderSidebar()}
-          <View style={styles.mainArea}>
-            {renderTopBar()}
-            <View style={styles.pageBody}>{children}</View>
-          </View>
-        </View>
-      ) : (
-        <View style={styles.mobileLayout}>
-          {renderTopBar()}
-          <View style={styles.pageBody}>{children}</View>
-          <View style={styles.mobileNav}>
-            {mobilePrimary.map((item) => {
-              const focused = item.id === activeTab;
-              return (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.mobileNavItem}
-                  onPress={() => selectTab(item.id)}>
-                  <View style={[styles.mobileIcon, focused && styles.mobileIconActive]}>
+      <View style={styles.nav}>
+        {tabs.map((t) => {
+          const focused = t.id === activeTab;
+          return (
+            <TouchableOpacity
+              key={t.id}
+              style={styles.navItem}
+              activeOpacity={0.7}
+              onPress={() => select(t.id)}>
+              <Icon name={t.icon} size={22} color={focused ? colors.accent : colors.textMuted} />
+              <Text style={[styles.navText, focused && styles.navTextActive]}>{t.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+        <TouchableOpacity
+          style={styles.navItem}
+          activeOpacity={0.7}
+          onPress={() => setMoreOpen(true)}>
+          <Icon
+            name="dots-grid"
+            size={22}
+            color={moreActive ? colors.accent : colors.textMuted}
+          />
+          <Text style={[styles.navText, moreActive && styles.navTextActive]}>More</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={moreOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setMoreOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setMoreOpen(false)}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.grab} />
+            <View style={styles.grid}>
+              {(moreItems || []).map((item) => {
+                const focused = item.id === activeTab;
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[styles.tile, focused && styles.tileActive]}
+                    activeOpacity={0.8}
+                    onPress={() => select(item.id)}>
                     <Icon
                       name={item.icon}
-                      size={20}
-                      color={focused ? colors.primary : colors.textMuted}
+                      size={24}
+                      color={focused ? colors.accent : colors.textSecondary}
                     />
-                  </View>
-                  <Text
-                    style={[
-                      styles.mobileNavText,
-                      focused && styles.mobileNavTextActive,
-                    ]}>
-                    {item.shortLabel || item.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          {renderMenuDrawer()}
-        </View>
-      )}
+                    <Text style={[styles.tileText, focused && { color: colors.accent }]}>
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  desktopLayout: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  sidebar: {
-    width: 248,
-    paddingHorizontal: 12,
-    paddingTop: 18,
-    paddingBottom: 12,
-    backgroundColor: colors.panel,
-    borderRightWidth: 1,
-    borderRightColor: colors.border,
-  },
-  brandBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 18,
-    paddingHorizontal: 6,
-  },
-  brandIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  brandTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    letterSpacing: -0.3,
-  },
-  brandSub: {
-    fontSize: 11,
-    color: colors.textMuted,
-    marginTop: 1,
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  navList: {
-    flex: 1,
-  },
-  navGroup: {
-    marginBottom: 14,
-  },
-  navGroupLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: colors.textMuted,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    paddingHorizontal: 10,
-    marginBottom: 6,
-    marginTop: 4,
-  },
-  sidebarItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderRadius: 12,
-    marginBottom: 4,
-  },
-  sidebarItemActive: {
-    backgroundColor: colors.primaryDim,
-  },
-  navIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.03)',
-  },
-  navIconWrapActive: {
-    backgroundColor: 'rgba(20, 184, 166, 0.18)',
-  },
-  sidebarText: {
-    marginLeft: 10,
-    fontSize: 13.5,
-    color: colors.textSecondary,
-    fontWeight: '600',
-    flex: 1,
-  },
-  sidebarTextActive: {
-    color: colors.textPrimary,
-  },
-  mainArea: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: colors.background },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    backgroundColor: colors.panelSoft,
+    gap: 12,
   },
-  topBarLeft: {
-    flex: 1,
+  title: { color: colors.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
+  subtitle: { color: colors.textMuted, fontSize: 12, marginTop: 1 },
+  sendBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 8,
+    gap: 6,
+    height: 38,
+    paddingHorizontal: 14,
+    borderRadius: 19,
+    backgroundColor: colors.accent,
   },
-  menuButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
-    backgroundColor: colors.panelMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  pageTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    letterSpacing: -0.3,
-  },
-  pageSubtitle: {
-    fontSize: 12,
-    color: colors.textMuted,
-    marginTop: 2,
-  },
-  topAction: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.panelMuted,
-  },
-  pageBody: {
-    flex: 1,
-  },
-  mobileLayout: {
-    flex: 1,
-  },
-  mobileNav: {
+  sendBtnText: { color: colors.onAccent, fontSize: 13, fontWeight: '800' },
+  body: { flex: 1 },
+  nav: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    backgroundColor: '#070b14',
+    backgroundColor: colors.panel,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    paddingTop: 6,
-    paddingBottom: 8,
-    paddingHorizontal: 6,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
-  mobileNavItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  mobileIcon: {
-    width: 44,
-    height: 30,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mobileIconActive: {
-    backgroundColor: colors.primaryDim,
-  },
-  mobileNavText: {
-    marginTop: 2,
-    fontSize: 10,
-    color: colors.textMuted,
-    fontWeight: '600',
-  },
-  mobileNavTextActive: {
-    color: colors.primary,
-  },
-  menuBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.62)',
-    flexDirection: 'row',
-  },
-  menuPanel: {
-    width: '82%',
-    maxWidth: 320,
-    backgroundColor: colors.panel,
-    borderRightWidth: 1,
-    borderRightColor: colors.border,
-    paddingTop: 10,
+  navItem: { flex: 1, alignItems: 'center', gap: 3, paddingVertical: 2 },
+  navText: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
+  navTextActive: { color: colors.accent },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: colors.backgroundElevated,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderColor: colors.border,
     paddingBottom: 28,
   },
-  menuHeader: {
-    flexDirection: 'row',
+  grab: {
+    alignSelf: 'center',
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.borderStrong,
+    marginTop: 8,
+    marginBottom: 14,
+  },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 12, gap: 10 },
+  tile: {
+    width: '31%',
+    flexGrow: 1,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    marginBottom: 8,
+    gap: 8,
+    paddingVertical: 18,
+    borderRadius: 16,
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  menuKicker: {
-    fontSize: 11,
-    color: colors.primary,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  menuTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginTop: 2,
-  },
-  drawerGroup: {
-    paddingHorizontal: 8,
-    marginBottom: 8,
-  },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    gap: 10,
-  },
-  menuItemActive: {
-    backgroundColor: colors.primaryDim,
-  },
-  menuItemText: {
-    flex: 1,
-    fontSize: 15,
-    color: colors.textSecondary,
-    fontWeight: '600',
-  },
-  menuItemTextActive: {
-    color: colors.textPrimary,
-  },
+  tileActive: { borderColor: colors.accent, backgroundColor: colors.accentDim },
+  tileText: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
 });
 
 export default AppShell;

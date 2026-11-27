@@ -1,2046 +1,540 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Modal,
-  ActivityIndicator,
-  RefreshControl,
-  FlatList,
-  Platform,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import LinearGradient from 'react-native-linear-gradient';
-import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert, ActivityIndicator } from 'react-native';
 import { adminUsersAPI, dashboardAPI } from '../../config/api';
+import colors from '../../theme/colors';
+import {
+  Sheet,
+  Button,
+  Chip,
+  ChipRow,
+  SearchBar,
+  Field,
+  Input,
+  Badge,
+  Avatar,
+  Empty,
+  Loading,
+  Row as KitRow,
+  compact,
+  timeAgo,
+  toast,
+} from '../ui/kit';
 
-/** Smaller pages = faster first response; list fills in progressively. */
-const USERS_PAGE_SIZE = 200;
-/** Default list shows newest installs only (full 50k+ scan is slow and misses users created mid-fetch). */
-const RECENT_USERS_MAX = 800;
-/** Quick poll for new User-XXXXX rows without re-downloading the whole table. */
-const LIVE_REFRESH_LIMIT = 60;
-/** Safety cap so a broken offset/total cannot spin forever. */
-const MAX_USER_FETCH_PAGES = 300;
-/** Wait until typing pauses before hitting the API (stops list jitter). */
-const SEARCH_DEBOUNCE_MS = 350;
+const PAGE = 50;
+const UNITS = ['hours', 'days', 'weeks', 'months'];
+const PRESETS = [
+  { label: '+1 day', n: 1, unit: 'days' },
+  { label: '+7 days', n: 7, unit: 'days' },
+  { label: '+30 days', n: 30, unit: 'days' },
+];
 
-// Generate gradient colors based on user ID
-const getGradientColors = (id) => {
-  const gradients = [
-    ['#3b82f6', '#7c3aed'],
-    ['#10b981', '#3b82f6'],
-    ['#f97316', '#ef4444'],
-    ['#ec4899', '#7c3aed'],
-    ['#06b6d4', '#3b82f6'],
-    ['#8b5cf6', '#ec4899'],
-  ];
-  return gradients[id % gradients.length];
-};
-
-// Get initials from external_id (e.g., "User-A2F34" -> "UA")
-const getInitials = (externalId) => {
-  if (!externalId) return 'U';
-  const parts = externalId.split('-');
-  if (parts.length > 1) {
-    return parts[1].substring(0, 2).toUpperCase();
-  }
-  return externalId.substring(0, 2).toUpperCase();
-};
-
-const parseReportedTotal = (raw) => {
-  if (raw == null || raw === '') return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-};
-
-const userCreatedAtMs = (user) => {
-  const raw = user?.created_at ?? user?.createdAt;
-  if (!raw) return 0;
-  const t = new Date(raw).getTime();
-  return Number.isFinite(t) ? t : 0;
-};
-
-/** Preview additive admin grant (matches backend GREATEST(expiry, now()) + duration). */
-const previewPremiumExpiryAfterGrant = (currentExpiryIso, duration, unit) => {
-  const n = Math.floor(Number(duration));
-  if (!Number.isFinite(n) || n <= 0) return null;
+const statusOf = (u) => {
+  if (u.blocked === true || u.blocked === 't' || u.blocked === 1) return 'Blocked';
+  const exp = u.premium_expires_at ? new Date(u.premium_expires_at) : null;
   const now = new Date();
-  const current = currentExpiryIso ? new Date(currentExpiryIso) : null;
-  const base =
-    current && !Number.isNaN(current.getTime()) && current > now ? current : now;
-  const result = new Date(base);
-  switch (unit) {
-    case 'hours':
-      result.setHours(result.getHours() + n);
-      break;
-    case 'days':
-      result.setDate(result.getDate() + n);
-      break;
-    case 'weeks':
-      result.setDate(result.getDate() + n * 7);
-      break;
-    case 'months':
-      result.setMonth(result.getMonth() + n);
-      break;
-    default:
-      result.setDate(result.getDate() + n);
-  }
-  return result;
+  if (u.is_premium === true && (!exp || exp > now)) return 'Premium';
+  if (exp && exp <= now) return 'Expired';
+  return 'Free';
+};
+const toneOf = (s) =>
+  s === 'Premium' ? 'accent' : s === 'Blocked' ? 'danger' : s === 'Expired' ? 'warning' : 'neutral';
+
+const initialsOf = (u) => {
+  const id = String(u.external_id || u.externalId || `U${u.id}`);
+  const parts = id.split('-');
+  return (parts[1] || id).slice(0, 2);
 };
 
-const formatGrantError = (error) => {
-  const msg = String(error?.message || error || '').trim();
-  if (!msg) return 'Failed to grant access. Check admin API key and network.';
-  if (msg.length > 280) return `${msg.slice(0, 277)}…`;
-  return msg;
+const formatDate = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? '—'
+    : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
-const mergeUsersById = (existing, incoming) => {
-  const byId = new Map();
-  for (const row of existing) {
-    if (row?.id != null) byId.set(row.id, row);
-  }
-  for (const row of incoming) {
-    if (row?.id != null) byId.set(row.id, row);
-  }
-  return Array.from(byId.values()).sort((a, b) => userCreatedAtMs(b) - userCreatedAtMs(a));
-};
+const UserRow = React.memo(({ user, onPress }) => {
+  const status = statusOf(user);
+  const exp = user.premium_expires_at;
+  return (
+    <TouchableOpacity activeOpacity={0.8} style={styles.userRow} onPress={() => onPress(user)}>
+      <Avatar text={initialsOf(user)} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.userName} numberOfLines={1}>
+          {user.external_id || `User-${user.id}`}
+        </Text>
+        <Text style={styles.userSub} numberOfLines={1}>
+          Joined {timeAgo(user.created_at) || '—'}
+          {exp && status !== 'Free' ? ` · until ${formatDate(exp)}` : ''}
+        </Text>
+      </View>
+      <Badge label={status} tone={toneOf(status)} />
+    </TouchableOpacity>
+  );
+});
 
-const formatUsersForList = (data) => {
-  return data.map((user, index) => {
-    const externalId = user.external_id || user.externalId;
-    const now = new Date();
-    const exp = user.premium_expires_at ? new Date(user.premium_expires_at) : null;
-    const expiredByDate = !!(exp && exp <= now);
-    const activePremium =
-      user.is_premium === true && (!user.premium_expires_at || (exp && exp > now));
-    let statusText = 'Free';
-    if (user.blocked) {
-      statusText = 'Blocked';
-    } else if (activePremium) {
-      statusText = 'Premium';
-    } else if (expiredByDate) {
-      statusText = 'Expired';
-    }
-
-    const uid = Number(user.id);
-    return {
-      id: user.id,
-      name: externalId || `User-${user.id}`,
-      initials: getInitials(externalId),
-      status: statusText,
-      gradient: getGradientColors(Number.isFinite(uid) ? uid : index),
-      blocked: !!(user.blocked === true || user.blocked === 't' || user.blocked === 1),
-      premiumExpiresAt: user.premium_expires_at,
-      createdAt: user.created_at,
-      paymentPhones: user.payment_phones || user.paymentPhones || '',
-      rawData: user,
-    };
-  });
-};
-
-const UsersSection = ({ isActive }) => {
-  const [searchInput, setSearchInput] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+const UsersSection = () => {
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
   const [users, setUsers] = useState([]);
-  const [fetchInProgress, setFetchInProgress] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [managementModalVisible, setManagementModalVisible] = useState(false);
-  const [specialAccessModalVisible, setSpecialAccessModalVisible] = useState(false);
-  const [accessType, setAccessType] = useState('days'); // 'days', 'hours', 'weeks', 'months'
-  const [accessValue, setAccessValue] = useState('');
-  const [statusModalVisible, setStatusModalVisible] = useState(false);
-  const [statusModalTitle, setStatusModalTitle] = useState('');
-  const [statusModalMessage, setStatusModalMessage] = useState('');
-  const [statusModalType, setStatusModalType] = useState('success'); // 'success' or 'error'
-  const [grantingAccess, setGrantingAccess] = useState(false);
-  const [filter, setFilter] = useState('all'); // 'all', 'free', 'premium', 'expired', 'blocked'
-  const [totalUsers, setTotalUsers] = useState(0);
-  const [dashboardStats, setDashboardStats] = useState(null);
-  const [remindingBulk, setRemindingBulk] = useState(false);
-  const [remindingUserId, setRemindingUserId] = useState(null);
-  const [blockingUser, setBlockingUser] = useState(false);
-  // Bulk downgrade state
-  const [downgradeModalVisible, setDowngradeModalVisible] = useState(false);
-  const [downgradeFilterMode, setDowngradeFilterMode] = useState('all'); // 'all' | 'joinedBefore' | 'selected'
-  const [downgradeJoinedBeforeDays, setDowngradeJoinedBeforeDays] = useState('7');
-  const [downgradeSelectedIds, setDowngradeSelectedIds] = useState(new Set());
-  const [downgradeDryRunResult, setDowngradeDryRunResult] = useState(null);
-  const [downgradingBulk, setDowngradingBulk] = useState(false);
-  const [downgradeStep, setDowngradeStep] = useState('configure'); // 'configure' | 'confirm'
-  const [downgradeUserSearch, setDowngradeUserSearch] = useState('');
-  const wasActiveRef = useRef(false);
-  const fetchGenRef = useRef(0);
-  const prevFilterKeyRef = useRef(null);
-
-  const searchPending = searchInput.trim() !== debouncedSearch;
+  const [selected, setSelected] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [customN, setCustomN] = useState('');
+  const [customUnit, setCustomUnit] = useState('days');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkDays, setBulkDays] = useState('7');
+  const [bulkMode, setBulkMode] = useState('all');
+  const [bulkCount, setBulkCount] = useState(null);
+  const [reminding, setReminding] = useState(false);
+  const gen = useRef(0);
+  const endReached = useRef(false);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setDebouncedSearch(searchInput.trim());
-    }, SEARCH_DEBOUNCE_MS);
+    const t = setTimeout(() => setDebounced(search.trim()), 300);
     return () => clearTimeout(t);
-  }, [searchInput]);
+  }, [search]);
 
-  // Show status modal
-  const showStatusModal = useCallback((type, title, message) => {
-    setStatusModalType(type);
-    setStatusModalTitle(title);
-    setStatusModalMessage(message);
-    setStatusModalVisible(true);
-  }, [setStatusModalType, setStatusModalTitle, setStatusModalMessage, setStatusModalVisible]);
-
-  const fetchDashboardStats = useCallback(async () => {
+  const loadStats = useCallback(async () => {
     try {
-      const s = await dashboardAPI.getStats();
-      setDashboardStats(s);
-    } catch (e) {
-      console.warn('Dashboard stats:', e);
-    }
+      setStats(await dashboardAPI.getStats());
+    } catch (_) {}
   }, []);
 
-  /** Pull newest rows only (for 15s live refresh without a 100+ page full scan). */
-  const refreshNewestUsers = useCallback(async () => {
+  const loadFirst = useCallback(async () => {
+    const g = ++gen.current;
+    endReached.current = false;
     try {
-      const res = await dashboardAPI.getUsers(
-        LIVE_REFRESH_LIMIT,
-        0,
-        filter,
-        debouncedSearch,
-      );
-      const chunk = Array.isArray(res.users) ? res.users : [];
-      if (chunk.length === 0) return;
-      setUsers((prev) => formatUsersForList(mergeUsersById(prev.map((u) => u.rawData), chunk)));
-      const reportedTotal = parseReportedTotal(res.total);
-      if (reportedTotal != null) setTotalUsers(reportedTotal);
+      const res = await dashboardAPI.getUsers(PAGE, 0, filter, debounced);
+      if (g !== gen.current) return;
+      const list = Array.isArray(res?.users) ? res.users : [];
+      setUsers(list);
+      setTotal(Number(res?.total) || list.length);
+      if (list.length < PAGE) endReached.current = true;
     } catch (e) {
-      console.warn('Newest users refresh:', e);
-    }
-  }, [filter, debouncedSearch]);
-
-  // Fetch users: recent window by default; full scan only when searching by external ID.
-  const fetchUsers = useCallback(async () => {
-    const filterKey = `${filter}|${debouncedSearch}`;
-    const filterOrSearchChanged =
-      prevFilterKeyRef.current !== null && prevFilterKeyRef.current !== filterKey;
-    prevFilterKeyRef.current = filterKey;
-    const searchActive = debouncedSearch.trim().length > 0;
-    const fetchCap = searchActive ? Number.MAX_SAFE_INTEGER : RECENT_USERS_MAX;
-
-    const gen = ++fetchGenRef.current;
-    setFetchInProgress(true);
-    if (filterOrSearchChanged) {
-      setUsers([]);
-      setTotalUsers(0);
-    }
-
-    try {
-      let offset = 0;
-      let lastReportedTotal = null;
-      let data = [];
-      let lastPageIndex = 0;
-
-      for (let page = 0; page < MAX_USER_FETCH_PAGES; page += 1) {
-        const res = await dashboardAPI.getUsers(USERS_PAGE_SIZE, offset, filter, debouncedSearch);
-        if (gen !== fetchGenRef.current) return;
-
-        const chunk = Array.isArray(res.users) ? res.users : [];
-        const reportedTotal = parseReportedTotal(res.total);
-        if (reportedTotal != null) lastReportedTotal = reportedTotal;
-
-        data.push(...chunk);
-        offset += chunk.length;
-        lastPageIndex = page;
-
-        if (page === 0) {
-          setRefreshing(false);
-          setUsers(formatUsersForList(data));
-          setTotalUsers(reportedTotal != null ? reportedTotal : data.length);
-        }
-
-        if (chunk.length === 0) break;
-        if (data.length >= fetchCap) break;
-        if (reportedTotal != null && data.length >= reportedTotal) break;
-        if (chunk.length < USERS_PAGE_SIZE) break;
-      }
-
-      if (gen !== fetchGenRef.current) return;
-
-      // Users created while we paginated won't appear in page 0 — re-fetch newest slice and merge.
-      try {
-        const freshRes = await dashboardAPI.getUsers(
-          Math.min(LIVE_REFRESH_LIMIT, USERS_PAGE_SIZE),
-          0,
-          filter,
-          debouncedSearch,
-        );
-        if (gen !== fetchGenRef.current) return;
-        const freshChunk = Array.isArray(freshRes.users) ? freshRes.users : [];
-        if (freshChunk.length > 0) {
-          data = mergeUsersById(data, freshChunk).slice(0, fetchCap);
-        }
-      } catch (mergeErr) {
-        console.warn('Newest users merge after fetch:', mergeErr);
-      }
-
-      if (lastPageIndex >= 1 || data.length > 0) {
-        setUsers(formatUsersForList(data));
-        setTotalUsers(lastReportedTotal != null ? lastReportedTotal : data.length);
-      }
-    } catch (error) {
-      console.error('Failed to fetch users:', error);
-      showStatusModal('error', 'Error', 'Failed to load users. Please try again.');
+      if (g === gen.current) toast('Could not load users');
     } finally {
-      if (gen === fetchGenRef.current) {
-        setFetchInProgress(false);
+      if (g === gen.current) {
+        setLoading(false);
         setRefreshing(false);
       }
     }
-  }, [filter, debouncedSearch, showStatusModal]);
-
-  const emptyStateMessage =
-    filter === 'all'
-      ? 'No users found'
-      : filter === 'premium'
-        ? 'No premium users'
-        : filter === 'free'
-          ? 'No free users'
-          : filter === 'blocked'
-            ? 'No blocked accounts yet — blocked users appear here.'
-            : 'No expired subscriptions';
+  }, [filter, debounced]);
 
   useEffect(() => {
-    fetchUsers();
-    fetchDashboardStats();
-  }, [filter, debouncedSearch, fetchUsers, fetchDashboardStats]);
+    setLoading(true);
+    loadFirst();
+  }, [loadFirst]);
 
-  // When user switches to Users tab, refetch so premium status is up to date (e.g. after payment)
   useEffect(() => {
-    if (isActive && !wasActiveRef.current) {
-      fetchUsers();
-      fetchDashboardStats();
+    loadStats();
+  }, [loadStats]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || loading || endReached.current) return;
+    const g = gen.current;
+    setLoadingMore(true);
+    try {
+      const res = await dashboardAPI.getUsers(PAGE, users.length, filter, debounced);
+      if (g !== gen.current) return;
+      const list = Array.isArray(res?.users) ? res.users : [];
+      if (list.length < PAGE) endReached.current = true;
+      setUsers((prev) => {
+        const seen = new Set(prev.map((u) => u.id));
+        return [...prev, ...list.filter((u) => !seen.has(u.id))];
+      });
+    } catch (_) {
+      endReached.current = true;
+    } finally {
+      setLoadingMore(false);
     }
-    wasActiveRef.current = !!isActive;
-  }, [isActive, fetchUsers, fetchDashboardStats]);
+  }, [loadingMore, loading, users.length, filter, debounced]);
 
-  // Light poll for new installs + premium changes (avoid re-scanning 50k+ rows every 15s).
-  useEffect(() => {
-    if (!isActive) return;
-    const id = setInterval(() => {
-      refreshNewestUsers();
-      fetchDashboardStats();
-    }, 15000);
-    return () => clearInterval(id);
-  }, [isActive, refreshNewestUsers, fetchDashboardStats]);
-
-  const onRefresh = () => {
+  const refreshAll = () => {
     setRefreshing(true);
-    fetchUsers();
-    fetchDashboardStats();
+    loadFirst();
+    loadStats();
   };
 
-  const handleRemindAllExpired = async () => {
+  const afterChange = () => {
+    loadFirst();
+    loadStats();
+  };
+
+  const filters = useMemo(
+    () => [
+      { id: 'all', label: 'All', count: stats?.totalUsers },
+      { id: 'premium', label: 'Premium', count: stats?.premiumUsers },
+      { id: 'free', label: 'Free', count: stats?.freeUsers },
+      { id: 'expired', label: 'Expired', count: stats?.expiredSubscriptions },
+      { id: 'blocked', label: 'Blocked', count: stats?.blockedUsers },
+    ],
+    [stats],
+  );
+
+  const grant = async (n, unit) => {
+    const duration = Math.floor(Number(n));
+    if (!selected || !Number.isFinite(duration) || duration <= 0) return toast('Enter a valid number');
+    setBusy(true);
     try {
-      setRemindingBulk(true);
-      const res = await adminUsersAPI.remindExpiredSubscriptions({ force: true });
-      if (res && res.ok === false) {
-        showStatusModal(
-          'error',
-          'Push unavailable',
-          res.message ||
-            'Firebase is not configured on the server (FIREBASE_SERVICE_ACCOUNT_KEY).',
-        );
-        return;
-      }
-      const extra = res?.message ? `\n${res.message}` : '';
-      showStatusModal(
-        'success',
-        'Reminders sent',
-        `Delivered ~${res.sent ?? 0} (FCM). Targeted devices: ${res.targeted ?? 0}.${extra}`,
-      );
+      await adminUsersAPI.giveSpecialAccess(Number(selected.id), duration, unit);
+      toast(`Added ${duration} ${unit}`);
+      setSelected(null);
+      setCustomN('');
+      afterChange();
     } catch (e) {
-      console.error(e);
-      showStatusModal('error', 'Reminder failed', e?.message || 'Could not send reminders.');
+      toast(String(e?.message || 'Could not grant access').slice(0, 100));
     } finally {
-      setRemindingBulk(false);
+      setBusy(false);
     }
   };
 
-  const handleRemindOneExpired = async (userId) => {
+  const setBlocked = async (blocked) => {
+    if (!selected) return;
+    setBusy(true);
     try {
-      setRemindingUserId(userId);
-      const res = await adminUsersAPI.remindExpiredSubscriptions({ userId, force: true });
-      if (res && res.ok === false) {
-        showStatusModal(
-          'error',
-          'Push unavailable',
-          res.message ||
-            'Firebase is not configured on the server (FIREBASE_SERVICE_ACCOUNT_KEY).',
-        );
-        return;
-      }
-      const detail =
-        res.sent > 0
-          ? 'Push sent to this device (requires valid FCM token).'
-          : `${res.message || 'No message delivered — check subscription end date, token, or block status.'}`;
-      showStatusModal(res.sent > 0 ? 'success' : 'error', res.sent > 0 ? 'Reminder sent' : 'No push', detail);
+      await adminUsersAPI.blockUser(selected.id, blocked);
+      toast(blocked ? 'User blocked' : 'User unblocked');
+      setSelected(null);
+      afterChange();
     } catch (e) {
-      console.error(e);
-      showStatusModal('error', 'Reminder failed', e?.message || 'Could not send.');
+      toast('Could not update user');
     } finally {
-      setRemindingUserId(null);
+      setBusy(false);
     }
   };
 
-  const applyBlocking = async (blocked) => {
-    if (!selectedUser?.rawData) return;
+  const remindOne = async () => {
+    if (!selected) return;
+    setBusy(true);
     try {
-      setBlockingUser(true);
-      await adminUsersAPI.blockUser(selectedUser.rawData.id, blocked);
-      showStatusModal(
-        'success',
-        blocked ? 'User blocked' : 'User unblocked',
-        blocked
-          ? `${selectedUser.name} cannot use the app until they pay again (subscription cleared).`
-          : `${selectedUser.name} can use the app again; premium still requires payment if not active.`,
-      );
-      setManagementModalVisible(false);
-      fetchUsers();
-      fetchDashboardStats();
-    } catch (error) {
-      console.error('Failed to update block status:', error);
-      const msg = error?.message || String(error || '');
-      showStatusModal(
-        'error',
-        'Update failed',
-        msg && msg.length < 200 ? msg : 'Could not update user. Check admin API key and network.',
-      );
+      const res = await adminUsersAPI.remindExpiredSubscriptions({ userId: selected.id, force: true });
+      toast(res?.sent > 0 ? 'Reminder sent' : res?.message || 'No push delivered');
+      if (res?.sent > 0) setSelected(null);
+    } catch (e) {
+      toast('Could not send reminder');
     } finally {
-      setBlockingUser(false);
+      setBusy(false);
     }
   };
 
-  // Handle special access — adds time on top of existing premium (never shortens).
-  const handleGrantSpecialAccess = async () => {
-    const duration = Math.floor(Number(String(accessValue || '').trim()));
-    if (!Number.isFinite(duration) || duration <= 0) {
-      showStatusModal('error', 'Invalid Duration', 'Please enter a valid positive number');
-      return;
-    }
-
-    const userId = Number(selectedUser?.rawData?.id);
-    if (!selectedUser?.rawData || !Number.isFinite(userId) || userId <= 0) {
-      showStatusModal('error', 'Invalid User', 'Could not resolve user id. Refresh the list and try again.');
-      return;
-    }
-
-    try {
-      setGrantingAccess(true);
-      const result = await adminUsersAPI.giveSpecialAccess(userId, duration, accessType);
-      const expiresAfter =
-        result?.expiresAfter || result?.premium_expires_at || result?.premiumExpiresAt;
-      const expiresLabel = expiresAfter
-        ? new Date(expiresAfter).toLocaleString()
-        : 'updated on server';
-      showStatusModal(
-        'success',
-        'Access Granted',
-        result?.message ||
-          `Added ${duration} ${accessType} for ${selectedUser.name}. Premium until ${expiresLabel}. All channels unlocked.`,
-      );
-      setSpecialAccessModalVisible(false);
-      setAccessValue('');
-      setAccessType('days');
-      fetchUsers();
-      fetchDashboardStats();
-    } catch (error) {
-      console.error('Failed to grant special access:', error);
-      showStatusModal('error', 'Grant Failed', formatGrantError(error));
-    } finally {
-      setGrantingAccess(false);
-    }
+  const remindAllExpired = () => {
+    Alert.alert('Remind all expired users?', 'Sends a renewal reminder to every expired subscriber.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Send',
+        onPress: async () => {
+          setReminding(true);
+          try {
+            const res = await adminUsersAPI.remindExpiredSubscriptions({ force: true });
+            toast(res?.ok === false ? res.message || 'Push unavailable' : `Sent · ${res?.sent ?? 0} delivered`);
+          } catch (e) {
+            toast('Could not send reminders');
+          } finally {
+            setReminding(false);
+          }
+        },
+      },
+    ]);
   };
 
-  const openDowngradeModal = useCallback(() => {
-    setDowngradeStep('configure');
-    setDowngradeFilterMode('all');
-    setDowngradeJoinedBeforeDays('7');
-    setDowngradeSelectedIds(new Set());
-    setDowngradeDryRunResult(null);
-    setDowngradeUserSearch('');
-    setDowngradeModalVisible(true);
-  }, []);
-
-  const buildDowngradePayload = useCallback((dryRun = false) => {
-    const payload = {};
-    if (dryRun) payload.dryRun = true;
-    if (downgradeFilterMode === 'joinedBefore') {
-      const days = Math.floor(Number(downgradeJoinedBeforeDays));
-      if (!Number.isFinite(days) || days <= 0) return { error: 'Enter a valid number of days.' };
+  const bulkPayload = (dryRun) => {
+    const payload = dryRun ? { dryRun: true } : {};
+    if (bulkMode === 'before') {
+      const d = Math.floor(Number(bulkDays));
+      if (!Number.isFinite(d) || d <= 0) return null;
       const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - days);
+      cutoff.setDate(cutoff.getDate() - d);
       payload.joinedBefore = cutoff.toISOString();
-    } else if (downgradeFilterMode === 'selected') {
-      const ids = Array.from(downgradeSelectedIds).map(Number).filter((n) => n > 0);
-      if (ids.length === 0) return { error: 'Select at least one user to downgrade.' };
-      payload.userIds = ids;
     }
-    // 'all' mode — no extra filter
     return payload;
-  }, [downgradeFilterMode, downgradeJoinedBeforeDays, downgradeSelectedIds]);
-
-  const handleDowngradeDryRun = useCallback(async () => {
-    const payload = buildDowngradePayload(true);
-    if (!payload || payload.error) {
-      showStatusModal('error', 'Invalid Filter', payload?.error || 'Please check your filter settings.');
-      return;
-    }
-    try {
-      setDowngradingBulk(true);
-      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
-      setDowngradeDryRunResult(res.affectedCount ?? 0);
-      setDowngradeStep('confirm');
-    } catch (e) {
-      showStatusModal('error', 'Preview failed', e?.message || 'Could not preview downgrade.');
-    } finally {
-      setDowngradingBulk(false);
-    }
-  }, [buildDowngradePayload, showStatusModal]);
-
-  const handleBulkDowngrade = useCallback(async () => {
-    const payload = buildDowngradePayload(false);
-    if (!payload || payload.error) {
-      showStatusModal('error', 'Invalid Filter', payload?.error || 'Please check your filter settings.');
-      return;
-    }
-    try {
-      setDowngradingBulk(true);
-      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
-      setDowngradeModalVisible(false);
-      showStatusModal(
-        'success',
-        'Downgrade Complete',
-        `${res.downgradedCount ?? 0} user(s) reverted to free plan. Their premium access has been cleared.`,
-      );
-      fetchUsers();
-      fetchDashboardStats();
-    } catch (e) {
-      showStatusModal('error', 'Downgrade failed', e?.message || 'Could not downgrade users.');
-    } finally {
-      setDowngradingBulk(false);
-    }
-  }, [buildDowngradePayload, showStatusModal, fetchUsers, fetchDashboardStats]);
-
-  // Always store IDs as strings to avoid number/string type mismatch in Set
-  const toggleDowngradeSelectUser = useCallback((userId) => {
-    setDowngradeSelectedIds((prev) => {
-      const key = String(userId);
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  }, []);
-
-  // Select all / deselect all premium users from the currently loaded list
-  const toggleSelectAllPremiumUsers = useCallback((premiumUsers) => {
-    const allIds = premiumUsers.map((u) => String(u.id));
-    setDowngradeSelectedIds((prev) => {
-      const allSelected = allIds.length > 0 && allIds.every((id) => prev.has(id));
-      if (allSelected) return new Set(); // deselect all
-      return new Set(allIds); // select all
-    });
-  }, []);
-
-  const grantPreviewDate = previewPremiumExpiryAfterGrant(
-    selectedUser?.premiumExpiresAt || selectedUser?.rawData?.premium_expires_at,
-    accessValue,
-    accessType,
-  );
-
-  const formatStat = (n) => {
-    if (n == null || n === '') return '—';
-    const v = Number(n);
-    if (!Number.isFinite(v)) return '—';
-    return v.toLocaleString('en-US');
   };
 
-  const statTotal = dashboardStats?.totalUsers;
-  const statPremium = dashboardStats?.premiumUsers;
-  const statFree = dashboardStats?.freeUsers;
-  const statExpired = dashboardStats?.expiredSubscriptions;
-  const statBlocked = dashboardStats?.blockedUsers;
-  const statsLoading = !dashboardStats && fetchInProgress;
+  const previewBulk = async () => {
+    const payload = bulkPayload(true);
+    if (!payload) return toast('Enter a valid number of days');
+    setBusy(true);
+    try {
+      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
+      setBulkCount(Number(res?.affectedCount) || 0);
+    } catch (e) {
+      toast('Preview failed');
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  const listHeader = (
-    <>
-      <View style={styles.statsRow}>
-        <View style={[styles.statCard, styles.statCardTotal]}>
-          <Icon name="account-group" size={16} color="#38bdf8" style={styles.statIcon} />
-          <Text style={styles.statValue}>
-            {statsLoading ? '…' : formatStat(statTotal)}
-          </Text>
-          <Text style={styles.statLabel}>Registered</Text>
-        </View>
-        <View style={[styles.statCard, styles.statCardPremium]}>
-          <Icon name="star" size={16} color="#fbbf24" style={styles.statIcon} />
-          <Text style={[styles.statValue, styles.statValuePremium]}>
-            {statsLoading ? '…' : formatStat(statPremium)}
-          </Text>
-          <Text style={styles.statLabel}>Premium</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Icon name="account" size={16} color="#9ca3af" style={styles.statIcon} />
-          <Text style={styles.statValue}>
-            {statsLoading ? '…' : formatStat(statFree)}
-          </Text>
-          <Text style={styles.statLabel}>Free</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Icon name="clock-alert" size={16} color="#f87171" style={styles.statIcon} />
-          <Text style={[styles.statValue, styles.statValueExpired]}>
-            {statsLoading ? '…' : formatStat(statExpired)}
-          </Text>
-          <Text style={styles.statLabel}>Expired</Text>
-        </View>
-        <View style={styles.statCard}>
-          <Icon name="block-helper" size={16} color="#fca5a5" style={styles.statIcon} />
-          <Text style={[styles.statValue, styles.statValueBlocked]}>
-            {statsLoading ? '…' : formatStat(statBlocked)}
-          </Text>
-          <Text style={styles.statLabel}>Blocked</Text>
-        </View>
-      </View>
+  const runBulk = async () => {
+    const payload = bulkPayload(false);
+    if (!payload) return;
+    setBusy(true);
+    try {
+      const res = await adminUsersAPI.bulkDowngradeUsers(payload);
+      toast(`${res?.downgradedCount ?? 0} users moved to Free`);
+      setBulkOpen(false);
+      setBulkCount(null);
+      afterChange();
+    } catch (e) {
+      toast('Downgrade failed');
+    } finally {
+      setBusy(false);
+    }
+  };
 
-      <View style={styles.searchContainer}>
-        <View style={styles.searchBox}>
-          <Icon name="magnify" size={20} color="#9ca3af" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search by external ID…"
-            placeholderTextColor="#6b7280"
-            value={searchInput}
-            onChangeText={setSearchInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-            clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
-          />
-          {searchPending ? (
-            <ActivityIndicator size="small" color="#a78bfa" style={styles.searchSpinner} />
-          ) : fetchInProgress && users.length === 0 ? (
-            <ActivityIndicator size="small" color="#a78bfa" style={styles.searchSpinner} />
-          ) : null}
-          {searchInput.length > 0 ? (
-            <TouchableOpacity
-              onPress={() => setSearchInput('')}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              accessibilityLabel="Clear search">
-              <Icon name="close-circle" size={22} color="#6b7280" />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterContainer}
-        contentContainerStyle={styles.filterScroll}>
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'all' && styles.filterTabActive]}
-          onPress={() => setFilter('all')}
-          activeOpacity={0.7}>
-          <Icon name="account-group" size={16} color={filter === 'all' ? '#fff' : '#9ca3af'} />
-          <Text style={[styles.filterTabText, filter === 'all' && styles.filterTabTextActive]}>All</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'premium' && styles.filterTabActive]}
-          onPress={() => setFilter('premium')}
-          activeOpacity={0.7}>
-          <Icon name="star" size={16} color={filter === 'premium' ? '#fff' : '#9ca3af'} />
-          <Text style={[styles.filterTabText, filter === 'premium' && styles.filterTabTextActive]}>Premium</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'free' && styles.filterTabActive]}
-          onPress={() => setFilter('free')}
-          activeOpacity={0.7}>
-          <Icon name="account" size={16} color={filter === 'free' ? '#fff' : '#9ca3af'} />
-          <Text style={[styles.filterTabText, filter === 'free' && styles.filterTabTextActive]}>Free</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'expired' && styles.filterTabActive]}
-          onPress={() => setFilter('expired')}
-          activeOpacity={0.7}>
-          <Icon name="clock-alert" size={16} color={filter === 'expired' ? '#fff' : '#9ca3af'} />
-          <Text style={[styles.filterTabText, filter === 'expired' && styles.filterTabTextActive]}>Expired</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.filterTab, filter === 'blocked' && styles.filterTabActive]}
-          onPress={() => setFilter('blocked')}
-          activeOpacity={0.7}>
-          <Icon name="block-helper" size={16} color={filter === 'blocked' ? '#fff' : '#9ca3af'} />
-          <Text style={[styles.filterTabText, filter === 'blocked' && styles.filterTabTextActive]}>Blocked</Text>
-        </TouchableOpacity>
-      </ScrollView>
-
-      {filter === 'expired' ? (
-        <View style={styles.remindAllWrap}>
-          <TouchableOpacity
-            style={styles.remindAllButton}
-            onPress={remindingBulk ? undefined : handleRemindAllExpired}
-            disabled={remindingBulk}
-            activeOpacity={0.85}>
-            {remindingBulk ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <Icon name="bell-ring-outline" size={18} color="#fff" />
-                <Text style={styles.remindAllButtonText}>Remind all expired (push)</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
-      {filter === 'premium' ? (
-        <View style={styles.remindAllWrap}>
-          <TouchableOpacity
-            style={styles.downgradeAllButton}
-            onPress={openDowngradeModal}
-            activeOpacity={0.85}>
-            <Icon name="account-arrow-down-outline" size={18} color="#fff" />
-            <Text style={styles.remindAllButtonText}>Downgrade to Free…</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
-      <View style={[styles.tableCard, styles.tableCardTop]}>
-        <View style={styles.tableHeader}>
-          <Text style={styles.tableHeaderText}>
-            {filter === 'all'
-              ? 'All Users'
-              : filter === 'premium'
-              ? 'Premium Users'
-              : filter === 'free'
-              ? 'Free Users'
-              : filter === 'blocked'
-              ? 'Blocked Users'
-              : 'Expired'}{' '}
-            ({users.length}
-            {totalUsers > 0 ? ` / ${totalUsers}` : ''}
-            {!debouncedSearch && users.length < totalUsers
-              ? ` · showing newest ${RECENT_USERS_MAX.toLocaleString()}`
-              : ''}
-            )
-          </Text>
-          {isActive ? (
-            <View style={styles.autoRefreshIndicator}>
-              <View style={styles.autoRefreshDot} />
-              <Text style={styles.autoRefreshText}>Live</Text>
-            </View>
-          ) : null}
-        </View>
-      </View>
-    </>
-  );
-
-  const renderUserItem = ({ item: user, index }) => (
-    <View
-      style={[
-        styles.tableRow,
-        styles.tableRowCard,
-        index === 0 && styles.tableRowCardFirst,
-        index === users.length - 1 && styles.tableRowCardLast,
-      ]}>
-      <View style={styles.userCell}>
-        <LinearGradient
-          colors={user.gradient}
-          style={styles.userAvatar}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}>
-          <Text style={styles.userInitials}>{user.initials}</Text>
-        </LinearGradient>
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{user.name}</Text>
-          <View style={styles.badgeRow}>
-            <View
-              style={[
-                styles.statusBadge,
-                user.status === 'Premium'
-                  ? styles.premiumBadge
-                  : user.status === 'Expired'
-                  ? styles.expiredBadge
-                  : user.status === 'Blocked'
-                  ? styles.blockedBadge
-                  : styles.freeBadge,
-              ]}>
-              <Text
-                style={[
-                  styles.statusText,
-                  user.status === 'Premium'
-                    ? styles.premiumText
-                    : user.status === 'Expired'
-                    ? styles.expiredText
-                    : user.status === 'Blocked'
-                    ? styles.blockedText
-                    : styles.freeText,
-                ]}>
-                {user.status}
-              </Text>
-            </View>
-            {user.blocked && user.status !== 'Blocked' ? (
-              <View style={[styles.statusBadge, styles.blockedBadge]}>
-                <Text style={[styles.statusText, styles.blockedText]}>Blocked</Text>
-              </View>
-            ) : null}
-          </View>
-          {user.paymentPhones ? (
-            <Text style={styles.paymentPhonesText} numberOfLines={2}>
-              Payment: {user.paymentPhones}
-            </Text>
-          ) : null}
-          {user.premiumExpiresAt && user.status === 'Premium' ? (
-            <Text style={styles.expiryText}>Expires: {new Date(user.premiumExpiresAt).toLocaleDateString()}</Text>
-          ) : null}
-          {user.premiumExpiresAt && user.status === 'Expired' ? (
-            <Text style={styles.expiredAtText}>Expired: {new Date(user.premiumExpiresAt).toLocaleDateString()}</Text>
-          ) : null}
-        </View>
-      </View>
-      <View style={styles.rowActions}>
-        {filter === 'expired' && user.status === 'Expired' && !user.blocked ? (
-          <TouchableOpacity
-            style={styles.remindOneButton}
-            onPress={() => handleRemindOneExpired(user.id)}
-            disabled={remindingUserId === user.id}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            {remindingUserId === user.id ? (
-              <ActivityIndicator size="small" color="#a78bfa" />
-            ) : (
-              <Icon name="bell-outline" size={22} color="#a78bfa" />
-            )}
-          </TouchableOpacity>
-        ) : null}
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => {
-            setSelectedUser(user);
-            setManagementModalVisible(true);
-          }}
-          activeOpacity={0.7}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <Icon name="dots-vertical" size={20} color="#9ca3af" />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  const listEmpty = () => (
-    <View style={[styles.tableCard, styles.tableCardEmpty]}>
-      <View style={styles.emptyState}>
-        {fetchInProgress || searchPending ? (
-          <>
-            <ActivityIndicator size="large" color="#a78bfa" />
-            <Text style={[styles.emptyStateText, styles.emptyStateHint]}>
-              {searchPending ? 'Waiting for search…' : 'Loading users…'}
-            </Text>
-          </>
-        ) : (
-          <>
-            <Icon name="account-off" size={48} color="#6b7280" />
-            <Text style={styles.emptyStateText}>{emptyStateMessage}</Text>
-          </>
-        )}
-      </View>
-    </View>
-  );
+  const status = selected ? statusOf(selected) : null;
 
   return (
-    <View style={styles.container}>
-      <FlatList
-        data={users}
-        extraData={`${users.length}-${fetchInProgress}-${filter}`}
-        keyExtractor={(item) => String(item.id)}
-        renderItem={renderUserItem}
-        ListHeaderComponent={listHeader}
-        ListEmptyComponent={listEmpty}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        removeClippedSubviews={Platform.OS === 'android'}
-        initialNumToRender={12}
-        maxToRenderPerBatch={16}
-        windowSize={8}
-        updateCellsBatchingPeriod={50}
-        contentContainerStyle={styles.flatListContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        showsVerticalScrollIndicator={false}
-      />
-
-      {/* User Management Modal */}
-      <Modal
-        visible={managementModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setManagementModalVisible(false)}>
-        <SafeAreaView style={styles.modalContainer}>
-          <LinearGradient
-            colors={['#030712', '#111827', '#1f2937']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          />
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                Manage {selectedUser?.name}
-              </Text>
-              <TouchableOpacity
-                onPress={() => setManagementModalVisible(false)}
-                style={styles.closeButton}>
-                <Icon name="close" size={24} color="#9ca3af" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.modalBody}>
-              {!selectedUser?.blocked ? (
-                <TouchableOpacity
-                  style={[styles.managementOption, styles.managementOptionDanger]}
-                  onPress={() => applyBlocking(true)}
-                  disabled={blockingUser}
-                  activeOpacity={0.85}>
-                  <View style={[styles.optionIconContainer, styles.optionIconDanger]}>
-                    {blockingUser ? (
-                      <ActivityIndicator size="small" color="#fecaca" />
-                    ) : (
-                      <Icon name="shield-lock-outline" size={24} color="#fecaca" />
-                    )}
-                  </View>
-                  <View style={styles.optionContent}>
-                    <Text style={styles.optionTitle}>Block user</Text>
-                    <Text style={styles.optionDescription}>
-                      Suspends app access and clears subscription until they pay again.
-                    </Text>
-                  </View>
-                  {!blockingUser ? <Icon name="chevron-right" size={20} color="#9ca3af" /> : null}
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={[styles.managementOption, styles.managementOptionSuccess]}
-                  onPress={() => applyBlocking(false)}
-                  disabled={blockingUser}
-                  activeOpacity={0.85}>
-                  <View style={[styles.optionIconContainer, styles.optionIconSuccess]}>
-                    {blockingUser ? (
-                      <ActivityIndicator size="small" color="#bbf7d0" />
-                    ) : (
-                      <Icon name="account-check" size={24} color="#bbf7d0" />
-                    )}
-                  </View>
-                  <View style={styles.optionContent}>
-                    <Text style={styles.optionTitle}>Unblock user</Text>
-                    <Text style={styles.optionDescription}>
-                      Restores access; premium still follows payment or admin grant.
-                    </Text>
-                  </View>
-                  {!blockingUser ? <Icon name="chevron-right" size={20} color="#9ca3af" /> : null}
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity
-                style={styles.managementOption}
-                onPress={() => {
-                  setManagementModalVisible(false);
-                  setSpecialAccessModalVisible(true);
-                }}>
-                <View style={[styles.optionIconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.2)' }]}>
-                  <Icon name="gift" size={24} color="#10b981" />
-                </View>
-                <View style={styles.optionContent}>
-                  <Text style={styles.optionTitle}>Give Special Access</Text>
-                  <Text style={styles.optionDescription}>
-                    Add premium time (stacks on existing expiry) and unlock all channels
-                  </Text>
-                </View>
-                <Icon name="chevron-right" size={20} color="#9ca3af" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Special Access Modal */}
-      <Modal
-        visible={specialAccessModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setSpecialAccessModalVisible(false)}>
-        <SafeAreaView style={styles.modalContainer}>
-          <LinearGradient
-            colors={['#030712', '#111827', '#1f2937']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          />
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Special Access</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setSpecialAccessModalVisible(false);
-                  setAccessValue('');
-                  setAccessType('days');
-                }}
-                style={styles.closeButton}>
-                <Icon name="close" size={24} color="#9ca3af" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-              {selectedUser ? (
-                <View style={styles.grantSummaryCard}>
-                  <Text style={styles.grantSummaryTitle}>{selectedUser.name}</Text>
-                  <Text style={styles.grantSummaryMeta}>
-                    {selectedUser.premiumExpiresAt
-                      ? `Current expiry: ${new Date(selectedUser.premiumExpiresAt).toLocaleString()}`
-                      : 'No active premium — time will start from now'}
-                  </Text>
-                  {grantPreviewDate ? (
-                    <Text style={styles.grantSummaryPreview}>
-                      After grant: {grantPreviewDate.toLocaleString()}
-                    </Text>
-                  ) : null}
-                </View>
-              ) : null}
-
-              {/* Quick presets */}
-              <View style={styles.presetRow}>
-                {[
-                  { value: '1', unit: 'days', label: '+1 day' },
-                  { value: '7', unit: 'days', label: '+7 days' },
-                  { value: '30', unit: 'days', label: '+30 days' },
-                  { value: '90', unit: 'days', label: '+90 days' },
-                ].map((preset) => (
-                  <TouchableOpacity
-                    key={preset.label}
-                    style={styles.presetChip}
-                    onPress={() => {
-                      setAccessValue(preset.value);
-                      setAccessType(preset.unit);
-                    }}>
-                    <Text style={styles.presetChipText}>{preset.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {/* Access Type Selection */}
-              <View style={styles.accessTypeContainer}>
-                <Text style={styles.inputLabel}>Access Duration</Text>
-                <View style={styles.accessTypeButtons}>
-                  {[
-                    { id: 'hours', label: 'Hours' },
-                    { id: 'days', label: 'Days' },
-                    { id: 'weeks', label: 'Weeks' },
-                    { id: 'months', label: 'Months' },
-                  ].map((type) => (
-                    <TouchableOpacity
-                      key={type.id}
-                      style={[
-                        styles.accessTypeButton,
-                        accessType === type.id && styles.accessTypeButtonActive,
-                      ]}
-                      onPress={() => setAccessType(type.id)}>
-                      <Text
-                        style={[
-                          styles.accessTypeButtonText,
-                          accessType === type.id && styles.accessTypeButtonTextActive,
-                        ]}>
-                        {type.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-
-              {/* Access Value Input */}
-              <View style={styles.inputContainer}>
-                <Text style={styles.inputLabel}>Duration</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder={`Enter number of ${accessType}`}
-                  placeholderTextColor="#6b7280"
-                  value={accessValue}
-                  onChangeText={setAccessValue}
-                  keyboardType="numeric"
-                />
-              </View>
-
-              {/* Action Buttons */}
-              <View style={styles.modalActions}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={() => {
-                    setSpecialAccessModalVisible(false);
-                    setAccessValue('');
-                    setAccessType('days');
-                  }}>
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.confirmButton,
-                    grantingAccess && { opacity: 0.7 },
-                  ]}
-                  onPress={handleGrantSpecialAccess}
-                  disabled={grantingAccess}>
-                  {grantingAccess ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Text style={styles.confirmButtonText}>Grant Access</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Bulk Downgrade Modal */}
-      <Modal
-        visible={downgradeModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setDowngradeModalVisible(false)}>
-        <SafeAreaView style={styles.modalContainer}>
-          <LinearGradient
-            colors={['#030712', '#111827', '#1f2937']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          />
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {downgradeStep === 'confirm' ? 'Confirm Downgrade' : 'Downgrade to Free'}
-              </Text>
-              <TouchableOpacity
-                onPress={() => setDowngradeModalVisible(false)}
-                style={styles.closeButton}>
-                <Icon name="close" size={24} color="#9ca3af" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-              {downgradeStep === 'configure' ? (
-                <>
-                  {/* Warning banner */}
-                  <View style={styles.downgradeWarnCard}>
-                    <Icon name="alert" size={22} color="#fbbf24" />
-                    <Text style={styles.downgradeWarnText}>
-                      This will clear premium access for the selected users. They will immediately revert to the free plan.
-                    </Text>
-                  </View>
-
-                  {/* Filter mode */}
-                  <Text style={[styles.inputLabel, { marginBottom: 10 }]}>Who to downgrade</Text>
-                  {[
-                    { id: 'all', label: 'All premium users', icon: 'account-group', desc: 'Every user currently on premium.' },
-                    { id: 'joinedBefore', label: 'Joined before N days ago', icon: 'calendar-clock', desc: 'Keep recent users; downgrade older ones.' },
-                    { id: 'selected', label: 'Select specific users', icon: 'format-list-checks', desc: 'Pick individual users from the list below.' },
-                  ].map((opt) => (
-                    <TouchableOpacity
-                      key={opt.id}
-                      style={[
-                        styles.managementOption,
-                        downgradeFilterMode === opt.id && styles.downgradeOptionActive,
-                      ]}
-                      onPress={() => {
-                        setDowngradeFilterMode(opt.id);
-                        setDowngradeSelectedIds(new Set());
-                        setDowngradeDryRunResult(null);
-                        setDowngradeUserSearch('');
-                      }}
-                      activeOpacity={0.8}>
-                      <View style={[styles.optionIconContainer, { backgroundColor: 'rgba(124,58,237,0.2)' }]}>
-                        <Icon name={opt.icon} size={22} color="#a78bfa" />
-                      </View>
-                      <View style={styles.optionContent}>
-                        <Text style={styles.optionTitle}>{opt.label}</Text>
-                        <Text style={styles.optionDescription}>{opt.desc}</Text>
-                      </View>
-                      <Icon
-                        name={downgradeFilterMode === opt.id ? 'radiobox-marked' : 'radiobox-blank'}
-                        size={20}
-                        color={downgradeFilterMode === opt.id ? '#a78bfa' : '#6b7280'}
-                      />
-                    </TouchableOpacity>
-                  ))}
-
-                  {/* joinedBefore input */}
-                  {downgradeFilterMode === 'joinedBefore' ? (
-                    <View style={[styles.inputContainer, { marginTop: 8 }]}>
-                      <Text style={styles.inputLabel}>Keep users who joined in the last N days</Text>
-                      <Text style={styles.optionDescription}>
-                        Users who joined within this many days will be KEPT as premium. All older premium users will be downgraded.
-                      </Text>
-                      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-                        {['3', '7', '14', '30'].map((d) => (
-                          <TouchableOpacity
-                            key={d}
-                            style={[styles.presetChip, downgradeJoinedBeforeDays === d && { backgroundColor: 'rgba(124,58,237,0.4)', borderColor: '#a78bfa' }]}
-                            onPress={() => setDowngradeJoinedBeforeDays(d)}>
-                            <Text style={[styles.presetChipText, downgradeJoinedBeforeDays === d && { color: '#c4b5fd' }]}>Last {d}d</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                      <TextInput
-                        style={[styles.input, { marginTop: 10 }]}
-                        placeholder="Number of days"
-                        placeholderTextColor="#6b7280"
-                        value={downgradeJoinedBeforeDays}
-                        onChangeText={(v) => setDowngradeJoinedBeforeDays(v.replace(/[^0-9]/g, ''))}
-                        keyboardType="numeric"
-                      />
-                    </View>
-                  ) : null}
-
-                  {/* Selected users list */}
-                  {downgradeFilterMode === 'selected' ? (() => {
-                    const allPremium = users.filter((u) => u.status === 'Premium');
-                    const searchTerm = downgradeUserSearch.trim().toLowerCase();
-                    const visiblePremium = searchTerm
-                      ? allPremium.filter((u) => u.name.toLowerCase().includes(searchTerm))
-                      : allPremium;
-                    const allVisible = visiblePremium.length > 0 && visiblePremium.every((u) => downgradeSelectedIds.has(String(u.id)));
-                    return (
-                      <View style={{ marginTop: 8 }}>
-                        {/* Header row: count + select-all toggle */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                          <Text style={styles.inputLabel}>
-                            Premium users ({downgradeSelectedIds.size} of {allPremium.length} selected)
-                          </Text>
-                          {allPremium.length > 0 ? (
-                            <TouchableOpacity
-                              onPress={() => toggleSelectAllPremiumUsers(visiblePremium)}
-                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                              <Text style={{ fontSize: 13, color: '#a78bfa', fontWeight: '600' }}>
-                                {allVisible ? 'Deselect all' : 'Select all'}
-                              </Text>
-                            </TouchableOpacity>
-                          ) : null}
-                        </View>
-
-                        {/* Search box */}
-                        {allPremium.length > 5 ? (
-                          <View style={[styles.searchBox, { marginBottom: 10 }]}>
-                            <Icon name="magnify" size={18} color="#9ca3af" />
-                            <TextInput
-                              style={[styles.searchInput, { fontSize: 13, paddingVertical: 8 }]}
-                              placeholder="Search by user ID…"
-                              placeholderTextColor="#6b7280"
-                              value={downgradeUserSearch}
-                              onChangeText={setDowngradeUserSearch}
-                              autoCapitalize="none"
-                              autoCorrect={false}
-                            />
-                            {downgradeUserSearch.length > 0 ? (
-                              <TouchableOpacity onPress={() => setDowngradeUserSearch('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                                <Icon name="close-circle" size={18} color="#6b7280" />
-                              </TouchableOpacity>
-                            ) : null}
-                          </View>
-                        ) : null}
-
-                        {/* User list */}
-                        {allPremium.length === 0 ? (
-                          <View style={[styles.downgradeWarnCard, { borderColor: 'rgba(251,191,36,0.3)' }]}>
-                            <Icon name="information-outline" size={20} color="#fbbf24" />
-                            <Text style={styles.downgradeWarnText}>
-                              No premium users in the loaded list. Go back, switch to the Premium filter, then re-open Downgrade.
-                            </Text>
-                          </View>
-                        ) : visiblePremium.length === 0 ? (
-                          <Text style={[styles.optionDescription, { marginBottom: 8 }]}>No users match "{downgradeUserSearch}"</Text>
-                        ) : (
-                          visiblePremium.map((u) => {
-                            const selected = downgradeSelectedIds.has(String(u.id));
-                            return (
-                              <TouchableOpacity
-                                key={u.id}
-                                style={[
-                                  styles.managementOption,
-                                  selected && styles.downgradeOptionActive,
-                                  { marginBottom: 6, paddingVertical: 10 },
-                                ]}
-                                onPress={() => toggleDowngradeSelectUser(u.id)}
-                                activeOpacity={0.8}>
-                                <LinearGradient
-                                  colors={u.gradient}
-                                  style={[styles.userAvatar, { width: 36, height: 36, borderRadius: 18 }]}
-                                  start={{ x: 0, y: 0 }}
-                                  end={{ x: 1, y: 1 }}>
-                                  <Text style={[styles.userInitials, { fontSize: 12 }]}>{u.initials}</Text>
-                                </LinearGradient>
-                                <View style={styles.optionContent}>
-                                  <Text style={styles.optionTitle}>{u.name}</Text>
-                                  {u.premiumExpiresAt ? (
-                                    <Text style={[styles.optionDescription, { color: '#6ee7b7', fontSize: 11 }]}>
-                                      Expires: {new Date(u.premiumExpiresAt).toLocaleDateString()}
-                                    </Text>
-                                  ) : (
-                                    <Text style={[styles.optionDescription, { fontSize: 11 }]}>No expiry set</Text>
-                                  )}
-                                  {u.createdAt ? (
-                                    <Text style={[styles.optionDescription, { fontSize: 10, marginTop: 2 }]}>
-                                      Joined: {new Date(u.createdAt).toLocaleDateString()}
-                                    </Text>
-                                  ) : null}
-                                </View>
-                                <Icon
-                                  name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
-                                  size={24}
-                                  color={selected ? '#a78bfa' : '#6b7280'}
-                                />
-                              </TouchableOpacity>
-                            );
-                          })
-                        )}
-                      </View>
-                    );
-                  })() : null}
-
-                  {/* Preview / Next button */}
-                  <View style={[styles.modalActions, { marginTop: 20 }]}>
-                    <TouchableOpacity
-                      style={styles.cancelButton}
-                      onPress={() => setDowngradeModalVisible(false)}>
-                      <Text style={styles.cancelButtonText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.confirmButton, { backgroundColor: '#dc2626' }, downgradingBulk && { opacity: 0.7 }]}
-                      onPress={handleDowngradeDryRun}
-                      disabled={downgradingBulk}>
-                      {downgradingBulk ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Text style={styles.confirmButtonText}>Preview →</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </>
-              ) : (
-                /* Confirm step */
-                <>
-                  <View style={[styles.downgradeWarnCard, { borderColor: 'rgba(220,38,38,0.5)', backgroundColor: 'rgba(127,29,29,0.35)' }]}>
-                    <Icon name="alert-circle" size={28} color="#f87171" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.downgradeWarnText, { color: '#fca5a5', fontWeight: '700', fontSize: 16 }]}>
-                        {downgradeDryRunResult ?? '?'} user(s) will be downgraded
-                      </Text>
-                      <Text style={[styles.downgradeWarnText, { marginTop: 6 }]}>
-                        {downgradeFilterMode === 'all'
-                          ? 'All current premium users will be reverted to the free plan.'
-                          : downgradeFilterMode === 'joinedBefore'
-                          ? `Premium users who joined more than ${downgradeJoinedBeforeDays} day(s) ago will be reverted. Recent users are kept.`
-                          : `${downgradeSelectedIds.size} individually selected user(s) will be reverted.`}
-                      </Text>
-                      <Text style={[styles.downgradeWarnText, { marginTop: 6, color: '#fca5a5' }]}>
-                        ⚠ This cannot be undone automatically — re-grant access manually if needed.
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.modalActions}>
-                    <TouchableOpacity
-                      style={styles.cancelButton}
-                      onPress={() => setDowngradeStep('configure')}>
-                      <Text style={styles.cancelButtonText}>← Back</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.confirmButton, { backgroundColor: '#dc2626' }, downgradingBulk && { opacity: 0.7 }]}
-                      onPress={handleBulkDowngrade}
-                      disabled={downgradingBulk}>
-                      {downgradingBulk ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Text style={styles.confirmButtonText}>Downgrade Now</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-            </ScrollView>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Status Modal */}
-      <Modal
-        visible={statusModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setStatusModalVisible(false)}>
-        <View style={styles.statusModalOverlay}>
-          <View style={styles.statusModalContent}>
-            <View style={[
-              styles.statusModalIconContainer,
-              statusModalType === 'success' 
-                ? styles.statusModalIconSuccess 
-                : styles.statusModalIconError
-            ]}>
-              <Icon
-                name={statusModalType === 'success' ? 'check-circle' : 'alert-circle'}
-                size={48}
-                color={statusModalType === 'success' ? '#10b981' : '#ef4444'}
+    <View style={{ flex: 1 }}>
+      <View style={styles.head}>
+        <SearchBar value={search} onChangeText={setSearch} placeholder="Search by user ID" />
+        <View style={{ marginTop: 12 }}>
+          <ChipRow>
+            {filters.map((f) => (
+              <Chip
+                key={f.id}
+                label={f.label}
+                count={f.count != null ? compact(f.count) : undefined}
+                active={filter === f.id}
+                onPress={() => setFilter(f.id)}
               />
-            </View>
-            <Text style={styles.statusModalTitle}>{statusModalTitle}</Text>
-            <Text style={styles.statusModalMessage}>{statusModalMessage}</Text>
-            <TouchableOpacity
-              style={[
-                styles.statusModalButton,
-                statusModalType === 'success' 
-                  ? styles.statusModalButtonSuccess 
-                  : styles.statusModalButtonError
-              ]}
-              onPress={() => setStatusModalVisible(false)}
-              activeOpacity={0.8}>
-              <Text style={styles.statusModalButtonText}>OK</Text>
-            </TouchableOpacity>
-          </View>
+            ))}
+          </ChipRow>
         </View>
-      </Modal>
+        <KitRow style={styles.toolbar}>
+          <Text style={styles.total}>{compact(total)} users</Text>
+          <View style={{ flex: 1 }} />
+          <Button
+            small
+            variant="secondary"
+            icon="account-clock-outline"
+            label="Remind expired"
+            onPress={remindAllExpired}
+            loading={reminding}
+          />
+          <Button
+            small
+            variant="ghost"
+            icon="account-arrow-down-outline"
+            onPress={() => {
+              setBulkCount(null);
+              setBulkOpen(true);
+            }}
+          />
+        </KitRow>
+      </View>
+
+      {loading ? (
+        <Loading />
+      ) : (
+        <FlatList
+          data={users}
+          keyExtractor={(u) => String(u.id)}
+          renderItem={({ item }) => <UserRow user={item} onPress={setSelected} />}
+          contentContainerStyle={styles.list}
+          showsVerticalScrollIndicator={false}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.6}
+          initialNumToRender={14}
+          windowSize={9}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={refreshAll} tintColor={colors.accent} />
+          }
+          ListEmptyComponent={<Empty icon="account-search-outline" title="No users found" />}
+          ListFooterComponent={
+            loadingMore ? <ActivityIndicator color={colors.accent} style={{ margin: 16 }} /> : null
+          }
+        />
+      )}
+
+      <Sheet
+        visible={!!selected}
+        onClose={() => setSelected(null)}
+        title={selected?.external_id || `User-${selected?.id}`}>
+        {selected ? (
+          <>
+            <View style={styles.infoGrid}>
+              <View style={styles.infoCell}>
+                <Text style={styles.infoLabel}>Status</Text>
+                <Badge label={status} tone={toneOf(status)} />
+              </View>
+              <View style={styles.infoCell}>
+                <Text style={styles.infoLabel}>Premium until</Text>
+                <Text style={styles.infoValue}>{formatDate(selected.premium_expires_at)}</Text>
+              </View>
+              <View style={styles.infoCell}>
+                <Text style={styles.infoLabel}>Joined</Text>
+                <Text style={styles.infoValue}>{formatDate(selected.created_at)}</Text>
+              </View>
+              <View style={styles.infoCell}>
+                <Text style={styles.infoLabel}>Phone</Text>
+                <Text style={styles.infoValue} numberOfLines={1}>
+                  {selected.payment_phones || selected.paymentPhones || '—'}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.groupTitle}>Give premium access</Text>
+            <View style={styles.presetRow}>
+              {PRESETS.map((p) => (
+                <Button
+                  key={p.label}
+                  small
+                  variant="secondary"
+                  label={p.label}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                  onPress={() => grant(p.n, p.unit)}
+                />
+              ))}
+            </View>
+            <View style={styles.customRow}>
+              <Input
+                style={{ flex: 1 }}
+                value={customN}
+                onChangeText={(v) => setCustomN(v.replace(/[^0-9]/g, ''))}
+                placeholder="Custom amount"
+                keyboardType="number-pad"
+              />
+              <Button label="Add" onPress={() => grant(customN, customUnit)} loading={busy} style={{ width: 84 }} />
+            </View>
+            <View style={{ marginTop: 10 }}>
+              <ChipRow>
+                {UNITS.map((u) => (
+                  <Chip key={u} label={u} active={customUnit === u} onPress={() => setCustomUnit(u)} />
+                ))}
+              </ChipRow>
+            </View>
+
+            <Text style={styles.groupTitle}>Actions</Text>
+            {status === 'Expired' || status === 'Free' ? (
+              <Button
+                variant="secondary"
+                icon="bell-ring-outline"
+                label="Send renewal reminder"
+                onPress={remindOne}
+                disabled={busy}
+                style={{ marginBottom: 10 }}
+              />
+            ) : null}
+            {status === 'Blocked' ? (
+              <Button
+                variant="secondary"
+                icon="lock-open-outline"
+                label="Unblock user"
+                onPress={() => setBlocked(false)}
+                disabled={busy}
+              />
+            ) : (
+              <Button
+                variant="danger"
+                icon="block-helper"
+                label="Block user"
+                onPress={() =>
+                  Alert.alert('Block user?', 'They lose access and their subscription is cleared.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Block', style: 'destructive', onPress: () => setBlocked(true) },
+                  ])
+                }
+                disabled={busy}
+              />
+            )}
+          </>
+        ) : null}
+      </Sheet>
+
+      <Sheet
+        visible={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        title="Reset premium to Free"
+        footer={
+          bulkCount == null ? (
+            <Button label="Preview" onPress={previewBulk} loading={busy} style={{ flex: 1 }} />
+          ) : (
+            <>
+              <Button variant="secondary" label="Back" onPress={() => setBulkCount(null)} />
+              <Button
+                variant="danger"
+                label={`Downgrade ${bulkCount}`}
+                onPress={runBulk}
+                loading={busy}
+                disabled={bulkCount === 0}
+                style={{ flex: 1 }}
+              />
+            </>
+          )
+        }>
+        <Text style={styles.bulkText}>
+          Clears premium for many users at once. You will see how many are affected before anything changes.
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+          <Chip label="All premium users" active={bulkMode === 'all'} onPress={() => setBulkMode('all')} />
+          <Chip label="Joined before…" active={bulkMode === 'before'} onPress={() => setBulkMode('before')} />
+        </View>
+        {bulkMode === 'before' ? (
+          <Field label="Joined more than (days) ago">
+            <Input
+              value={bulkDays}
+              onChangeText={(v) => setBulkDays(v.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad"
+            />
+          </Field>
+        ) : null}
+        {bulkCount != null ? (
+          <Text style={styles.bulkResult}>{bulkCount} user(s) will be moved to Free.</Text>
+        ) : null}
+      </Sheet>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  flatListContent: {
-    paddingBottom: 100,
-  },
-  container: {
-    flex: 1,
-    padding: 16,
-    paddingBottom: 0,
-  },
-  tableCardTop: {
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-    marginBottom: 0,
-  },
-  tableCardEmpty: {
-    marginTop: 8,
-  },
-  tableRowCard: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: '#1f2937',
-    backgroundColor: 'rgba(17, 24, 39, 0.85)',
-    marginTop: 0,
-  },
-  tableRowCardFirst: {
-    borderTopWidth: 0,
-  },
-  tableRowCardLast: {
-    borderBottomLeftRadius: 16,
-    borderBottomRightRadius: 16,
-    marginBottom: 8,
-  },
-  badgeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    alignItems: 'center',
-  },
-  blockedBadge: {
-    backgroundColor: 'rgba(239, 68, 68, 0.22)',
-  },
-  blockedText: {
-    color: '#fca5a5',
-  },
-  paymentPhonesText: {
-    fontSize: 11,
-    color: '#93c5fd',
-    marginTop: 4,
-    lineHeight: 15,
-  },
-  remindAllWrap: {
-    marginBottom: 14,
-  },
-  remindAllButton: {
+  head: { paddingHorizontal: 16, paddingBottom: 6 },
+  toolbar: { marginTop: 12, gap: 8 },
+  total: { color: colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  list: { paddingHorizontal: 16, paddingBottom: 24 },
+  userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#6d28d9',
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  remindHint: {
-    fontSize: 11,
-    color: '#6b7280',
-    marginTop: 8,
-    lineHeight: 15,
-    paddingHorizontal: 4,
-  },
-  remindAllButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  remindOneButton: {
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  searchSpinner: {
-    marginRight: 4,
-  },
-  searchContainer: {
-    marginBottom: 16,
-  },
-  searchBox: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
-    borderRadius: 12,
-    paddingHorizontal: 16,
     gap: 12,
-    borderWidth: 1,
-    borderColor: '#1f2937',
-  },
-  searchInput: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 14,
-    paddingVertical: 12,
-  },
-  tableCard: {
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
+    padding: 12,
+    marginTop: 8,
     borderRadius: 16,
+    backgroundColor: colors.panel,
     borderWidth: 1,
-    borderColor: '#1f2937',
-    overflow: 'hidden',
+    borderColor: colors.border,
   },
-  tableHeader: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(31, 41, 55, 0.5)',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-  },
-  tableHeaderText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-  },
-  userCell: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginRight: 16,
-  },
-  userInfo: {
-    flex: 1,
-    gap: 6,
-  },
-  userAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  userInitials: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  userName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  actionButton: {
-    padding: 4,
-    width: 50,
-    alignItems: 'flex-end',
-  },
-  statusBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  premiumBadge: {
-    backgroundColor: 'rgba(234, 179, 8, 0.2)',
-  },
-  freeBadge: {
-    backgroundColor: 'rgba(55, 65, 81, 0.5)',
-  },
-  expiredBadge: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-  },
-  statusText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  premiumText: {
-    color: '#fbbf24',
-  },
-  freeText: {
-    color: '#d1d5db',
-  },
-  expiredText: {
-    color: '#f87171',
-  },
-  expiryText: {
-    fontSize: 11,
-    color: '#10b981',
-    marginTop: 2,
-  },
-  expiredAtText: {
-    fontSize: 11,
-    color: '#ef4444',
-    marginTop: 2,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-  statCard: {
-    flex: 1,
-    minWidth: 68,
-    backgroundColor: '#0c1220',
+  userName: { color: colors.textPrimary, fontSize: 14, fontWeight: '700' },
+  userSub: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
+  infoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  infoCell: {
+    width: '48%',
+    flexGrow: 1,
+    padding: 12,
     borderRadius: 14,
-    padding: 10,
-    alignItems: 'center',
+    backgroundColor: colors.panel,
     borderWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.12)',
-  },
-  statCardTotal: {
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-  },
-  statCardPremium: {
-    borderColor: 'rgba(251, 191, 36, 0.35)',
-  },
-  statIcon: {
-    marginBottom: 4,
-  },
-  statValue: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#fff',
-  },
-  statValuePremium: {
-    color: '#fbbf24',
-  },
-  statValueExpired: {
-    color: '#f87171',
-  },
-  statValueBlocked: {
-    color: '#fca5a5',
-  },
-  statLabel: {
-    fontSize: 10,
-    color: '#9ca3af',
-    marginTop: 4,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  filterContainer: {
-    marginBottom: 16,
-  },
-  filterScroll: {
-    gap: 8,
-  },
-  filterTab: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: 'rgba(17, 24, 39, 0.8)',
-    borderWidth: 1,
-    borderColor: '#1f2937',
-  },
-  filterTabActive: {
-    backgroundColor: 'rgba(20, 184, 166, 0.18)',
-    borderColor: 'rgba(110, 231, 210, 0.35)',
-  },
-  filterTabText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#9ca3af',
-  },
-  filterTabTextActive: {
-    color: '#fff',
-  },
-  autoRefreshIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  autoRefreshDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#10b981',
-  },
-  autoRefreshText: {
-    fontSize: 11,
-    color: '#10b981',
-  },
-  modalContainer: {
-    flex: 1,
-  },
-  modalContent: {
-    flex: 1,
-    backgroundColor: 'rgba(17, 24, 39, 0.95)',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    marginTop: 100,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2937',
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  closeButton: {
-    padding: 4,
-  },
-  modalBody: {
-    flex: 1,
-    padding: 16,
-  },
-  grantSummaryCard: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-  },
-  grantSummaryTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-    marginBottom: 6,
-  },
-  grantSummaryMeta: {
-    fontSize: 13,
-    color: '#9ca3af',
-    marginBottom: 4,
-  },
-  grantSummaryPreview: {
-    fontSize: 13,
-    color: '#6ee7b7',
-    fontWeight: '600',
-  },
-  presetRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  presetChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: 'rgba(55, 65, 81, 0.8)',
-    borderWidth: 1,
-    borderColor: 'rgba(75, 85, 99, 0.9)',
-  },
-  presetChipText: {
-    color: '#e5e7eb',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: '#9ca3af',
-    marginBottom: 24,
-  },
-  managementOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: 'rgba(31, 41, 55, 0.5)',
-    borderRadius: 12,
-    marginBottom: 12,
-    gap: 16,
-  },
-  managementOptionDanger: {
-    borderWidth: 1,
-    borderColor: 'rgba(248, 113, 113, 0.35)',
-    backgroundColor: 'rgba(69, 10, 10, 0.35)',
-  },
-  managementOptionSuccess: {
-    borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.35)',
-    backgroundColor: 'rgba(6, 78, 59, 0.28)',
-  },
-  optionIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  optionIconDanger: {
-    backgroundColor: 'rgba(127, 29, 29, 0.55)',
-  },
-  optionIconSuccess: {
-    backgroundColor: 'rgba(20, 83, 45, 0.55)',
-  },
-  optionContent: {
-    flex: 1,
-  },
-  optionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-    marginBottom: 4,
-  },
-  optionDescription: {
-    fontSize: 13,
-    color: '#9ca3af',
-  },
-  accessTypeContainer: {
-    marginBottom: 24,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-    marginBottom: 12,
-  },
-  accessTypeButtons: {
-    flexDirection: 'row',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  accessTypeButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  accessTypeButtonActive: {
-    backgroundColor: '#7c3aed',
-    borderColor: '#7c3aed',
-  },
-  accessTypeButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#9ca3af',
-  },
-  accessTypeButtonTextActive: {
-    color: '#fff',
-  },
-  inputContainer: {
-    marginBottom: 24,
-  },
-  input: {
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderWidth: 1,
-    borderColor: '#374151',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: '#fff',
-    fontSize: 14,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 24,
-    marginBottom: 32,
-  },
-  cancelButton: {
-    flex: 1,
-    paddingVertical: 14,
-    backgroundColor: 'rgba(31, 41, 55, 0.8)',
-    borderRadius: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  cancelButtonText: {
-    color: '#9ca3af',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  confirmButton: {
-    flex: 1,
-    paddingVertical: 14,
-    backgroundColor: '#7c3aed',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  confirmButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  emptyState: {
-    padding: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyStateHint: {
-    marginTop: 16,
-    color: '#9ca3af',
-  },
-  emptyStateText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#9ca3af',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  emptyStateSubtext: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-  },
-  statusModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  statusModalContent: {
-    backgroundColor: '#1f2937',
-    borderRadius: 20,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#374151',
-  },
-  statusModalIconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  statusModalIconSuccess: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  statusModalIconError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-  },
-  statusModalTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  statusModalMessage: {
-    fontSize: 14,
-    color: '#d1d5db',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 20,
-  },
-  statusModalButton: {
-    width: '100%',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusModalButtonSuccess: {
-    backgroundColor: '#10b981',
-  },
-  statusModalButtonError: {
-    backgroundColor: '#ef4444',
-  },
-  statusModalButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  downgradeAllButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#dc2626',
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  downgradeOptionActive: {
-    borderWidth: 1,
-    borderColor: 'rgba(167,139,250,0.6)',
-    backgroundColor: 'rgba(76,29,149,0.25)',
-  },
-  downgradeWarnCard: {
-    flexDirection: 'row',
+    borderColor: colors.border,
     alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: 'rgba(120,53,15,0.3)',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(251,191,36,0.35)',
+    gap: 6,
   },
-  downgradeWarnText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#fde68a',
-    lineHeight: 18,
+  infoLabel: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
+  infoValue: { color: colors.textPrimary, fontSize: 14, fontWeight: '600' },
+  groupTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 22,
+    marginBottom: 10,
   },
+  presetRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  customRow: { flexDirection: 'row', gap: 8 },
+  bulkText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginBottom: 16 },
+  bulkResult: { color: colors.warning, fontSize: 14, fontWeight: '600', marginTop: 4 },
 });
 
 export default UsersSection;
