@@ -24,17 +24,17 @@ object PlaybackHttpHeaders {
     fun isDirectMediaUrl(rawUrl: String): Boolean {
         val trimmed = rawUrl.trim()
         if (trimmed.isEmpty()) return false
-        if (trimmed.contains(".php", ignoreCase = true)) return false
+        val uri = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return false
+        val scheme = uri.scheme?.lowercase().orEmpty()
+        if (scheme != "http" && scheme != "https") return false
+        val path = uri.path?.lowercase().orEmpty()
+        // .php gateways (incl. manifest.php) keep page-style headers.
+        if (path.contains(".php")) return false
         if (CdnTokenHeaders.refererOriginForUrl(trimmed) != null) return false
-        val path = runCatching { Uri.parse(trimmed).path }.getOrNull()?.lowercase() ?: return false
-        return path.endsWith(".m3u8") ||
-            path.endsWith(".m3u") ||
-            path.endsWith(".mpd") ||
-            path.endsWith(".mp4") ||
-            path.endsWith(".m4v") ||
-            path.endsWith(".ts") ||
-            path.endsWith(".mkv") ||
-            path.endsWith(".webm")
+        // Path extension, ?format=m3u8 style hints, tokenised paths (index.m3u8;jsessionid,
+        // /index.m3u8/), upper-case / percent-encoded names and raw IPTV panel links
+        // (http://ip:port/live/user/pass/1) are all direct media — never page headers.
+        return StreamUrlClassifier.hasMediaSignature(trimmed)
     }
 
     fun defaultsForUrl(rawUrl: String): Map<String, String> {

@@ -47,6 +47,7 @@ class PlayerManager(
     private var webViewFailoverUsed = false
     private var clearKeyDemoteUsed = false
     private var drmSoftRetries = 0
+    @Volatile private var startGeneration = 0
     private var sameFormatRetries = 0
     private var playlistResetReloads = 0
     private var networkRetries = 0
@@ -90,6 +91,7 @@ class PlayerManager(
     }
 
     private fun startSession(session: StreamSession) {
+        startGeneration++
         currentSession = preferClearKeySession(session)
         handlingError = false
         formatQueue.clear()
@@ -115,7 +117,28 @@ class PlayerManager(
             return
         }
 
-        val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
+        val active = currentSession ?: session
+        if (factory.needsProbe(active.mpdUrl)) {
+            // No file extension (IPTV panel, tokenised CDN, redirect…): sniff the real format
+            // first so Exo's very first attempt is right — no wrong-parser flash, faster start.
+            val gen = ++startGeneration
+            onStateChanged(PlaybackState.BUFFERING)
+            isInitialized = true
+            factory.detectFormatAsync(active) { sniffed ->
+                if (gen != startGeneration || currentSession == null) return@detectFormatAsync
+                Log.i(TAG, "route → ExoPlayer sniffed format=$sniffed")
+                val format = if (sniffed == OrizonPlayerFactory.Format.GATEWAY) {
+                    OrizonPlayerFactory.Format.HLS
+                } else {
+                    sniffed
+                }
+                enqueueFormats(format)
+                startExo(format)
+            }
+            return
+        }
+
+        val classified = factory.lockedFormat(active.mpdUrl) ?: factory.classify(active.mpdUrl)
         Log.i(TAG, "route → ExoPlayer format=$classified")
         enqueueFormats(classified)
         startExo(classified)
@@ -458,6 +481,7 @@ class PlayerManager(
     }
 
     fun release() {
+        startGeneration++
         mainHandler.removeCallbacksAndMessages(null)
         exoPlayer?.removeListener(exoListener)
         exoPlayer?.release()

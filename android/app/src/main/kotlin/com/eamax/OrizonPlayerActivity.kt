@@ -162,6 +162,19 @@ class OrizonPlayerActivity : AppCompatActivity() {
             StreamUrlClassifier.needsWebPlayer(session.mpdUrl)
         ) {
             resolveGatewayThenPlay()
+        } else if (factory.needsProbe(session.mpdUrl)) {
+            // Extension-less link (IPTV panel / tokenised CDN): sniff the real format first.
+            factory.detectFormatAsync(session) { sniffed ->
+                if (isFinishing) return@detectFormatAsync
+                Log.i(TAG, "sniffed format=$sniffed url=${safeUrlForLogs(session.mpdUrl)}")
+                val format = if (sniffed == OrizonPlayerFactory.Format.GATEWAY) {
+                    OrizonPlayerFactory.Format.HLS
+                } else {
+                    sniffed
+                }
+                enqueueFormats(format)
+                startExo(format)
+            }
         } else {
             enqueueFormats(classified)
             startExo(classified)

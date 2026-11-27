@@ -57,9 +57,13 @@ class OrizonPlayerFactory(private val context: Context) {
         // (feels like play→pause→play). Floor remote policy to safe live minima.
         val minBuf = PlayerRuntimeConfig.bufferMinMs.coerceAtLeast(LIVE_MIN_BUFFER_MS)
         val maxBuf = PlayerRuntimeConfig.bufferMaxMs.coerceAtLeast(minBuf + 10_000)
-        val forPlayback = PlayerRuntimeConfig.bufferForPlaybackMs.coerceIn(3_000, 6_000)
+        // Fast first frame: start after ~2s of media (live sits 35s behind the edge, so the
+        // cushion refills at network speed). The deep min/max buffer + larger after-rebuffer
+        // target still protect against stalls, so quick start does not cost smoothness.
+        val forPlayback = PlayerRuntimeConfig.bufferForPlaybackMs
+            .coerceIn(1_500, MAX_STARTUP_BUFFER_MS)
         val afterRebuffer = PlayerRuntimeConfig.bufferForPlaybackAfterRebufferMs
-            .coerceAtLeast(forPlayback + 2_000)
+            .coerceAtLeast(forPlayback + 4_000)
             .coerceAtMost(maxBuf)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBuf, maxBuf, forPlayback, afterRebuffer)
@@ -234,24 +238,11 @@ class OrizonPlayerFactory(private val context: Context) {
 
     fun classify(url: String): Format {
         val trimmed = url.trim()
-        val noQuery = trimmed.substringBefore('?').substringBefore('#')
-        if (noQuery.endsWith(".mpd", ignoreCase = true) ||
-            noQuery.endsWith("manifest.php", ignoreCase = true)
-        ) {
-            return Format.DASH
-        }
-        if (noQuery.endsWith(".m3u8", ignoreCase = true) ||
-            noQuery.endsWith(".m3u", ignoreCase = true)
-        ) {
-            return Format.HLS
-        }
-        if (noQuery.endsWith(".mp4", ignoreCase = true) ||
-            noQuery.endsWith(".m4v", ignoreCase = true) ||
-            noQuery.endsWith(".webm", ignoreCase = true) ||
-            noQuery.endsWith(".mkv", ignoreCase = true) ||
-            noQuery.endsWith(".ts", ignoreCase = true)
-        ) {
-            return Format.PROGRESSIVE
+        when (StreamUrlClassifier.strongFormat(trimmed)) {
+            StreamUrlClassifier.Format.DASH -> return Format.DASH
+            StreamUrlClassifier.Format.HLS -> return Format.HLS
+            StreamUrlClassifier.Format.PROGRESSIVE -> return Format.PROGRESSIVE
+            else -> Unit
         }
         return when (StreamUrlClassifier.detectFormat(trimmed)) {
             StreamUrlClassifier.Format.DASH -> Format.DASH
@@ -285,17 +276,44 @@ class OrizonPlayerFactory(private val context: Context) {
     }
 
     fun lockedFormat(url: String): Format? {
-        val path = url.trim().substringBefore('?').substringBefore('#')
-        return when {
-            path.endsWith(".m3u8", ignoreCase = true) ||
-                path.endsWith(".m3u", ignoreCase = true) -> Format.HLS
-            path.endsWith(".mpd", ignoreCase = true) -> Format.DASH
-            path.endsWith(".mp4", ignoreCase = true) ||
-                path.endsWith(".m4v", ignoreCase = true) ||
-                path.endsWith(".webm", ignoreCase = true) ||
-                path.endsWith(".mkv", ignoreCase = true) ||
-                path.endsWith(".ts", ignoreCase = true) -> Format.PROGRESSIVE
+        // Real file extension on the path (tolerates ;params, trailing /, UPPER-case, %-encoding).
+        if (StreamUrlClassifier.pathExtension(url).isEmpty()) return null
+        return when (StreamUrlClassifier.pathFormat(url)) {
+            StreamUrlClassifier.Format.HLS -> Format.HLS
+            StreamUrlClassifier.Format.DASH -> Format.DASH
+            StreamUrlClassifier.Format.PROGRESSIVE -> Format.PROGRESSIVE
             else -> null
+        }
+    }
+
+    /**
+     * True when the format is only a guess (no file extension): IPTV panels, tokenised CDN
+     * paths, `?format=` hints, unknown links. Those are content-sniffed before Exo starts so
+     * the first attempt is the right one (faster start, no wrong-parser flash).
+     */
+    fun needsProbe(url: String): Boolean =
+        lockedFormat(url) == null &&
+            !StreamUrlClassifier.needsWebPlayer(url) &&
+            url.trim().startsWith("http", ignoreCase = true)
+
+    /** Headers Exo will use for this session — also used by the format probe. */
+    fun requestHeaders(session: StreamSession): Map<String, String> = buildHeaders(session)
+
+    /**
+     * Sniffs the real format off the main thread (<=4s), then calls [onResult] on the main
+     * thread. Falls back to [classify] when the host does not answer.
+     */
+    fun detectFormatAsync(session: StreamSession, onResult: (Format) -> Unit) {
+        val url = session.mpdUrl.trim()
+        val headers = runCatching { buildHeaders(session) }.getOrDefault(emptyMap())
+        val main = Handler(android.os.Looper.getMainLooper())
+        MediaFormatProbe.executor.execute {
+            val sniffed = try {
+                MediaFormatProbe.probe(url, headers)
+            } catch (_: Exception) {
+                null
+            }
+            main.post { onResult(sniffed ?: classify(url)) }
         }
     }
 
@@ -562,6 +580,7 @@ class OrizonPlayerFactory(private val context: Context) {
         private const val TAG = "OrizonPlayerFactory"
         private const val BACK_BUFFER_MS = 0
         private const val LIVE_MIN_BUFFER_MS = 20_000
+        private const val MAX_STARTUP_BUFFER_MS = 2_500
         private const val MAX_DROPPED_VIDEO_FRAMES_TO_NOTIFY = 50
         // Sit inside the live window — not on the tip. Chasing the edge causes
         // constant rebuffer / speed correction (play-pause-play).

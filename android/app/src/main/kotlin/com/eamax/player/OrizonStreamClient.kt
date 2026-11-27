@@ -2,6 +2,8 @@ package com.eamax.player
 
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -26,6 +28,14 @@ object OrizonStreamClient {
             .retryOnConnectionFailure(true)
             .followRedirects(true)
             .followSslRedirects(true)
+            // Reuse sockets across playlist/segment fetches (no TLS handshake per segment).
+            .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 64
+                    maxRequestsPerHost = 16
+                },
+            )
             .build()
     }
 

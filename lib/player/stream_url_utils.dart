@@ -1,15 +1,56 @@
 /// Stream URL classification aligned with native [StreamUrlClassifier] / RN VideoPlayer.
 enum StreamFormat { dash, hls, progressive, gateway, unknown }
 
+// Path-extension match tolerant of `;params`, a trailing `/` and upper-case names.
+// Mirrors Kotlin StreamUrlClassifier.pathExtension / strongFormat.
+const _hlsExt = {'m3u8', 'm3u', 'm3u8x'};
+const _dashExt = {'mpd'};
+const _progressiveExt = {
+  'mp4', 'm4v', 'm4s', 'm4a', 'mov', 'webm', 'mkv', 'ts', 'm2ts', 'mts', '3gp', 'flv', 'avi',
+  'mp3', 'aac', 'ogg', 'oga', 'ogv', 'opus', 'flac', 'wav',
+};
+
+String _pathExtension(String url) {
+  var path = url.trim().split('#').first.split('?').first;
+  try {
+    path = Uri.decodeFull(path);
+  } catch (_) {}
+  path = path.split(';').first.toLowerCase();
+  while (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  final afterScheme = path.contains('://') ? path.split('://').skip(1).join('://') : path;
+  final slash = afterScheme.indexOf('/');
+  if (slash < 0) return '';
+  final name = afterScheme.substring(slash + 1).split('/').last;
+  final dot = name.lastIndexOf('.');
+  if (dot < 0 || dot == name.length - 1) return '';
+  return name.substring(dot + 1);
+}
+
+String _query(String url) {
+  final noFrag = url.trim().split('#').first;
+  final i = noFrag.indexOf('?');
+  return i < 0 ? '' : noFrag.substring(i + 1);
+}
+
 bool _hasObviousM3u8(String url) =>
-    RegExp(r'\.m3u8?(\?|#|$)', caseSensitive: false).hasMatch(url) ||
-    RegExp(r'[?&](format|type)=m3u8?(\b|&|$)', caseSensitive: false).hasMatch(url);
+    _hlsExt.contains(_pathExtension(url)) ||
+    RegExp(r'(^|[?&])(format|type|output|ext|fmt|container|mode)=(m3u8?|hls|applehls)(\b|&|$)',
+            caseSensitive: false)
+        .hasMatch(_query(url));
 
 bool _hasObviousMpd(String url) =>
-    RegExp(r'\.mpd(\?|#|$)', caseSensitive: false).hasMatch(url);
+    _dashExt.contains(_pathExtension(url)) ||
+    RegExp(r'(^|[?&])(format|type|output|ext|fmt|container|mode)=(mpd|dash)(\b|&|$)',
+            caseSensitive: false)
+        .hasMatch(_query(url));
 
 bool _hasObviousProgressive(String url) =>
-    RegExp(r'\.(mp4|m4v|webm|mkv|mov|ts)(\?|#|$)', caseSensitive: false).hasMatch(url);
+    _progressiveExt.contains(_pathExtension(url)) ||
+    RegExp(r'(^|[?&])(format|type|output|ext|fmt|container)=(mp4|ts|mkv|webm|mpegts)(\b|&|$)',
+            caseSensitive: false)
+        .hasMatch(_query(url));
 
 bool isLikelyIptvLiveUrl(String url) {
   if (url.isEmpty) return false;

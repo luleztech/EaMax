@@ -10,7 +10,7 @@ import com.eamax.domain.model.StreamQuality
 object PlayerRuntimeConfig {
     var bufferMinMs: Int = 20_000
     var bufferMaxMs: Int = 60_000
-    var bufferForPlaybackMs: Int = 3_500
+    var bufferForPlaybackMs: Int = 2_000
     var bufferForPlaybackAfterRebufferMs: Int = 7_000
     var networkTimeoutMs: Int = 15_000
     var defaultQuality: StreamQuality = StreamQuality.QUALITY_480P
@@ -37,7 +37,7 @@ object PlayerRuntimeConfig {
             bufferMaxMs = it.coerceAtLeast(bufferMinMs + 10_000)
         }
         (args["initialBufferMs"] as? Number)?.toInt()?.takeIf { it in 200..12_000 }?.let {
-            bufferForPlaybackMs = it.coerceIn(3_000, 6_000)
+            bufferForPlaybackMs = it.coerceIn(1_500, 6_000)
             bufferForPlaybackAfterRebufferMs =
                 (bufferForPlaybackMs * 2).coerceIn(6_000, 12_000)
         }
