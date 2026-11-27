@@ -1985,10 +1985,19 @@ async function channelNameFor(channelId) {
  * Never leave the player on a 502: stale cached resolve → fresh resolve → known-good
  * ClearKey source (nur/mpilali) for AzamSportN. Returns the sent response or null.
  */
-async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl }) {
+function hostOf(u) {
+  try {
+    return new URL(String(u)).host;
+  } catch (_) {
+    return 'invalid';
+  }
+}
+
+async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl, trace = [] }) {
   try {
     return await sendProxiedMpd(res, resolved, baseUrl);
   } catch (firstErr) {
+    trace.push(`primary:${firstErr.message || firstErr} host=${hostOf(resolved.streamUrl)}`);
     console.warn(`[embed] mpd failover start ch=${channelId}: ${firstErr.message || firstErr}`);
   }
 
@@ -2002,7 +2011,9 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl 
       if (fresh.clearKeyRaw) persistChannelClearKey(channelId, fresh).catch(() => {});
       return sendMpdBody(res, body);
     }
+    trace.push(`fresh:${fresh?.streamUrl ? 'same-url' : 'unresolved'}`);
   } catch (err) {
+    trace.push(`fresh:${err.message || err}`);
     console.warn(`[embed] fresh resolve failover failed ch=${channelId}: ${err.message || err}`);
   }
 
@@ -2012,7 +2023,9 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl 
     const name = await channelNameFor(channelId);
     const m = name.match(/azam\s*sports?\s*(\d+)/i);
     sport = m ? Number(m[1]) : null;
+    trace.push(`name:${name || 'none'}`);
   }
+  trace.push(`sport:${sport || 'none'}`);
   if (sport) {
     try {
       const nur = await fetchNurClearKeyForAzam(sport);
@@ -2022,7 +2035,9 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl 
         persistChannelClearKey(channelId, nur).catch(() => {});
         return sendMpdBody(res, body);
       }
+      trace.push('nur:no-clearkey');
     } catch (err) {
+      trace.push(`nur:${err.message || err}`);
       console.warn(`[embed] nur failover failed ch=${channelId}: ${err.message || err}`);
     }
   }
@@ -2083,17 +2098,19 @@ async function handleChannelPlay(req, res) {
   }
   if (ext === 'mpd' || resolved.kind === 'dash') {
     try {
+      const trace = [];
       const sent = await proxyMpdWithFailover(res, {
         channelId,
         source,
         resolved,
         baseUrl: base,
+        trace,
       });
       if (sent) return sent;
       if (needsHostedWebPlayer(resolved)) {
         return res.redirect(302, watchPageUrl(base, resolved));
       }
-      return res.status(502).json({ error: 'mpd_proxy_failed' });
+      return res.status(502).json({ error: 'mpd_proxy_failed', trace });
     } catch (err) {
       console.warn('[embed] mpd proxy failed:', err.message || err);
       return res.status(502).json({ error: 'mpd_proxy_failed' });
