@@ -4,7 +4,9 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
@@ -37,6 +39,29 @@ object OrizonStreamClient {
                 },
             )
             .build()
+    }
+
+    /**
+     * Opens the TCP + TLS (HTTP/2) connection to the stream host ahead of time so the player's
+     * first manifest request reuses it from the pool instead of paying the handshake.
+     */
+    fun preconnect(url: String) {
+        val httpUrl = url.trim().toHttpUrlOrNull() ?: return
+        if (httpUrl.scheme != "http" && httpUrl.scheme != "https") return
+        warmExecutor.execute {
+            try {
+                val root = httpUrl.newBuilder().encodedPath("/").query(null).fragment(null).build()
+                okHttpClient.newCall(Request.Builder().url(root).head().build())
+                    .execute()
+                    .close()
+            } catch (_: Exception) {
+                // Best effort only.
+            }
+        }
+    }
+
+    private val warmExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "orizon-preconnect").apply { isDaemon = true }
     }
 
     fun dataSourceFactory(headers: Map<String, String>): HttpDataSource.Factory {

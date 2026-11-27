@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show HttpClient, HttpHeaders;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -107,8 +108,11 @@ class PlaybackOrchestrator {
 
     // Android: Orizon native player — gateway resolve → ExoPlayer, WebView last.
     if (NativeAndroidPlayer.supported) {
-      // Apply server-driven settings before the native activity builds ExoPlayer.
-      await _syncNativePolicy(policy);
+      // Warm the server's resolve + MPD cache while the native activity starts.
+      _prewarmManifest(url);
+      // Platform-channel calls run in order, so the policy reaches Kotlin before `open`
+      // without making the tap wait for a round trip.
+      unawaited(_syncNativePolicy(policy));
       await NativeAndroidPlayer.open(
         url: url,
         channelId: session.channelId,
@@ -240,6 +244,29 @@ class PlaybackOrchestrator {
       extractHeaders: extractHeaders,
       extractAudioLanguage: extractAudioLanguage,
     );
+  }
+
+  /// Fire-and-forget GET of a server-proxied manifest (`/api/channels/:id/play.mpd|m3u8`).
+  /// The backend caches the resolved link and rewritten MPD for a few seconds and shares
+  /// in-flight work, so the player's own request starts from a warm server.
+  static void _prewarmManifest(String url) {
+    final lower = url.toLowerCase();
+    if (!(lower.contains('/api/channels/') && lower.contains('/play.'))) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    unawaited(() async {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+      try {
+        final req = await client.getUrl(uri);
+        req.headers.set(HttpHeaders.userAgentHeader, 'ExoPlayer');
+        final resp = await req.close().timeout(const Duration(seconds: 12));
+        await resp.drain<void>();
+      } catch (_) {
+        // Best effort only.
+      } finally {
+        client.close(force: true);
+      }
+    }());
   }
 
   Future<void> _syncNativePolicy(RemotePlayerConfig policy) async {

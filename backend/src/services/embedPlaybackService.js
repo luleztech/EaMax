@@ -1957,16 +1957,20 @@ async function fetchUpstreamMpd(resolved) {
   ];
   if (prefersBare(resolved.streamUrl)) attempts.sort((a, b) => Number(b.bare) - Number(a.bare));
   let lastErr = null;
-  for (const { headers, bare } of attempts) {
+  for (let i = 0; i < attempts.length; i += 1) {
+    const { headers, bare } = attempts[i];
     try {
+      // Fail fast on early attempts (a hung edge must not stall the channel open for
+      // 18s); only the last attempt gets a long timeout.
       const fetched = await fetchPublic(resolved.streamUrl, {
         headers,
-        timeoutMs: 18000,
+        timeoutMs: i < attempts.length - 1 ? 5000 : 12000,
       });
       if (fetched.response.status >= 200 && fetched.response.status < 300) {
         if (bare) markBare(resolved.streamUrl);
         return fetched;
       }
+      try { await fetched.response.body?.cancel(); } catch (_) { /* ignore */ }
       lastErr = new Error(`HTTP ${fetched.response.status}`);
       console.warn(
         `[embed] mpd upstream HTTP ${fetched.response.status} ua=${String(headers['User-Agent']).slice(0, 24)}`,
@@ -1979,8 +1983,37 @@ async function fetchUpstreamMpd(resolved) {
   throw lastErr || new Error('mpd_upstream_failed');
 }
 
-/** Fetch + rewrite the MPD. Throws on any upstream problem so callers can fail over. */
+/**
+ * Live MPDs refresh every ~2s, so a body up to MPD_BODY_TTL_MS old is as good as a fresh one.
+ * Concurrent requests (client prefetch + player, several viewers of one channel) share one
+ * upstream fetch instead of each paying the full resolve→fetch→rewrite latency.
+ */
+const MPD_BODY_TTL_MS = 1500;
+const mpdBodies = new Map();
+const mpdBodyJobs = new Map();
+
 async function buildProxiedMpdBody(resolved, baseUrl) {
+  const key = `${baseUrl}|${resolved.streamUrl}|${resolved.clearKeyRaw || ''}`;
+  const hit = mpdBodies.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.body;
+  const pending = mpdBodyJobs.get(key);
+  if (pending) return pending;
+  const job = buildProxiedMpdBodyUncached(resolved, baseUrl)
+    .then((body) => {
+      mpdBodies.set(key, { body, expiresAt: Date.now() + MPD_BODY_TTL_MS });
+      if (mpdBodies.size > 200) {
+        const now = Date.now();
+        for (const [k, v] of mpdBodies) if (v.expiresAt <= now) mpdBodies.delete(k);
+      }
+      return body;
+    })
+    .finally(() => mpdBodyJobs.delete(key));
+  mpdBodyJobs.set(key, job);
+  return job;
+}
+
+/** Fetch + rewrite the MPD. Throws on any upstream problem so callers can fail over. */
+async function buildProxiedMpdBodyUncached(resolved, baseUrl) {
   let fetched;
   try {
     fetched = await fetchUpstreamMpd(resolved);

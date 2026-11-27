@@ -204,6 +204,17 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private fun resolveGatewayThenPlay() {
         gatewayFallbackUrl = session.mpdUrl
         Log.i(TAG, "gateway resolve… url=${safeUrlForLogs(session.mpdUrl)}")
+        // Build the player while the network resolve runs, so Exo is ready the moment the
+        // stream URL arrives (decoder/renderer setup no longer adds to the wait).
+        mainHandler.post {
+            if (!isFinishing && player == null && webViewEngine == null) {
+                try {
+                    ensurePlayer()
+                } catch (e: Exception) {
+                    Log.w(TAG, "pre-create player failed: ${e.message}")
+                }
+            }
+        }
         resolveExecutor.execute {
             val resolved = try {
                 GatewayPlaybackResolver.resolve(session)
@@ -370,29 +381,35 @@ class OrizonPlayerActivity : AppCompatActivity() {
         formatQueue.addAll(rest)
     }
 
+    /** Builds ExoPlayer once (renderers, track selector, load control) and attaches the view. */
+    private fun ensurePlayer(): ExoPlayer {
+        player?.let { return it }
+        val created = factory.createPlayer(
+            session.preferredAudioLanguage,
+            playbackPreferences,
+        )
+        created.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    sameFormatRetries = 0
+                    playlistResetReloads = 0
+                    networkRetries = 0
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                handlePlaybackError(error)
+            }
+        })
+        player = created
+        playerView.player = created
+        return created
+    }
+
     private fun startExo(format: OrizonPlayerFactory.Format, soft: Boolean = false) {
         handlingError = false
         try {
-            val exo = player ?: factory.createPlayer(
-                session.preferredAudioLanguage,
-                playbackPreferences,
-            ).also { created ->
-                created.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        if (playbackState == Player.STATE_READY) {
-                            sameFormatRetries = 0
-                            playlistResetReloads = 0
-                            networkRetries = 0
-                        }
-                    }
-
-                    override fun onPlayerError(error: PlaybackException) {
-                        handlePlaybackError(error)
-                    }
-                })
-                player = created
-                playerView.player = created
-            }
+            val exo = ensurePlayer()
             playerView.visibility = View.VISIBLE
             webContainer.visibility = View.GONE
             if (!soft && exo.mediaItemCount > 0) {

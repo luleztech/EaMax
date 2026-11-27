@@ -228,6 +228,8 @@ class MainActivity : FlutterActivity() {
                             "open drm=${args["drmType"]} clearKeyLen=${mergedClearKey.length} " +
                                 "engine=${args["playbackEngine"]} url=${args["url"]}",
                         )
+                        // Open the socket/TLS to the stream host while the activity starts.
+                        com.eamax.player.OrizonStreamClient.preconnect(args["url"]?.toString().orEmpty())
                         nativeOpenResult = result
                         @Suppress("DEPRECATION")
                         startActivityForResult(intent, NATIVE_PLAYER_REQUEST)
