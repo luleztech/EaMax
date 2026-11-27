@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -50,6 +51,8 @@ class OrizonPlayerActivity : AppCompatActivity() {
         private const val MAX_SAME_FORMAT_RETRIES = 4
         private const val MAX_PLAYLIST_RESET_RELOADS = 8
         private const val MAX_NETWORK_RETRIES = 8
+        /** How long controls stay on screen after the last touch. */
+        private const val CONTROLS_TIMEOUT_MS = 3_000L
         /** Cycle: Fit → Contain → Kuza → Jaza. */
         private val ZOOM_MODES = listOf("fit", "contain", "kuza", "jaza")
     }
@@ -58,6 +61,8 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private var webViewEngine: WebViewEngine? = null
     private lateinit var playerView: PlayerView
     private lateinit var webContainer: FrameLayout
+    private lateinit var chipsContainer: View
+    private val hideChipsRunnable = Runnable { hideChips() }
     private lateinit var zoomChip: LinearLayout
     private lateinit var zoomLabel: TextView
     private lateinit var qualityChip: LinearLayout
@@ -133,7 +138,18 @@ class OrizonPlayerActivity : AppCompatActivity() {
         // DRM/keys never reach STATE_BUFFERING (emulator ClearKey hang).
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
         playerView.keepScreenOn = true
-        playerView.controllerAutoShow = true
+        // Controls (Media3 bar + Ubora/Zoom chips) stay hidden until the user touches the screen,
+        // then fade out again after CONTROLS_TIMEOUT_MS.
+        playerView.controllerAutoShow = false
+        playerView.controllerShowTimeoutMs = CONTROLS_TIMEOUT_MS.toInt()
+        playerView.controllerHideOnTouch = true
+        playerView.hideController()
+        chipsContainer = findViewById(R.id.player_chips)
+        playerView.setControllerVisibilityListener(
+            PlayerView.ControllerVisibilityListener { visibility ->
+                if (visibility == View.VISIBLE) showChips() else hideChips()
+            },
+        )
         playerView.setShowPreviousButton(false)
         playerView.setShowNextButton(false)
         playerView.setShowFastForwardButton(false)
@@ -565,6 +581,33 @@ class OrizonPlayerActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "fallbackStreamsJson parse failed", e)
         }
+    }
+
+    /** Any touch reveals the chips (works for Exo and WebView); they auto-hide again. */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) showChips()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun showChips() {
+        if (!::chipsContainer.isInitialized) return
+        mainHandler.removeCallbacks(hideChipsRunnable)
+        chipsContainer.animate().cancel()
+        if (chipsContainer.visibility != View.VISIBLE) {
+            chipsContainer.alpha = 0f
+            chipsContainer.visibility = View.VISIBLE
+        }
+        chipsContainer.animate().alpha(1f).setDuration(150L).start()
+        mainHandler.postDelayed(hideChipsRunnable, CONTROLS_TIMEOUT_MS)
+    }
+
+    private fun hideChips() {
+        if (!::chipsContainer.isInitialized) return
+        mainHandler.removeCallbacks(hideChipsRunnable)
+        chipsContainer.animate().cancel()
+        chipsContainer.animate().alpha(0f).setDuration(200L).withEndAction {
+            chipsContainer.visibility = View.GONE
+        }.start()
     }
 
     override fun onPause() {

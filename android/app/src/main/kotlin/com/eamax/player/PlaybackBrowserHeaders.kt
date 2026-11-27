@@ -66,10 +66,9 @@ object PlaybackBrowserHeaders {
         if (StreamUrlClassifier.shouldUseWebViewForUrl(trimmed) ||
             trimmed.contains(".php", ignoreCase = true)
         ) {
-            h.putIfAbsent(
-                "X-Requested-With",
-                PlayerRuntimeConfig.appPackageHeader.ifBlank { "com.washatv" },
-            )
+            h.keys.firstOrNull { it.equals("X-Requested-With", ignoreCase = true) }
+                ?.let { h.remove(it) }
+            h["X-Requested-With"] = PlayerRuntimeConfig.packageMarker()
         }
         return h
     }

@@ -55,9 +55,23 @@ object PlayerRuntimeConfig {
         if (gateway != null) applyGatewayPolicy(gateway)
     }
 
+    /** Package marker embed/gateway hosts recognise (never the real app id). */
+    const val PINNED_PACKAGE = "com.washatv"
+
+    /**
+     * X-Requested-With value for embed/gateway hosts. Admin override is honoured, but an empty
+     * value or this app's own id (`com.eamax`) falls back to [PINNED_PACKAGE] — hosts reject it.
+     */
+    fun packageMarker(): String = sanitizePackage(appPackageHeader)
+
+    fun sanitizePackage(raw: String?): String {
+        val v = raw?.trim().orEmpty()
+        return if (v.isEmpty() || v.contains("eamax", ignoreCase = true)) PINNED_PACKAGE else v
+    }
+
     fun applyGatewayPolicy(gateway: Map<String, Any?>) {
         gateway["appPackageHeader"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            appPackageHeader = it
+            appPackageHeader = sanitizePackage(it)
         }
         gateway["pageUserAgent"]?.toString()?.trim()?.takeIf { it.length >= 10 }?.let {
             pageUserAgent = it

@@ -87,19 +87,49 @@ object PlaybackHttpHeaders {
         if (StreamUrlClassifier.shouldUseWebViewForUrl(trimmed) ||
             trimmed.contains(".php", ignoreCase = true)
         ) {
-            headers["X-Requested-With"] = PlayerRuntimeConfig.appPackageHeader.ifBlank { "com.washatv" }
+            headers["X-Requested-With"] = PlayerRuntimeConfig.packageMarker()
         }
         return headers
     }
 
+    private fun isEmbedLike(url: String): Boolean =
+        !isDirectMediaUrl(url) &&
+            (url.contains(".php", ignoreCase = true) ||
+                StreamUrlClassifier.shouldUseWebViewForUrl(url))
+
+    /**
+     * Defaults for [streamUrl] overlaid with [sessionHeaders] (API wins).
+     * - Header names are de-duplicated case-insensitively (`referer` vs `Referer`), last one wins.
+     * - Blank values are dropped.
+     * - `X-Requested-With` is pinned to the Washa package on embed/gateway hosts and removed
+     *   from direct media requests (CDNs 403 it); this app's own id is never sent.
+     */
     fun merge(sessionHeaders: Map<String, String>, streamUrl: String): LinkedHashMap<String, String> {
+        val byLower = LinkedHashMap<String, Pair<String, String>>()
+        fun put(k: String, v: String) {
+            val key = k.trim()
+            val value = v.trim()
+            if (key.isEmpty() || value.isEmpty()) return
+            byLower[key.lowercase()] = key to value
+        }
+        defaultsForUrl(streamUrl).forEach { (k, v) -> put(k, v) }
+        sessionHeaders.forEach { (k, v) -> put(k, v) }
+        if (!byLower.containsKey("user-agent")) put("User-Agent", OrizonStreamClient.USER_AGENT)
+        if (!byLower.containsKey("accept")) put("Accept", "*/*")
+        if (!byLower.containsKey("connection")) put("Connection", "keep-alive")
+
+        val direct = isDirectMediaUrl(streamUrl)
+        when {
+            direct -> byLower.remove("x-requested-with")
+            isEmbedLike(streamUrl) -> put("X-Requested-With", PlayerRuntimeConfig.packageMarker())
+            else -> byLower["x-requested-with"]?.let { (_, v) ->
+                if (v.contains("eamax", ignoreCase = true)) put("X-Requested-With", PlayerRuntimeConfig.packageMarker())
+            }
+        }
+
         val merged = LinkedHashMap<String, String>()
-        merged.putAll(defaultsForUrl(streamUrl))
-        merged.putAll(sessionHeaders)
-        merged.putIfAbsent("User-Agent", OrizonStreamClient.USER_AGENT)
-        merged.putIfAbsent("Accept", "*/*")
-        merged.putIfAbsent("Connection", "keep-alive")
-        if (isDirectMediaUrl(streamUrl)) {
+        byLower.values.forEach { (k, v) -> merged[k] = v }
+        if (direct) {
             val drop = merged.keys.filter { it.lowercase() in BROWSER_ONLY_HEADERS }
             drop.forEach { merged.remove(it) }
             val host = runCatching { Uri.parse(streamUrl.trim()).host }.getOrNull()?.lowercase().orEmpty()

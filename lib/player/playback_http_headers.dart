@@ -1,5 +1,6 @@
 import './cdn_token_headers.dart';
 import '../services/remote_config_service.dart';
+import 'stream_url_utils.dart';
 
 const _chromeMobileUa =
     'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
@@ -11,7 +12,9 @@ String _pageUserAgent() {
 
 String _appPackageHeader() {
   final pkg = RemoteConfigService.playerConfig.gatewayPolicy.appPackageHeader.trim();
-  return pkg.isNotEmpty ? pkg : 'com.washatv';
+  // Never advertise this app's own id — embed hosts only recognise the Washa package.
+  if (pkg.isEmpty || pkg.toLowerCase().contains('eamax')) return 'com.washatv';
+  return pkg;
 }
 
 /// Direct HLS/DASH/file URLs. Browser page headers (`Origin`, `Sec-Fetch-Dest: document`)
@@ -23,15 +26,11 @@ bool isDirectMediaUrl(String rawUrl) {
   if (CdnTokenHeaders.isTokenizedCdnUrl(u)) return false;
   final uri = Uri.tryParse(u);
   if (uri == null) return false;
-  final path = uri.path.toLowerCase();
-  return path.endsWith('.m3u8') ||
-      path.endsWith('.m3u') ||
-      path.endsWith('.mpd') ||
-      path.endsWith('.mp4') ||
-      path.endsWith('.m4v') ||
-      path.endsWith('.ts') ||
-      path.endsWith('.mkv') ||
-      path.endsWith('.webm');
+  final scheme = uri.scheme.toLowerCase();
+  if (scheme != 'http' && scheme != 'https') return false;
+  // Extension, ?format= hints, `;params`, trailing `/`, upper-case / %-encoded names and
+  // raw IPTV panel links all count as direct media (same rules as native classifier).
+  return hasMediaSignature(u);
 }
 
 /// CDNs / `.php` gateways often reject players without browser-like headers.
@@ -104,14 +103,30 @@ Map<String, String> mergePlaybackHeaders(
   Map<String, dynamic>? fromApi,
 ]) {
   final merged = Map<String, String>.from(playbackHttpHeaders(streamUrl));
+  // API header names win and replace defaults case-insensitively (no `referer` + `Referer`).
+  void put(String k, String v) {
+    merged.removeWhere((existing, _) => existing.toLowerCase() == k.toLowerCase());
+    merged[k] = v;
+  }
+
   if (fromApi != null) {
     fromApi.forEach((key, value) {
       final k = key.toString().trim();
       final v = value?.toString().trim() ?? '';
-      if (k.isNotEmpty && v.isNotEmpty) merged[k] = v;
+      if (k.isNotEmpty && v.isNotEmpty) put(k, v);
     });
   }
-  if (isDirectMediaUrl(streamUrl)) {
+  final direct = isDirectMediaUrl(streamUrl);
+  final xrw = merged.keys.where((k) => k.toLowerCase() == 'x-requested-with').toList();
+  if (direct) {
+    // CDNs 403 the package marker on plain media requests.
+    for (final k in xrw) {
+      merged.remove(k);
+    }
+  } else if (xrw.any((k) => merged[k]!.toLowerCase().contains('eamax'))) {
+    put('X-Requested-With', _appPackageHeader());
+  }
+  if (direct) {
     merged.removeWhere((key, _) => _browserOnlyHeader(key));
     final host = Uri.tryParse(streamUrl.trim())?.host.toLowerCase() ?? '';
     final isBareIp = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$').hasMatch(host);

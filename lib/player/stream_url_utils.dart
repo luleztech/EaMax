@@ -52,6 +52,14 @@ bool _hasObviousProgressive(String url) =>
             caseSensitive: false)
         .hasMatch(_query(url));
 
+/// True when the URL is clearly a media playlist/file or IPTV link (not a gateway page).
+/// Mirrors Kotlin StreamUrlClassifier.hasMediaSignature.
+bool hasMediaSignature(String url) =>
+    _hasObviousM3u8(url) ||
+    _hasObviousMpd(url) ||
+    _hasObviousProgressive(url) ||
+    isLikelyIptvLiveUrl(url);
+
 bool isLikelyIptvLiveUrl(String url) {
   if (url.isEmpty) return false;
   if (_hasObviousM3u8(url) || _hasObviousMpd(url) || _hasObviousProgressive(url)) {

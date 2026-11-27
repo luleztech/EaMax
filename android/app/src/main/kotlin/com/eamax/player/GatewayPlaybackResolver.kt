@@ -28,8 +28,7 @@ object GatewayPlaybackResolver {
     private const val CACHE_TTL_MS = 60_000L
     private const val MAX_API_ATTEMPTS = 3
 
-    private fun packageHeader(): String =
-        PlayerRuntimeConfig.appPackageHeader.ifBlank { "com.washatv" }
+    private fun packageHeader(): String = PlayerRuntimeConfig.packageMarker()
 
     private fun licenseAuthHeader(): String =
         PlayerRuntimeConfig.licenseAuthHeader.ifBlank { "nv-authorizations" }
@@ -191,7 +190,14 @@ object GatewayPlaybackResolver {
         val headers = PlaybackHttpHeaders.merge(sessionHeaders, gatewayUrl)
 
         val pageHtml = if (PlayerRuntimeConfig.warmCookies) {
-            fetchText(client, gatewayUrl, headers) ?: return null
+            // Warm page can 502 transiently; the API URL is derivable from ?app=&key= so a failed
+            // warm (after one retry) must not abort the resolve.
+            fetchText(client, gatewayUrl, headers)
+                ?: run {
+                    Thread.sleep(600)
+                    fetchText(client, gatewayUrl, headers)
+                }
+                ?: ""
         } else {
             ""
         }
@@ -205,13 +211,13 @@ object GatewayPlaybackResolver {
         val apiUrl = findApiUrl(gatewayUrl, pageHtml) ?: return null
         Log.i(TAG, "api=${safeUrlForLogs(apiUrl)}")
 
-        val apiHeaders = LinkedHashMap(headers).apply {
-            put("Accept", "application/json")
-            put("X-Requested-With", packageHeader())
-        }
+        val variants = apiHeaderVariants(headers, gatewayUrl)
 
         var lastError = ""
         repeat(MAX_API_ATTEMPTS) { attempt ->
+            // 401 "request rejected" / 502: rotate through header variants (full embed Referer,
+            // origin-only Referer, package marker only) — hosts gate on different combinations.
+            val apiHeaders = variants[attempt % variants.size]
             val apiBody = fetchText(client, apiUrl, apiHeaders)
             if (apiBody.isNullOrBlank()) {
                 lastError = "empty body"
@@ -242,6 +248,50 @@ object GatewayPlaybackResolver {
         }
         Log.e(TAG, "Embed API resolver: no stream after retries ($lastError)")
         return null
+    }
+
+    /**
+     * Header sets for the `player.php?api=1` call, mirroring the server resolver
+     * (`resolveEmbedApi`): package marker + browser UA + Referer/Origin of the embed page.
+     * Page-navigation fetch headers (Sec-Fetch-Dest: document …) are dropped — this is an XHR.
+     */
+    private fun apiHeaderVariants(
+        base: Map<String, String>,
+        gatewayUrl: String,
+    ): List<Map<String, String>> {
+        val origin = originOf(gatewayUrl)
+        val pkg = packageHeader()
+        val navOnly = setOf(
+            "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user",
+            "upgrade-insecure-requests",
+        )
+        fun clean(source: Map<String, String>): LinkedHashMap<String, String> {
+            val out = LinkedHashMap<String, String>()
+            source.forEach { (k, v) -> if (k.lowercase() !in navOnly && v.isNotBlank()) out[k] = v }
+            listOf("accept", "x-requested-with", "referer", "origin").forEach { lk ->
+                out.keys.filter { it.equals(lk, ignoreCase = true) }.forEach { out.remove(it) }
+            }
+            if (out.keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                out["User-Agent"] = PlayerRuntimeConfig.pageUserAgent
+                    .ifBlank { PlaybackBrowserHeaders.CHROME_MOBILE_UA }
+            }
+            out["Accept"] = "application/json, text/plain, */*"
+            out["X-Requested-With"] = pkg
+            return out
+        }
+
+        val full = clean(base).apply {
+            put("Referer", gatewayUrl)
+            if (origin.isNotEmpty()) put("Origin", origin)
+        }
+        val originOnly = clean(base).apply {
+            if (origin.isNotEmpty()) {
+                put("Referer", "$origin/")
+                put("Origin", origin)
+            }
+        }
+        val packageOnly = clean(base)
+        return listOf(full, originOnly, packageOnly)
     }
 
     private fun parseApiJson(body: String, gatewayUrl: String): Resolved? {
