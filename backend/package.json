@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node scripts/test-embed-playback.js && node scripts/test-playback-guards.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

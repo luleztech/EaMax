@@ -5,9 +5,16 @@ const {
   handleLicenseRelay,
   handleWatchPage,
   handleDashSegment,
+  getChannelHealth,
 } = require('../services/embedPlaybackService');
 
 const router = express.Router();
+
+// Watchdog status: which channels were verified / repaired / are failing (no secrets).
+router.get('/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(getChannelHealth());
+});
 
 // Media segment / playlist relay (Exo + HLS proxy + hosted webplayer).
 router.get('/relay', playbackLimiter, (req, res, next) => {

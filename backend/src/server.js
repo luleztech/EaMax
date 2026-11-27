@@ -502,6 +502,13 @@ server.listen(PORT, HOST, () => {
   console.log(`EaMax backend listening on ${HOST}:${PORT} (HTTP + WebSocket)`);
 });
 
+// Self-healing playback: keeps hot channels resolved + verified, repairs Azam when upstream drifts.
+try {
+  require('./services/channelWatchdog').startChannelWatchdog();
+} catch (e) {
+  console.warn('[watchdog] not started:', e.message || e);
+}
+
 global.realtimeServer = {
   broadcastToUser,
   notifyPremiumUpdate,

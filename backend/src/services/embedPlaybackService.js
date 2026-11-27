@@ -51,6 +51,9 @@ const CLEAR_KEY_FIELDS = ['encryptedClearKey', 'encryptedClearKeys', 'encryptedK
 
 const cache = new Map();
 const inflight = new Map();
+/** Last successful resolve per source (survives cache expiry) — see resolveEmbedPlaybackUncached. */
+const lastGood = new Map();
+const LAST_GOOD_GRACE_MS = 10 * 60 * 1000;
 
 function proxySecret() {
   return (
@@ -813,6 +816,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       value = await resolveEmbedApi(raw, parsed);
       if (value) {
         value = await preferClearKeyOverWidevine(value);
+        lastGood.set(raw, { value, at: Date.now() });
         cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
         return value;
       }
@@ -822,6 +826,7 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
       value = await resolveChannelJsonPlayer(raw, parsed);
       if (value) {
         value = await preferClearKeyOverWidevine(value);
+        lastGood.set(raw, { value, at: Date.now() });
         cache.set(raw, { value, expiresAt: Date.now() + SUCCESS_TTL_MS });
         return value;
       }
@@ -881,11 +886,37 @@ async function resolveEmbedPlaybackUncached(raw, depth) {
     console.warn('[embed] resolve failed:', err.message || err);
     value = null;
   }
+  if (!value) {
+    // A transient host hiccup (429/502/timeout) must not blank a channel that resolved fine a
+    // moment ago: keep serving the last good result briefly while we retry.
+    const prev = lastGood.get(raw);
+    if (prev && Date.now() - prev.at < LAST_GOOD_GRACE_MS) {
+      console.warn(`[embed] resolve failed — serving last good result (${Math.round((Date.now() - prev.at) / 1000)}s old)`);
+      cache.set(raw, { value: prev.value, expiresAt: Date.now() + FAILURE_TTL_MS });
+      return prev.value;
+    }
+  } else {
+    lastGood.set(raw, { value, at: Date.now() });
+  }
   cache.set(raw, {
     value,
     expiresAt: Date.now() + (value ? SUCCESS_TTL_MS : FAILURE_TTL_MS),
   });
   return value;
+}
+
+/**
+ * Re-resolve a source in the background (watchdog). Unlike resolveEmbedPlayback this ignores
+ * the cache, so the next tap finds a fresh link instead of paying the cold-resolve wait.
+ */
+async function refreshEmbedPlayback(pageUrl) {
+  const raw = String(pageUrl || '').trim();
+  if (!isEmbedPlaybackUrl(raw) || !isPublicHttpUrl(raw)) return null;
+  const pending = inflight.get(raw);
+  if (pending) return pending;
+  const job = resolveEmbedPlaybackUncached(raw, 0).finally(() => inflight.delete(raw));
+  inflight.set(raw, job);
+  return job;
 }
 
 function playExtension(resolved) {
@@ -2128,6 +2159,7 @@ async function handleChannelPlay(req, res) {
   if (hasPriority && !Number.isFinite(priority)) {
     return res.status(400).json({ error: 'Invalid stream priority' });
   }
+  touchChannel(channelId);
   const source = await loadPublicStreamUrl(channelId, priority);
   if (!source) return res.status(404).json({ error: 'Channel not found' });
   if (!isEmbedPlaybackUrl(source)) {
@@ -2548,7 +2580,131 @@ async function warmEmbedRows(rows) {
   return { warmed };
 }
 
+/** Channels users opened recently — the watchdog keeps exactly these warm and healthy. */
+const hotChannels = new Map();
+const channelHealth = new Map();
+
+function touchChannel(channelId) {
+  const id = Number(channelId);
+  if (Number.isFinite(id) && id > 0) hotChannels.set(id, Date.now());
+}
+
+function recentlyPlayedChannelIds(windowMs) {
+  const cutoff = Date.now() - windowMs;
+  const ids = [];
+  for (const [id, at] of hotChannels) {
+    if (at >= cutoff) ids.push(id);
+    else hotChannels.delete(id);
+  }
+  return ids;
+}
+
+function getChannelHealth() {
+  const rows = [...channelHealth.values()];
+  const failing = rows.filter((r) => !r.ok).map((r) => ({
+    channelId: r.channelId,
+    since: r.failingSince,
+    consecutiveFailures: r.consecutiveFailures,
+    steps: r.steps,
+  }));
+  return {
+    checked: rows.length,
+    ok: rows.length - failing.length,
+    failing,
+    hot: hotChannels.size,
+    bareHosts: [...bareHosts.keys()],
+    updatedAt: rows.reduce((m, r) => Math.max(m, r.at), 0) || null,
+  };
+}
+
+/**
+ * Verify one channel end to end and repair it when possible:
+ *  1. re-resolve the source (fresh link, keeps last good on a hiccup)
+ *  2. fetch the real upstream MPD with the same header plan the player path uses
+ *  3. if that fails and it is an Azam channel, switch the source to the stable nur ClearKey
+ *     MPD (verified first) and persist the key so the app/list stay on a working stream
+ * Never throws.
+ */
+async function healChannel(channelId) {
+  const id = Number(channelId);
+  const out = { channelId: id, ok: false, steps: [], at: Date.now() };
+  const record = () => {
+    const prev = channelHealth.get(id);
+    out.consecutiveFailures = out.ok ? 0 : (prev?.consecutiveFailures || 0) + 1;
+    out.failingSince = out.ok ? null : (prev?.failingSince || out.at);
+    channelHealth.set(id, out);
+    if (!out.ok && out.consecutiveFailures === 1) {
+      console.warn(`[watchdog] ch=${id} FAILING steps=${out.steps.join(',')}`);
+    } else if (out.ok && prev && !prev.ok) {
+      console.info(`[watchdog] ch=${id} RECOVERED steps=${out.steps.join(',')}`);
+    }
+    return out;
+  };
+  try {
+    const source = await loadPublicStreamUrl(id);
+    if (!source || !isEmbedPlaybackUrl(source)) {
+      out.ok = true;
+      out.steps.push('not-embed');
+      return record();
+    }
+    const resolved = await refreshEmbedPlayback(source);
+    out.steps.push(resolved?.streamUrl ? 'resolved' : 'unresolved');
+    if (resolved?.streamUrl) {
+      const isDash = resolved.kind === 'dash' || /\.mpd(\?|#|$)/i.test(resolved.streamUrl);
+      if (!isDash) {
+        out.ok = true;
+        return record();
+      }
+      try {
+        const fetched = await fetchUpstreamMpd(resolved);
+        try { await fetched.response.body?.cancel(); } catch (_) { /* ignore */ }
+        out.ok = true;
+        out.steps.push('mpd-ok');
+        if (resolved.clearKeyRaw) persistChannelClearKey(id, resolved).catch(() => {});
+        return record();
+      } catch (_) {
+        out.steps.push('mpd-fail');
+      }
+    }
+
+    // Repair path: Azam → nur ClearKey.
+    let sport = azamSportNumberFromUrl(resolved?.streamUrl) || azamSportNumberFromUrl(source);
+    if (!sport) {
+      const m = (await channelNameFor(id)).match(/azam\s*sports?\s*(\d+)/i);
+      sport = m ? Number(m[1]) : null;
+    }
+    if (sport) {
+      try {
+        const nur = await fetchNurClearKeyForAzam(sport);
+        if (nur?.streamUrl) {
+          const fetched = await fetchUpstreamMpd(nur);
+          try { await fetched.response.body?.cancel(); } catch (_) { /* ignore */ }
+          // Serve the verified stream for this source until the primary recovers.
+          lastGood.set(source, { value: nur, at: Date.now() });
+          cache.set(source, { value: nur, expiresAt: Date.now() + SUCCESS_TTL_MS });
+          persistChannelClearKey(id, nur).catch(() => {});
+          out.ok = true;
+          out.steps.push(`repaired:nur-azam${sport}`);
+          return record();
+        }
+        out.steps.push('nur:no-clearkey');
+      } catch (err) {
+        out.steps.push(`nur:${err.message || err}`);
+      }
+    }
+  } catch (err) {
+    out.steps.push(`error:${err.message || err}`);
+  }
+  return record();
+}
+
 module.exports = {
+  touchChannel,
+  recentlyPlayedChannelIds,
+  getChannelHealth,
+  healChannel,
+  refreshEmbedPlayback,
+  __test: { withoutPageHeaders, prefersBare, markBare, bareHosts, MPD_BODY_TTL_MS },
   publicBaseUrl,
   isDirectMediaUrl,
   isEmbedPlaybackUrl,
