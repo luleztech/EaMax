@@ -1903,28 +1903,68 @@ async function sendProxiedPlaylist(res, resolved, baseUrl) {
   return res.status(200).send(body);
 }
 
+/**
+ * Some CDNs (cdn77 for nur/mpilali Azam) now answer 403 when the request carries the
+ * player page Referer/Origin, yet serve the same URL with no Referer at all. Remember
+ * which hosts need the bare request so every later MPD/segment goes straight through.
+ */
+const bareHosts = new Map();
+const BARE_HOST_TTL_MS = 6 * 60 * 60 * 1000;
+
+function hostKey(url) {
+  try {
+    return new URL(String(url)).host.toLowerCase();
+  } catch (_) {
+    return '';
+  }
+}
+
+function prefersBare(url) {
+  const k = hostKey(url);
+  const exp = bareHosts.get(k);
+  if (!exp) return false;
+  if (exp <= Date.now()) {
+    bareHosts.delete(k);
+    return false;
+  }
+  return true;
+}
+
+function markBare(url) {
+  const k = hostKey(url);
+  if (k) bareHosts.set(k, Date.now() + BARE_HOST_TTL_MS);
+}
+
+function withoutPageHeaders(headers) {
+  const out = { ...headers };
+  for (const k of Object.keys(out)) {
+    const lk = k.toLowerCase();
+    if (lk === 'referer' || lk === 'origin' || lk === 'x-requested-with') delete out[k];
+  }
+  return out;
+}
+
 async function fetchUpstreamMpd(resolved) {
+  const full = upstreamHeaders(resolved.streamUrl, resolved);
+  const exoFull = { ...full, 'User-Agent': 'ExoPlayer', Accept: 'application/dash+xml,application/xml,*/*' };
+  // Some CDN edges accept browser UA when ExoPlayer is blocked (device/ISP variance).
+  const browserFull = { ...full, 'User-Agent': BROWSER_UA, Accept: 'application/dash+xml,application/xml,*/*' };
   const attempts = [
-    {
-      ...upstreamHeaders(resolved.streamUrl, resolved),
-      'User-Agent': 'ExoPlayer',
-      Accept: 'application/dash+xml,application/xml,*/*',
-    },
-    // Some CDN edges accept browser UA when ExoPlayer is blocked (device/ISP variance).
-    {
-      ...upstreamHeaders(resolved.streamUrl, resolved),
-      'User-Agent': BROWSER_UA,
-      Accept: 'application/dash+xml,application/xml,*/*',
-    },
+    { headers: exoFull, bare: false },
+    { headers: browserFull, bare: false },
+    { headers: withoutPageHeaders(exoFull), bare: true },
+    { headers: withoutPageHeaders(browserFull), bare: true },
   ];
+  if (prefersBare(resolved.streamUrl)) attempts.sort((a, b) => Number(b.bare) - Number(a.bare));
   let lastErr = null;
-  for (const headers of attempts) {
+  for (const { headers, bare } of attempts) {
     try {
       const fetched = await fetchPublic(resolved.streamUrl, {
         headers,
         timeoutMs: 18000,
       });
       if (fetched.response.status >= 200 && fetched.response.status < 300) {
+        if (bare) markBare(resolved.streamUrl);
         return fetched;
       }
       lastErr = new Error(`HTTP ${fetched.response.status}`);
@@ -2130,28 +2170,42 @@ async function handleChannelPlay(req, res) {
 async function pipeUpstreamMedia(req, res, targetUrl, ctx) {
   // nv-authorizations is license-only (Nagra). Sending it on MPD/segments often 403s CDNs.
   // Long timeout: AbortSignal.timeout mid-body used to crash Node (unhandled TimeoutError).
-  const tryFetch = async (userAgent) => {
-    const headers = {
+  const tryFetch = async (userAgent, bare) => {
+    let headers = {
       ...upstreamHeaders(targetUrl, ctx),
       'User-Agent': userAgent,
     };
+    if (bare) headers = withoutPageHeaders(headers);
     if (req.headers.range) headers.Range = req.headers.range;
     return fetchPublic(targetUrl, { headers, timeoutMs: 120_000 });
   };
+  const plan = [
+    ['ExoPlayer', false],
+    [BROWSER_UA, false],
+    ['ExoPlayer', true],
+    [BROWSER_UA, true],
+  ];
+  if (prefersBare(targetUrl)) plan.sort((a, b) => Number(b[1]) - Number(a[1]));
   let fetched;
-  try {
-    fetched = await tryFetch('ExoPlayer');
-    if (fetched.response.status >= 400) {
-      console.warn(`[embed] relay HTTP ${fetched.response.status} — retry browser UA`);
-      fetched = await tryFetch(BROWSER_UA);
-    }
-  } catch (err) {
+  let lastErr = null;
+  for (const [ua, bare] of plan) {
     try {
-      fetched = await tryFetch(BROWSER_UA);
-    } catch (err2) {
-      console.warn('[embed] relay failed:', err2.message || err.message || err2);
-      return res.status(502).json({ error: 'Upstream playback failed' });
+      const attempt = await tryFetch(ua, bare);
+      if (attempt.response.status < 400) {
+        if (bare) markBare(targetUrl);
+        fetched = attempt;
+        break;
+      }
+      console.warn(`[embed] relay HTTP ${attempt.response.status} bare=${bare} — next attempt`);
+      try { await attempt.response.body?.cancel(); } catch (_) { /* ignore */ }
+      fetched = attempt;
+    } catch (err) {
+      lastErr = err;
     }
+  }
+  if (!fetched) {
+    console.warn('[embed] relay failed:', lastErr?.message || lastErr);
+    return res.status(502).json({ error: 'Upstream playback failed' });
   }
   const { response, finalUrl } = fetched;
   if (response.status >= 400 || !response.body) {
