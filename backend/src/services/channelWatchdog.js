@@ -6,7 +6,7 @@
  *  - HOT loop (every 75s): channels users opened in the last 30 min are re-resolved before the
  *    120s resolve cache expires, so the next tap never pays a cold resolve and an upstream
  *    change (CDN headers, token host, rotated link) is detected and repaired within a minute.
- *  - SWEEP loop (every 15 min): every embed channel is checked once, low concurrency, so a
+ *  - SWEEP loop (every 30 min): every embed channel is checked once, low concurrency, so a
  *    dead source is noticed (and Azam repaired) even if nobody is watching it right now.
  *
  * Both loops are best-effort and never throw. Status: GET /api/playback/health.
@@ -19,7 +19,7 @@ const {
 } = require('./embedPlaybackService');
 
 const HOT_INTERVAL_MS = 75 * 1000;
-const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 const HOT_WINDOW_MS = 30 * 60 * 1000;
 const HOT_CONCURRENCY = 3;
 const SWEEP_CONCURRENCY = 2;

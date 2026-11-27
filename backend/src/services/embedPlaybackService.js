@@ -2155,6 +2155,7 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl,
     trace.push(`name:${name || 'none'}`);
   }
   trace.push(`sport:${sport || 'none'}`);
+  let directUrl = '';
   if (sport) {
     try {
       const nur = await fetchNurClearKeyForAzam(sport);
@@ -2171,12 +2172,7 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl,
         // 3) Last resort: this server cannot reach the CDN (its egress IP is blocked or rate
         // limited), but the nur MPD is a plain public URL with no IP-bound token and the key
         // is already on the device. Send the player straight to the CDN instead of a 502.
-        if (isPublicHttpUrl(nur.streamUrl)) {
-          trace.push('direct-redirect');
-          console.warn(`[embed] ↪ direct CDN redirect ch=${channelId} host=${hostOf(nur.streamUrl)}`);
-          res.setHeader('Cache-Control', 'no-store');
-          return res.redirect(302, nur.streamUrl);
-        }
+        directUrl = nur.streamUrl;
       } else {
         trace.push('nur:no-clearkey');
       }
@@ -2184,6 +2180,17 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl,
       trace.push(`nur:${err.message || err} [${err.detail || ''}]`);
       console.warn(`[embed] nur failover failed ch=${channelId}: ${err.message || err}`);
     }
+  }
+  // Same idea for any ClearKey stream whose link we already resolved (no IP-bound token, no
+  // license auth): the CDN is reachable from the phone even when it blocks this server.
+  if (!directUrl && resolved.clearKeyRaw && !resolved.nvAuthorizations) {
+    directUrl = resolved.streamUrl;
+  }
+  if (directUrl && isPublicHttpUrl(directUrl)) {
+    trace.push('direct-redirect');
+    console.warn(`[embed] ↪ direct CDN redirect ch=${channelId} host=${hostOf(directUrl)}`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.redirect(302, directUrl);
   }
   return null;
 }
@@ -2731,6 +2738,13 @@ async function healChannel(channelId) {
       } catch (err) {
         out.steps.push(`nur:${err.message || err}`);
       }
+    }
+    // Server cannot reach the CDN but the stream is plain ClearKey: players are redirected
+    // straight to the CDN (see proxyMpdWithFailover), so the channel still plays.
+    if (resolved?.streamUrl && resolved.clearKeyRaw && !resolved.nvAuthorizations) {
+      out.ok = true;
+      out.steps.push('direct-fallback');
+      return record();
     }
   } catch (err) {
     out.steps.push(`error:${err.message || err}`);
