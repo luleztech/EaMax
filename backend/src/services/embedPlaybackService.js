@@ -1939,7 +1939,8 @@ async function fetchUpstreamMpd(resolved) {
   throw lastErr || new Error('mpd_upstream_failed');
 }
 
-async function sendProxiedMpd(res, resolved, baseUrl) {
+/** Fetch + rewrite the MPD. Throws on any upstream problem so callers can fail over. */
+async function buildProxiedMpdBody(resolved, baseUrl) {
   let fetched;
   try {
     fetched = await fetchUpstreamMpd(resolved);
@@ -1948,18 +1949,84 @@ async function sendProxiedMpd(res, resolved, baseUrl) {
       `[embed] mpd upstream failed for ${String(resolved.streamUrl).slice(0, 96)}:`,
       err.message || err,
     );
-    return res.status(502).json({ error: 'mpd_upstream_failed' });
+    throw new Error('mpd_upstream_failed');
   }
   const { response, finalUrl } = fetched;
   const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
   if (!looksLikeMpd(finalUrl || resolved.streamUrl, response.headers.get('content-type'), text)) {
-    return res.status(502).json({ error: 'mpd_invalid' });
+    console.warn(`[embed] mpd invalid body from ${String(resolved.streamUrl).slice(0, 96)}`);
+    throw new Error('mpd_invalid');
   }
-  const body = rewriteMpdXml(text, finalUrl || resolved.streamUrl, baseUrl, resolved);
+  return rewriteMpdXml(text, finalUrl || resolved.streamUrl, baseUrl, resolved);
+}
+
+function sendMpdBody(res, body) {
   res.setHeader('Content-Type', 'application/dash+xml');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   return res.status(200).send(body);
+}
+
+async function sendProxiedMpd(res, resolved, baseUrl) {
+  const body = await buildProxiedMpdBody(resolved, baseUrl);
+  return sendMpdBody(res, body);
+}
+
+async function channelNameFor(channelId) {
+  try {
+    const r = await query('SELECT name FROM channels WHERE id = $1 LIMIT 1', [channelId]);
+    return String(r.rows[0]?.name || '');
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Never leave the player on a 502: stale cached resolve → fresh resolve → known-good
+ * ClearKey source (nur/mpilali) for AzamSportN. Returns the sent response or null.
+ */
+async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl }) {
+  try {
+    return await sendProxiedMpd(res, resolved, baseUrl);
+  } catch (firstErr) {
+    console.warn(`[embed] mpd failover start ch=${channelId}: ${firstErr.message || firstErr}`);
+  }
+
+  // 1) Cached tokens / IP-bound URLs go stale — resolve again from the link.
+  cache.delete(source);
+  try {
+    const fresh = await resolveEmbedPlayback(source);
+    if (fresh?.streamUrl && fresh.streamUrl !== resolved.streamUrl) {
+      const body = await buildProxiedMpdBody(fresh, baseUrl);
+      console.info(`[embed] ♻️ mpd recovered via fresh resolve ch=${channelId}`);
+      if (fresh.clearKeyRaw) persistChannelClearKey(channelId, fresh).catch(() => {});
+      return sendMpdBody(res, body);
+    }
+  } catch (err) {
+    console.warn(`[embed] fresh resolve failover failed ch=${channelId}: ${err.message || err}`);
+  }
+
+  // 2) Azam: the nur ClearKey MPD is a plain CDN URL and stays reachable.
+  let sport = azamSportNumberFromUrl(resolved.streamUrl) || azamSportNumberFromUrl(source);
+  if (!sport) {
+    const name = await channelNameFor(channelId);
+    const m = name.match(/azam\s*sports?\s*(\d+)/i);
+    sport = m ? Number(m[1]) : null;
+  }
+  if (sport) {
+    try {
+      const nur = await fetchNurClearKeyForAzam(sport);
+      if (nur?.streamUrl) {
+        const body = await buildProxiedMpdBody(nur, baseUrl);
+        console.info(`[embed] 🔑 mpd recovered via nur ClearKey AzamSport${sport} ch=${channelId}`);
+        persistChannelClearKey(channelId, nur).catch(() => {});
+        return sendMpdBody(res, body);
+      }
+    } catch (err) {
+      console.warn(`[embed] nur failover failed ch=${channelId}: ${err.message || err}`);
+    }
+  }
+  return null;
 }
 
 async function handleChannelPlay(req, res) {
@@ -1987,7 +2054,13 @@ async function handleChannelPlay(req, res) {
     if (resolvedOnDevice?.streamUrl) {
       if (ext === 'mpd' || resolvedOnDevice.kind === 'dash') {
         try {
-          return await sendProxiedMpd(res, resolvedOnDevice, base);
+          const sent = await proxyMpdWithFailover(res, {
+            channelId,
+            source,
+            resolved: resolvedOnDevice,
+            baseUrl: base,
+          });
+          if (sent) return sent;
         } catch (err) {
           console.warn('[embed] on-device mpd proxy failed, falling back to webplayer:', err.message || err);
         }
@@ -2010,12 +2083,19 @@ async function handleChannelPlay(req, res) {
   }
   if (ext === 'mpd' || resolved.kind === 'dash') {
     try {
-      return await sendProxiedMpd(res, resolved, base);
-    } catch (err) {
-      console.warn('[embed] mpd proxy failed:', err.message || err);
+      const sent = await proxyMpdWithFailover(res, {
+        channelId,
+        source,
+        resolved,
+        baseUrl: base,
+      });
+      if (sent) return sent;
       if (needsHostedWebPlayer(resolved)) {
         return res.redirect(302, watchPageUrl(base, resolved));
       }
+      return res.status(502).json({ error: 'mpd_proxy_failed' });
+    } catch (err) {
+      console.warn('[embed] mpd proxy failed:', err.message || err);
       return res.status(502).json({ error: 'mpd_proxy_failed' });
     }
   }
