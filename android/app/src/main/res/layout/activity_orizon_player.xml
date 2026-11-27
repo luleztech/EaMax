@@ -22,6 +22,16 @@
         android:background="@android:color/black"
         android:visibility="gone" />
 
+    <!-- Shown the instant the screen opens; hidden once the first frames are ready. -->
+    <ProgressBar
+        android:id="@+id/player_loading"
+        style="?android:attr/progressBarStyle"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center"
+        android:indeterminate="true"
+        android:indeterminateTint="#FFFFFF" />
+
     <!-- Quality + zoom chips (bottom-end, above Media3 controls). -->
     <LinearLayout
         android:id="@+id/player_chips"

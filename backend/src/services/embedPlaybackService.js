@@ -1975,7 +1975,22 @@ function withoutPageHeaders(headers) {
   return out;
 }
 
+/**
+ * When every header plan fails for a host (egress IP blocked / host down) remember it briefly,
+ * so concurrent and repeated opens fail over immediately instead of each burning ~25s on
+ * four doomed attempts.
+ */
+const deadHosts = new Map();
+const DEAD_HOST_TTL_MS = 20 * 1000;
+
 async function fetchUpstreamMpd(resolved) {
+  const deadKey = hostKey(resolved.streamUrl);
+  const deadUntil = deadHosts.get(deadKey);
+  if (deadUntil && deadUntil > Date.now()) {
+    const skipped = new Error('host_recently_unreachable');
+    skipped.attempts = 'skipped(host recently failed)';
+    throw skipped;
+  }
   const full = upstreamHeaders(resolved.streamUrl, resolved);
   const exoFull = { ...full, 'User-Agent': 'ExoPlayer', Accept: 'application/dash+xml,application/xml,*/*' };
   // Some CDN edges accept browser UA when ExoPlayer is blocked (device/ISP variance).
@@ -1988,8 +2003,10 @@ async function fetchUpstreamMpd(resolved) {
   ];
   if (prefersBare(resolved.streamUrl)) attempts.sort((a, b) => Number(b.bare) - Number(a.bare));
   let lastErr = null;
+  const attemptLog = [];
   for (let i = 0; i < attempts.length; i += 1) {
     const { headers, bare } = attempts[i];
+    const tag = `${bare ? 'bare' : 'full'}/${String(headers['User-Agent']).slice(0, 8)}`;
     try {
       // Fail fast on early attempts (a hung edge must not stall the channel open for
       // 18s); only the last attempt gets a long timeout.
@@ -1999,19 +2016,25 @@ async function fetchUpstreamMpd(resolved) {
       });
       if (fetched.response.status >= 200 && fetched.response.status < 300) {
         if (bare) markBare(resolved.streamUrl);
+        deadHosts.delete(deadKey);
         return fetched;
       }
       try { await fetched.response.body?.cancel(); } catch (_) { /* ignore */ }
+      attemptLog.push(`${tag}=${fetched.response.status}`);
       lastErr = new Error(`HTTP ${fetched.response.status}`);
       console.warn(
         `[embed] mpd upstream HTTP ${fetched.response.status} ua=${String(headers['User-Agent']).slice(0, 24)}`,
       );
     } catch (err) {
       lastErr = err;
+      attemptLog.push(`${tag}=${String(err.cause?.code || err.name || 'err')}:${String(err.message || err).slice(0, 40)}`);
       console.warn('[embed] mpd fetch error:', err.message || err);
     }
   }
-  throw lastErr || new Error('mpd_upstream_failed');
+  if (deadKey) deadHosts.set(deadKey, Date.now() + DEAD_HOST_TTL_MS);
+  const failure = lastErr || new Error('mpd_upstream_failed');
+  failure.attempts = attemptLog.join(' ');
+  throw failure;
 }
 
 /**
@@ -2053,7 +2076,9 @@ async function buildProxiedMpdBodyUncached(resolved, baseUrl) {
       `[embed] mpd upstream failed for ${String(resolved.streamUrl).slice(0, 96)}:`,
       err.message || err,
     );
-    throw new Error('mpd_upstream_failed');
+    const wrapped = new Error('mpd_upstream_failed');
+    wrapped.detail = err.attempts || '';
+    throw wrapped;
   }
   const { response, finalUrl } = fetched;
   const text = await readLimitedText(response, PLAYLIST_MAX_BYTES);
@@ -2101,7 +2126,7 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl,
   try {
     return await sendProxiedMpd(res, resolved, baseUrl);
   } catch (firstErr) {
-    trace.push(`primary:${firstErr.message || firstErr} host=${hostOf(resolved.streamUrl)}`);
+    trace.push(`primary:${firstErr.message || firstErr} host=${hostOf(resolved.streamUrl)} [${firstErr.detail || ''}]`);
     console.warn(`[embed] mpd failover start ch=${channelId}: ${firstErr.message || firstErr}`);
   }
 
@@ -2134,14 +2159,29 @@ async function proxyMpdWithFailover(res, { channelId, source, resolved, baseUrl,
     try {
       const nur = await fetchNurClearKeyForAzam(sport);
       if (nur?.streamUrl) {
-        const body = await buildProxiedMpdBody(nur, baseUrl);
-        console.info(`[embed] 🔑 mpd recovered via nur ClearKey AzamSport${sport} ch=${channelId}`);
         persistChannelClearKey(channelId, nur).catch(() => {});
-        return sendMpdBody(res, body);
+        try {
+          const body = await buildProxiedMpdBody(nur, baseUrl);
+          console.info(`[embed] 🔑 mpd recovered via nur ClearKey AzamSport${sport} ch=${channelId}`);
+          return sendMpdBody(res, body);
+        } catch (err) {
+          trace.push(`nur:${err.message || err} [${err.detail || ''}]`);
+          console.warn(`[embed] nur proxy failed ch=${channelId}: ${err.message || err}`);
+        }
+        // 3) Last resort: this server cannot reach the CDN (its egress IP is blocked or rate
+        // limited), but the nur MPD is a plain public URL with no IP-bound token and the key
+        // is already on the device. Send the player straight to the CDN instead of a 502.
+        if (isPublicHttpUrl(nur.streamUrl)) {
+          trace.push('direct-redirect');
+          console.warn(`[embed] ↪ direct CDN redirect ch=${channelId} host=${hostOf(nur.streamUrl)}`);
+          res.setHeader('Cache-Control', 'no-store');
+          return res.redirect(302, nur.streamUrl);
+        }
+      } else {
+        trace.push('nur:no-clearkey');
       }
-      trace.push('nur:no-clearkey');
     } catch (err) {
-      trace.push(`nur:${err.message || err}`);
+      trace.push(`nur:${err.message || err} [${err.detail || ''}]`);
       console.warn(`[embed] nur failover failed ch=${channelId}: ${err.message || err}`);
     }
   }

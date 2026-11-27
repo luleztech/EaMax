@@ -62,6 +62,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var webContainer: FrameLayout
     private lateinit var chipsContainer: View
+    private lateinit var loadingView: View
     private val hideChipsRunnable = Runnable { hideChips() }
     private lateinit var zoomChip: LinearLayout
     private lateinit var zoomLabel: TextView
@@ -145,6 +146,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
         playerView.controllerHideOnTouch = true
         playerView.hideController()
         chipsContainer = findViewById(R.id.player_chips)
+        loadingView = findViewById(R.id.player_loading)
         playerView.setControllerVisibilityListener(
             PlayerView.ControllerVisibilityListener { visibility ->
                 if (visibility == View.VISIBLE) showChips() else hideChips()
@@ -172,6 +174,21 @@ class OrizonPlayerActivity : AppCompatActivity() {
             },
         )
 
+        // Draw the player screen (black + spinner) NOW; build ExoPlayer / DRM / start loading on
+        // the next loop turn so the window appears instantly instead of after the heavy setup.
+        mainHandler.post { startInitialPlayback() }
+    }
+
+    private fun showLoading() {
+        if (::loadingView.isInitialized) loadingView.visibility = View.VISIBLE
+    }
+
+    private fun hideLoading() {
+        if (::loadingView.isInitialized) loadingView.visibility = View.GONE
+    }
+
+    private fun startInitialPlayback() {
+        if (isFinishing) return
         val classified = factory.lockedFormat(session.mpdUrl) ?: factory.classify(session.mpdUrl)
         Log.i(TAG, "open classified=$classified url=${safeUrlForLogs(session.mpdUrl)}")
         if (classified == OrizonPlayerFactory.Format.GATEWAY ||
@@ -390,6 +407,10 @@ class OrizonPlayerActivity : AppCompatActivity() {
         )
         created.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
+                // Media3 draws its own buffering spinner from here on — avoid two circles.
+                if (playbackState == Player.STATE_BUFFERING || playbackState == Player.STATE_READY) {
+                    hideLoading()
+                }
                 if (playbackState == Player.STATE_READY) {
                     sameFormatRetries = 0
                     playlistResetReloads = 0
@@ -439,6 +460,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
             session
         }
         Log.i(TAG, "failover → WebView url=${safeUrlForLogs(webSession.mpdUrl)}")
+        hideLoading()
         try {
             playerView.player = null
             player?.release()
@@ -713,6 +735,7 @@ class OrizonPlayerActivity : AppCompatActivity() {
 
     private fun showUnavailableAndFinish() {
         if (isFinishing) return
+        hideLoading()
         try {
             val msg = getString(R.string.channel_unavailable_message)
                 .ifBlank { "Channel haipatikani sasa." }

@@ -233,6 +233,9 @@ class MainActivity : FlutterActivity() {
                         nativeOpenResult = result
                         @Suppress("DEPRECATION")
                         startActivityForResult(intent, NATIVE_PLAYER_REQUEST)
+                        // No slide animation: the player screen appears on the very next frame.
+                        @Suppress("DEPRECATION")
+                        overridePendingTransition(0, 0)
                     } catch (e: Exception) {
                         nativeOpenResult = null
                         result.error("native_open_failed", e.message ?: "Failed to open player", null)
