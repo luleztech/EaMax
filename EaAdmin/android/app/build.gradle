@@ -49,6 +49,13 @@ react {
     //
     //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
     // hermesFlags = ["-O", "-output-source-map"]
+    //
+    //   Windows: RN 0.84's hermes-compiler npm package ships no hermesc.exe. Point HERMESC_PATH at a
+    //   compiler (or a pass-through shim that emits plain JS) to make `assembleRelease` work there.
+    if (System.getenv("HERMESC_PATH")) {
+        hermesCommand = System.getenv("HERMESC_PATH")
+        hermesFlags = []
+    }
 
     /* Autolinking */
     autolinkLibrariesWithApp()
